@@ -133,3 +133,63 @@ def test_durations_are_computed_for_the_stages_that_were_reached():
     }
 
     assert index.calculate_durations(timestamps) == {"queue": 2000}
+
+
+def _completed_item(**extra):
+    item = {
+        "PK": "doc#batch/b.pdf",
+        "SK": "none",
+        "ObjectStatus": "COMPLETED",
+        "InitialEventTime": "2026-11-13T14:44:38Z",
+    }
+    item.update(extra)
+    return item
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status_only", [True, False])
+def test_caller_attributes_are_returned_json_serialisable(tracking_item, status_only):
+    """#1851: DynamoDB hands back numbers as Decimal, which the Lambda response
+    serialiser cannot encode, so they are converted on the way out."""
+    import json
+    from decimal import Decimal
+
+    tracking_item(
+        _completed_item(
+            DocumentAttributes={
+                "account_id": "ACME-0042",
+                "amount": Decimal("12.5"),
+                "count": Decimal("3"),
+                "flags": [True, Decimal("1")],
+            }
+        )
+    )
+
+    result = index.get_document_status("batch/b.pdf", status_only=status_only)
+
+    assert result["attributes"] == {
+        "account_id": "ACME-0042",
+        "amount": 12.5,
+        "count": 3,
+        "flags": [True, 1],
+    }
+    json.dumps(result)  # would raise on a Decimal
+    # And the right native type: an int stays an int, a fraction a float.
+    assert type(result["attributes"]["count"]) is int
+    assert type(result["attributes"]["amount"]) is float
+
+
+@pytest.mark.unit
+def test_a_document_without_attributes_has_no_attributes_key(tracking_item):
+    tracking_item(_completed_item())
+    result = index.get_document_status("batch/b.pdf", status_only=True)
+    assert "attributes" not in result
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stored", ["not-a-map", ["a"], {}])
+def test_a_malformed_or_empty_stored_set_is_not_returned(tracking_item, stored):
+    tracking_item(_completed_item(DocumentAttributes=stored))
+    assert "attributes" not in index.get_document_status(
+        "batch/b.pdf", status_only=True
+    )

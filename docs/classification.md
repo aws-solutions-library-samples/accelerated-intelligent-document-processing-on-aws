@@ -42,7 +42,7 @@ classification:
         granularity, page, packet, boundary_hints
         model settings           # no validation or confidence: it returns no class
     section_classification:      # one class per section, one call per section
-      method: llm                # llm | decision_model
+      method: llm                # llm | decision_model | embeddings
       pages: first_k             # first | first_k | all
       k: 2
       llm:
@@ -50,6 +50,8 @@ classification:
         model settings + validation + confidence
       decision_model:            # only with method: decision_model
         endpoint, input, max_pages, instructions, timeout_ms, max_concurrency
+      embeddings:                # only with method: embeddings
+        model, references, min_similarity, temperature, max_image_dimension
       low_confidence: {min_confidence, on_low_confidence}
 
   document_shape:                # Advanced — what you already know about a document
@@ -631,9 +633,10 @@ the retry correct it) is available in
 - Better suited for packets where context spans multiple pages
 - Selected with `classification.combined.granularity: packet`
 
-The packet task prompt lives in
-`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
-under `classification.combined.packet.task_prompt`, and the configuration panel
+The default packet task prompt is
+[`combined.packet.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.task_prompt.txt)
+(`classification.combined.packet.task_prompt`; see
+[Default prompts](#default-prompts) for the others), and the configuration panel
 exposes it under *Packet settings* once the combined call's granularity is `packet`. It
 instructs the model to:
 
@@ -1212,7 +1215,7 @@ severity says how much attention the case deserves:
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class of its own and nothing was extracted from it, unless `sectionSplitting: disabled` gave it its section's class (see below the table). On the Bedrock backend's page path it is produced in two cases: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails — or the page's reply was withheld by a content filter, described below. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors. The exception on both paths is a reply Amazon Bedrock's content filter withheld (a `ValidationException` saying the output was blocked by the content filtering policy): that page or section is labelled `unclassified` and carries this issue naming the block, but the block is not added to the document's errors, so the rest of the document is classified and completes. A block still fails the document on a packet-granularity call, on a split-then-classify splitting call, when the document name matched a class's `x-aws-idp-document-name-regex` (the page's class is asserted, so labelling it `unclassified` would split the asserted document around it), and when `maxPagesForClassification` limits classification to a sample of pages (the sample's class is given to every page of the document, so a blocked sample would leave the whole document `unclassified` with no error). A throttle or another transient error is not caught that way: it fails the classification step, which the state machine retries | For a read failure, check the page's artifacts in the working bucket and reprocess. For a content-filter block, review the page, or reprocess with a different classification model. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class of its own and nothing was extracted from it, unless `sectionSplitting: disabled` gave it its section's class (see below the table). On the Bedrock backend's page path it is produced in two cases: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails — or the page's reply was withheld by a content filter, described below. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors. The exception on both paths is a reply Amazon Bedrock's content filter withheld (a `ValidationException` saying the output was blocked by the content filtering policy): that page or section is labelled `unclassified` and carries this issue naming the block, but the block is not added to the document's errors, so the rest of the document is classified and completes. The same applies to a reply Amazon Bedrock ends with the stop reason `content_filtered`, or `guardrail_intervened` when the stack's guardrail blocked it, instead of raising an error. A block still fails the document on a packet-granularity call (including a withheld reply whose text would have parsed as a class, which was previously accepted as one), on a split-then-classify splitting call, when the document name matched a class's `x-aws-idp-document-name-regex` (the page's class is asserted, so labelling it `unclassified` would split the asserted document around it), and when `maxPagesForClassification` limits classification to a sample of pages (the sample's class is given to every page of the document, so a blocked sample would leave the whole document `unclassified` with no error). A throttle or another transient error is not caught that way: it fails the classification step, which the state machine retries | For a read failure, check the page's artifacts in the working bucket and reprocess. For a content-filter block, review the page, or reprocess with a different classification model. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
 | `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text (text that is only whitespace counts as none), and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` (under `sectionSplitting: disabled`, usually its section's class; see below the table) and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed. It is also recorded when no model is called because the document's name matched a class's `x-aws-idp-document-name-regex` or the configuration has one class, under `sectionSplitting: disabled` or `page`: with `modality.images` off at combined page granularity each page's text is read to check it (only the first `maxPagesForClassification` pages when that limit is set, as the model path classifies only those), and a blank page is named in the issue as given the asserted class (a page whose text could not be read is not reported there and does not fail the document) | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema, except under `sectionSplitting: disabled` when the section's class is another one (see below the table) | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 | `classification_page_order_not_applied` | warning | `document_shape.pageOrder` is `printed_page_numbers`, and the printed page numbers could not be trusted for the whole document, so the pages were classified in scan order. Recorded on the first section; `details.reason_code` and `details.problem_page_ids` say why and which pages. See [Page Order](#page-order) | Nothing, if scan order is right for this document. Otherwise check the named pages' OCR text for their page numbers |
@@ -1524,16 +1527,165 @@ the configured `fallback_class` instead, as on the page-level path, and its sect
 carries a `classification_invalid_class_fallback` warning. Extraction treats `unclassified` as classification having determined no
 class, rather than as a class missing from the configuration.
 
-`splitting.method` and `section_classification.method` ship with one value,
-`llm`. A boundary-detection model, embeddings-based classification and external
-classifier endpoints (SageMaker, a Bedrock custom model, or a Lambda adapter in
-front of anything else) are described in
+`splitting.method` ships with one value, `llm`. `section_classification.method`
+also takes `decision_model` ([Decision models](decision-models.md)) and
+`embeddings` (below). A boundary-detection model and external classifier endpoints
+(SageMaker, a Bedrock custom model, or a Lambda adapter in front of anything else)
+are described in
 [issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329);
-each needs measurement on real documents before its defaults can be set
-honestly. Their settings blocks (`splitting.boundary_model`,
-`section_classification.embeddings`, `decision_model` and `low_confidence`) are
-declared so adding a method later needs no configuration migration, and are
-ignored until their method exists.
+each needs measurement on real documents before its defaults can be set honestly.
+`splitting.boundary_model` is declared so adding that method later needs no
+configuration migration, and is ignored until the method exists.
+
+### Section classification by embeddings
+
+`section_classification.method: embeddings` labels a section by comparing its page
+images with reference images or descriptions of each class, using a Bedrock
+multimodal embeddings model, and sends every section it is not sure of to the
+`llm` settings of section classification. It is off by default, applies only to
+`strategy: split_then_classify` (the combined call decides boundaries and classes
+together, so there is no separate labelling step to replace), and is never used
+without the LLM fallback.
+
+```yaml
+classification:
+  strategy: split_then_classify
+  split_then_classify:
+    section_classification:
+      method: embeddings
+      pages: first_k               # the pages embedded, averaged into one vector
+      k: "2"
+      embeddings:
+        model: ""                  # empty: Cohere Embed v4 for the stack's Region
+        references: examples       # examples | descriptions
+        min_similarity: 0.0
+        temperature: 0.034
+        max_image_dimension: 512
+      low_confidence:
+        min_confidence: 0.97       # the measured starting value, see below
+        on_low_confidence: llm     # required with method: embeddings
+      llm: {...}                   # labels every section below the thresholds
+```
+
+**How a section is labelled.** The pages `pages` and `k` select are downscaled to
+`max_image_dimension` pixels on the longer side, embedded, and averaged into one
+vector. Each class has reference vectors: with `references: examples`, the images
+of its few-shot examples (`x-aws-idp-examples` entries with an
+`x-aws-idp-image-path`, read the way [few-shot examples](few-shot-examples.md) are);
+with `references: descriptions`, its name and description embedded as text. A
+class's similarity is the cosine similarity of its best-matching reference. A
+softmax at `temperature` turns the similarities into a probability per class, so
+the top probability reflects both how similar the section is to the best class
+and how far ahead of the runner-up that class is. That probability is the
+section's confidence and the distribution is its class candidates, in the same
+shape the LLM writes, so HITL, the Sections panel and extraction need nothing new.
+
+**When the LLM labels it instead.** A section whose best similarity is below
+`min_similarity`, whose probability is below `low_confidence.min_confidence`, or
+none of whose pages has an image, is labelled by the `llm` settings exactly as
+`method: llm` would have labelled it. The configuration is refused unless
+`on_low_confidence` is `llm` and at least one of the two thresholds is above 0,
+because an embedding always has a nearest class, including for a page of no
+configured class. Each page's classification reason says which path labelled
+its section: it starts `Embeddings (<model>): <class> (similarity ..., margin ...,
+probability ...)`, and ends `..., so labeled by the LLM: <the LLM's reason>` when
+the LLM did.
+
+With `references: examples`, a class with no example image has no reference: the
+embeddings never choose it, and its sections are labelled correctly only when they
+fall below a threshold and reach the LLM. Fewer than two classes with references
+fails every section with a message naming the cause. A failed embedding call fails
+its section, as a failed LLM call does; a throttle the client's retries could not
+absorb retries the classification step. Neither is converted into an LLM call.
+
+**Cost.** Embedding calls are metered under
+`SectionClassification/bedrock/<model>`, beside the LLM's own key, with the
+input-token count Bedrock reports. Cohere Embed v4 counts an image by its pixels,
+about 196 pixels per token: 996 tokens for a page at 512 pixels, 4,069 at 1024 and
+10,647 at 150 DPI unscaled (one US Letter page, measured). Reference vectors are
+cached for the life of the Lambda container, so a warm container embeds each
+example image once; the first document after a cold start pays for all of them.
+`config_library/pricing.yaml` has no row for Cohere Embed v4, so the embedding
+tokens are recorded but their cost is reported as unpriced rather than as zero.
+The AWS price list for `us-east-1` gives $0.12 per million input tokens for it,
+and also lists a second usage type whose relation to image calls it does not
+state, so no rate is shipped; add a `bedrock/<model>` row to your pricing
+configuration (one per Region profile you use) if you want the cost reported.
+
+#### What the benchmark measured
+
+`benchmarks/harness/embedding_labeling_bench.py` runs this method and the `llm`
+method through the product's own section-classification code against Bedrock in
+`us-east-1`, on documents whose class is known, so only the label is scored (the
+quantity evaluation reports as `label_accuracy`). One run, on 2026-11-20:
+
+- **Corpus:** the RVL-CDIP-N multi-page source documents that the DocSplit test
+  set is built from (13 classes), with the `docsplit` preset's classes,
+  descriptions and LLM settings (Nova 2 Lite, page images and Textract OCR text,
+  the first 2 pages of each section). One unreadable PDF was dropped.
+- **Split:** by document and stratified by class, with a fixed seed: 61 documents
+  became the classes' example images (5 per class; 1 for `language`, which has 7
+  documents), 159 fitted the temperature and chose the threshold and the image
+  size (512 px kept more sections there than 1024 px did), and 171 are the
+  test split every figure below comes from. No document appears in two splits.
+
+| Configuration (test split, 171 sections) | Label accuracy | Sections sent to the LLM |
+|---|---|---|
+| `method: llm` | 0.947 | all |
+| Embeddings alone, example images at 512 px | 0.696 | none |
+| Embeddings alone, example images at 1024 px | 0.743 | none |
+| Embeddings alone, descriptions at 512 px | 0.661 | none |
+| Embeddings with LLM fallback, `min_confidence: 0.97` (examples, 512 px) | 0.947 | 75% |
+| Embeddings with LLM fallback, `min_confidence: 0.9` | 0.942 | 58% |
+| Embeddings with LLM fallback, `min_confidence: 0.7` | 0.918 | 43% |
+
+The threshold 0.97 is the lowest at which the hybrid matched the LLM's accuracy on
+the calibration split, and it matched it on the test split too: the 42 sections
+the embeddings kept were all correct, so a quarter of the LLM calls were saved at
+no measured loss of accuracy. What that saving is worth depends on how Cohere
+Embed v4 image calls are billed, which the price list does not settle. At its
+$0.12 per million input tokens the run's cost was the same as the LLM's to within
+1% ($0.1355 against $0.1362 for the 171 sections, with the embeddings $0.032 of
+it and Nova 2 Lite at its `pricing.yaml` rates), because the saved LLM calls only
+paid for the embeddings of every section and every reference. Under the price
+list's other usage type for the model (a fraction of a cent per thousand
+embeddings) the embeddings would cost almost nothing and the hybrid would be
+about 24% cheaper than the LLM alone.
+The probabilities were reasonably calibrated (expected calibration error 0.077 on
+the test split at 512 px).
+
+What this sample can and cannot support:
+
+- 171 sections put about ±0.03 around the figures near 0.95 and about ±0.07
+  around those near 0.7 (95% binomial intervals), so the hybrid's equality with
+  the LLM, the step down to 0.942, and the order of the three embeddings-alone rows
+  are all within noise. 42 correct out of 42 kept sections puts the kept sections'
+  accuracy at 0.91 or more (exact 95% interval), not at 1.
+- **Whether the method pays for itself on this corpus depends on the embedding
+  price.** At the per-token reading it saves nothing: with five examples per class
+  and Nova 2 Lite as the LLM, the threshold that keeps the LLM's accuracy still
+  sends three sections in four to the LLM, and lower thresholds that send fewer
+  cost accuracy (0.918 at 43%). Confirm how your account is billed for Cohere
+  Embed v4 before relying on a saving. It may pay off more with a more expensive
+  section-classification model, more examples per class, or visually uniform
+  classes, but none of those was measured.
+- Latency was not measured: the fallback calls in the end-to-end run replayed the
+  LLM's cached answers, so its wall-clock time says nothing.
+- The temperature and threshold were fitted for Cohere Embed v4 with example
+  images at 512 px. Refit both with the harness when the model, the image size,
+  the references or the classes change.
+
+To measure your own corpus, run the harness on a directory with one folder of PDFs
+per class; it caches every response outside the repository so a second run is
+free:
+
+```bash
+AWS_PROFILE=<profile> AWS_REGION=us-east-1 python3 benchmarks/harness/embedding_labeling_bench.py \
+    --corpus <dir> --cache <dir outside the repository> --per-class 32 --out results.json
+```
+
+Storing per-document embeddings and searching them from agents is not part of this
+method; it keeps nothing after a section is labelled.
 
 ### Telling a wrong boundary from a wrong label
 
@@ -1755,6 +1907,38 @@ contract: the output it must ask for, the placeholders it can use and where
 `<<CACHEPOINT>>` goes. Comments are removed before a prompt is sent; see
 [Comments in a prompt](configuration.md#comments-in-a-prompt).
 
+### Default prompts
+
+Each default classification prompt is its own plain-text file, named by its key
+path under `classification`. The file is the text the stack sends when your
+configuration does not set that prompt (less its `{# ... #}` comments), and the
+configuration editor's help text for each prompt field links to the same file.
+
+| Prompt | Default |
+|---|---|
+| Combined call, page granularity: system prompt | [`combined.page.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.system_prompt.txt) |
+| Combined call, page granularity: task prompt | [`combined.page.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.task_prompt.txt) |
+| Combined call, packet granularity: system prompt | [`combined.packet.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.system_prompt.txt) |
+| Combined call, packet granularity: task prompt | [`combined.packet.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.task_prompt.txt) |
+| Combined call: confidence block, `topk` mode, page granularity | [`combined.llm.confidence.task_prompt_topk.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk.txt) |
+| Combined call: confidence block, `verbalized` mode, page granularity | [`combined.llm.confidence.task_prompt_verbalized.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized.txt) |
+| Combined call: confidence block, `topk` mode, packet granularity | [`combined.llm.confidence.task_prompt_topk_packet.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk_packet.txt) |
+| Combined call: confidence block, `verbalized` mode, packet granularity | [`combined.llm.confidence.task_prompt_verbalized_packet.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized_packet.txt) |
+| Splitting call, page granularity: system prompt | [`split_then_classify.splitting.llm.page.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.system_prompt.txt) |
+| Splitting call, page granularity: task prompt | [`split_then_classify.splitting.llm.page.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.task_prompt.txt) |
+| Splitting call, packet granularity: system prompt | [`split_then_classify.splitting.llm.packet.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.system_prompt.txt) |
+| Splitting call, packet granularity: task prompt | [`split_then_classify.splitting.llm.packet.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.task_prompt.txt) |
+| Section classification: system prompt | [`split_then_classify.section_classification.llm.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.system_prompt.txt) |
+| Section classification: task prompt | [`split_then_classify.section_classification.llm.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.task_prompt.txt) |
+| Section classification: confidence block, `topk` mode | [`split_then_classify.section_classification.llm.confidence.task_prompt_topk.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_topk.txt) |
+| Section classification: confidence block, `verbalized` mode | [`split_then_classify.section_classification.llm.confidence.task_prompt_verbalized.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_verbalized.txt) |
+
+The classification defaults (`base-classification.yaml`) reference these files
+rather than holding the text, and the reference is resolved when the defaults are
+loaded, so a stored, downloaded or exported configuration carries the prompt text
+itself. How the reference works is described in the
+[system defaults README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/README.md#default-prompts-in-their-own-files).
+
 ### System Prompts
 
 Define overall model behavior and constraints:
@@ -1807,10 +1991,10 @@ which produces an error if it is missing.**
 - **The output shape the active call's parser reads.** A page call is parsed for
   `class` and `document_boundary`; a packet call is parsed for a `segments` array
   of `ordinal_start_page`/`ordinal_end_page`/`type`. Asking for the wrong one
-  fails the parse rather than the validation. The shipped prompts in
-  `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
-  are the reference for both shapes, and the split-then-classify splitting prompts there
-  drop `class`/`type` entirely because that call assigns no class.
+  fails the parse rather than the validation. The shipped
+  [default prompts](#default-prompts) are the reference for both shapes, and the
+  split-then-classify splitting prompts drop `class`/`type` entirely because that
+  call assigns no class.
 - **Both `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`, unless you mean to drop one.**
   An unset `modality.text` or `modality.images` is **inferred from this call's
   task prompt**, so deleting `{DOCUMENT_IMAGE}` turns images off for the call
@@ -1972,7 +2156,8 @@ call fails with `found N occurrences, but exactly 1 is required`, and
 page, context-pages and packet prompts and to both calls of split-then-classify; a
 repeat in the section-classification prompt fails the document before any section
 is labelled, except under `method: decision_model` with an `on_low_confidence` other
-than `llm`, where that prompt is never sent. `modality.images: false` removes every `{DOCUMENT_IMAGE}` from the prompt (a
+than `llm`, where that prompt is never sent (`method: embeddings` always sends it,
+because it requires `on_low_confidence: llm`). `modality.images: false` removes every `{DOCUMENT_IMAGE}` from the prompt (a
 `<document-image>` element that held only the placeholder goes with it), so nothing
 is refused and no image is sent. A placeholder written inside the class-confidence
 block (`confidence.task_prompt_topk`, `task_prompt_verbalized` and their packet

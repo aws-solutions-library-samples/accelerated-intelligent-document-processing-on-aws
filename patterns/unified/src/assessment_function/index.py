@@ -26,6 +26,7 @@ from idp_common.lambda_deadline import lambda_deadline_scope, set_lambda_deadlin
 from idp_common.models import Document, Status
 from idp_common.utils import (
     calculate_lambda_metering,
+    failure_metering,
     merge_metering_data,
 )
 from idp_common.utils.transient_errors import (
@@ -397,6 +398,11 @@ def _handle(event, context):
                 f"failing the document."
             )
             updated_document = document
+            # A call that failed after Bedrock billed it (a reply withheld by stop
+            # reason) carries that usage on the exception.
+            updated_document.metering = merge_metering_data(
+                updated_document.metering, failure_metering(e)
+            )
             issue = degrade_section_to_no_confidence(updated_document, section_id, e)
             logger.warning(f"Recorded assessment ProcessingIssue: {issue.code}")
             # And in the section's extraction result, which the Processing Report

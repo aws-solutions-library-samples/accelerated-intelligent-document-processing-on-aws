@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Stdlib-only and in this package, so it belongs to neither import tier below: it
 # cannot fail to import and nothing has to be stubbed for it.
@@ -490,6 +490,8 @@ def _deploy_terraform(
     govcloud: bool = False,
     assume_role_arn: Optional[str] = None,
     allow_replace_retained: bool = False,
+    tags: Optional[Dict[str, str]] = None,
+    terraform_state: Optional[str] = None,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
@@ -560,6 +562,8 @@ def _deploy_terraform(
             terraform_bin=terraform_bin,
             assume_role_arn=assume_role_arn,
             allow_replace_retained=allow_replace_retained,
+            tags=tags,
+            terraform_state=terraform_state or "local",
         )
         console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
         outputs = result.outputs
@@ -583,10 +587,28 @@ _KMS_KEY_TYPES = ("AWS::KMS::Key", "aws_kms_key", "awscc_kms_key")
 
 
 def _print_retained_kms_keys(
-    key_ids: List[str], stack_id: Optional[str] = None
+    key_ids: List[str],
+    stack_id: Optional[str] = None,
+    supplied_key_arn: Optional[str] = None,
 ) -> None:
     """Say that the deployment's KMS key was kept, what it costs and how to
-    schedule its deletion. With no ``key_ids``, say how to find the key."""
+    schedule its deletion. With no ``key_ids``, say how to find the key.
+
+    A stack deployed with ``CustomerManagedKmsKeyArn`` created no key: its data
+    is encrypted with the supplied one, which is the customer's and may protect
+    other data too, so nothing here may suggest deleting it."""
+    if supplied_key_arn:
+        console.print(
+            "[bold]KMS key:[/bold] this stack encrypted its data with the key you "
+            "supplied (CustomerManagedKmsKeyArn). The stack did not create it and "
+            "did not delete it, and whatever data the stack wrote that still "
+            "exists stays encrypted with it:"
+        )
+        console.print(f"    - {supplied_key_arn}")
+        console.print(
+            "    Keep it while any of that data is needed; managing it is up to you."
+        )
+        return
     console.print(
         "[bold]KMS key kept:[/bold] the key that encrypts the retained buckets is "
         "retained so their data stays readable. It costs about $1 a month ($3 "
@@ -900,7 +922,10 @@ def cli():
     help=(
         "Stack tags as key=value,key2=value2. Propagated by CloudFormation "
         "to all taggable resources and nested stacks. On update, providing "
-        "tags replaces the stack's tag set; omitting them preserves existing tags."
+        "tags replaces the stack's tag set; omitting them preserves existing tags. "
+        "With --terraform, the module tags every taggable resource the same way, "
+        "and omitting them keeps the tags of the previous deploy from "
+        "--terraform-dir."
     ),
 )
 @click.option("--wait", is_flag=True, help="Wait for stack operation to complete")
@@ -1009,6 +1034,18 @@ def cli():
         "the earlier name (used with --terraform)"
     ),
 )
+@click.option(
+    "--terraform-state",
+    type=click.Choice(["local", "s3"], case_sensitive=False),
+    default=None,
+    help=(
+        "Where Terraform keeps the deployment's state (used with --terraform). "
+        "local (the default): terraform.tfstate in --terraform-dir. s3: an "
+        "encrypted, versioned bucket idp-tf-<stack-name>-<account>-<region>, "
+        "created if missing and kept on delete, locked with the DynamoDB table "
+        "idp-tf-lock-<stack-name>; a directory with a local state is refused"
+    ),
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -1039,6 +1076,7 @@ def deploy(
     terraform_bin: str,
     terraform_assume_role_arn: Optional[str],
     terraform_allow_replace_retained: bool,
+    terraform_state: Optional[str],
 ):
     """
     Deploy or update IDP stack from command line
@@ -1114,7 +1152,6 @@ def deploy(
             "--template-url": template_url,
             "--template-file": template_file,
             "--custom-config": custom_config,
-            "--tags": tags,
             "--role-arn": role_arn,
             "--no-rollback": no_rollback,
             "--log-level": log_level,
@@ -1133,8 +1170,18 @@ def deploy(
             govcloud=govcloud,
             assume_role_arn=terraform_assume_role_arn,
             allow_replace_retained=terraform_allow_replace_retained,
+            # As on the CloudFormation path, no tags (or only blank segments)
+            # keeps the deployment's tags.
+            tags=_parse_tags(tags) or None,
+            terraform_state=terraform_state,
         )
         return
+    if terraform_state:
+        console.print(
+            "[red]✗ Error: --terraform-state is used with --terraform; a "
+            "CloudFormation stack keeps no Terraform state.[/red]"
+        )
+        sys.exit(1)
     if terraform_assume_role_arn:
         console.print(
             "[red]✗ Error: --terraform-assume-role-arn is used with --terraform; "
@@ -1796,6 +1843,15 @@ def delete(
         # Get bucket information
         console.print(f"[bold blue]Analyzing stack: {stack_name}[/bold blue]")
         bucket_info = client.stack.get_bucket_info()
+        # Read before the stack is gone: a supplied key is reported as the
+        # customer's, never as one to schedule for deletion.
+        stack_parameters = client.stack.get_parameters()
+        supplied = (
+            stack_parameters.get("CustomerManagedKmsKeyArn")
+            if isinstance(stack_parameters, dict)
+            else None
+        )
+        supplied_key_arn = supplied if isinstance(supplied, str) and supplied else None
 
         # Show warning with bucket details
         console.print()
@@ -2006,9 +2062,12 @@ def delete(
                         console.print(f"  • {error['type']}: {error['resource']}")
                         console.print(f"    Error: {error['error']}")
 
-                if cleanup_result.get("kms_keys_retained"):
+                if cleanup_result.get("kms_keys_retained") or supplied_key_arn:
                     console.print()
-                    _print_retained_kms_keys(cleanup_result["kms_keys_retained"])
+                    _print_retained_kms_keys(
+                        cleanup_result.get("kms_keys_retained") or [],
+                        supplied_key_arn=supplied_key_arn,
+                    )
 
                 console.print()
 
@@ -2030,7 +2089,9 @@ def delete(
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
             console.print()
-            _print_retained_kms_keys([], stack_id=result.stack_id)
+            _print_retained_kms_keys(
+                [], stack_id=result.stack_id, supplied_key_arn=supplied_key_arn
+            )
             console.print()
 
         if deletion_failed:
@@ -2305,6 +2366,34 @@ def delete_documents_cmd(
         sys.exit(1)
 
 
+def _read_attribute_options(
+    attribute_pairs: Tuple[str, ...], attributes_file: Optional[str]
+) -> Dict[str, Any]:
+    """The `--attributes-file` object overlaid by each `--attribute key=value`.
+
+    Values given as pairs are strings. A key given twice as a pair is refused
+    rather than silently resolved. Raises ValueError (or OSError for the file).
+    """
+    attributes: Dict[str, Any] = {}
+    if attributes_file:
+        with open(attributes_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"{attributes_file}: must hold a JSON object")
+        attributes.update(data)
+    seen = set()
+    for pair in attribute_pairs:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise ValueError(f"--attribute {pair!r} is not in key=value form")
+        key = key.strip()
+        if key in seen:
+            raise ValueError(f"--attribute {key!r} is given more than once")
+        seen.add(key)
+        attributes[key] = value
+    return attributes
+
+
 def _process_impl(
     stack_name: str,
     manifest: Optional[str],
@@ -2323,9 +2412,32 @@ def _process_impl(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int] = None,
+    attribute_pairs: Tuple[str, ...] = (),
+    attributes_file: Optional[str] = None,
 ):
     """Implementation for process and run_inference commands"""
     try:
+        # Caller-supplied document attributes (#1851): `--attributes-file`, then
+        # each `--attribute key=value` on top. Only the input syntax is checked
+        # here; the SDK validates the set against the attribute rules and refuses
+        # an invalid one before anything is uploaded.
+        attributes = None
+        if attribute_pairs or attributes_file:
+            if test_set:
+                console.print(
+                    "[red]✗ Error: --attribute/--attributes-file cannot be used "
+                    "with --test-set[/red]"
+                )
+                sys.exit(1)
+            try:
+                attributes = _read_attribute_options(attribute_pairs, attributes_file)
+            except (OSError, ValueError) as e:
+                console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
+                sys.exit(1)
+        # Passed only when given, so a submission without attributes makes exactly
+        # the SDK call it always did.
+        attribute_kwargs = {"attributes": attributes} if attributes is not None else {}
+
         # Validate mutually exclusive options
         if not manifest and not directory and not s3_uri and not test_set:
             console.print(
@@ -2419,6 +2531,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif directory:
                 result = client.batch.process(
@@ -2430,6 +2543,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif s3_uri:
                 result = client.batch.process(
@@ -2441,6 +2555,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             else:
                 raise ValueError("No input source specified")
@@ -2559,6 +2674,23 @@ def _process_impl(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def process(
     stack_name: str,
     manifest: Optional[str],
@@ -2577,6 +2709,8 @@ def process(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Process documents
@@ -2645,6 +2779,8 @@ def process(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 
@@ -2802,6 +2938,23 @@ def reprocess(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def run_inference(
     stack_name: str,
     manifest: Optional[str],
@@ -2820,6 +2973,8 @@ def run_inference(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Run inference on a batch of documents
@@ -2848,6 +3003,8 @@ def run_inference(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 

@@ -477,6 +477,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          # Full history: `make terraform-replay-releases` (inside terraform-check)
+          # reads the template tree of each release in
+          # terraform/tools/replay_releases.json from its recorded commit.
+          fetch-depth: 0
 
       - name: Set up Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

@@ -166,7 +166,8 @@ the **Status** column of the Sections panel and in the section's Processing Repo
 tab, whose Confidence stage then reads *no confidence scores*. Writing it into the
 report is best effort; if that write fails, the Status column still has it. A reply Amazon
 Bedrock's content filter withheld degrades the section the same way, and the issue's
-message says so. Transient
+message says so; so does a reply Bedrock ended with the stop reason
+`content_filtered` or `guardrail_intervened` instead of raising an error. Transient
 failures (throttling, read timeouts) are unaffected and still retry. To get
 confidence back, reduce the confidence request's size: `geometry.mode: ocr_only`,
 a lower `extraction.confidence.list_batch_size`, or Advanced (agentic) extraction,

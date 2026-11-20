@@ -51,7 +51,15 @@ class TestNotificationsTableParity:
         assert table_properties["BillingMode"] == "PAY_PER_REQUEST"
         sse = table_properties["SSESpecification"]
         assert sse["SSEType"] == "KMS"
-        assert sse["KMSMasterKeyId"] == {"!Ref": "CustomerManagedEncryptionKey"}
+        # The deployment key: CustomerManagedKmsKeyArn when supplied, else the
+        # key the stack creates (#2016).
+        assert sse["KMSMasterKeyId"] == {
+            "!If": [
+                "UseSuppliedKmsKey",
+                {"!GetAtt": "CustomerManagedKmsKeyCheck.KeyArn"},
+                {"!Ref": "CustomerManagedEncryptionKey"},
+            ]
+        }
 
     def test_table_name_output_has_no_export(self, template):
         output = template["Outputs"]["NotificationsTableName"]

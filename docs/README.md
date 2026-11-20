@@ -49,6 +49,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Few-Shot Examples](./few-shot-examples.md) - Implementing few-shot examples for improved accuracy
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
 - [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
+- [Document Attributes](./document-attributes.md) - Attach caller-supplied key-value attributes (account id, claim number) at upload and get them back with the results
 - [Document Versions](./document-versions.md) - Each processing run of a document is kept as a version, so reprocessing or re-uploading does not lose prior results
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
 - [Z3 Symbolic Rule Validation Engine](./rule-validation-z3.md) - Deterministic, formal rule validation with the Z3 theorem prover, routed per rule alongside the LLM engine
@@ -96,6 +97,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 ### Extensions
 
 - [Auto Optimizer (Beta)](./extensions/auto-optimizer.md) - Agentic optimization of a document processing configuration
+- [Decision Model: Strands Decider](./extensions/decision-model-decider.md) - Builds and deploys a decision model for section classification and extraction confidence
 - [Test Set - ConfBench](./extensions/confbench-testset.md) - Deploys the ConfBench benchmark into Test Studio on demand
 - [Test Set Generator](./extensions/idp-data-generator.md) - Generates labeled synthetic document test sets
 - [IDP Monitor](./extensions/idp-monitor.md) - AI-assisted operations dashboard over the reporting data
@@ -126,6 +128,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Role-Based Access Control](./rbac.md) - Server-side role enforcement at the API layer, UI controls, and configuration-profile scoping
 - [External Identity Provider](./external-idp.md) - Federating sign-in from a SAML or OIDC identity provider through Amazon Cognito
 - [Malware Scanning](./malware-scanning.md) - Scanning incoming documents before they are processed
+- [Customer Managed KMS Key](./customer-managed-kms-key.md) - Encrypting a new deployment's data with a KMS key you supply, and the key policy it needs
 - [VPC Secured Mode](./vpc-secured-mode.md) - Running the solution in a VPC-secured environment for network isolation
 - [Deploying in a Private Network](./deployment-private-network.md) - Runbook for a fully private or air-gapped deployment
 - [Installing First-Party Packages Safely](./dependency-confusion.md) - Why the packages in `lib/` must be installed from a local checkout, never by bare name

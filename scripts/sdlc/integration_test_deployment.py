@@ -259,6 +259,80 @@ def terraform_migration_requested(environ: dict | None = None) -> bool:
     return True
 
 
+#: The weekly Terraform-upgrade schedule: the build runs
+#: scripts/sdlc/terraform_upgrade_test.py instead of the primary suite, upgrading a
+#: deployment of the newest published release's module to the module this build
+#: publishes (the same name codebuild_deployment.py reads in
+#: terraform_upgrade_mode). Reaches the build in ci_run_options.json as
+#: ``terraform_upgrade``.
+TERRAFORM_UPGRADE_VARIABLE = "IDP_RUN_TERRAFORM_UPGRADE"
+
+
+def terraform_upgrade_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly Terraform-upgrade run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError beside any other selector of what a scheduled run
+    does (the probes, a region run, a Terraform run, the migration run): the
+    upgrade run replaces the primary suite, so any of those would report a result
+    for a run that never happened.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_UPGRADE_VARIABLE, "")).strip().lower() != "true":
+        return False
+    for clash, asked in (
+        (f"{VARIANT_PROBES_VARIABLE}=true", variant_probes_requested(env)),
+        (REGION_RUN_VARIABLE, bool(region_run_requested(env))),
+        (
+            f"{IAC_VARIABLE}=terraform",
+            str(env.get(IAC_VARIABLE, "")).strip().lower() == IAC_TERRAFORM,
+        ),
+        (
+            f"{TERRAFORM_MIGRATION_VARIABLE}=true",
+            str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() == "true",
+        ),
+    ):
+        if asked:
+            raise ValueError(
+                f"{TERRAFORM_UPGRADE_VARIABLE}=true cannot be combined with "
+                f"{clash}: the upgrade run replaces the primary suite. Give each "
+                "its own schedule."
+            )
+    return True
+
+
+#: A Terraform schedule that also deploys a CloudFormation twin of the same
+#: commit and compares the two with terraform/tools/parity.py (the same name
+#: codebuild_deployment.py reads in terraform_parity_mode). Reaches the build in
+#: ci_run_options.json as ``terraform_parity``.
+TERRAFORM_PARITY_VARIABLE = "IDP_TERRAFORM_PARITY"
+
+
+def terraform_parity_requested(environ: dict | None = None) -> bool:
+    """Whether this run adds the parity check to a Terraform run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError when the schedule is not a Terraform run
+    (iac_requested): the check compares a Terraform deployment with its
+    CloudFormation twin, and without the Terraform deployment the run would
+    report a comparison that never happened.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_PARITY_VARIABLE, "")).strip().lower() != "true":
+        return False
+    if iac_requested(env) != IAC_TERRAFORM:
+        raise ValueError(
+            f"{TERRAFORM_PARITY_VARIABLE}=true needs {IAC_VARIABLE}=terraform on "
+            "the same schedule: the parity check compares the Terraform deployment "
+            "with a CloudFormation twin."
+        )
+    return True
+
+
 def upload_to_s3(bucket_name):
     """Upload code package to S3 and return version ID"""
     print(f"Uploading to S3 bucket: {bucket_name}")
@@ -536,6 +610,11 @@ PROBE_RUN_MONITOR_MAX_WAIT_SECONDS = 11700  # 195 min
 # headroom.
 MIGRATION_RUN_MONITOR_HANDOFF_SECONDS = 15000  # 250 min
 MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS = 15600  # 260 min
+# The weekly Terraform-upgrade run is budgeted against the same 240-minute build
+# timeout (TERRAFORM_UPGRADE_MIN_TIMEOUT_MINUTES in codebuild_deployment.py), so
+# its monitor watches as long as the migration run's.
+UPGRADE_RUN_MONITOR_HANDOFF_SECONDS = MIGRATION_RUN_MONITOR_HANDOFF_SECONDS
+UPGRADE_RUN_MONITOR_MAX_WAIT_SECONDS = MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS
 # Re-assume this far before the ~1h chained-session expiry.
 CREDENTIAL_REFRESH_SECONDS = 3000  # 50 min
 GITLAB_ROLE_NAME = "idp-sdlc-GitLab"
@@ -607,6 +686,8 @@ def write_ci_run_options(
         "region_run": region_run_requested(env) or "",
         "iac": iac_requested(env),
         "terraform_migration": terraform_migration_requested(env),
+        "terraform_parity": terraform_parity_requested(env),
+        "terraform_upgrade": terraform_upgrade_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -1002,6 +1083,8 @@ def main():
     try:
         iac = iac_requested()
         migration = terraform_migration_requested()
+        parity = terraform_parity_requested()
+        upgrade = terraform_upgrade_requested()
     except ValueError as e:
         print(f"❌ {e}")
         sys.exit(1)
@@ -1010,8 +1093,18 @@ def main():
             "🔀 Weekly Terraform-migration run — migrating a genai-idp-terraform "
             "deployment onto the built-in module instead of the primary suite"
         )
+    if upgrade:
+        print(
+            "⏫ Weekly Terraform-upgrade run — upgrading a deployment of the newest "
+            "published release's module to this build's instead of the primary suite"
+        )
     if iac == IAC_TERRAFORM:
         print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
+        if parity:
+            print(
+                "🪞 With the parity check — a CloudFormation twin of the same commit "
+                "is deployed beside it and compared with terraform/tools/parity.py"
+            )
     elif os.environ.get(IAC_VARIABLE, "").strip():
         source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
         print(
@@ -1024,7 +1117,7 @@ def main():
 
     # Execute deployment steps
     write_ci_run_options()
-    if (iac == IAC_TERRAFORM or migration) and not pathlib.Path(
+    if (iac == IAC_TERRAFORM or migration or upgrade) and not pathlib.Path(
         CI_RUN_OPTIONS_FILE
     ).is_file():
         # The file is the only way the choice reaches CodeBuild, which reads no
@@ -1046,6 +1139,13 @@ def main():
             version_id,
             max_wait=MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS,
             handoff_after=MIGRATION_RUN_MONITOR_HANDOFF_SECONDS,
+        )
+    elif upgrade:
+        result = monitor_pipeline(
+            pipeline_name,
+            version_id,
+            max_wait=UPGRADE_RUN_MONITOR_MAX_WAIT_SECONDS,
+            handoff_after=UPGRADE_RUN_MONITOR_HANDOFF_SECONDS,
         )
     elif variant_probes_requested():
         result = monitor_pipeline(

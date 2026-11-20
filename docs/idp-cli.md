@@ -405,6 +405,7 @@ idp-cli deploy [OPTIONS]
 - `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
 - `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
+- `--terraform-state`: `local` (default) keeps the Terraform state in `terraform.tfstate` in `--terraform-dir`; `s3` keeps it in an encrypted, versioned S3 bucket `idp-tf-<stack-name>-<account>-<region>` that the CLI creates if missing (and never deletes), locked with the DynamoDB table `idp-tf-lock-<stack-name>`. A directory that already holds a local state is refused with `s3`; moving it is not supported yet. Used with `--terraform`; refused without it. See [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3)
 
 **Note:** `--from-code`, `--template-url`, and `--template-file` are mutually exclusive. Use `--from-code` for development/testing from local source, `--template-url` for production deployments from a pre-published template, and `--template-file` to deploy a locally-built template.
 
@@ -553,6 +554,7 @@ Notes and caveats:
 - **Format:** comma-separated `key=value` pairs. Tag keys may contain spaces and the characters `. : / + - _` (a value may itself contain `=`; only the first `=` splits key from value). Commas inside a tag value are not supported.
 - **Update behavior:** re-running `deploy` with `--tags` **replaces** the stack's entire tag set with what you pass. Omitting `--tags` on an update **preserves** the existing tags (unlike a bare AWS API call, which would clear them).
 - **Not every resource type accepts propagated tags.** CloudFormation propagation is best-effort — a small number of resource types (e.g. some Cognito, CloudFront, and custom resources) do not receive stack tags. This is an AWS platform limitation, not a configuration option.
+- **With `--terraform`:** the Terraform module applies the tags to every taggable resource the same way; omitting `--tags` keeps the tags of the previous deploy from the same `--terraform-dir`. See [Tagging the deployment](terraform.md#tagging-the-deployment).
 - **Cost allocation:** to use these tags in AWS Cost Explorer / cost allocation reports you must additionally activate them as *cost allocation tags* in the Billing console (a one-time, account-level step); this CLI option does not do that for you.
 
 ```bash
@@ -899,6 +901,11 @@ Proceeding with stack deletion...
 
 #### The retained KMS key
 
+A stack deployed with a key of your own ([`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md))
+created no key, so nothing in this section applies to it: `delete` names the supplied
+key, says it is yours and that the retained data stays encrypted with it, and prints
+no deletion steps.
+
 The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
 data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would
 leave every object in the retained buckets unreadable once its deletion window ended.
@@ -1121,6 +1128,7 @@ idp-cli run-inference [OPTIONS]
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
+- `--attribute KEY=VALUE` (repeatable) and `--attributes-file <json>`: [Document attributes](./document-attributes.md) stored with every document and returned with its results. Values given with `--attribute` are strings and override the file's value for the same key; a manifest's `attributes` column overrides both per row. An invalid set is refused before anything is uploaded. Not accepted with `--test-set`
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)

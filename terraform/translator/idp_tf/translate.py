@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import hcl, suppressions
+from . import create_only, hcl, suppressions
 from .awscc_schema import ANY, AwsccSchema, Hint, awscc_type_name
 
 NO_VALUE = {"Ref": "AWS::NoValue"}
@@ -57,7 +57,13 @@ PERMISSIONS_BOUNDARY_PARAMETER = "PermissionsBoundaryArn"
 #: has a key parameter but no logging bucket of its own, so the root's flow down.
 BRIDGE_KMS_VAR = "cfn_bridge_kms_key_arn"
 BRIDGE_LOG_BUCKET_VAR = "cfn_bridge_access_log_bucket"
-RESERVED_VARS = (STACK_NAME_VAR, BRIDGE_KMS_VAR, BRIDGE_LOG_BUCKET_VAR)
+#: The module's tags, merged into the tag attribute of every ``awscc`` resource
+#: whose schema has one (``awscc`` has no ``default_tags``), and passed down to
+#: every nested module. Tags the template sets on a resource win over these.
+TAGS_VAR = "tags"
+RESERVED_VARS = (STACK_NAME_VAR, BRIDGE_KMS_VAR, BRIDGE_LOG_BUCKET_VAR, TAGS_VAR)
+#: ``var.tags`` as awscc's ``[{key, value}]`` tag shape.
+_TAGS_KV = f"[for k, v in var.{TAGS_VAR} : {{ key = k, value = v }}]"
 # A module variable carrying a plan-time-known stand-in for a parameter that a
 # condition reads. Resource attributes are replaced by a non-empty placeholder,
 # which is exactly what CloudFormation's condition sees: a resource id is never
@@ -106,7 +112,18 @@ AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
     ("AWS::Cognito::UserPoolClient", "LogoutURLs"): "distinct",
     # API Gateway drops an empty response template.
     ("AWS::ApiGateway::Method", "Integration"): "drop_empty_templates",
+    # A log group's GetAtt Arn ends in ":*" and the stage stores its access-log
+    # destination without it, so the re-plan after an apply would add the suffix
+    # back every time (#2006). The provider's bare ARN is what is read back.
+    ("AWS::ApiGateway::Stage", "AccessLogSetting"): "bare_log_group_arn",
 }
+
+#: Not a CloudFormation attribute: the translator rewrites a log group's
+#: ``GetAtt Arn`` to it where the consuming service stores the ARN without
+#: CloudFormation's ``:*`` suffix. A template naming it on a log group gets that
+#: rewrite too (CloudFormation itself would refuse such a template); on any other
+#: type it is refused as an unmapped attribute.
+BARE_ARN_ATTR = "Arn without suffix"
 
 # Functions that walk the stack tree at run time. Under Terraform they get the
 # resource directory's location (IDP_TF_RESOURCE_DIRECTORY) and read access to
@@ -157,6 +174,29 @@ STABLE_CUSTOM_OUTPUTS: dict[tuple[str, str, str], str] = {
         "a deployment cannot change"
     ),
 }
+
+# Custom-resource attributes whose handler returns one of the resource's own
+# properties unchanged: (custom type, attribute) -> property. Terraform reads the
+# property instead of the invocation's result, so a reference to the attribute
+# neither waits for the bridge (which would put every key reference, the bridge's
+# own log group included, behind the check the bridge runs) nor is unknown at plan.
+# CloudFormation still orders every reference after the check, which is what the
+# attribute is for there.
+ECHOED_CUSTOM_ATTRS: dict[tuple[str, str], str] = {
+    # src/lambda/customer_managed_kms_key_check/index.py returns
+    # {"KeyArn": ResourceProperties.KeyArn} on every SUCCESS.
+    ("Custom::CustomerManagedKmsKeyCheck", "KeyArn"): "KeyArn",
+}
+
+
+def echoed_property(res: dict[str, Any], attr: str) -> Any:
+    """The property a custom resource's ``attr`` echoes, or None."""
+    prop = ECHOED_CUSTOM_ATTRS.get((str(res.get("Type", "")), attr))
+    props = res.get("Properties") or {}
+    if prop is None or prop not in props:
+        return None
+    return props[prop]
+
 
 # Resource attributes that are one of the resource's own properties, read back.
 # Rendering a STABLE_CUSTOM_OUTPUTS key inlines the property instead of reading
@@ -574,6 +614,11 @@ class Translator:
 
     def getatt(self, name: str, attr: str) -> str:
         plan = self.plans.get(name)
+        if plan is not None and plan.kind == "custom":
+            # Before the opaque form: the echoed property is known at plan.
+            echoed = echoed_property(self.t["Resources"][name], attr)
+            if echoed is not None:
+                return self.expr(echoed)
         if self._opaque and plan is not None:
             return hcl.string(f"opaque-{name}-{attr}")
         if plan is None:
@@ -593,6 +638,15 @@ class Translator:
                     f"{self._current}: nested stack {name} has no output {out}"
                 )
             return self._wrap(plan, out)
+        if (
+            plan.kind == "awscc"
+            and attr == BARE_ARN_ATTR
+            and plan.cfn_type == "AWS::Logs::LogGroup"
+        ):
+            # Under --mode awscc a log group is awscc_logs_log_group, whose arn
+            # is Cloud Control's, CloudFormation's form; the bare ARN is that
+            # value without its ":*".
+            return f'trimsuffix({self.getatt(name, "Arn")}, ":*")'
         passed = PASS_THROUGH_ATTRS.get((plan.cfn_type, attr))
         if self._stable and passed is not None and passed in plan.props:
             return self.expr(plan.props[passed])
@@ -833,6 +887,11 @@ class Translator:
 
     def emit_awscc(self, plan: Plan, res: dict[str, Any]) -> str:
         hint = self.schema.hint(plan.cfn_type)
+        try:
+            tag_attr = self.schema.tag_attribute(plan.cfn_type)
+        except ValueError as exc:
+            raise TranslationError(f"{plan.logical_id}: {exc}") from exc
+        tags_merged = False
         lines = []
         for k, x in plan.props.items():
             found = hint.attr(k)
@@ -847,12 +906,29 @@ class Translator:
                 x = self._role_name(x)
             if fixup == "drop_empty_templates":
                 x = _drop_empty_templates(x)
+            if fixup == "bare_log_group_arn":
+                x = self._bare_log_group_arn(x)
             rendered = self.expr(x, child)
             if fixup == "distinct":
                 rendered = f"try(distinct({rendered}), {rendered})"
+            if tag_attr and tf_name == tag_attr[0]:
+                rendered = self._merge_tags(plan, x, rendered, tag_attr[1])
+                tags_merged = True
             lines.append(f"{tf_name} = {rendered}")
+        if tag_attr and not tags_merged:
+            lines.append(f"{tag_attr[0]} = {_module_tags(tag_attr[1])}")
         head, tail = self.meta_lines(plan, res)
         state_owned: list[str] = []
+        comments: list[str] = []
+        if tag_attr and tags_are_create_only(plan.cfn_type, tag_attr[0]):
+            # The registry makes this type's tags create-only, so a change to
+            # the module's tags would replace the resource. They are applied
+            # when it is created, as a tag-on-create policy needs, and kept.
+            state_owned.append(tag_attr[0])
+            comments.append(
+                f"# {tag_attr[0]}: create-only for {plan.cfn_type}; set when the "
+                "resource is created and not changed afterwards"
+            )
         generated = GENERATED_NAMES.get(plan.cfn_type)
         if generated and generated[0] not in plan.props:
             # Cloud Control names an unnamed resource of this type with no stack
@@ -870,7 +946,6 @@ class Translator:
             )
             state_owned.append(tf_name)
         triggers: list[str] = []
-        comments: list[str] = []
         keys: list[str] = []
         override = LIFECYCLE_OVERRIDES.get((plan.cfn_type, plan.logical_id))
         if override:
@@ -907,6 +982,29 @@ class Translator:
             f'resource "{plan.tf_type}" "{plan.name}"', head + lines + tail
         )
 
+    def _merge_tags(self, plan: Plan, value: Any, rendered: str, shape: str) -> str:
+        """The template's own tags on a resource, ``rendered``, with the
+        module's merged in. A key the template sets keeps the template's value.
+        With ``var.tags`` empty the expression's value is ``rendered``'s."""
+        if shape == "map":
+            return f"merge(var.{TAGS_VAR}, {rendered})"
+        if shape == "json":
+            return f"jsonencode(merge(var.{TAGS_VAR}, jsondecode({rendered})))"
+        keys: list[str] = []
+        for item in value if isinstance(value, list) else [value]:
+            found = _literal_tag_keys(item)
+            if found is None:
+                raise TranslationError(
+                    f"{plan.logical_id}: {plan.cfn_type} tags must be a list of "
+                    "entries with a literal Key (or a Fn::If between such entries "
+                    "and AWS::NoValue) for the module's tags to be merged in"
+                )
+            keys.extend(hcl.string(k) for k in found if hcl.string(k) not in keys)
+        return (
+            f"concat([for k, v in var.{TAGS_VAR} : {{ key = k, value = v }} "
+            f"if !contains({hcl.lst(keys)}, k)], {rendered})"
+        )
+
     def _role_name(self, v: Any) -> Any:
         if isinstance(v, dict) and set(v) == {"Fn::GetAtt"}:
             arg = v["Fn::GetAtt"]
@@ -915,6 +1013,35 @@ class Translator:
             if attr == "Arn" and target and target.cfn_type == "AWS::IAM::Role":
                 return {"Ref": name}
         return v
+
+    def _bare_log_group_arn(self, v: Any) -> Any:
+        """``v`` with every ``DestinationArn: GetAtt <LogGroup>.Arn`` in it, at any
+        depth (an ``Fn::If`` branch included), naming the log group's ARN without
+        CloudFormation's ``:*``. Any other destination, a Firehose stream's or a
+        literal, is left as written."""
+        if isinstance(v, list):
+            return [self._bare_log_group_arn(x) for x in v]
+        if not isinstance(v, dict):
+            return v
+        out = {}
+        for k, x in v.items():
+            if (
+                k == "DestinationArn"
+                and isinstance(x, dict)
+                and set(x) == {"Fn::GetAtt"}
+            ):
+                arg = x["Fn::GetAtt"]
+                name, attr = arg.split(".", 1) if isinstance(arg, str) else arg
+                target = self.plans.get(name)
+                if (
+                    attr == "Arn"
+                    and target is not None
+                    and target.cfn_type == "AWS::Logs::LogGroup"
+                ):
+                    out[k] = {"Fn::GetAtt": [name, BARE_ARN_ATTR]}
+                    continue
+            out[k] = self._bare_log_group_arn(x)
+        return out
 
     def emit_custom(self, plan: Plan, res: dict[str, Any]) -> str:
         props = dict(plan.props)
@@ -980,6 +1107,7 @@ class Translator:
             f'{STACK_NAME_VAR} = "${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"',
             f"{BRIDGE_KMS_VAR} = {self.bridge_kms_key() or 'null'}",
             f"{BRIDGE_LOG_BUCKET_VAR} = {self.bridge_access_log_bucket() or 'null'}",
+            f"{TAGS_VAR} = var.{TAGS_VAR}",
         ]
         for p, value in params.items():
             if p not in child.param_vars:
@@ -1092,10 +1220,16 @@ class Translator:
         self.emitted: dict[str, str] = {}
         # Before any resource renders: it decides which DependsOn edges drop.
         for lid, check in sorted(self._bridge_dropped()):
+            enforced = (
+                f"idp-cli deploy --terraform refuses at plan the change {check} "
+                f"refuses (a changed creation-fixed parameter, or a planned "
+                f"deletion of the stateful key)"
+                if self._creation_fixed_check(check)
+                else f"stack_name's validation enforces {check} at plan"
+            )
             note = (
                 f"{lid}: DependsOn {check} left out, so the custom-resource "
-                f"bridge can use the key; stack_name's validation enforces "
-                f"{check} at plan"
+                f"bridge can use the key; {enforced}"
             )
             if note not in self.report.warnings:  # render() may run again
                 self.report.warn(note)
@@ -1180,6 +1314,7 @@ class Translator:
                 ),
             )
         ]
+        out.append(self._tags_variable())
         if not self.is_root:
             # Required, so nothing scanning this module alone reads a null
             # default as the value; the parent always passes both.
@@ -1241,6 +1376,43 @@ class Translator:
                     )
                 )
         return "\n".join(out)
+
+    def _tags_variable(self) -> str:
+        if not self.is_root:
+            return hcl.block(
+                f'variable "{TAGS_VAR}"',
+                [
+                    "type = map(string)",
+                    "default = {}",
+                    'description = "Tags for every taggable resource, passed '
+                    'from the parent module."',
+                ],
+            )
+        return hcl.block(
+            f'variable "{TAGS_VAR}"',
+            [
+                "type = map(string)",
+                "default = {}",
+                "description = "
+                + hcl.string(
+                    "Tags for every taggable resource of the deployment, as "
+                    "CloudFormation stack tags are. They are merged into each "
+                    "awscc resource, because the awscc provider has no "
+                    "default_tags; give the same map to the aws provider's "
+                    "default_tags for the aws resources. A tag the template "
+                    "sets on a resource keeps its value."
+                ),
+                hcl.block(
+                    "validation",
+                    [
+                        f"condition = alltrue([for k in keys(var.{TAGS_VAR}) : "
+                        '!startswith(lower(k), "aws:")])',
+                        'error_message = "Tag keys may not start with aws:, '
+                        'which AWS reserves."',
+                    ],
+                ).rstrip(),
+            ],
+        )
 
     def _validations(self, p: str, spec: dict[str, Any], ptype: str) -> list[str]:
         """CloudFormation's parameter constraints as Terraform validations, so a
@@ -1327,8 +1499,14 @@ class Translator:
                 if k == "Ref" and isinstance(x, str):
                     out.add(x)
                 elif k == "Fn::GetAtt":
-                    name = x[0] if isinstance(x, list) else str(x).split(".", 1)[0]
-                    out.add(name)
+                    name, attr = (
+                        (x[0], x[1]) if isinstance(x, list) else str(x).split(".", 1)
+                    )
+                    echoed = echoed_property(resources.get(name) or {}, attr)
+                    if echoed is not None:
+                        out |= self._template_refs(echoed)
+                    else:
+                        out.add(name)
                 elif k == "Fn::Sub":
                     text = x[0] if isinstance(x, list) else x
                     if isinstance(text, str):
@@ -1355,6 +1533,26 @@ class Translator:
             and limit >= STACK_NAME_MAX_LENGTH
         )
 
+    def _creation_fixed_check(self, lid: str) -> bool:
+        """True for the root's ``Custom::CustomerManagedKmsKeyCheck``.
+
+        The deployment's key waits for it under CloudFormation so that clearing
+        ``CustomerManagedKmsKeyArn`` on an existing stack is refused before a
+        stack key is created. Under Terraform that edge would make the bridge
+        unable to use the key at all (the bridge runs the check), and the
+        changes the check refuses are refused at plan instead: ``idp-cli deploy
+        --terraform`` refuses a changed creation-fixed parameter
+        (``CREATION_FIXED_PARAMETERS``), and setting it on an existing
+        deployment plans the deletion of the key, which the plan guard refuses
+        as stateful. The check itself still runs through the bridge.
+        """
+        res = self.t.get("Resources", {}).get(lid, {})
+        return (
+            self.is_root
+            and res.get("Type") == "Custom::CustomerManagedKmsKeyCheck"
+            and not res.get("Condition")
+        )
+
     def _bridge_usable(self, value: Any) -> set[tuple[str, str]] | None:
         """Whether the bridge's own resources may reference ``value``.
 
@@ -1379,7 +1577,7 @@ class Translator:
                 return None
             deps = res.get("DependsOn", [])
             for d in [deps] if isinstance(deps, str) else deps:
-                if self._plan_enforced_check(d):
+                if self._plan_enforced_check(d) or self._creation_fixed_check(d):
                     drop.add((lid, d))
                 else:
                     todo.append(d)
@@ -1393,9 +1591,14 @@ class Translator:
         most often set at ``path``, rendered as HCL, with the ``DependsOn``
         edges to drop for it (see ``_bridge_usable``); None if none sets one.
 
-        A value carrying ``Fn::If`` is ignored: the bridge has no condition of
-        its own to mirror it with. With ``acyclic``, so is a value the bridge
-        cannot wait for. Ties go to the first in template order.
+        A resource with a ``Condition`` is ignored: the bridge has no condition
+        of its own to mirror it with. A value carrying ``Fn::If`` is counted
+        only when it names nothing but parameters and resources (no
+        ``AWS::NoValue``), so it renders as a conditional expression the bridge
+        can use as it stands; that is the shape every key reference takes once
+        ``CustomerManagedKmsKeyArn`` can supply the key. With ``acyclic``, a
+        value the bridge cannot wait for is ignored too. Ties go to the first in
+        template order.
         """
         counts: dict[str, int] = {}
         drops: dict[str, set[tuple[str, str]]] = {}
@@ -1407,7 +1610,10 @@ class Translator:
                 v: Any = res.get("Properties", {})
                 for key in path:
                     v = v.get(key) if isinstance(v, dict) else None
-                if v is None or "Fn::If" in json.dumps(v, default=str):
+                if v is None:
+                    continue
+                text = json.dumps(v, default=str)
+                if "Fn::If" in text and "AWS::NoValue" in text:
                     continue
                 drop = self._bridge_usable(v) if acyclic else set()
                 if drop is None:
@@ -1755,6 +1961,49 @@ class Translator:
                 "value = local.cfn_resource_directory_self",
             ],
         )
+
+
+def tags_are_create_only(cfn_type: str, tag_attribute: str) -> bool:
+    """True when the registry lists the type's tag property as create-only, so
+    changing the module's tags would replace the resource."""
+    return any(
+        len(p) == 1 and hcl.norm(p[0]) == hcl.norm(tag_attribute)
+        for p in create_only.paths(cfn_type)
+    )
+
+
+def _literal_tag_keys(item: Any) -> list[str] | None:
+    """The keys a ``Tags`` list entry can set, or None when one is not a literal.
+    An entry is ``{Key, Value}`` or a ``Fn::If`` whose branches are entries or
+    ``AWS::NoValue``."""
+    if item == {"Ref": "AWS::NoValue"}:
+        return []
+    if not isinstance(item, dict):
+        return None
+    if set(item) == {"Fn::If"} and isinstance(item["Fn::If"], list):
+        if len(item["Fn::If"]) != 3:
+            return None
+        out: list[str] = []
+        for branch in item["Fn::If"][1:]:
+            found = _literal_tag_keys(branch)
+            if found is None:
+                return None
+            out.extend(found)
+        return out
+    if isinstance(item.get("Key"), str):
+        return [item["Key"]]
+    return None
+
+
+def _module_tags(shape: str) -> str:
+    """The module's tags for a resource the template gives none: null when
+    there are none, which is what the attribute was without the merge."""
+    value = {
+        "kv": _TAGS_KV,
+        "map": f"var.{TAGS_VAR}",
+        "json": f"jsonencode(var.{TAGS_VAR})",
+    }[shape]
+    return f"length(var.{TAGS_VAR}) > 0 ? {value} : null"
 
 
 def _emptiness_operand(node: Any) -> Any:

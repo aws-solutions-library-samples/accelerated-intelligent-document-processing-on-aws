@@ -261,6 +261,58 @@ retried by substring whatever it said.
 `tests/unit/utils/test_validation_exception_retry_rule.py` measures both forms with a
 real Strands agent over a real botocore client and hand-framed event streams.
 
+### One rule for reading a Bedrock error code
+
+`is_image_request_rejection`, `is_image_count_rejection`, `is_input_token_overflow`,
+`is_content_filter_block` and `is_unretryable_validation_error` all read the code
+through `_chain_error_code`: the first exception on the explicit `__cause__` chain
+that carries a code decides, compared case-insensitively. A code other than
+`ValidationException` means "not this", whatever the text says; with a
+`ValidationException` on the chain, the text judged is that exception's own, so a
+wrapper's added wording cannot make a match; with no code anywhere the exception's
+own text is judged. Before this, the image and overflow matchers compared
+`code != "ValidationException"` on the outermost exception only, so an in-stream
+`validationException` image rejection was not recognised, and a Strands
+`ModelThrottledException` (no code of its own) whose text mentioned an image limit
+was taken for a deterministic rejection.
+
+In the async decorator's generic branch, `"ValidationException"` is no longer
+matched as a message substring: every wrapper Strands 1.48 raises around a Bedrock
+error is raised `from` it, so the code is on the chain, and the substring only
+matched text that quoted a refused request's code. A block is retried there only
+with its `ValidationException` on the chain (`_is_retryable_validation_error`).
+`tests/unit/utils/test_bedrock_error_code_rule.py` measures this with real
+in-stream errors.
+
+### A reply withheld with a stop reason (`ModelOutputWithheld`)
+
+A Converse `stopReason` of `content_filtered` or `guardrail_intervened`
+(`WITHHELD_OUTPUT_STOP_REASONS`) is a 200 whose text is not the model's answer.
+`guardrail_intervened` counts only when `trace.guardrail` records a policy whose
+`action` is `BLOCKED`: a guardrail that only anonymised sensitive information stops
+with the same reason and returns the model's answer, masked. With no trace the reply
+is read as an answer, as before; `guardrail_config_from_env` always enables the
+trace.
+`raise_if_output_withheld(response)` raises `ModelOutputWithheld` for it, with the
+envelope's metering attached (`utils.failure_metering`), and
+`is_content_filter_block` recognises that exception, so a step's existing
+block handling applies. Classification (`_invoke_bedrock_model`), Simple extraction
+and its escalation call, assessment and summarization call it after their model
+call; agentic extraction raises it when its last regeneration round is withheld
+too. `BedrockClient` itself does not, because document chat shows a guardrail's
+message to the user as the intended reply. Every block branch that catches it merges
+`utils.failure_metering(e)`, so the billed call is metered: the classification page,
+splitting-call and segment-labelling branches, the summarization stub, and the Assessment Lambda's
+deterministic-failure branch. In `assessment.batching`, a withheld list batch is
+caught in `_assess_chunk` and becomes per-row placeholders
+(`_UNASSESSED_CONTENT_FILTER_REASON`), and the recovery rungs use a call that scores
+nothing on a block instead of raising, so the other batches keep their scores; the
+first call of a section without list batching still raises and degrades it. Not
+covered: a withheld reply inside a Distributed Map extraction shard
+(`run_one_section_shard`), which fails the document as any failed shard does. `content_block_wording` gives the steps
+one wording, and tells a guardrail block to review the guardrail rather than change
+models. `tests/unit/test_withheld_reply_stop_reason.py` drives each step.
+
 ### A retry frees the attempt it replaces (`idp_common.failed_attempt`)
 
 `async_exponential_backoff_retry`, the ladder around the agentic extraction call,

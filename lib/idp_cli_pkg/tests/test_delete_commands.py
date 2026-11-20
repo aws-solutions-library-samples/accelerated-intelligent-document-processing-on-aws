@@ -591,6 +591,40 @@ class TestDeleteAgainstRealServices:
         )
         assert "aws kms schedule-key-deletion --key-id <key-id>" in result.output
 
+    def test_a_supplied_key_is_reported_as_the_customers_not_for_deletion(self):
+        """A stack deployed with CustomerManagedKmsKeyArn created no key (#2016).
+
+        Its data is encrypted with the supplied key, which may protect other data
+        too, so the command must name that key as the customer's and must not
+        print the schedule-deletion steps it prints for a key the stack created.
+        """
+        key = (
+            "arn:aws:kms:us-east-1:111122223333:key/"
+            "1234abcd-12ab-34cd-56ef-1234567890ab"
+        )
+        template = json.loads(_stack_template(["cmk-bucket"]))
+        template["Parameters"] = {
+            "CustomerManagedKmsKeyArn": {"Type": "String", "Default": ""}
+        }
+        with mock_aws():
+            boto3.client("cloudformation", region_name="us-east-1").create_stack(
+                StackName="cmk",
+                TemplateBody=json.dumps(template),
+                Parameters=[
+                    {"ParameterKey": "CustomerManagedKmsKeyArn", "ParameterValue": key}
+                ],
+            )
+            result = CliRunner().invoke(
+                cli, ["delete", "--stack-name", "cmk", "--force", "--wait"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Stack deleted successfully!" in result.output
+        assert "the key you supplied" in result.output
+        assert key in result.output
+        assert "KMS key kept" not in result.output
+        assert "schedule-key-deletion" not in result.output
+
     def test_without_wait_it_reports_a_deletion_started_rather_than_finished(self):
         """`delete` without `--wait` must not claim the stack is gone.
 

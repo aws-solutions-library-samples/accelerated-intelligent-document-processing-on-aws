@@ -64,6 +64,7 @@ tier of the Terraform documentation; the user guide is
    | Key | Read by | What it is |
    |---|---|---|
    | `parameters` | `idp-cli deploy --terraform --parameters` | `{<CfnName>: {variable, type, required, sensitive}}` |
+   | `tagsVariable` | `idp-cli deploy --terraform --tags` | the module's tags variable (`tags`); absent from a module published before it had one, which `idp-cli` then refuses tags for |
    | `retainedAddresses` | `idp-cli delete --terraform`, and the deploy's plan guard | addresses of resources with a `DeletionPolicy` other than `Delete`, removed from state before destroying |
    | `statefulAddresses` | the deploy's plan guard | addresses of every resource of a stateful type |
    | `customOutputEdges` | reviewers | every create-only property fed by a custom resource's output, and whether it is handled |
@@ -116,6 +117,17 @@ explicitly:
   while `count` must be known. The parent therefore also passes a `<variable>__cond`
   stand-in that is known at plan and never empty, which is exactly what
   CloudFormation's condition sees.
+- **Stack tags.** CloudFormation propagates stack tags to every taggable resource;
+  `awscc` has no `default_tags`. Every module declares a `tags` variable, passes it to
+  its nested modules, and merges it into the tag attribute of each `awscc` resource
+  whose type has one. `awscc_schema.tag_attribute` reads that attribute and its shape
+  (a list of `{key, value}`, a `map(string)`, or a JSON string) from the vendored
+  schema, and fails the translation on a tag attribute in any other shape. The
+  template's own keys win, and with `tags` empty each expression evaluates to the
+  attribute's value without the merge. A type whose registry schema lists its tags as
+  create-only (`schemas/create_only.json`) gets `ignore_changes` on them.
+  `tests/test_module_tags.py` checks every generated tree and cross-checks the schema
+  derivation against the registry's `tagging` metadata.
 - **Dependencies.** A reference to a nested stack waits for the whole module.
 - **Pseudo-parameters** are read once at the root and passed down, because a data
   source inside a module with `depends_on` is deferred to apply.
@@ -568,7 +580,7 @@ things, and none subsumes another:
 |---|---|---|---|
 | Translator checks and `terraform validate` (`make test`, `make terraform-check`) | every pull request | unmapped types and properties, values that do not reach the HCL, stateful custom-output edges, malformed HCL | anything AWS decides at apply time |
 | Static scan diff (`make terraform-scan-diff`) | every pull request, inside `make terraform-check` | a Terraform resource softer than its CloudFormation source under a rule both scanners share | what no `checkov` rule looks at (an empty guardrail id) |
-| Property parity (`make terraform-parity`) | release validation, by hand | any property the two deployments store differently | resources Cloud Control cannot read, and behaviour |
+| Property parity (`make terraform-parity`) | release validation, by hand; and a Terraform schedule carrying `IDP_TERRAFORM_PARITY=true`, against a CloudFormation twin it deploys | any property the two deployments store differently | resources Cloud Control cannot read, and behaviour |
 
 ### The static scan diff
 
@@ -731,9 +743,10 @@ translation that passes offline is not a deployment that passes.
 
 ### Not yet covered
 
-- Neither CI runs a live Terraform tier, and `make terraform-parity` has not yet
-  been run against the full stack; the parity numbers above are from the
-  prototype run on one nested stack.
+- No merge gate runs a live Terraform tier. The scheduled Terraform run can run
+  `make terraform-parity`'s comparison against a CloudFormation twin
+  (`IDP_TERRAFORM_PARITY=true`), but the tool has not yet been run against the full
+  stack; the parity numbers above are from the prototype run on one nested stack.
 - An apply of the `--headless` and `--govcloud` modules; they are validated offline
   only. The feature-platform extensions install as their own CloudFormation stacks.
 - An apply with a deploying role scoped to a role-name prefix and a required

@@ -106,6 +106,7 @@ PHASES = (
     "seed",
     "snapshot-before",
     "upgrade",
+    "replan",
     "verify",
     "destroy",
     "sweep",
@@ -154,6 +155,16 @@ _PLAN_LINE_RE = re.compile(
     re.MULTILINE,
 )
 _REFUSED_RE = re.compile(r"^\s+- (?P<address>module\.idp\.\S+)", re.MULTILINE)
+#: A plan's per-resource header for a resource the apply removes: ``# <address>
+#: will be destroyed``, ``must be replaced`` or ``will be replaced`` (the last for
+#: ``replace_triggered_by``), including ``is tainted, so must be replaced`` and
+#: ``(deposed object <id>) will be destroyed``.
+_DESTRUCTIVE_RE = re.compile(
+    r"^\s*# (?P<address>module\.idp\.\S+) "
+    r"(?:is tainted, so |\(deposed object \S+\) )?"
+    r"(?P<action>will be destroyed|must be replaced|will be replaced)",
+    re.MULTILINE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +244,14 @@ def stored_name_problems(ctx: Dict[str, Any], stack_name: str) -> List[str]:
     return []
 
 
+def plain_text(text: Optional[str]) -> str:
+    """A deploy log without its colour codes. ``idp-cli deploy --terraform`` runs
+    ``terraform plan`` without ``-no-color``, so the plan in the log is coloured:
+    ``\x1b[1m  # <address>\x1b[0m must be \x1b[1m\x1b[31mreplaced`` and
+    ``\x1b[1mPlan:\x1b[0m ...`` (measured on Terraform and OpenTofu)."""
+    return tmt._ANSI.sub("", text or "")
+
+
 def plan_summary(text: str) -> Optional[Dict[str, int]]:
     """The last ``Plan: N to add, M to change, K to destroy`` of a deploy log.
 
@@ -240,7 +259,7 @@ def plan_summary(text: str) -> Optional[Dict[str, int]]:
     log that holds an earlier plan too (a resumed work directory's log is appended
     to) is reporting this invocation's plan at the end.
     """
-    matches = list(_PLAN_LINE_RE.finditer(text or ""))
+    matches = list(_PLAN_LINE_RE.finditer(plain_text(text)))
     if not matches:
         return None
     last = matches[-1]
@@ -255,6 +274,24 @@ def refused_addresses(text: str) -> List[str]:
     """The addresses the deploy guard listed when it refused a plan, so the phase's
     failure names them instead of only pointing at a log."""
     return sorted({m.group("address") for m in _REFUSED_RE.finditer(text or "")})
+
+
+def destructive_changes(text: str) -> Dict[str, List[str]]:
+    """``{"destroy": [...], "replace": [...]}``: the addresses the last plan in a
+    deploy log deletes or replaces, from the plan's per-resource headers, with the
+    colour codes removed. Only the text after the last ``Terraform will perform``
+    (``OpenTofu will perform`` under OpenTofu) is read, for the reason
+    plan_summary reads the last plan line."""
+    text = plain_text(text)
+    start = max(
+        text.rfind("Terraform will perform"), text.rfind("OpenTofu will perform")
+    )
+    found: Dict[str, List[str]] = {"destroy": [], "replace": []}
+    for m in _DESTRUCTIVE_RE.finditer(text[start:] if start >= 0 else text):
+        key = "destroy" if m.group("action") == "will be destroyed" else "replace"
+        if m.group("address") not in found[key]:
+            found[key].append(m.group("address"))
+    return found
 
 
 def read_manifest(directory: Path) -> Dict[str, Any]:
@@ -335,6 +372,12 @@ def summarise(result: Dict[str, Any]) -> str:
             f"\nUpgrade plan: {p['add']} to add, {p['change']} to change, "
             f"{p['destroy']} to destroy"
         )
+    removed = result.get("upgradeDestructive") or {}
+    for key, label in (("replace", "Replaced"), ("destroy", "Destroyed")):
+        if removed.get(key):
+            lines.append(f"  {label}: " + ", ".join(removed[key]))
+    if result.get("replan"):
+        lines.append(f"Re-plan after the upgrade: {result['replan']}")
     if result.get("leftovers"):
         lines.append("\nLeftovers after teardown: " + ", ".join(result["leftovers"]))
     elif result.get("leftovers") == []:
@@ -766,6 +809,9 @@ class Run(tmt.Run):
         code, text = self.deploy(self.s.to_module_url, "upgrade.log", first=False)
         plan = plan_summary(text)
         self.ctx["upgradePlan"] = plan
+        # What the plan deletes or replaces, recorded whether or not the guard
+        # refused it, so a refusal and an applied replacement both name them.
+        self.ctx["upgradeDestructive"] = destructive_changes(text)
         self.save()
         if code != 0:
             refused = refused_addresses(text)
@@ -794,6 +840,39 @@ class Run(tmt.Run):
         return (
             f"{self.ctx['fromVersion']} -> {self.ctx['toVersion']} applied ({changed})"
         )
+
+    def phase_replan(self) -> str:
+        """The re-plan straight after the upgrade's apply must be empty.
+
+        The same check as the Terraform nightly's re-plan after its fresh apply
+        (check_terraform_convergence in codebuild_deployment.py), imported rather
+        than restated, so the two runs cannot disagree about what converged means.
+        A plan that did not answer fails as drift does: whether the upgraded
+        deployment converges is then unknown."""
+        from types import SimpleNamespace
+
+        import codebuild_deployment as cbd
+
+        # A resumed run that already reached a teardown phase has no deployment
+        # left to re-plan; a plan against it would want to create everything.
+        torn_down = [p for p in TEARDOWN_PHASES if p in self.ctx.get("completed", [])]
+        if torn_down:
+            self.ctx["replan"] = "not run"
+            return (
+                f"not run: {', '.join(torn_down)} already completed in this work "
+                "directory, so there is no deployment to re-plan"
+            )
+
+        verdict = cbd.check_terraform_convergence(
+            SimpleNamespace(binary=self.s.terraform_bin, directory=str(self.dir))
+        )
+        self.ctx["replan"] = verdict["status"]
+        self.save()
+        if verdict["status"] != "converged":
+            raise PhaseFailed(
+                f"the re-plan after the upgrade did not converge: {verdict['detail']}"
+            )
+        return verdict["detail"]
 
     def phase_verify(self) -> str:
         findings: List[str] = []
@@ -1068,6 +1147,8 @@ class Run(tmt.Run):
             "terraformVersion": self.ctx.get("terraformVersion"),
             "firstPlan": self.ctx.get("firstPlan"),
             "upgradePlan": self.ctx.get("upgradePlan"),
+            "upgradeDestructive": self.ctx.get("upgradeDestructive"),
+            "replan": self.ctx.get("replan"),
             "newDocument": self.ctx.get("newDocument"),
             "phases": self.ctx["phases"],
             "findings": self.ctx["findings"],

@@ -1107,3 +1107,195 @@ def test_a_list_parameter_is_never_given_the_emptiness_stand_in():
     )
     module = _block(tr.render()["main.tf"], 'module "pattern"')
     assert 'ids__cond = compact(split(",", var.ids))' in module
+
+
+# ---------------------------------- a supplied deployment key (#2016)
+def _supplied_key_template() -> dict:
+    """The main template's shape: a key created only when no ARN is supplied,
+    a check that echoes the ARN and that the key waits on, and a log group and a
+    bucket that use the supplied ARN (through the check) or the created key."""
+    t = _bridge_template(key_waits_on=["Check", "KeyCheck"], with_bucket=False)
+    t["Parameters"] = {"KeyArnParam": {"Type": "String", "Default": ""}}
+    t["Conditions"] = {
+        "UseSupplied": {"Fn::Not": [{"Fn::Equals": [{"Ref": "KeyArnParam"}, ""]}]},
+        "CreateOwn": {"Fn::Equals": [{"Ref": "KeyArnParam"}, ""]},
+    }
+    r = t["Resources"]
+    r["KeyCheck"] = {
+        "Type": "Custom::CustomerManagedKmsKeyCheck",
+        "Properties": {
+            "ServiceToken": {"Fn::GetAtt": ["CheckFunction", "Arn"]},
+            "KeyArn": {"Ref": "KeyArnParam"},
+        },
+    }
+    r["Key"]["Condition"] = "CreateOwn"
+    chosen_arn = {
+        "Fn::If": [
+            "UseSupplied",
+            {"Fn::GetAtt": ["KeyCheck", "KeyArn"]},
+            {"Fn::GetAtt": ["Key", "Arn"]},
+        ]
+    }
+    r["Group"]["Properties"]["KmsKeyId"] = chosen_arn
+    r["Data"] = {
+        "Type": "AWS::S3::Bucket",
+        "Properties": {
+            "BucketEncryption": {
+                "ServerSideEncryptionConfiguration": [
+                    {
+                        "ServerSideEncryptionByDefault": {
+                            "SSEAlgorithm": "aws:kms",
+                            "KMSMasterKeyID": {
+                                "Fn::If": [
+                                    "UseSupplied",
+                                    {"Fn::GetAtt": ["KeyCheck", "KeyArn"]},
+                                    {"Ref": "Key"},
+                                ]
+                            },
+                        }
+                    }
+                ]
+            }
+        },
+    }
+    return t
+
+
+def test_a_supplied_key_reads_the_parameter_not_the_checks_result(vendored):
+    """The check echoes its KeyArn, so Terraform reads the variable: nothing
+    waits for the invocation, and the value is known at plan."""
+    tr = Translator(_supplied_key_template(), vendored)
+    main = tr.render()["main.tf"]
+    group = _block(main, 'resource "aws_cloudwatch_log_group" "group"')
+    assert (
+        "kms_key_id = (local.c_use_supplied ? var.key_arn_param : "
+        "one(awscc_kms_key.key[*].arn))"
+    ) in group
+    assert "aws_lambda_invocation.key_check" not in group
+
+
+def test_a_key_reference_through_fn_if_is_still_an_arn_for_s3(vendored):
+    """``Ref`` on a key is its id; the provider's S3 encryption takes an ARN,
+    on each branch of a conditional reference alike."""
+    tr = Translator(_supplied_key_template(), vendored)
+    main = tr.render()["main.tf"]
+    assert (
+        "kms_master_key_id = (local.c_use_supplied ? var.key_arn_param : "
+        "one(awscc_kms_key.key[*].arn))"
+    ) in main
+
+
+def test_the_bridge_uses_a_conditional_key_and_drops_the_checks_edge(vendored):
+    tr = Translator(_supplied_key_template(), vendored)
+    files = tr.render()
+    assert tr.bridge_kms_key() == (
+        "(local.c_use_supplied ? var.key_arn_param : one(awscc_kms_key.key[*].arn))"
+    )
+    assert tr.bridge_dropped_deps == {("Key", "Check"), ("Key", "KeyCheck")}
+    key = _block(files["main.tf"], 'resource "awscc_kms_key" "key"')
+    assert "aws_lambda_invocation.key_check" not in key
+    assert any(
+        "DependsOn KeyCheck left out" in w and "creation-fixed" in w
+        for w in tr.report.warnings
+    )
+
+
+def test_a_conditional_value_with_a_novalue_branch_is_not_the_bridges_key(vendored):
+    t = _bridge_template(key_waits_on=None, with_bucket=False)
+    t["Conditions"] = {"C": {"Fn::Equals": ["a", "a"]}}
+    t["Resources"]["Group"]["Properties"]["KmsKeyId"] = {
+        "Fn::If": ["C", {"Fn::GetAtt": ["Key", "Arn"]}, {"Ref": "AWS::NoValue"}]
+    }
+    tr = Translator(t, vendored)
+    tr.render()
+    assert tr.bridge_kms_key() is None
+
+
+def _stage_logging_template(destination: Any, conditional: bool = False) -> dict:
+    setting = {"DestinationArn": destination, "Format": "{}"}
+    return {
+        "Conditions": {"Logs": {"Fn::Equals": ["a", "a"]}},
+        "Resources": {
+            "Logs": {"Type": "AWS::Logs::LogGroup", "Properties": {}},
+            "Stage": {
+                "Type": "AWS::ApiGateway::Stage",
+                "Properties": {
+                    "RestApiId": "api",
+                    "StageName": "api",
+                    "AccessLogSetting": (
+                        {"Fn::If": ["Logs", setting, {"Ref": "AWS::NoValue"}]}
+                        if conditional
+                        else setting
+                    ),
+                },
+            },
+            # The same GetAtt where the consumer needs CloudFormation's form.
+            "Param": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {"Type": "String", "Value": {"Fn::GetAtt": "Logs.Arn"}},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("conditional", [False, True], ids=["plain", "fn-if"])
+@pytest.mark.parametrize(
+    "getatt", [{"Fn::GetAtt": ["Logs", "Arn"]}, {"Fn::GetAtt": "Logs.Arn"}]
+)
+def test_a_stage_access_log_destination_is_the_bare_log_group_arn(
+    vendored, conditional, getatt
+):
+    """#2006: API Gateway stores the stage's access-log destination without the
+    ``:*`` CloudFormation's log-group Arn carries, so writing that form re-plans
+    after every apply. Only that property loses the suffix."""
+    main_tf = Translator(
+        _stage_logging_template(getatt, conditional), vendored
+    ).render()["main.tf"]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    (line,) = [ln.strip() for ln in stage.splitlines() if "destination_arn" in ln]
+    assert line == "destination_arn = aws_cloudwatch_log_group.logs.arn", line
+    param = _block(main_tf, 'resource "awscc_ssm_parameter" "param"')
+    assert 'value = "${aws_cloudwatch_log_group.logs.arn}:*"' in param, param
+
+
+def test_a_stage_destination_that_is_not_a_log_group_arn_is_left_alone(vendored):
+    firehose = (
+        "arn:aws:firehose:us-east-1:111122223333:deliverystream/amazon-apigateway-x"
+    )
+    main_tf = Translator(_stage_logging_template(firehose), vendored).render()[
+        "main.tf"
+    ]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    assert f'destination_arn = "{firehose}"' in stage, stage
+
+
+def test_under_awscc_mode_the_stage_destination_trims_cloud_controls_suffix(vendored):
+    """``--mode awscc`` makes the log group awscc_logs_log_group, whose arn is
+    Cloud Control's and so already CloudFormation's ``:*`` form."""
+    template = _stage_logging_template({"Fn::GetAtt": ["Logs", "Arn"]})
+    main_tf = Translator(template, vendored, mode="awscc").render()["main.tf"]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    (line,) = [ln.strip() for ln in stage.splitlines() if "destination_arn" in ln]
+    assert line == 'destination_arn = trimsuffix(awscc_logs_log_group.logs.arn, ":*")'
+    param = _block(main_tf, 'resource "awscc_ssm_parameter" "param"')
+    assert "value = awscc_logs_log_group.logs.arn" in param, param
+
+
+def test_a_stage_destination_naming_another_type_keeps_its_arn(vendored):
+    """Only a log group's Arn carries the suffix; any other resource's GetAtt Arn
+    (a Firehose stream in a real template) is written as it is."""
+    template = _stage_logging_template({"Fn::GetAtt": ["Queue", "Arn"]})
+    template["Resources"]["Queue"] = {"Type": "AWS::SQS::Queue", "Properties": {}}
+    main_tf = Translator(template, vendored).render()["main.tf"]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    assert "destination_arn = awscc_sqs_queue.queue.arn" in stage, stage
+
+
+@pytest.mark.parametrize("mode", ["hybrid", "awscc"])
+def test_the_internal_bare_arn_attribute_is_refused_on_other_types(vendored, mode):
+    from idp_tf.translate import BARE_ARN_ATTR
+
+    template = _stage_logging_template({"Fn::GetAtt": ["Queue", BARE_ARN_ATTR]})
+    template["Resources"]["Queue"] = {"Type": "AWS::SQS::Queue", "Properties": {}}
+    with pytest.raises(TranslationError):
+        Translator(template, vendored, mode=mode).render()

@@ -525,6 +525,13 @@ class DocumentDynamoDBService:
             item["SubmissionSource"] = document.submission_source
         if document.test_set_id:
             item["TestSetId"] = document.test_set_id
+        # Caller-supplied attributes, snapshotted at intake (#1851). Written only
+        # when present, so a document without any gets exactly the item it always
+        # did. Floats go in as Decimal; a whole-valued float reads back as an int.
+        if document.attributes:
+            item["DocumentAttributes"] = convert_floats_to_decimal(
+                dict(document.attributes)
+            )
         # Which object version the malware gate is waiting on. Written HERE, on
         # create, rather than by a later update: the gate's compare-and-set reads
         # it, so a window in which the row exists without it is a window in which
@@ -1179,6 +1186,11 @@ class DocumentDynamoDBService:
         # Read back for the same reason: a load->write round trip must not drop the
         # ingest-time issue from the count it contributes to.
         doc.processing_issues = deserialize_issue_list(item.get("ProcessingIssues"))
+        # Read back so a load->write round trip (reprocess, a review finalize run)
+        # carries the intake snapshot rather than an empty set.
+        stored_attributes = item.get("DocumentAttributes")
+        if isinstance(stored_attributes, dict):
+            doc.attributes = convert_decimals_to_native(stored_attributes)
 
         # Convert Review Status fields
         doc.hitl_status = item.get("HITLStatus")

@@ -6,6 +6,7 @@ import boto3
 import json
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 from log_sanitizer import sanitize_event_for_logging
 from review_statuses import ReviewStatus
 import logging
@@ -67,6 +68,25 @@ def review_info(item):
     }
 
 
+def _native(value):
+    """DynamoDB Decimals as int/float, so the response is JSON-serialisable."""
+    if isinstance(value, Decimal):
+        return int(value) if value % 1 == 0 else float(value)
+    if isinstance(value, list):
+        return [_native(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _native(v) for k, v in value.items()}
+    return value
+
+
+def document_attributes(item):
+    """The caller-supplied attributes snapshotted at intake (#1851), or None."""
+    stored = item.get('DocumentAttributes')
+    if not isinstance(stored, dict) or not stored:
+        return None
+    return _native(stored)
+
+
 def get_document_status(object_key, status_only=False):
     """
     Get status for a single document
@@ -110,6 +130,12 @@ def get_document_status(object_key, status_only=False):
             },
             'review': review_info(item),
         }
+
+        # Only when the document has any, so a response for a document uploaded
+        # without attributes is unchanged.
+        attributes = document_attributes(item)
+        if attributes:
+            result['attributes'] = attributes
 
         # A document refused at ingest (for example, outside every tenant's
         # prefixes under strict tenant isolation) never starts a workflow, so the

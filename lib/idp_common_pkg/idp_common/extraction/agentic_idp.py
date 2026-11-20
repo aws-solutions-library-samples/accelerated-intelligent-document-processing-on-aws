@@ -69,8 +69,10 @@ from idp_common.timeout_budget import (
     BOTOCORE_TOTAL_MAX_ATTEMPTS,
 )
 from idp_common.utils.bedrock_utils import (
+    ModelOutputWithheld,
     async_exponential_backoff_retry,
     is_max_tokens_agent_error,
+    withheld_stop_reason,
 )
 from idp_common.utils.metering import attach_failure_metering
 from idp_common.utils.strands_agent_tools.todo_list import (
@@ -2069,6 +2071,15 @@ async def _invoke_agent_for_extraction(
                 "No extraction found in agent state",
                 extra={"attempt": attempt + 1, "max_retries": max_extraction_retries},
             )
+            # The turn ended because Bedrock withheld the reply (stopReason
+            # content_filtered / guardrail_intervened), not because the model
+            # chose prose. The rounds below regenerate it, as the retry decorator
+            # does for a blocked ValidationException; when the last one is
+            # withheld too it is raised as the same block, so the service fails
+            # this section rather than the document (#2038).
+            withheld = withheld_stop_reason(response)
+            if withheld is not None and attempt == max_extraction_retries - 1:
+                raise ModelOutputWithheld(withheld)
             if attempt < max_extraction_retries - 1:
                 # Ask agent to provide extraction
                 prompt_content = [
