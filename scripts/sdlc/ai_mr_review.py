@@ -1212,6 +1212,24 @@ def diff_stat(iid: int, target_branch: str) -> tuple[int, int, int]:
     return files, additions, deletions
 
 
+def commits_behind(iid: int, target_branch: str) -> int | None:
+    """Target-branch commits the MR head does not contain, or ``None``.
+
+    Read from the same two refs :func:`export_base_tree` uses. ``None`` on any git
+    failure, which leaves the prompt without a staleness note rather than with a
+    wrong one.
+    """
+    head = f"refs/ai-review/{iid}"
+    base = f"refs/ai-review/target-{target_branch}"
+    result = _run(["git", "rev-list", "--count", f"{head}..{base}"], cwd=REPO_ROOT)
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def build_prompt(
     merge_request: MergeRequest,
     metadata_path: str,
@@ -1219,13 +1237,31 @@ def build_prompt(
     truncated: bool,
     skills_modified: list[str] | None = None,
     unpinnable: list[str] | None = None,
+    behind: int | None = None,
 ) -> str:
     """The instruction given to ``claude -p``.
 
     It points at the skill files rather than restating the review criteria, so
     there is exactly one copy of them: editing ``.claude/skills/pr-review.md``
     changes what this job checks.
+
+    ``behind`` is how many target-branch commits the head does not contain
+    (:func:`commits_behind`); ``None`` when it could not be counted.
     """
+    staleness_note = (
+        f"\n⚠️ This MR's head is {behind} commit(s) behind "
+        f"`{merge_request.target_branch}`. The diff you are reading is against "
+        "an older base than the one it would merge into, and its CI results may be "
+        "too: a pipeline that tests the branch alone never saw those commits, and "
+        "one that tests a merge with the target saw the target as it was when the "
+        "run started. The gates that read the whole tree — the coverage ratchet, "
+        "the SRT scan, the gate and exemption registries — can go red on the "
+        "merged result alone (#2115). Say so in the Summary, and recommend merging "
+        "the target branch into the MR and letting CI report on that head (or "
+        "running `make premerge` on it locally) before it is merged.\n"
+        if behind
+        else ""
+    )
     truncation_note = (
         "\n⚠️ The diff was TRUNCATED to fit the context window. Say so in the "
         "Summary, and scope every finding to what you actually read.\n"
@@ -1266,7 +1302,7 @@ can read any file at its post-merge state. Reads outside it are refused. Agent
 configuration (`.claude/` apart from the pinned skills, `CLAUDE.local.md`,
 `AGENTS.md`, `.mcp.json`) has been removed from it; read changes to those files
 in the diff.
-{skills_note}{unpinnable_note}
+{skills_note}{unpinnable_note}{staleness_note}
 
 Metadata (JSON): {metadata_path}
 Diff (unified):  {diff_path}
@@ -1757,6 +1793,7 @@ def review_one(
             truncated,
             skills_modified,
             unpinnable,
+            commits_behind(merge_request.iid, merge_request.target_branch),
         )
         review, cost = run_claude(prompt, worktree, args.model, args.timeout)
     finally:

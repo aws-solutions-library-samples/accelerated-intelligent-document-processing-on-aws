@@ -287,6 +287,15 @@ classification Lambda reports it under that name, which `ClassificationStep` ret
 (#2034). Recorded on the section, it would instead fail the whole document in
 ProcessResults with an error no retrier matches.
 
+The raised `TransientError` carries the usage of the calls the attempt completed (the
+pool's finished calls, the earlier packet windows, and under split-then-classify the
+splitting calls) as its failure metering (`utils.failure_metering`). The
+classification Lambda writes that usage to the tracking record together with the
+document as the attempt started it, with status `CLASSIFYING`, so a retried document
+is never shown half-classified or failed. On the page-level path the pages that
+succeeded are cached and the retry reads their usage back from the cache, so their
+usage is counted once.
+
 #### Section classification by a decision model
 
 With `section_classification.method: decision_model`,
@@ -299,17 +308,22 @@ pages into one state (`Page 1:` and its text, then `Page 2:`, and so on).
 which counts the text, the page images and the question with every class
 description together (default 3584: the 4,096-token window less 512 for the
 model's own prompt). Cutting from the end keeps the first page whole whenever it
-fits, the cut falls at a line break where it can, and each cut is logged at info
+fits, the cut falls at a line break when one is in the last tenth of the text that
+fits and mid-line otherwise (#2111), and each cut is logged at info
 with the pages and the characters dropped. **Text beyond the limit is cut and never
 read by the decision model**, so a class cue that appears only in the cut part is
 not seen. The counts are estimates from characters
 (`idp_common.decision_model.estimate_tokens`); see the
 [decision_model README](../decision_model/README.md#fitting-the-window-max_input_tokens).
 With `input: images` there is no text and nothing is cut. A section whose text would
-be cut to nothing, because the question and images already fill the limit, is not
-sent: `fit_text` raises `DecisionModelRefused`, and the section fails like any
-refused call, so it is labelled `unclassified` rather than classified from no
-evidence.
+be cut to nothing, or to its `Page N:` lines and under half of the budget besides them,
+because the question and images already fill most of the limit, is not sent:
+`fit_text` raises `DecisionModelRefused`, and the section fails like any refused
+call, so it is labelled `unclassified` rather than classified from no evidence. A
+question and images that are over the limit on their own are refused the same way
+by `decision_model.require_room` before the request is built, in every `input`
+mode, so an `images` request is refused locally with the reason instead of being
+sent and refused by the decider.
 
 #### Which placeholders a stage is allowed to render
 

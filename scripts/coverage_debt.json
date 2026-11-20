@@ -381,6 +381,7 @@
         "scripts/malware_gate_burst.py": 97.71,
         "scripts/migrate_metering_hour_partition.py": 0.0,
         "scripts/migrate_multi_instance_baselines.py": 0.0,
+        "scripts/premerge.py": 92.22,
         "scripts/rbac_common.py": 48.53,
         "scripts/regenerate_evaluation_goldens.py": 0.0,
         "scripts/review_queues_live_check.py": 0.0,

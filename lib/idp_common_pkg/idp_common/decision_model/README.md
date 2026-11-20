@@ -73,11 +73,14 @@ setting (#2032). `budget.py` holds the pieces:
 |---|---|
 | `estimate_tokens(text)` | An **estimate** from characters, since this package has no tokenizer: one token per digit or non-ASCII character, one per two other characters. It errs high. |
 | `PROMPT_RESERVE_TOKENS` | 512, left in the window for the decider's own prompt |
-| `DEFAULT_MAX_INPUT_TOKENS` | the window less that reserve, 3584: the setting's default |
+| `DEFAULT_MAX_INPUT_TOKENS` | the window less that reserve, 3584: the setting's default and the largest value it takes: `idp_common.config.models` caps a larger one, with a warning (#2111) |
 | `IMAGE_TOKENS` | 256 counted per image (196 for a square page at 448 px) |
 | `state_budget(max_input_tokens, question_tokens, images)` | the text a request can carry beside its question and images |
-| `truncate_to_tokens(text, budget)` | `(kept, characters dropped)`: the text cut from the end, at its last line break where it has one; unchanged when it fits |
-| `fit_text(text, budget, what)` | what both call sites send: the text cut by `truncate_to_tokens`, each cut logged at info naming `what`. Text with content that would be cut to nothing raises `DecisionModelRefused` (logged at warning) instead of being sent empty |
+| `LINE_BREAK_BACKOFF_SHARE` | 0.1: a cut ends at a line break only when the break is in the last tenth of the prefix that fits; otherwise it falls mid-line |
+| `MIN_EVIDENCE_SHARE` | 0.5: the least share of the budget a cut must keep besides its header lines |
+| `truncate_to_tokens(text, budget)` | `(kept, characters dropped)`: the text cut from the end, at a line break within `LINE_BREAK_BACKOFF_SHARE` of the cut and mid-line otherwise; unchanged when it fits |
+| `fit_text(text, budget, what, headers=())` | what both call sites send: the text cut by `truncate_to_tokens`, each cut logged at info naming `what`. `headers` are lines that are not evidence (section classification passes its `Page N:` lines). A cut whose kept text, less every header and any header it ends partway through, is blank or under `MIN_EVIDENCE_SHARE` of the budget raises `DecisionModelRefused` (logged at warning) instead of being sent. Text that fits is returned unchanged |
+| `require_room(max_input_tokens, question_tokens, images, what)` | raises `DecisionModelRefused` (logged at warning) when the question and images alone are over `max_input_tokens`. Both call sites run it before building a request, in every `input` mode, so an `images` request that would overflow is refused locally rather than sent |
 
 **Text beyond the limit is cut and never read by the decision model**, so a value
 or class cue that appears only in the cut part is not seen. Extraction confidence
@@ -85,7 +88,8 @@ cuts each page's text on its own
 ([assessment README](../assessment/README.md#confidence-by-a-decision-model-assessmentdecision_model_confidencepy));
 section classification cuts the section's joined text from the end, so its first
 page stays whole when it fits (`classification/decision_model_labeler.py`). Both
-go through `fit_text`.
+go through `fit_text`, and both check the question and images with `require_room`
+first.
 
 ## Backends
 

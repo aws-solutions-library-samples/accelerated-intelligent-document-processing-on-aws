@@ -876,6 +876,27 @@ class SummarizationService:
                     f"Summarization failed for {len(section_exceptions)} section(s). "
                     f"Re-raising exception from section {first_failed_section} to fail the workflow."
                 )
+                # The sections that finished, and any reply a failed one had
+                # received, were billed. A transient failure carries that usage
+                # to the handler, which records it before the step is retried
+                # (#2122); a hard one leaves it on the document it marks FAILED.
+                attempt_metering: Dict[str, Any] = {}
+                for section_metering in all_section_metering.values():
+                    attempt_metering = utils.merge_metering_data(
+                        attempt_metering, section_metering
+                    )
+                for section_exception in section_exceptions.values():
+                    attempt_metering = utils.merge_metering_data(
+                        attempt_metering, utils.failure_metering(section_exception)
+                    )
+                reraise_if_transient(
+                    first_exception,
+                    where="summarization",
+                    metering=attempt_metering,
+                )
+                document.metering = utils.merge_metering_data(
+                    document.metering, attempt_metering
+                )
                 raise first_exception
 
             # Merge all section-specific metering data into the document's metering data
