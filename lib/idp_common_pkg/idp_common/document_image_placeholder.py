@@ -81,7 +81,8 @@ def strip_placeholder(template: str, placeholder: str, element: str) -> str:
 def section_prompt_can_be_sent(method: str, on_low_confidence: str) -> bool:
     """Whether split-then-classify's section-classification LLM prompt is ever sent.
 
-    Always under ``method: llm``. Under ``method: decision_model`` only when a
-    low-confidence section falls back to the LLM (``on_low_confidence: llm``).
+    Always under ``method: llm``. Under ``method: decision_model`` or
+    ``embeddings`` only when a low-confidence section falls back to the LLM
+    (``on_low_confidence: llm``), which ``embeddings`` requires.
     """
-    return method != "decision_model" or on_low_confidence == "llm"
+    return method == "llm" or on_low_confidence == "llm"

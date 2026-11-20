@@ -44,6 +44,9 @@ from idp_common.classification.class_confidence import (
 from idp_common.classification.decision_model_labeler import (
     DecisionModelSectionLabeler,
 )
+from idp_common.classification.embeddings_labeler import (
+    EmbeddingSectionLabeler,
+)
 from idp_common.classification.models import (
     ClassificationResult,
     DocumentClassification,
@@ -7503,11 +7506,14 @@ class ClassificationService:
         section_cfg = (
             self.config.classification.split_then_classify.section_classification
         )
-        decision_labeler = (
-            DecisionModelSectionLabeler(self, section_cfg)
-            if section_cfg.method == "decision_model"
-            else None
-        )
+        # The non-LLM labelers share one contract (``label(...)`` returning the LLM
+        # path's tuple, calling ``llm_label`` only for a low-confidence answer), so
+        # one variable carries whichever the method selects.
+        decision_labeler: Optional[Any] = None
+        if section_cfg.method == "decision_model":
+            decision_labeler = DecisionModelSectionLabeler(self, section_cfg)
+        elif section_cfg.method == "embeddings":
+            decision_labeler = EmbeddingSectionLabeler(self, section_cfg)
         # Checked once, before the pool: a refusal inside a segment's call would be
         # recorded as that segment's failure and the document would carry on with
         # every section unclassified. Only when the prompt can be sent: the
@@ -7653,6 +7659,13 @@ class ClassificationService:
                     with lock:
                         errors.append(error_msg)
                         issues[index] = {"error": error_msg}
+        # Calls no section's result carries (the embeddings method's references,
+        # and the embedding calls of a section that then failed) are collected
+        # here, after every section has finished or failed, so a failed or retried
+        # section cannot take their cost with it.
+        take_shared = getattr(decision_labeler, "take_unreported_metering", None)
+        if take_shared is not None:
+            metering = utils.merge_metering_data(metering, take_shared())
         transient.raise_first(metering)
 
         logger.info(
