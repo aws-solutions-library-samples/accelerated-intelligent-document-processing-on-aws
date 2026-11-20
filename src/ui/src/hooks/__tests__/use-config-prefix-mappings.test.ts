@@ -41,6 +41,7 @@ vi.mock('../../api/client-shim', () => ({
 
 vi.mock('../../graphql/generated', () => ({
   listConfigPrefixMappings: 'listConfigPrefixMappings',
+  listConfigPrefixMappingHistory: 'listConfigPrefixMappingHistory',
   putConfigPrefixMapping: 'putConfigPrefixMapping',
   deleteConfigPrefixMapping: 'deleteConfigPrefixMapping',
   resolveConfigPrefixMapping: 'resolveConfigPrefixMapping',
@@ -344,5 +345,24 @@ describe('useConfigPrefixMappings', () => {
     });
 
     expect(graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { prefix: 'acme/invoices/' } }));
+  });
+});
+
+describe('fetchMappingHistory (#597)', () => {
+  beforeEach(() => graphql.mockReset());
+
+  it('rejects with an empty message when the server gives none, so the panel can translate its own', async () => {
+    const { fetchMappingHistory } = await import('../use-config-prefix-mappings');
+    graphql.mockResolvedValue({ data: { listConfigPrefixMappingHistory: { success: false, error: null } } });
+    await expect(fetchMappingHistory('acme/')).rejects.toThrow(/^$/);
+    expect(graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects with the server's own message when it gives one", async () => {
+    const { fetchMappingHistory } = await import('../use-config-prefix-mappings');
+    graphql.mockResolvedValue({
+      data: { listConfigPrefixMappingHistory: { success: false, error: { type: 'Error', message: 'No.' } } },
+    });
+    await expect(fetchMappingHistory(null)).rejects.toThrow('No.');
   });
 });

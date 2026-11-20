@@ -25,6 +25,7 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from idp_common.config.prefix_mappings import (
+    HISTORY_HEAD_KEY,
     MAX_MAPPINGS,
     PREFIX_MAP_INDEX_KEY,
     SOURCE_ACTIVE_PROFILE,
@@ -34,10 +35,13 @@ from idp_common.config.prefix_mappings import (
     SOURCE_REJECTED,
     ConfigAssignment,
     PrefixMappingConflict,
+    PrefixMappingHistoryCorrupt,
     PrefixMappingStore,
     canonical_key,
     description_rejection_reason,
     find_match,
+    history_key,
+    is_internal_producer,
     match_kind,
     normalize_entry,
     prefix_rejection_reason,
@@ -829,29 +833,39 @@ def test_a_decimal_revision_from_dynamodb_compares_equal_to_an_int():
 
 
 @pytest.mark.unit
-def test_a_mapping_naming_a_deleted_profile_falls_through_and_is_flagged():
+def test_a_mapping_naming_a_deleted_profile_refuses_the_document():
+    """#597: an unresolvable mapping fails the document instead of re-routing it."""
     assignment = _resolve(
         "acme/x.pdf",
         mappings=[_mapping("acme/", "deleted")],
         profile_exists=lambda profile: profile != "deleted",
     )
     assert assignment.unresolvable is True
-    assert assignment.profile == "active"
-    assert assignment.source == SOURCE_ACTIVE_PROFILE
+    assert assignment.rejected is True
+    assert assignment.profile is None
+    assert assignment.revision is None
+    assert assignment.source == SOURCE_REJECTED
     # The prefix is still recorded: an operator needs to know WHICH mapping is stale.
     assert assignment.mapping_prefix == "acme/"
+    # And the reason names both halves of what to fix.
+    assert "'acme/'" in assignment.reason and "'deleted'" in assignment.reason
+    assert "does not exist" in assignment.reason
 
 
 @pytest.mark.unit
-def test_a_deleted_profile_falls_back_to_the_uploads_own_choice_when_it_made_one():
+@pytest.mark.parametrize("precedence", ["mapping", "metadata", "reject"])
+def test_a_deleted_profile_refuses_even_when_the_upload_named_its_own(precedence):
+    """No fall-through to the metadata either, in any conflict mode: the routing
+    policy for this prefix is known and names a profile that cannot run."""
     assignment = _resolve(
         "acme/x.pdf",
         metadata_profile="chosen",
-        mappings=[_mapping("acme/", "deleted")],
+        mappings=[_mapping("acme/", "deleted", metadataPrecedence=precedence)],
         profile_exists=lambda profile: profile != "deleted",
     )
-    assert (assignment.profile, assignment.source) == ("chosen", SOURCE_METADATA)
+    assert assignment.rejected is True
     assert assignment.unresolvable is True
+    assert assignment.profile is None
 
 
 @pytest.mark.unit
@@ -1168,13 +1182,16 @@ def test_put_is_an_upsert_that_preserves_creation_provenance():
 @pytest.mark.unit
 @mock_aws
 def test_the_aggregate_item_does_not_look_like_a_configuration_profile():
-    """It shares the table with profiles, so its key must not match 'Config#'."""
+    """It shares the table with profiles, so no key it writes may match 'Config#' --
+    the aggregate, the history head and the history records alike."""
     store = PrefixMappingStore(_make_table())
     store.put("acme/", "lending")
-    assert not PREFIX_MAP_INDEX_KEY.startswith("Config#")
     scanned = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE).scan()
-    keys = [i["Configuration"] for i in scanned["Items"]]
-    assert keys == [PREFIX_MAP_INDEX_KEY]
+    keys = sorted(i["Configuration"] for i in scanned["Items"])
+    assert keys == sorted(
+        [PREFIX_MAP_INDEX_KEY, HISTORY_HEAD_KEY, history_key(1)["Configuration"]]
+    )
+    assert not any(k.startswith("Config#") for k in keys)
 
 
 @pytest.mark.unit
@@ -1390,7 +1407,7 @@ def test_delete_answers_about_the_winning_pass_not_the_first_one():
     store = PrefixMappingStore(_make_table())
     attempts = []
 
-    def two_attempts(mutate):
+    def two_attempts(mutate, **_kwargs):
         """Attempt one sees the entry; by the retry somebody else removed it."""
         attempts.append(mutate([{"prefix": "a/", "configProfile": "lending"}]))
         attempts.append(mutate([]))
@@ -1447,6 +1464,30 @@ def test_a_read_failure_must_not_turn_a_put_into_a_wipe():
     assert sorted(e["prefix"] for e in fresh.list()) == ["keep-me-too/", "keep-me/"]
 
 
+def _race_after_read(store, *, times):
+    """Make a second, real writer win between ``store``'s read and its write.
+
+    The race is real rather than simulated: after each of the first ``times`` reads
+    a separate store commits its own change through the same code path, so
+    ``store``'s transaction then fails its condition in DynamoDB itself.
+    """
+    rival = PrefixMappingStore(
+        boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
+    )
+    real_read = store._read_item
+    calls = {"n": 0}
+
+    def read_then_lose(**kwargs):
+        item = real_read(**kwargs)
+        calls["n"] += 1
+        if calls["n"] <= times:
+            rival.put(f"rival-{calls['n']}/", "lending", actor="rival@example.com")
+        return item
+
+    store._read_item = read_then_lose
+    return calls
+
+
 @pytest.mark.unit
 @mock_aws
 def test_a_losing_concurrent_write_raises_rather_than_reporting_success():
@@ -1455,21 +1496,15 @@ def test_a_losing_concurrent_write_raises_rather_than_reporting_success():
     table = _make_table()
     store = PrefixMappingStore(table)
     store.put("existing/", "lending")
+    _race_after_read(store, times=2)
 
-    real_update = table.update_item
-
-    def always_conflicts(**_kwargs):
-        # Simulate another writer winning the conditional check, every time.
-        raise ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
-        )
-
-    table.update_item = always_conflicts
     with pytest.raises(PrefixMappingConflict):
         store.put("new/", "lending")
 
-    table.update_item = real_update
-    assert [e["prefix"] for e in store.list()] == ["existing/"]
+    assert "new/" not in [e["prefix"] for e in store.list()]
+    # Nor was a history record left behind for the change that did not land.
+    actions = [(e["prefix"], e["action"]) for e in store.history()["entries"]]
+    assert ("new/", "create") not in actions
 
 
 @pytest.mark.unit
@@ -1478,24 +1513,17 @@ def test_a_conflict_on_the_first_attempt_is_retried_once_and_succeeds():
     table = _make_table()
     store = PrefixMappingStore(table)
     store.put("existing/", "lending")
+    calls = _race_after_read(store, times=1)
 
-    real_update = table.update_item
-    calls = {"n": 0}
-
-    def fails_once(**kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise ClientError(
-                {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
-            )
-        return real_update(**kwargs)
-
-    table.update_item = fails_once
     store.put("new/", "lending")
-    table.update_item = real_update
-
-    assert sorted(e["prefix"] for e in store.list()) == ["existing/", "new/"]
+    # One read for the attempt that lost, one for the retry that won.
     assert calls["n"] == 2
+
+    assert sorted(e["prefix"] for e in store.list()) == [
+        "existing/",
+        "new/",
+        "rival-1/",
+    ]
 
 
 @pytest.mark.unit
@@ -1503,11 +1531,42 @@ def test_a_conflict_on_the_first_attempt_is_retried_once_and_succeeds():
 def test_a_non_conflict_client_error_propagates_rather_than_retrying():
     table = _make_table()
     store = PrefixMappingStore(table)
+    calls = {"n": 0}
 
     def access_denied(**_kwargs):
-        raise ClientError({"Error": {"Code": "AccessDeniedException"}}, "UpdateItem")
+        calls["n"] += 1
+        raise ClientError(
+            {"Error": {"Code": "AccessDeniedException"}}, "TransactWriteItems"
+        )
 
-    table.update_item = access_denied
+    table.meta.client.transact_write_items = access_denied
+    with pytest.raises(ClientError):
+        store.put("acme/", "lending")
+    assert calls["n"] == 1
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_transaction_cancelled_for_another_reason_is_not_called_a_conflict():
+    """Only a lost condition is a race. A cancellation for, say, a validation error
+    must surface as itself rather than as "another administrator changed it"."""
+    table = _make_table()
+    store = PrefixMappingStore(table)
+
+    def cancelled(**_kwargs):
+        raise ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException"},
+                "CancellationReasons": [
+                    {"Code": "None"},
+                    {"Code": "None"},
+                    {"Code": "ValidationError"},
+                ],
+            },
+            "TransactWriteItems",
+        )
+
+    table.meta.client.transact_write_items = cancelled
     with pytest.raises(ClientError):
         store.put("acme/", "lending")
 
@@ -1538,3 +1597,243 @@ def test_the_assignment_is_frozen():
     """It is recorded on a document and read by four consumers; none may edit it."""
     with pytest.raises(Exception):
         ConfigAssignment().profile = "something-else"  # pyright: ignore[reportAttributeAccessIssue]
+
+
+# ---------------------------------------------------------------------------
+# #597: only named internal producers are exempt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", ["test-studio", "pii-anonymizer"])
+def test_a_named_internal_producer_still_bypasses_a_mapping(source):
+    assignment = _resolve(
+        "acme/x.pdf",
+        metadata_profile="companion",
+        submission_source=source,
+        mappings=[_mapping("acme/", "mapped", metadataPrecedence="reject")],
+    )
+    assert is_internal_producer(source)
+    assert (assignment.profile, assignment.source) == (
+        "companion",
+        SOURCE_INTERNAL_PRODUCER,
+    )
+    assert assignment.rejected is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "forged",
+    ["partner-feed", "Test-Studio", "test-studio ", "PII-ANONYMIZER", "x", "true"],
+)
+def test_any_other_submission_source_is_an_ordinary_upload(forged):
+    """The route #597 asked to close: any truthy value used to skip the mapping, so
+    one metadata key let any S3 writer pick any profile under any mapping."""
+    assert not is_internal_producer(forged)
+    # Under the default mode the mapping wins over the upload's own choice...
+    mapped = _resolve(
+        "acme/x.pdf",
+        metadata_profile="other-teams-profile",
+        submission_source=forged,
+        mappings=[_mapping("acme/", "mapped")],
+    )
+    assert (mapped.profile, mapped.source) == ("mapped", SOURCE_PREFIX_MAPPING)
+    assert mapped.conflict is True
+    # ...and under `reject` the conflicting upload is refused, as any upload is.
+    refused = _resolve(
+        "acme/x.pdf",
+        metadata_profile="other-teams-profile",
+        submission_source=forged,
+        mappings=[_mapping("acme/", "mapped", metadataPrecedence="reject")],
+    )
+    assert refused.rejected is True
+    assert refused.profile is None
+
+
+@pytest.mark.unit
+def test_a_forged_source_does_not_escape_the_scope_check_on_the_mapping():
+    """The scope guard skips the mapped profile only for a named producer."""
+    assignment = _resolve(
+        "tenant-a-docs/x.pdf",
+        metadata_profile="tenant-a",
+        submission_source="partner-feed",
+        mappings=[_mapping("tenant-a-docs/", "finance-prod")],
+        allowed_profiles=["tenant-a"],
+    )
+    assert assignment.scope_denied is True
+
+
+# ---------------------------------------------------------------------------
+# #597: append-only change history
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@mock_aws
+def test_every_put_and_delete_appends_one_record_with_before_and_after():
+    store = PrefixMappingStore(_make_table())
+    store.put("acme/", "lending", actor="creator@example.com")
+    store.put("acme/", "invoices", config_revision=3, actor="editor@example.com")
+    assert store.delete("acme/", actor="remover@example.com") is True
+
+    entries = store.history()["entries"]
+    assert [(e["seq"], e["action"], e["actor"]) for e in entries] == [
+        (3, "delete", "remover@example.com"),
+        (2, "update", "editor@example.com"),
+        (1, "create", "creator@example.com"),
+    ]
+    delete, update, create = entries
+    assert create["before"] is None
+    assert create["after"]["configProfile"] == "lending"
+    assert update["before"]["configProfile"] == "lending"
+    assert update["after"]["configProfile"] == "invoices"
+    assert update["after"]["configRevision"] == 3
+    assert delete["before"]["configProfile"] == "invoices"
+    assert delete["after"] is None
+    # The entry itself only ever holds the latest editor; the log is what keeps the
+    # earlier one, which is the gap the history exists to close.
+    assert all(e["prefix"] == "acme/" for e in entries)
+    assert all(e["timestamp"] for e in entries)
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_delete_of_a_missing_mapping_records_nothing():
+    store = PrefixMappingStore(_make_table())
+    assert store.delete("never/", actor="a@example.com") is False
+    assert store.history() == {"entries": [], "nextBefore": None}
+
+
+@pytest.mark.unit
+@mock_aws
+def test_history_filters_by_prefix_and_pages_newest_first():
+    store = PrefixMappingStore(_make_table())
+    for n in range(5):
+        store.put("a/", f"p{n}")
+        store.put("b/", f"q{n}")
+
+    only_a = store.history("a/", limit=2)
+    assert [e["after"]["configProfile"] for e in only_a["entries"]] == ["p4", "p3"]
+    assert only_a["nextBefore"] == 7  # seq 7 is a/ -> p3
+
+    rest = store.history("a/", limit=10, before=only_a["nextBefore"])
+    assert [e["after"]["configProfile"] for e in rest["entries"]] == [
+        "p2",
+        "p1",
+        "p0",
+    ]
+    assert rest["nextBefore"] is None
+    assert len(store.history()["entries"]) == 10
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_filtered_read_examines_a_bounded_number_of_records(monkeypatch):
+    import idp_common.config.prefix_mappings as pm
+
+    store = PrefixMappingStore(_make_table())
+    store.put("rare/", "lending")
+    for n in range(4):
+        store.put("busy/", f"p{n}")
+    monkeypatch.setattr(pm, "_BATCH_GET_LIMIT", 2)
+    monkeypatch.setattr(pm, "MAX_HISTORY_EXAMINED", 2)
+
+    page = store.history("rare/")
+    # Two records examined (seq 5 and 4), neither for rare/, and a cursor to go on.
+    assert page == {"entries": [], "nextBefore": 4}
+    later = store.history("rare/", before=page["nextBefore"])
+    assert later["entries"] == []
+    final = store.history("rare/", before=later["nextBefore"])
+    assert [e["prefix"] for e in final["entries"]] == ["rare/"]
+    assert final["nextBefore"] is None
+
+
+@pytest.mark.unit
+@mock_aws
+def test_the_sequence_survives_the_aggregate_being_deleted_by_hand():
+    """Keyed on its own head, so recreating the aggregate cannot reuse a seq."""
+    table = _make_table()
+    store = PrefixMappingStore(table)
+    store.put("a/", "lending")
+    table.delete_item(Key={"Configuration": PREFIX_MAP_INDEX_KEY})
+    store.put("b/", "lending")
+    assert [e["seq"] for e in store.history()["entries"]] == [2, 1]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_record_is_never_overwritten_and_the_change_does_not_land_without_one():
+    """Append-only, and atomic with the mapping. A record already at the next seq
+    (here planted with the head missing) makes the write fail rather than replace
+    it -- and the mapping change in the same transaction is not applied either."""
+    table = _make_table()
+    planted = {**history_key(1), "Seq": 1, "Actor": "earlier", "Changes": []}
+    table.put_item(Item=planted)
+    store = PrefixMappingStore(table)
+
+    # Named as what it is -- the head is behind the log -- rather than as a
+    # concurrent edit, which retrying could never resolve.
+    with pytest.raises(PrefixMappingHistoryCorrupt, match="head item"):
+        store.put("a/", "lending")
+
+    assert store.list() == []
+    stored = table.get_item(Key=history_key(1))["Item"]
+    assert stored["Actor"] == "earlier"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_the_actor_on_a_record_is_bounded_like_the_entry():
+    store = PrefixMappingStore(_make_table())
+    store.put("a/", "lending", actor="x" * 5000)
+    record = store.history()["entries"][0]
+    assert len(record["actor"].encode("utf-8")) <= 256
+
+
+@pytest.mark.unit
+def test_a_forged_source_cannot_hide_a_deferring_mapping_from_the_scope_check():
+    """Under `metadata` precedence the caller's own in-scope profile wins, so only
+    the MATCHED mapping's profile is out of scope -- and the guard reads it only
+    when the source is not a named producer."""
+    assignment = _resolve(
+        "tenant-a-docs/x.pdf",
+        metadata_profile="tenant-a",
+        submission_source="partner-feed",
+        mappings=[
+            _mapping("tenant-a-docs/", "finance-prod", metadataPrecedence="metadata")
+        ],
+        allowed_profiles=["tenant-a"],
+    )
+    assert assignment.scope_denied is True
+
+
+@pytest.mark.unit
+@mock_aws
+def test_an_overlapping_transaction_is_retried_like_a_lost_condition():
+    """DynamoDB cancels one of two overlapping transactions with
+    TransactionConflict; that is the same race a lost condition is."""
+    table = _make_table()
+    store = PrefixMappingStore(table)
+    real = table.meta.client.transact_write_items
+    calls = {"n": 0}
+
+    def conflict_once(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClientError(
+                {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [
+                        {"Code": "TransactionConflict"},
+                        {"Code": "None"},
+                        {"Code": "None"},
+                    ],
+                },
+                "TransactWriteItems",
+            )
+        return real(**kwargs)
+
+    table.meta.client.transact_write_items = conflict_once
+    store.put("acme/", "lending")
+    assert calls["n"] == 2
+    assert [e["prefix"] for e in store.list()] == ["acme/"]

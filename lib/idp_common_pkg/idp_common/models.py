@@ -319,7 +319,10 @@ class ProcessingIssue:
             ``"classification_invalid_class_fallback"`` (classification produced no
             usable class for one or more of the section's pages), or
             ``"classification_page_assigned_to_neighbour"`` (a packet call's page
-            ranges left pages out, and they were added to this section).
+            ranges left pages out, and they were added to this section), or
+            ``"classification_confidence_missing"`` (a class confidence was
+            requested and the reply gave none; one issue per document, on the
+            first unscored section, listing them all in ``details``).
         message: User-friendly one-liner.
         root_cause: Technical detail — model, output cap, rows affected, geometry
             mode, escalation chain tried.
@@ -365,7 +368,9 @@ class ProcessingIssue:
     #: it, but every writer composes it from a fixed template plus a page count or
     #: page list — never from an exception — so it is bounded by the section's page
     #: count rather than by document content, which is what makes the other two a
-    #: 400 KB risk and this one not.
+    #: 400 KB risk and this one not. ``classification_confidence_missing`` names
+    #: sections across the whole document instead, so it caps what it names itself
+    #: (``_MAX_SECTIONS_NAMED`` in ``classification/service.py``).
     MAX_ROOT_CAUSE_BYTES: ClassVar[int] = 4096
     ROOT_CAUSE_TAIL_BYTES: ClassVar[int] = 512
 
@@ -478,6 +483,59 @@ class ProcessingIssue:
             section_id=data.get("section_id"),
             details=data.get("details", {}) or {},
         )
+
+
+def serialize_issue_list(issues: List[ProcessingIssue]) -> List[Dict[str, Any]]:
+    """A list of issues in the tracking table's camelCase item shape.
+
+    The shape ``idp_common.dynamodb.service.serialize_processing_issues`` writes
+    for a section, mirroring the GraphQL ``ProcessingIssue`` type.
+
+    Also used for the *document-level* list (``Document.processing_issues``), which
+    is persisted as the item's top-level ``ProcessingIssues``. That list exists for
+    the one stage with no section to hang an issue on -- ingest, where
+    ``queue_sender`` records that the prefix-mapping read failed (#597).
+    """
+    issues_data: List[Dict[str, Any]] = []
+    for issue in issues:
+        issue_item: Dict[str, Any] = {
+            "stage": issue.stage,
+            "severity": issue.severity,
+            "code": issue.code,
+            "message": issue.message,
+        }
+        if issue.root_cause:
+            issue_item["rootCause"] = issue.root_cause
+        if issue.details:
+            issue_item["details"] = json.dumps(issue.details, default=str)
+        issues_data.append(issue_item)
+    return issues_data
+
+
+def deserialize_issue_list(
+    issues_data: Any, section_id: Optional[str] = None
+) -> List[ProcessingIssue]:
+    """The inverse of :func:`serialize_issue_list`."""
+    issues: List[ProcessingIssue] = []
+    for iss in issues_data or []:
+        details = iss.get("details")
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except (json.JSONDecodeError, TypeError):
+                details = {}
+        issues.append(
+            ProcessingIssue(
+                stage=iss.get("stage", ""),
+                severity=iss.get("severity", "info"),
+                code=iss.get("code", ""),
+                message=iss.get("message", ""),
+                root_cause=iss.get("rootCause", ""),
+                section_id=section_id,
+                details=details or {},
+            )
+        )
+    return issues
 
 
 @dataclass

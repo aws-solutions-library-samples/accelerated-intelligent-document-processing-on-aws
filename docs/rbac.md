@@ -695,7 +695,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 143 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 144 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -963,7 +963,7 @@ enforcement itself is Layer 2.
 | `deleteConfigVersion` | Admin |
 | `deleteConfigProfileRevision` | Admin |
 | `restoreConfigProfileRevision`, `labelConfigProfileRevision` | Admin, Author |
-| `listConfigPrefixMappings`, `putConfigPrefixMapping`, `deleteConfigPrefixMapping` | Admin. A prefix mapping *assigns* a Configuration Profile to everything arriving under an S3 prefix, so writing one decides which scoped users can see those documents — the same side of the line as minting a profile, not the same side as editing one's content |
+| `listConfigPrefixMappings`, `putConfigPrefixMapping`, `deleteConfigPrefixMapping`, `listConfigPrefixMappingHistory` | Admin. A prefix mapping *assigns* a Configuration Profile to everything arriving under an S3 prefix, so writing one decides which scoped users can see those documents — the same side of the line as minting a profile, not the same side as editing one's content |
 | `resolveConfigPrefixMapping` | Admin, Author. A read-only dry run ("what would this key process under?") serving the upload form, so Author is the lowest role that can use it — a Viewer cannot upload. **Scope-filtered**: a caller outside the resolved profile's scope is told the destination is out of scope and nothing else — not the profile's name, not the revision, and not the **mapping prefix**. The `reason` field is returned, carrying one fixed sentence that names none of those, because it is what the upload panel renders as the whole body of its alert. The prefix is withheld because the caller supplied a *key*, so returning the mapping that governs it reveals where the boundary sits, and a probe at a time that reconstructs the routing policy `listConfigPrefixMappings` is Admin-only to protect. The subject of the check is every profile the answer could *disclose*, not the one it selected — a refusal names the mapped profile in its reason while resolving to no profile at all, and metadata precedence resolves to the caller's own in-scope profile while explaining that it beat the mapping's |
 | `createUser`, `updateUser`, `deleteUser` | Admin |
 | `updatePricing`, `restoreDefaultPricing` | Admin |

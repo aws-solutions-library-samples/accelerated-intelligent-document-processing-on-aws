@@ -621,7 +621,16 @@ def parse_max_tokens_limit_from_error(message: str) -> Optional[int]:
 #: too, but they fail the same way every time, so they are left out.
 RETRYABLE_HTTP_SERVER_STATUSES = frozenset({500, 502, 503, 504})
 
-_BARE_STATUS_CODES = {str(status): status for status in RETRYABLE_HTTP_SERVER_STATUSES}
+#: HTTP 429 Too Many Requests: the request was throttled before it was served.
+THROTTLED_HTTP_STATUS = 429
+
+#: The statuses that are retried when botocore uses one as the error code because the
+#: reply named no error type: the server errors above, and a throttle (#2112). A bare
+#: 429 is a front end refusing the request for rate, which botocore's legacy retry
+#: mode treats as throttling and its standard mode, the one used here, does not.
+RETRYABLE_BARE_HTTP_STATUSES = RETRYABLE_HTTP_SERVER_STATUSES | {THROTTLED_HTTP_STATUS}
+
+_BARE_STATUS_CODES = {str(status): status for status in RETRYABLE_BARE_HTTP_STATUSES}
 
 
 def bare_http_server_status(code: object) -> Optional[int]:
@@ -630,7 +639,8 @@ def bare_http_server_status(code: object) -> Optional[int]:
     botocore uses the HTTP status itself as the error code (``"500"``, with the
     message ``"Internal Server Error"``) when a reply names no error type, as an
     empty or HTML body from a front end does. Such a code says nothing about the
-    request, only that the server failed it (#2036).
+    request, only that the server failed it (#2036) or, for ``"429"``, throttled it
+    (#2112). The statuses are :data:`RETRYABLE_BARE_HTTP_STATUSES`.
     """
     return _BARE_STATUS_CODES.get(code) if isinstance(code, str) else None
 
@@ -638,14 +648,17 @@ def bare_http_server_status(code: object) -> Optional[int]:
 def http_server_error_status(
     error_response: Optional[Mapping[str, Any]],
 ) -> Optional[int]:
-    """The retryable HTTP server-error status of a botocore error response, else None.
+    """The retryable HTTP status of a Bedrock error response, else None.
 
     Read from the reply's HTTP status, then from a bare-status error code, so a
-    500, 502, 503 or 504 is recognised whatever code it carries. Use it for Bedrock
-    replies, where every documented 5xx (``InternalServerException``,
-    ``ServiceUnavailableException``) is transient. It is not a rule for every AWS
-    service: Lambda, for one, answers several deterministic errors with a 502,
-    which is why ``utils.transient_errors`` uses only :func:`bare_http_server_status`.
+    500, 502, 503 or 504 is recognised whatever code it carries, and a 429 when the
+    reply named no error type (``"429"``, #2112). Use it for Bedrock replies, where
+    every documented 5xx (``InternalServerException``,
+    ``ServiceUnavailableException``) is transient. A 429 with a NAMED code is left to
+    the name (``ThrottlingException`` is retried by name, ``ModelNotReadyException``
+    is not retried by the client ladders). It is not a rule for every AWS service:
+    Lambda, for one, answers several deterministic errors with a 502, which is why
+    ``utils.transient_errors`` uses only :func:`bare_http_server_status`.
     """
     response = error_response or {}
     status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")

@@ -405,6 +405,9 @@
     ],
     "listCatalogFeatures": "ANY",
     "listChatSessions": "ANY",
+    "listConfigPrefixMappingHistory": [
+      "Admin"
+    ],
     "listConfigPrefixMappings": [
       "Admin"
     ],

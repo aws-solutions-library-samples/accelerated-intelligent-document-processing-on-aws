@@ -533,9 +533,11 @@ def test_a_request_with_no_text_or_text_that_fits_is_untouched(caplog):
 def test_truncation_cuts_the_tail_at_a_line_break_when_it_can():
     from idp_common.decision_model import estimate_tokens, truncate_to_tokens
 
-    text = "first line\nsecond line\nthird line\n"
-    kept, dropped = truncate_to_tokens(text, estimate_tokens("first line\nsecond li"))
-    assert (kept, dropped) == ("first line\n", len(text) - len("first line\n"))
+    # A line break in the last tenth of the prefix that fits: the cut ends there.
+    first = "a" * 39 + "\n"
+    text = first + "b" * 39 + "\n" + "c" * 39 + "\n"
+    kept, dropped = truncate_to_tokens(text, estimate_tokens(first + "bb"))
+    assert (kept, dropped) == (first, len(text) - len(first))
     # One line with no break: cut where the budget runs out.
     assert truncate_to_tokens("x" * 100, 10) == ("x" * 20, 80)
     assert truncate_to_tokens(text, 1000) == (text, 0)
@@ -733,12 +735,13 @@ def test_the_assessment_step_names_the_section_when_a_page_is_refused(caplog):
 def test_a_page_whose_text_has_no_room_is_refused_rather_than_sent_empty(caplog):
     """When the question alone fills max_input_tokens, the page text would be cut
     to nothing and an empty field scored about 1.0 from no evidence. The request is
-    not sent; the pass fails like a refusal, so the section degrades."""
+    not sent; the pass fails like a refusal, so the section degrades. The question
+    alone overflows the limit here, so the refusal says so (#2111)."""
     extracted = {"Total": None, "Notes": "remark " * 120}
     decider = ScriptedDecider()
     with (
         caplog.at_level(logging.WARNING),
-        pytest.raises(DecisionModelRefused, match="page 1") as raised,
+        pytest.raises(DecisionModelRefused, match="question and 0 image") as raised,
     ):
         _score(
             _service(input="text", max_input_tokens=256),
@@ -747,9 +750,9 @@ def test_a_page_whose_text_has_no_room_is_refused_rather_than_sent_empty(caplog)
             extracted=extracted,
         )
     assert decider.requests == []
-    assert "max_input_tokens" in str(raised.value)
+    assert "max_input_tokens of 256" in str(raised.value)
     assert any(
-        r.levelno == logging.WARNING and "page 1" in r.getMessage()
+        r.levelno == logging.WARNING and "max_input_tokens" in r.getMessage()
         for r in caplog.records
     )
 
@@ -831,3 +834,88 @@ def test_every_request_fits_the_window_at_the_largest_section():
                     f"{case}: a request of about {tokens:.0f} tokens was sent, "
                     f"over the {WINDOW_INPUT_TOKENS} the window holds"
                 )
+
+
+# --- A page with a short first line and no other line break (#2111) -----------
+
+
+@pytest.mark.parametrize("mode", ["text", "both"])
+@pytest.mark.parametrize("style", DENSE_STYLES)
+def test_a_page_with_a_short_first_line_and_no_other_break_is_cut_mid_line(mode, style):
+    """The cut used to back up to the line break after "INVOICE" and score every
+    value from that one word."""
+    from idp_common.decision_model import (
+        DEFAULT_MAX_INPUT_TOKENS,
+        IMAGE_TOKENS,
+        estimate_tokens,
+    )
+    from idp_common.decision_model.budget import LINE_BREAK_BACKOFF_SHARE
+
+    page = "INVOICE\n" + dense_page(style, 1).replace("\n", " ")
+    decider = ScriptedDecider()
+    _score(
+        _service(input=mode, max_concurrency=1),
+        decider,
+        page_texts=[page],
+        page_images=_pages(1) if mode == "both" else (),
+    )
+
+    (request,) = decider.requests
+    state = request["state"]
+    assert page.startswith(state)
+    budget = (
+        DEFAULT_MAX_INPUT_TOKENS
+        - _longest_question(request)
+        - IMAGE_TOKENS * len(request["images"])
+    )
+    assert estimate_tokens(state) >= budget * (1 - LINE_BREAK_BACKOFF_SHARE) - 2
+
+
+def test_an_images_request_whose_question_overflows_is_refused_locally():
+    """input images cuts no text, so nothing else checks the request's size before
+    it is sent: a question longer than the limit is refused here, not sent."""
+    from idp_common.decision_model import (
+        DEFAULT_MAX_INPUT_TOKENS,
+        IMAGE_TOKENS,
+        estimate_tokens,
+    )
+
+    notes = "remark " * 1000
+    assert estimate_tokens(notes) > DEFAULT_MAX_INPUT_TOKENS - IMAGE_TOKENS
+    decider = ScriptedDecider()
+    with pytest.raises(DecisionModelRefused, match="question and 1 image"):
+        _score(
+            _service(input="images"),
+            decider,
+            page_texts=["Total due 100.00"],
+            page_images=_pages(1),
+            extracted={"Total": "100.00", "Notes": notes},
+        )
+    assert decider.requests == []
+
+
+def test_max_input_tokens_is_capped_at_the_window_less_the_reserve(caplog):
+    from idp_common.config.models import IDPConfig
+    from idp_common.decision_model import DEFAULT_MAX_INPUT_TOKENS
+
+    def confidence(limit):
+        return IDPConfig.model_validate(
+            {
+                "extraction": {
+                    "confidence": {"decision_model": {"max_input_tokens": limit}}
+                }
+            }
+        )
+
+    def limit(cfg):
+        return cfg.extraction.confidence.decision_model.max_input_tokens
+
+    with caplog.at_level(logging.WARNING):
+        assert limit(confidence(DEFAULT_MAX_INPUT_TOKENS)) == DEFAULT_MAX_INPUT_TOKENS
+        assert caplog.records == []
+        # Capped, not refused, so a configuration saved with a larger value loads.
+        assert limit(confidence(DEFAULT_MAX_INPUT_TOKENS + 1)) == (
+            DEFAULT_MAX_INPUT_TOKENS
+        )
+    (record,) = caplog.records
+    assert "max_input_tokens is 3585" in record.getMessage()

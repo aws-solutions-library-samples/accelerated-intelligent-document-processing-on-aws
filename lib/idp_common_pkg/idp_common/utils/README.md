@@ -77,10 +77,18 @@ transport text (`Read timed out`, `Connection reset`, ...).
 
 A `ClientError` whose code is a bare HTTP status — botocore's code when a reply names
 no error type, such as `"500"` with the message `"Internal Server Error"` — is
-transient for 500, 502, 503 and 504 (#2036). The status of a *named* code is not
+transient for 500, 502, 503 and 504 (#2036), and for 429, a throttle (#2112). The status of a *named* code is not
 consulted: Lambda answers several deterministic errors with a 502, so the name still
 decides. The Bedrock ladders go further and retry any 5xx of those four by status
 (see the [bedrock README](../bedrock/README.md#resilience-features)).
+
+An exception that carries its own retry verdict, a `retry_later` attribute holding a
+`bool`, is judged by that verdict alone, and its cause chain is not consulted. The
+decision-model client sets it on every `DecisionModelError` (False unless the request
+never ran), so a bare `"500"` from Lambda that the client did not retry stays not
+transient even though the `ClientError` it chains would be. Section classification
+and the assessment step therefore treat one decision-model failure the same way
+(#2112).
 
 ⚠️ **The throttling half of the vocabulary is read from botocore, not listed here.**
 AWS has at least six spellings meaning "you are being rate limited" — `Throttling`,
@@ -143,7 +151,13 @@ except Exception as e:
 ```
 
 Neither ever wraps a `TransientError` in another one, so a failure that passes through
-several nested handlers still reports one name and one cause. Rule validation is where
+several nested handlers still reports one name and one cause.
+
+`reraise_if_transient(e, where=..., metering=m)` also attaches `m`, the usage of the
+calls the failed attempt completed, to the raised `TransientError`
+(`attach_failure_metering`), so the Lambda can record that spend before Step
+Functions retries the step. It replaces anything already attached, so `m` must
+include `failure_metering(e)` when `e` carried some. Rule validation is where
 this matters most, because its blocks nest: a transient re-raised for one rule travels
 up through `asyncio.gather` into a document-level `except` that returns a document
 marked failed (#1101).
