@@ -117,6 +117,7 @@ stored values.
 | `document_shape` | *Advanced — known document shape* |
 | `document_shape.sectionSplitting` | *Section splitting*: `llm_determined` is *Detect boundaries (default)*, `disabled` is *One section*, `page` is *One per page* |
 | `document_shape.maxPagesForClassification` | *Pages to classify*: `ALL` is *All pages (default)* |
+| `document_shape.pageOrder` | *Page order*: `scan` is *Scan order (default)*, `printed_page_numbers` is *Printed page numbers* |
 
 In the cost table, *Splitting* is metered as `Splitting/…` and *Section
 classification* as `SectionClassification/…`. The combined strategy stays under
@@ -1072,6 +1073,114 @@ Result: Single section
 Entire document treated as one unit
 ```
 
+## Page Order
+
+Pages are classified in the order they were scanned. When a file's pages were
+scanned out of order (an automatic feeder misfeed, a re-stacked batch), the
+classifier sees them out of order too, and a multi-page form whose pages are not
+adjacent in the scan becomes two sections: its second page, seen before its first,
+looks like the start of a new document. Raising `contextPagesCount` gives each page
+more neighbours to judge from, at a cost in tokens on every call, and does not help
+once the pages are far apart.
+
+`classification.document_shape.pageOrder` (*Page order* in the editor, under
+*Advanced — known document shape*) changes the order the classifier sees:
+
+| Value | What happens |
+|---|---|
+| `scan` (default) | Pages are classified in scan order, as they always have been. |
+| `printed_page_numbers` | Each page's printed page number is read from its OCR text, and when the numbers can be trusted the pages are classified in that order. |
+
+```yaml
+classification:
+  document_shape:
+    pageOrder: printed_page_numbers
+```
+
+It applies to both strategies and both granularities, and to `maxPagesForClassification`
+(the first N pages become the first N *printed* pages). It does nothing in BDA mode,
+on a one-page document, or when classification calls no model at all (one configured
+class, or a document-name regex match, under `sectionSplitting: disabled` or `page`).
+
+### How page numbers are read
+
+The numbers come from the text the OCR step already wrote for each page, so no model
+is called; the only added cost is one read of each page's text. Only the first three
+and the last three non-empty lines of a page are looked at, which is where running
+headers and footers land, so a number in the body of a page is not read. Two kinds
+of marking are recognised:
+
+- **Explicit**: `Page 3 of 7` or `Pg. 3/7` anywhere on one of those lines; `Page 3`,
+  `p. 3`, `3 of 7` or `- 3 -` as a line of its own; and `Page 3` at the end of a
+  line that holds other text (`Form 1040 (2023)  Page 3`, `Rev. 01/2026 • Page 3`)
+  when it is written as a label: `Page` with a capital, after something other than
+  a word. `continued on page 3` and `see Page 3` are read as references to another
+  page and ignored; `Continued on reverse - Page 3` still reads as 3.
+- **Bare**: a line that is only a number (`3`) or a fraction (`3/7`), used only when
+  the page has no explicit marking.
+
+Numbers of more than three digits (a year) and a `3 of 2` are not page numbers, and
+a page that prints two different totals (`Page 2 of 4` and `Page 2 of 5`) is
+ambiguous.
+
+### When the pages are reordered
+
+All or nothing. The pages are reordered only when **every** page has exactly one
+number, the numbers are distinct and form one run with no gaps, every page that
+prints a total prints the same one and no number exceeds it, and — if any page's
+number is a bare numeral — the run starts at 1 (a bare number is also what a form's
+box value looks like on a line of its own). A document that is already in printed
+order is classified exactly as with `scan`.
+
+Otherwise the scan order is kept, the document is classified exactly as with `scan`,
+and the first section carries a `classification_page_order_not_applied` warning
+naming the reason and the pages concerned:
+
+| Reason | Meaning |
+|---|---|
+| `no_text` | A page has no OCR text (an image-only page, a blank sheet, or `ocr.backend: none`). |
+| `ambiguous` | A page shows two different candidate numbers. |
+| `no_number` | A page has no recognisable page number in its header or footer. |
+| `inconsistent_totals` | Pages print different totals (`of 4` and `of 5`), or a number above the printed total. |
+| `duplicate` | Two pages print the same number. This is what a packet of several documents each numbered from 1 produces, and one sequence cannot order them. |
+| `gap` | The numbers skip one (1, 2, 4). |
+| `unanchored` | The numbers include bare numerals and do not start at 1. |
+
+The warning counts towards the document's *Processing Issues* badge like any other
+issue, so enable the setting where scans are mostly numbered.
+
+### What the results look like
+
+Page IDs do not change. Page 3 of the scan is page 3 in the results, in the page
+viewer, in extraction and assessment, in `page_indices` and in evaluation, whatever
+order it was classified in. What changes is which pages are grouped together: a
+form printed as pages 2 and 3 but scanned as pages 3 and 1 becomes one section whose
+`page_ids` are `["1", "3"]`, listed ascending like any section's. Sections are
+listed and numbered by their first scan page, as they are with `scan`, so a document
+whose grouping does not change gets the same section IDs either way — which is what
+evaluation pairs sections by. The order used is recorded on the document as
+`metadata.page_order`, with `printed_order` holding the scan page IDs in printed
+order; page references in classification's processing issues and errors are
+rewritten to the scan page IDs.
+
+Three things to know:
+
+- **Extraction reads a section's pages in ascending page-ID order**, so the form
+  above is extracted with scan page 1 (its printed page 3) before scan page 3 (its
+  printed page 2). The grouping is right; the order within the section is the scan
+  order.
+- **A classification reason is the model's own text**, and a page number it mentions
+  refers to the order the model was shown, which is the printed order.
+- **Pages from different documents whose numbers happen to form one run are
+  reordered.** Measured on the text embedded in this repository's sample PDFs, 2,000
+  random mixtures of 2 to 6 text-bearing pages drawn from different places produced a
+  usable order 7 times, all of them two-page mixtures. In 4 the numbers were already
+  in scan order, so nothing moved; 3 were reordered, and one of those was two pages
+  of the same statement put back in order. Two bare numerals that happen to read 2
+  and 1 (a packing slip and a return form, each ending in a lone number) are swapped
+  the same way. A scanned PDF has no
+  embedded text, so the image-only samples were not part of that measurement.
+
 ## Pages Classification Could Not Classify
 
 A page can come out of classification without a usable class. When that happens
@@ -1095,7 +1204,9 @@ severity says how much attention the case deserves:
 > fallback class replaced an out-of-vocabulary answer. Packet granularity with the
 > combined strategy records none of those three. At packet granularity, under either
 > strategy, it records `classification_page_assigned_to_neighbour` instead when the
-> model's page ranges left a page out. When `maxPagesForClassification` limits
+> model's page ranges left a page out. `classification_confidence_missing` can be recorded
+> on any of these paths when the call that chose a class was asked for a confidence,
+> except for the sections the table lists as unscored by design. When `maxPagesForClassification` limits
 > classification to the first pages, the issues recorded on those pages are carried
 > onto the document's one section.
 
@@ -1104,10 +1215,13 @@ severity says how much attention the case deserves:
 | `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class of its own and nothing was extracted from it, unless `sectionSplitting: disabled` gave it its section's class (see below the table). On the Bedrock backend's page path it is produced in two cases: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails — or the page's reply was withheld by a content filter, described below. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors. The exception on both paths is a reply Amazon Bedrock's content filter withheld (a `ValidationException` saying the output was blocked by the content filtering policy): that page or section is labelled `unclassified` and carries this issue naming the block, but the block is not added to the document's errors, so the rest of the document is classified and completes. A block still fails the document on a packet-granularity call, on a split-then-classify splitting call, when the document name matched a class's `x-aws-idp-document-name-regex` (the page's class is asserted, so labelling it `unclassified` would split the asserted document around it), and when `maxPagesForClassification` limits classification to a sample of pages (the sample's class is given to every page of the document, so a blocked sample would leave the whole document `unclassified` with no error). A throttle or another transient error is not caught that way: it fails the classification step, which the state machine retries | For a read failure, check the page's artifacts in the working bucket and reprocess. For a content-filter block, review the page, or reprocess with a different classification model. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
 | `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text (text that is only whitespace counts as none), and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` (under `sectionSplitting: disabled`, usually its section's class; see below the table) and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed. It is also recorded when no model is called because the document's name matched a class's `x-aws-idp-document-name-regex` or the configuration has one class, under `sectionSplitting: disabled` or `page`: with `modality.images` off at combined page granularity each page's text is read to check it (only the first `maxPagesForClassification` pages when that limit is set, as the model path classifies only those), and a blank page is named in the issue as given the asserted class (a page whose text could not be read is not reported there and does not fail the document) | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema, except under `sectionSplitting: disabled` when the section's class is another one (see below the table) | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
+| `classification_page_order_not_applied` | warning | `document_shape.pageOrder` is `printed_page_numbers`, and the printed page numbers could not be trusted for the whole document, so the pages were classified in scan order. Recorded on the first section; `details.reason_code` and `details.problem_page_ids` say why and which pages. See [Page Order](#page-order) | Nothing, if scan order is right for this document. Otherwise check the named pages' OCR text for their page numbers |
 | `classification_page_assigned_to_neighbour` | warning | Packet granularity only. The page ranges the model returned left these pages out of every document, so each was added to the document of the page before it in the same packet call (or, when nothing precedes it in that call, the document after it) and given that document's class. Under `sectionSplitting: disabled` this is not needed, because the one section already holds every page. The pages were extracted with that section; what is not the model's answer is which section they are in. A page whose packet call failed is not placed this way: no call decided anything about it, and the failure is already reported as a document error | Check that the pages belong to the section they were added to |
+| `classification_confidence_missing` | warning | The call that chose these sections' classes was asked for a confidence (`confidence.mode` is `topk` or `verbalized`), but its reply carried no usable `candidates` or `confidence` key for them, so they are stored with no score. The class is still the model's answer. This is **one issue per document**, attached to the first unscored section. Its message names up to 20 of the unscored sections and up to 20 of their pages. `details` lists up to 100 section ids and 100 page ids, with `section_count` and `page_count` giving the full totals. Sections unscored by design are not reported: a document-name-regex class, a fallback class, a decision-model label that did not escalate to the LLM, a reply with no class, a page relabelled with its section's class under `sectionSplitting: disabled`, and the one section a `maxPagesForClassification` sample is extrapolated to | Confidence-based review has nothing to act on for those sections. If you wrote your own `<output-format>`, add the key to its JSON example (see [The output-format example names the key](#the-output-format-example-names-the-key)). Otherwise try another classification model |
 
 One issue per section per cause, listing the page IDs, so a long run of
 unclassifiable pages produces one row rather than one per page.
+`classification_confidence_missing` is the exception: it is one issue per document.
 
 **Under `sectionSplitting: disabled` such a page usually takes its section's
 class.** The document's one section gets the configured class with the most pages
@@ -2354,6 +2468,31 @@ carries a `<class-confidence>` block. Both blocks are editable config
 prompt here. At combined packet granularity the per-segment variants,
 `task_prompt_topk_packet` / `task_prompt_verbalized_packet`, are spliced instead,
 because that call returns a segment list rather than one object per page.
+
+### The output-format example names the key
+
+When confidence is on, the JSON example in a shipped prompt's `<output-format>`
+also shows the key the mode asks for. In `topk` mode that is `candidates`, and in
+`verbalized` mode it is `confidence`. At packet granularity the key goes inside each
+`segments` item, and otherwise in the top-level object. With `off` the example is
+unchanged. The instruction block alone was not enough: the shipped prompts end by
+asking for "the exact JSON format specified in <output-format>", and some models
+follow the example literally. On a six-document packet at packet granularity in
+`topk` mode, Claude Sonnet 5.5 returned no `candidates` on any segment in three runs
+without the key in the example, and returned them on all six segments in three runs
+with it.
+
+An `<output-format>` block gets the key only when it is the system-default block
+for that call, unchanged apart from whitespace. That holds wherever the prompt
+comes from: the system default, a configuration preset, or your own custom prompt.
+A block that differs from the default in any other way is left as written, and so
+is the example in a prompt that carries its own `<class-confidence>` block. If you
+want confidence from such a prompt, put the key in its example, as in the prompt
+below.
+
+When the call asked for a confidence and the reply gave none for some sections,
+the document records one `classification_confidence_missing` warning that lists
+them (see the issue table under [Pages Classification Could Not Classify](#pages-classification-could-not-classify)).
 
 Writing it into your own prompt works too:
 

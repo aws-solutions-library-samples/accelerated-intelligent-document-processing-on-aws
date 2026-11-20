@@ -77,6 +77,7 @@ from .guardrail import (  # noqa: F401 - re-exported for existing importers
 from .model_utils import (
     LONG_CONTEXT_SUFFIX,
     REGION_PREFIXES,
+    THROTTLED_HTTP_STATUS,
     get_model_max_output_tokens,
     http_server_error_status,
     metering_model_id,
@@ -150,11 +151,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_RETRIES = 7
 
 #: Retryable codes counted as ``BedrockThrottling`` (the circuit breaker's throttling
-#: trigger) and logged as throttling, on both retry ladders.
+#: trigger) and logged as throttling, on both retry ladders. ``"429"`` is the code
+#: botocore gives a 429 reply that names no error type, which the ladders retry
+#: through ``http_server_error_status`` (#2112).
 _THROTTLING_CODES = (
     "ThrottlingException",
     "TooManyRequestsException",
     "RequestLimitExceeded",
+    str(THROTTLED_HTTP_STATUS),
 )
 
 
@@ -2230,7 +2234,8 @@ class BedrockClient:
             # An HTTP 500, 502, 503 or 504 is retried whatever code it carries,
             # including the bare status botocore uses as the code when the reply
             # names no error ("500", "Internal Server Error"). Matched by name
-            # alone, that one failed the call on its first attempt (#2036).
+            # alone, that one failed the call on its first attempt (#2036). A bare
+            # "429" is retried the same way, as throttling (#2112).
             server_error_status = http_server_error_status(e.response)
 
             if error_code in retryable_errors or server_error_status is not None:
@@ -2724,7 +2729,7 @@ class BedrockClient:
                 "RequestTimeoutException",
             ]
             # The same rule as the generation ladder: any HTTP 500, 502, 503 or
-            # 504 is retried, whatever its code (#2036).
+            # 504 is retried, whatever its code (#2036), and a bare "429" (#2112).
             server_error_status = http_server_error_status(e.response)
 
             if error_code in retryable_errors or server_error_status is not None:

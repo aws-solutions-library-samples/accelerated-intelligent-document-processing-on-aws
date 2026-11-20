@@ -1079,10 +1079,11 @@ class ExternalModelConfig(BaseModel):
 #: is a request, so this bounds how many one section fans out to.
 DECISION_MODEL_MAX_CONFIDENCE_PAGES = 50
 
-#: The default ``decision_model.max_input_tokens``: the decider's 4,096-token window
-#: less the 512 reserved for its own prompt. Stated here rather than imported,
-#: because ``idp_common.decision_model`` imports this module; a test keeps it equal
-#: to ``idp_common.decision_model.DEFAULT_MAX_INPUT_TOKENS``.
+#: The default and the largest ``decision_model.max_input_tokens``: the decider's
+#: 4,096-token window less the 512 reserved for its own prompt. A larger value
+#: would let dense text overflow the window, so it is capped (#2111). Stated here
+#: rather than imported, because ``idp_common.decision_model`` imports this module;
+#: a test keeps it equal to ``idp_common.decision_model.DEFAULT_MAX_INPUT_TOKENS``.
 DECISION_MODEL_MAX_INPUT_TOKENS = 3584
 
 #: The least ``max_input_tokens`` accepted, so a request keeps room for a question.
@@ -1114,8 +1115,31 @@ def _require_room_for_text(
             f"{path}.max_input_tokens is {max_input_tokens}, but its question and "
             f"{images} page image(s) alone take about {math.ceil(reserved)} tokens, "
             "which leaves no room for page text with input 'text' or 'both'. Raise "
-            "max_input_tokens or set input to 'images'."
+            f"max_input_tokens (at most {DECISION_MODEL_MAX_INPUT_TOKENS}), shorten "
+            "the question, or set input to 'images'."
         )
+
+
+def _cap_max_input_tokens(value: int, path: str) -> int:
+    """``value`` capped at ``DECISION_MODEL_MAX_INPUT_TOKENS``, with a warning.
+
+    A larger limit would let dense text overflow the decision model's window
+    (#2111). Capped rather than refused, so a stored configuration saved with a
+    larger value before the cap existed still loads.
+    """
+    if value <= DECISION_MODEL_MAX_INPUT_TOKENS:
+        return value
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "%s.max_input_tokens is %d, over the decision model's %d-token window "
+        "less its prompt reserve; using %d",
+        path,
+        value,
+        DECISION_MODEL_MAX_INPUT_TOKENS,
+        DECISION_MODEL_MAX_INPUT_TOKENS,
+    )
+    return DECISION_MODEL_MAX_INPUT_TOKENS
 
 
 class ConfidenceDecisionModelConfig(ExternalModelConfig):
@@ -1201,8 +1225,9 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             "limit is cut from the end and never read by the decision model, so a "
             "value that appears only in the cut part is not seen: it scores low, "
             "and an empty field is not checked against that part. Default "
-            f"{DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's 4,096-token "
-            "window less 512 for its own prompt."
+            f"{DECISION_MODEL_MAX_INPUT_TOKENS}, which is also the most used (a "
+            "larger value is capped, with a warning): the decision model's "
+            "4,096-token window less 512 for its own prompt."
         ),
     )
 
@@ -1271,6 +1296,11 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
     @classmethod
     def parse_ints(cls, v: Any, info: ValidationInfo) -> int:
         return _parse_required_int(v, info, cls)
+
+    @field_validator("max_input_tokens", mode="after")
+    @classmethod
+    def max_input_tokens_fits_the_window(cls, v: int) -> int:
+        return _cap_max_input_tokens(v, "extraction.confidence.decision_model")
 
 
 class ConfidenceConfig(BaseModel):
@@ -2759,7 +2789,8 @@ class DecisionModelConfig(ExternalModelConfig):
             "text or both, the section's text beyond the limit is cut from the end "
             "and never read by the decision model, so a class cue that appears only "
             "in the cut part is not seen. The first page is kept whole when it "
-            f"fits. Default {DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's "
+            f"fits. Default {DECISION_MODEL_MAX_INPUT_TOKENS}, which is also the most "
+            "used (a larger value is capped, with a warning): the decision model's "
             "4,096-token window less 512 for its own prompt."
         ),
     )
@@ -2831,6 +2862,14 @@ class DecisionModelConfig(ExternalModelConfig):
     @classmethod
     def parse_max_input_tokens(cls, v: Any, info: ValidationInfo) -> int:
         return _parse_required_int(v, info, cls)
+
+    @field_validator("max_input_tokens", mode="after")
+    @classmethod
+    def max_input_tokens_fits_the_window(cls, v: int) -> int:
+        return _cap_max_input_tokens(
+            v,
+            "classification.split_then_classify.section_classification.decision_model",
+        )
 
     @field_validator("score_calibration", mode="before")
     @classmethod
@@ -2978,6 +3017,14 @@ SECTION_SPLITTING_VALUES = ("llm_determined", "disabled", "page")
 DEFAULT_SECTION_SPLITTING = "llm_determined"
 
 
+#: The values of ``document_shape.pageOrder``: classify pages in scan order, or in
+#: the order of their printed page numbers (``idp_common.classification.page_order``).
+PAGE_ORDER_VALUES = ("scan", "printed_page_numbers")
+
+#: What an unset ``pageOrder`` means: the scan order.
+DEFAULT_PAGE_ORDER = "scan"
+
+
 def _unusable_page_limit(value: Any) -> str:
     """``'ALL'``, plus the warning that the operator's page limit is not in force."""
     import logging
@@ -3014,6 +3061,18 @@ class DocumentShapeConfig(BaseModel):
         description=(
             "With sectionSplitting 'disabled', classify only the first N pages and "
             "give the whole document their majority class. 'ALL' classifies every page."
+        ),
+    )
+    pageOrder: str = Field(
+        default="scan",
+        description=(
+            "'scan' (default): pages are classified in the order they were scanned. "
+            "'printed_page_numbers': read each page's printed page number from its "
+            "OCR text (header and footer lines, no model call) and classify the "
+            "pages in that order, but only when every page has exactly one number "
+            "and the numbers form one gap-free sequence; otherwise the scan order "
+            "is kept and a warning issue says why. Page IDs in the results are "
+            "unchanged either way."
         ),
     )
 
@@ -3065,6 +3124,27 @@ class DocumentShapeConfig(BaseModel):
                 "classification.document_shape.sectionSplitting must be one of "
                 f"{', '.join(SECTION_SPLITTING_VALUES)} (or empty for the default, "
                 f"{DEFAULT_SECTION_SPLITTING}), got {v!r}"
+            )
+        return v_str
+
+    @field_validator("pageOrder", mode="before")
+    @classmethod
+    def validate_page_order(cls, v: Any) -> str:
+        """One of :data:`PAGE_ORDER_VALUES`; empty is the default; else raises.
+
+        Refused rather than normalised, as ``sectionSplitting`` is and for the
+        second of its two reasons: the key is new, so no stored profile can hold an
+        unrecognised value, and a misspelt ``printed_page_numbers`` read as
+        ``scan`` would switch the feature off with nothing to say so.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_PAGE_ORDER
+        v_str = str(v).strip().lower()
+        if v_str not in PAGE_ORDER_VALUES:
+            raise ValueError(
+                "classification.document_shape.pageOrder must be one of "
+                f"{', '.join(PAGE_ORDER_VALUES)} (or empty for the default, "
+                f"{DEFAULT_PAGE_ORDER}), got {v!r}"
             )
         return v_str
 

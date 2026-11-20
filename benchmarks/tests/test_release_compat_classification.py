@@ -585,3 +585,35 @@ def test_a_decision_model_cell_is_still_refused_against_a_release_without_it():
         )
         is False
     )
+
+
+def test_a_page_order_other_than_scan_is_still_refused_against_a_release_without_it():
+    """The prior-behaviour skip is bounded by the value: ``pageOrder: scan`` is what
+    a release without the key does, so dropping it is inert, while
+    ``printed_page_numbers`` asks for behaviour that release does not have."""
+    path = "classification.document_shape.pageOrder"
+    classification = {"document_shape": {"pageOrder": "scan"}}
+    assert release_model_check._inert_at_prior_behaviour(classification, path) is True
+    classification["document_shape"]["pageOrder"] = "printed_page_numbers"
+    assert release_model_check._inert_at_prior_behaviour(classification, path) is False
+    assert (
+        release_model_check._inert_at_prior_behaviour(
+            {"document_shape": {"sectionSplitting": "scan"}},
+            "classification.document_shape.sectionSplitting",
+        )
+        is False
+    )
+
+
+@needs_nested_release
+def test_a_non_default_page_order_fails_against_the_nested_release(
+    built, nested_release_lib
+):
+    """End to end through ``check_config``: the release that predates ``pageOrder``
+    still refuses a cell that asks for printed-page ordering."""
+    cfg = copy.deepcopy(built["split-disabled"])
+    cfg["classification"]["document_shape"]["pageOrder"] = "printed_page_numbers"
+    errors = release_model_check.check_config(cfg, nested_release_lib)
+    assert any(
+        e.startswith("classification.document_shape.pageOrder ") for e in errors
+    ), errors

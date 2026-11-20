@@ -94,7 +94,9 @@ The ingest rule is a single comparison: **the tenant that owns the object key mu
 be the tenant that owns the profile the document resolves to.** It does not depend
 on knowing who wrote the object, which S3 events do not report, so it holds even when
 an uploader sets its own metadata. Two of the solution's own producers are handled
-explicitly:
+explicitly, recognised by the exact `submission-source` value each writes
+(`test-studio`, `pii-anonymizer`); an object carrying any other value is an ordinary
+external upload, and outside every tenant's prefixes it is refused like one:
 
 - **Test Studio** copies test sets to the bucket root under the test-run ID. A run
   against a tenant's profile is accepted only while that run is in progress and its

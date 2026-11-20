@@ -591,6 +591,16 @@ operations:
       set is a statement of the deployment's routing policy; a partially-filtered
       view of a longest-prefix rule is actively misleading, because you cannot tell
       which mapping wins when some of them are hidden from you.
+  listConfigPrefixMappingHistory:
+    groups: [Admin]
+    kind: read
+    enforced_in: *cfg
+    args: {}
+    note: >
+      Admin-only and not scope-filtered, for the reason the list is: each entry
+      carries a whole mapping before and after, so the log is the routing policy
+      plus who set it -- including mappings since deleted, which the list no longer
+      shows.
   putConfigPrefixMapping:
     groups: [Admin]
     kind: mutation

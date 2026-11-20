@@ -368,6 +368,13 @@ classification:
   #   whole document) | page (one section per page).
   # maxPagesForClassification: with 'disabled' only — classify the first N
   #   pages and give the whole document their majority class.
+  # pageOrder: scan (classify pages in scan order) | printed_page_numbers (read
+  #   each page's printed page number from its OCR header/footer text, no model
+  #   call, and classify in that order — only when every page has exactly one
+  #   number and they form one gap-free run; otherwise scan order is kept and a
+  #   classification_page_order_not_applied warning says why). Page IDs in the
+  #   results are unchanged either way.
   document_shape:
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
+    pageOrder: scan

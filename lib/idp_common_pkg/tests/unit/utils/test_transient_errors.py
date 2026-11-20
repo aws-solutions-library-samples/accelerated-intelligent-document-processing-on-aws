@@ -11,7 +11,7 @@ import asyncio
 import botocore.exceptions
 import pytest
 from tests.unit._botocore_errors import (
-    SERVER_ERROR_STATUSES,
+    BARE_RETRIED_STATUSES,
     bare_replies,
     empty_reply,
     named_reply,
@@ -319,17 +319,28 @@ class TestProducersInThisCodebase:
 class TestBareHttpServerStatus:
     """#2036: botocore uses the bare HTTP status as the code when a reply names no
     error type (an empty body, or a front end's HTML page). A 500, 502, 503 or 504
-    there is the server failing, so it is transient; nothing else about the status
-    is. Each reply is turned into its error by a real client, with both bodies."""
+    there is the server failing, and a 429 a front end throttling the request
+    (#2112), so each is transient; nothing else about the status is. Each reply is
+    turned into its error by a real client, with both bodies."""
 
-    @pytest.mark.parametrize("status", SERVER_ERROR_STATUSES)
-    def test_a_bare_server_error_status_is_transient(self, status):
+    @pytest.mark.parametrize("status", BARE_RETRIED_STATUSES)
+    @pytest.mark.parametrize(
+        "operation, service",
+        [
+            ("Converse", "bedrock-runtime"),
+            ("Invoke", "lambda"),
+            ("GetItem", "dynamodb"),
+        ],
+    )
+    def test_a_bare_server_error_or_throttle_status_is_transient(
+        self, status, operation, service
+    ):
         for reply in bare_replies(status):
-            error = service_error(reply)
+            error = service_error(reply, operation, service)
             assert error.response["Error"]["Code"] == str(status), reply.label
             assert is_transient_error(error) is True, reply.label
 
-    @pytest.mark.parametrize("status", [400, 404, 501, 505])
+    @pytest.mark.parametrize("status", [400, 404, 428, 430, 501, 505])
     def test_any_other_bare_status_is_not(self, status):
         for reply in bare_replies(status):
             error = service_error(reply)
@@ -350,6 +361,67 @@ class TestBareHttpServerStatus:
             assert is_transient_error(wrapped) is True
             with pytest.raises(TransientError):
                 raise_if_transient(wrapped, where="classification")
+
+
+@pytest.mark.unit
+class TestAnExceptionsOwnRetryVerdictIsFinal:
+    """#2112, rule 5: an exception carrying a ``retry_later`` bool is judged by it,
+    and its cause chain is not consulted. The decision-model client sets it; its
+    ``ClientError`` cause stays chained for the log only."""
+
+    @staticmethod
+    def _unavailable(retry_later: bool, cause: BaseException | None):
+        from idp_common.decision_model import DecisionModelUnavailable
+
+        try:
+            raise DecisionModelUnavailable(
+                "decider: failed", retry_later=retry_later
+            ) from cause
+        except DecisionModelUnavailable as e:
+            return e
+
+    @pytest.mark.parametrize("status", BARE_RETRIED_STATUSES)
+    def test_not_retry_later_over_a_transient_cause_is_not_transient(self, status):
+        cause = service_error(empty_reply(status), "Invoke", "lambda")
+        assert is_transient_error(cause) is True  # the cause alone would be
+        assert is_transient_error(self._unavailable(False, cause)) is False
+
+    def test_not_retry_later_over_a_named_throttle_is_not_transient(self):
+        cause = _lambda_error("TooManyRequestsException")
+        assert is_transient_error(self._unavailable(False, cause)) is False
+
+    def test_retry_later_is_transient_without_a_cause(self):
+        assert is_transient_error(self._unavailable(True, None)) is True
+
+    def test_the_verdict_is_found_through_a_wrapper_and_ends_the_walk(self):
+        inner = self._unavailable(
+            False, service_error(empty_reply(503), "Invoke", "lambda")
+        )
+        try:
+            raise RuntimeError("step failed") from inner
+        except RuntimeError as wrapped:
+            assert is_transient_error(wrapped) is False
+            raise_if_transient(wrapped)  # returns: nothing to surface
+
+    def test_a_refusal_carries_the_verdict_too(self):
+        from idp_common.decision_model import DecisionModelError, DecisionModelRefused
+
+        assert DecisionModelError.retry_later is False
+        try:
+            raise DecisionModelRefused("over the window") from _lambda_error(
+                "TooManyRequestsException"
+            )
+        except DecisionModelRefused as refused:
+            assert is_transient_error(refused) is False
+
+    def test_a_non_bool_attribute_is_not_a_verdict(self):
+        class Odd(Exception):
+            retry_later = "yes"
+
+        try:
+            raise Odd("x") from service_error(empty_reply(500))
+        except Odd as e:
+            assert is_transient_error(e) is True  # looked through to the bare 500
 
 
 class TestInvalidToolUseSequenceIsNotTransient:

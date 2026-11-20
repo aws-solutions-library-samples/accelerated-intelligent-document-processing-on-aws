@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getDocumentConfidenceAlertCount } from './confidence-alerts-utils';
-import { getDocumentProcessingIssueCount } from './processing-issues-utils';
+import { getDocumentProcessingIssueCount, type ProcessingIssue } from './processing-issues-utils';
 import { resolveMissingRequiredFieldCount } from './missing-required-fields-utils';
 import { parseMetering, parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 import { isHitlReviewFinished } from './review-status';
@@ -62,6 +62,12 @@ interface DocumentApiItem {
   ConfigSource?: string;
   ConfigMappingPrefix?: string;
   ConfigAssignmentError?: string;
+  /**
+   * Issues recorded on the document rather than on a section. Only ingest writes
+   * these: a warning that the configuration prefix mappings could not be read, so
+   * the document was processed with no mapping applied.
+   */
+  ProcessingIssues?: ProcessingIssue[] | null;
 }
 
 // Helper function to determine Review Status without nested ternaries
@@ -216,6 +222,7 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       configSource,
       configMappingPrefix,
       configAssignmentError,
+      documentProcessingIssues: (item.ProcessingIssues ?? []).filter(Boolean),
     };
 
     return mapping;

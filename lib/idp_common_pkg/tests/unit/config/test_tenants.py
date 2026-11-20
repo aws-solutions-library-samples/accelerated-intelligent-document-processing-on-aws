@@ -249,6 +249,11 @@ def test_scope_is_unchecked_with_no_tenants_declared():
         # ... accepted for an internal producer, whose reach is an untenanted
         # profile nobody tenant-scoped can see.
         ("other/x.pdf", "lending", "pii-anonymizer", True),
+        ("other/x.pdf", "lending", "test-studio", True),
+        # ... but only for a NAMED producer (#597): any other value is an ordinary
+        # external upload and is refused outside every tenant like one.
+        ("other/x.pdf", "lending", "partner-feed", False),
+        ("other/x.pdf", "lending", "Test-Studio", False),
         # A forged source does not move a document across a boundary.
         ("clients/acme/x.pdf", "globex_w2", "pii-anonymizer", False),
         ("other/x.pdf", "acme-x", "pii-anonymizer", False),

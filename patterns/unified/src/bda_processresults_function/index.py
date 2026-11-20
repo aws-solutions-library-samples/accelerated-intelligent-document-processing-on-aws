@@ -1691,6 +1691,14 @@ def handler(event, context):
     # Set config version on the new document object
     document.config_version = input_config_version
     document.config_revision = input_config_revision
+    # Carry the document-level processing issues the row already holds (ingest
+    # records one when the prefix mappings could not be read). This document is
+    # built fresh rather than from the workflow's state, and the whole-document
+    # write that follows recomputes ProcessingIssueCount from it, so without this
+    # the list badge would drop the ingest issue while its text stayed on the row.
+    document.processing_issues = list(
+        getattr(existing_document, "processing_issues", None) or []
+    ) if existing_document else []
 
     # Load configuration using the input document's version
     config = get_config(

@@ -317,18 +317,18 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `allowedConfigVersions` and `allowedTestSets` scope, per-object ownership and review-queue eligibility**, and repeats the group check | Nothing forces a per-object check to exist or to match the right object (AUTH.T16) |
 
-**180 operations** are routable — 44 mapped directly by the
+**181 operations** are routable — 44 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **126** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **127** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 181, not 180, because one field (`getCircuitBreakerStatus`)
+three sets sum to 182, not 181, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 180, which is exactly the number of entries in
+union is 181, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
-| Admin only | 49 |
+| Admin only | 50 |
 | Admin + Author | 42 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 27 |
 | Admin + Author + Viewer | 15 |
