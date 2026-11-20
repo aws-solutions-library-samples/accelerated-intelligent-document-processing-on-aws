@@ -1,0 +1,22 @@
+# Decision Model: Strands Decider — configuration preset.
+#
+# Installed by the ui-deployer as the NON-ACTIVE configuration profile
+# `decision-model-decider` (each release is a new revision of it), merged over the
+# host's default configuration. Activating it, or copying these settings into
+# another profile, makes section classification call this extension's decision
+# model. The ui-deployer fills in `endpoint` with the function's `live` alias ARN,
+# which is not known until the stack deploys.
+#
+# Section classification is the second call of the split-then-classify strategy:
+# splitting still finds where each document starts, with the LLM, and the
+# decision model names each section. See docs/decision-models.md.
+classification:
+  strategy: split_then_classify
+  split_then_classify:
+    section_classification:
+      method: decision_model
+      pages: first
+      decision_model:
+        # endpoint: filled in at install
+        input: images
+        max_pages: 1

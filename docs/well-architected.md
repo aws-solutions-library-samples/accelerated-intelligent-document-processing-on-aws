@@ -348,8 +348,8 @@ can supply one at deploy time. `scripts/tests/test_iam_privilege_escalation.py` 
 runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
-here. Counting across the eleven templates that make up the solution and its optional
-extensions, 131 IAM policy statements are written against `Resource: "*"` — 54 in
+here. Counting across the twelve templates that make up the solution and its optional
+extensions, 132 IAM policy statements are written against `Resource: "*"` — 54 in
 `template.yaml`, 39 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the

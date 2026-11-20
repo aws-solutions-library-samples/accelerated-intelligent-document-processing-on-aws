@@ -48,7 +48,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from idp_sdk._core.publish import IDPPublisher
+from idp_sdk._core.publish import IDPPublisher, declares_container_image_function
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -530,6 +530,59 @@ def test_container_components_get_an_image_repository(tmp_path, monkeypatch, com
     assert package_cmd[package_cmd.index("--image-repository") + 1] == (
         "111122223333.dkr.ecr.us-west-2.amazonaws.com/placeholder"
     )
+
+
+_IMAGE_FUNCTION_TEMPLATE = """\
+Resources:
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub '${Repo.RepositoryUri}:${Build.ImageTag}'
+"""
+
+
+def test_any_component_declaring_an_image_function_gets_an_image_repository(
+    tmp_path, monkeypatch
+):
+    """A bundled extension with a container-image function is not in the list.
+
+    ``sam package`` refuses its template without ``--image-repository`` even
+    though the image is built later, in the deploying account (#1656), so the flag
+    follows what the template declares rather than which directory it is in.
+    """
+    directory = _prepare_build_dir(tmp_path, "feature-platform/an-extension")
+    write(directory / "template.yaml", _IMAGE_FUNCTION_TEMPLATE)
+    recorder = CommandRecorder()
+
+    pub, _ = make_publisher()
+    _configure(pub)
+    monkeypatch.setattr(pub, "run_subprocess_with_logging", recorder)
+    monkeypatch.chdir(tmp_path)
+
+    pub.build_and_package_template("feature-platform/an-extension")
+
+    package_cmd = recorder.argvs[1]
+    assert package_cmd[package_cmd.index("--image-repository") + 1] == (
+        "111122223333.dkr.ecr.us-west-2.amazonaws.com/placeholder"
+    )
+
+
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        ("feature-platform/decision-model-decider/template.yaml", True),
+        ("patterns/unified/template.yaml", True),
+        ("nested/multi-doc-discovery/template.yaml", True),
+        ("feature-platform/sample-feature/template.yaml", False),
+        ("nested/bedrockkb/template.yaml", False),
+    ],
+)
+def test_image_function_detection_on_the_real_templates(template, expected):
+    repo = Path(__file__).resolve().parents[4]
+    assert (repo / template).is_file()
+    assert declares_container_image_function(str(repo / template)) is expected
 
 
 def test_a_zip_component_gets_no_image_repository(tmp_path, monkeypatch):

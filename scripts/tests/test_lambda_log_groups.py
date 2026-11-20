@@ -123,6 +123,7 @@ TEMPLATES = [
     "nested/multi-doc-discovery/template.yaml",
     "feature-platform/main-stack-extensions/template.yaml",
     "feature-platform/confbench-testset/template.yaml",
+    "feature-platform/decision-model-decider/template.yaml",
     "feature-platform/feature-template/template.yaml",
     "feature-platform/idp-data-generator/template.yaml",
     "feature-platform/pii-anonymizer/template.yaml",
