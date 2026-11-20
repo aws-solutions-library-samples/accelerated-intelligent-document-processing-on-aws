@@ -1,0 +1,874 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Discovery questions (Solution Profile contract v1, discoveryQuestionsFile).
+# Each `text` is written to be asked to a customer as it stands. `implications`
+# are read by people and assistants, not executed; figures in them are copied
+# from the page named at the end of each `then`, with the conditions under which
+# they were measured.
+questions:
+  # ---------------------------------------------------------------- Documents
+  - id: document-classes
+    topic: Documents
+    text: >-
+      What kinds of documents do you need to process, for example invoices, bank
+      statements, tax forms or claim forms, and roughly how many different kinds
+      are there?
+    intent: >-
+      Each kind of document becomes a document class in the configuration. The
+      answer decides which shipped preset to start from and how much
+      classification and schema work the delivery needs.
+    answer_type: list
+    priority: must
+    phase: pre-contract
+    tests: [capability:classification, capability:configuration-presets, capability:discovery, capability:quick-start]
+    implications:
+      - when: a kind matches a shipped preset (bank statements, W-2 forms, lending packets, passport applications, healthcare multi-section packages, FCC invoices, the RVL-CDIP business document classes)
+        then: >-
+          Deploy with that preset and run its samples on day one; the preset's
+          classes and schemas are a starting point, not a finished configuration.
+          See config_library/README.md.
+        refs: [capability:configuration-presets, delivery:deploy-nearest-preset]
+      - when: no shipped preset is close
+        then: >-
+          Draft the classes from sample documents with Discovery or Quick Start,
+          then review the generated schemas by hand. See docs/discovery.md and
+          docs/quick-start.md.
+        refs: [capability:discovery, capability:quick-start, delivery:discovery-on-samples]
+      - when: many classes, or classes that look alike
+        then: >-
+          Plan to measure classification accuracy per class with a labelled test
+          set before go-live; class descriptions and few-shot examples are the
+          usual levers. See docs/classification.md and docs/few-shot-examples.md.
+        refs: [capability:test-studio, capability:few-shot-examples, delivery:accuracy-baseline]
+    follow_ups: [class-attributes, single-or-packet, monthly-volume]
+
+  - id: class-attributes
+    topic: Documents
+    text: >-
+      For each kind of document, which fields, tables and values do you need to
+      capture, and can you share an example of the output you expect?
+    intent: >-
+      The fields become a JSON Schema per class. Their number, nesting and the
+      presence of tables decide the extraction mode, the confidence cost and the
+      schema work.
+    answer_type: list
+    priority: must
+    phase: discovery
+    tests: [capability:simple-extraction, capability:advanced-extraction, extension:json-schema-classes, capability:assessment-confidence]
+    implications:
+      - when: the answer includes tables or line items
+        then: Ask for the longest table next; row count decides between Simple and Advanced extraction.
+        refs: [question:max-table-rows, limitation:simple-extraction-row-limit]
+      - when: one file section can hold several records of the same class (for example several W-2 forms in one PDF)
+        then: >-
+          Turn on several documents per section for that class
+          (x-aws-idp-multi-instance) and migrate its evaluation baselines in the
+          same change, or the class's measured accuracy collapses with no error.
+          See docs/extraction-and-confidence.md and CHANGELOG.md (0.6.7).
+        refs: [capability:simple-extraction, capability:evaluation]
+      - when: the output must match a format another system expects
+        then: Plan a post-processing step that maps the extracted JSON to that format.
+        refs: [extension:pipeline-hook-postprocessing, extension:eventbridge-post-processing, question:downstream-systems]
+    follow_ups: [max-table-rows, business-rules, downstream-systems]
+
+  - id: single-or-packet
+    topic: Documents
+    text: >-
+      Does each file you receive hold one document, or can one file hold several
+      different documents bundled together (a packet)? If packets, how many
+      documents and pages does a typical and a large packet have?
+    intent: >-
+      Packets need section boundary detection, which is a separate source of error
+      from field extraction and has its own settings and failure modes.
+    answer_type: enum
+    options: [one document per file, packets of several documents, both]
+    priority: must
+    phase: pre-contract
+    tests: [capability:classification, limitation:packet-classification-long-context]
+    implications:
+      - when: one document per file
+        then: >-
+          Assert the shape instead of detecting it:
+          classification.document_shape.sectionSplitting disabled gives each file
+          exactly one section, and maxPagesForClassification can classify only the
+          first pages. See docs/classification.md.
+        refs: [capability:classification]
+      - when: packets
+        then: >-
+          Boundary detection (the default) over-split real-world packets 1.5x to
+          2.3x regardless of prompt in the documented measurement; page granularity
+          tends to split a document whose header repeats on every page, packet
+          granularity tends to merge two adjacent documents of the same class.
+          Measure section counts on the customer's own packets. See
+          docs/classification.md.
+        refs: [capability:classification, capability:evaluation, delivery:accuracy-baseline]
+      - when: packets longer than about 20 pages classified at packet granularity
+        then: >-
+          The packet is windowed at 20 pages by default, because above 20 image
+          blocks in one request Bedrock shrinks every image to 2,000 px; with
+          window_pages 0 a packet too large for the model fails outright. Keep the
+          window no smaller than the longest single section. See
+          docs/classification.md.
+        refs: [limitation:packet-classification-long-context]
+    follow_ups: [pages-per-document, document-classes]
+
+  - id: file-formats
+    topic: Documents
+    text: >-
+      In which file formats do your documents arrive, for example PDF, scanned
+      images such as TIFF, JPEG or PNG, Word, Excel or CSV? Do any arrive as older
+      .doc or .xls files, as email messages, or as password-protected PDFs?
+    intent: >-
+      Accepted formats are converted to page images before OCR; formats outside the
+      accepted list need converting before upload or in a preprocessing step.
+    answer_type: list
+    priority: must
+    phase: pre-contract
+    tests: [capability:input-file-formats, limitation:legacy-office-formats]
+    implications:
+      - when: legacy .doc files
+        then: >-
+          A legacy binary .doc fails with a message asking for the file to be
+          re-saved as .docx; plan that conversion upstream. See
+          lib/idp_common_pkg/idp_common/ocr/document_converter.py.
+        refs: [limitation:legacy-office-formats]
+      - when: formats that are not on the accepted list (for example email messages or archives)
+        then: Convert them before upload or in a preprocessing hook that runs before OCR.
+        refs: [extension:pipeline-hook-preprocessing]
+      - when: password-protected PDFs and malware scanning is wanted
+        then: >-
+          Decide AllowUnscannableDocuments before enabling malware scanning; the
+          fail-closed default refuses files the scanner cannot open. See
+          docs/malware-scanning.md.
+        refs: [capability:malware-scanning]
+    follow_ups: [image-quality, pages-per-document]
+
+  - id: pages-per-document
+    topic: Documents
+    text: >-
+      How many pages does a typical document have, and how many does the largest
+      one you would ever need to process have?
+    intent: >-
+      Simple extraction sends a whole section in one request and is refused once
+      the request is too large; Advanced extraction shards it. Very long documents
+      also strain the single-call summarization step.
+    answer_type: range
+    unit: pages
+    priority: must
+    phase: pre-contract
+    tests: [limitation:simple-extraction-page-limit, capability:advanced-extraction, capability:summarization]
+    implications:
+      - when: up to about 9 pages per section
+        then: >-
+          Simple extraction was complete at 400 rows and 9 pages on the v0.6.14
+          benchmark grid with the shipped default model. See
+          docs/extraction-scaling-guide.md.
+        refs: [capability:simple-extraction]
+      - when: between about 33 and 66 pages in one section
+        then: >-
+          On v0.6.14 Simple mode was refused on every run of a 66-page document and
+          not refused at 33 pages with the control model; sizes between 33 and 66
+          pages were not measured. Plan Advanced extraction. See
+          docs/extraction-scaling-guide.md.
+        refs: [limitation:simple-extraction-page-limit, capability:advanced-extraction]
+      - when: much more than 66 pages
+        then: >-
+          Advanced extraction was measured complete to 3,200 rows and 66 pages on
+          v0.6.14 ($3.76 to $4.20 and 434 s mean per document at the shipped
+          default, 2 runs). In an earlier study a 131-page document extracted
+          completely and then failed at summarization; split such documents, or
+          turn summarization off. See docs/extraction-scaling-guide.md.
+        refs: [capability:advanced-extraction, capability:summarization]
+    follow_ups: [max-table-rows, latency-target]
+
+  - id: max-table-rows
+    topic: Documents
+    text: >-
+      What is the largest number of rows a single table or list in one of your
+      documents can have, for example transactions on a statement or line items
+      on an invoice?
+    intent: >-
+      Simple extraction can return part of a long list and still report success;
+      long lists need Advanced extraction, which changes cost and latency.
+    answer_type: number
+    unit: rows
+    priority: must
+    phase: pre-contract
+    tests: [limitation:simple-extraction-row-limit, capability:advanced-extraction]
+    implications:
+      - when: up to about 400 rows of narrow, clean rows
+        then: >-
+          Simple extraction returned every row of three 400-row statements on every
+          run on the v0.6.14 grid with the shipped default model. Wide or noisy rows
+          reach the limit earlier. See docs/extraction-scaling-guide.md.
+        refs: [capability:simple-extraction]
+      - when: more than about 400 rows
+        then: >-
+          Use Advanced extraction. On an 800-row, 17-page statement Simple mode
+          returned the whole list on 5 of 13 runs and 43 to 190 rows on the others,
+          each reported COMPLETED; no size between 400 and 800 rows was measured.
+          Budget about $0.0012 to $0.0017 per row, OCR included (v0.6.14, 400 to
+          3,200 rows). See docs/extraction-scaling-guide.md.
+        refs: [capability:advanced-extraction, limitation:simple-extraction-row-limit]
+      - when: a non-default extraction model is wanted
+        then: >-
+          The row limit depends on the model: Claude Sonnet 5.5 lost most of a
+          400-row list on 15 of 133 runs, and both Amazon Nova models returned about
+          half a list or less above 100 rows. Measure before choosing. See
+          docs/extraction-scaling-guide.md.
+        refs: [capability:bedrock-model-choice]
+      - when: completeness matters for every document
+        then: >-
+          Read processing issues, not status: a loss of 30 or more rows is flagged
+          when the section's OCR shows a matching table, up to 29 rows can go missing
+          unreported, and a list with no matching OCR table may not be flagged at all.
+          Reconcile against an
+          expected total downstream where one exists. See
+          docs/extraction-scaling-guide.md.
+        refs: [capability:advanced-extraction, question:business-rules]
+    follow_ups: [tables-span-pages, accuracy-target]
+
+  - id: tables-span-pages
+    topic: Documents
+    text: >-
+      Do any tables continue across several pages, and if so, are the column
+      headings or a header block printed again at the top of each page?
+    intent: >-
+      Multi-page tables and repeated headers affect both extraction completeness
+      and how pages are grouped into documents.
+    answer_type: boolean
+    priority: should
+    phase: discovery
+    tests: [capability:advanced-extraction, capability:classification, limitation:simple-extraction-row-limit]
+    implications:
+      - when: yes, tables continue across pages
+        then: >-
+          Plan Advanced extraction with Textract TABLES OCR so the deterministic
+          table parser gets clean cells; when OCR corrupts a table the agent can
+          decline the table tool and return the list as null. See
+          docs/extraction-scaling-guide.md.
+        refs: [capability:advanced-extraction, capability:ocr-backends]
+      - when: a header or identity block is reprinted on every page of one document
+        then: >-
+          Page-granularity classification can split such a document into one
+          section per page (3 sections for one 3-page statement in the documented
+          fixture); packet granularity or a declared document shape avoids it. See
+          docs/classification.md.
+        refs: [capability:classification]
+    follow_ups: [max-table-rows, single-or-packet]
+
+  - id: languages-scripts
+    topic: Documents
+    text: >-
+      Which languages and writing systems appear in your documents, for example
+      English, Spanish, Arabic, Chinese or Japanese? Do some documents mix
+      languages, or use vertical text?
+    intent: >-
+      OCR language coverage depends on the OCR backend and on which OCR features
+      are switched on, and model accuracy varies by language.
+    answer_type: list
+    priority: must
+    phase: pre-contract
+    tests: [capability:language-support, limitation:language-script-support, capability:ocr-backends, capability:bda-mode]
+    implications:
+      - when: only English, Spanish, Italian, Portuguese, French or German
+        then: >-
+          Textract covers these for the default OCR features; BDA mode also listed
+          these six when its documentation was last checked (2025-09-19), and the
+          BDA documentation is the authority. See docs/languages.md.
+        refs: [capability:ocr-backends, capability:bda-mode]
+      - when: other languages, such as Arabic, Chinese, Japanese, Korean or Hindi
+        then: >-
+          Textract's Tables, Layout and Signatures features (the default) have the
+          broadest coverage, but plain text detection and Queries are English only
+          and Forms covers six languages; for a language outside the features'
+          coverage use the Bedrock OCR backend. BDA does not support vertical text.
+          See docs/languages.md.
+        refs: [limitation:language-script-support, capability:ocr-backends]
+      - when: low-resource languages
+        then: >-
+          Plan more validation: the guidance is 50 to 100 representative documents
+          for a high-resource language and often 5 to 10 times that for a
+          low-resource one. If Bedrock classification is not good enough, a custom
+          classifier can be called through a Lambda inference hook. See
+          docs/languages.md.
+        refs: [extension:lambda-hook-model, delivery:accuracy-baseline]
+    follow_ups: [handwriting, accuracy-target]
+
+  - id: handwriting
+    topic: Documents
+    text: >-
+      Do your documents contain handwriting, for example filled-in forms or
+      signatures, and is the handwriting in English or another language?
+    intent: Handwriting recognition coverage differs between OCR backends and languages.
+    answer_type: enum
+    options: [no handwriting, some handwritten fields, mostly handwritten]
+    priority: should
+    phase: discovery
+    tests: [capability:ocr-backends, limitation:language-script-support]
+    implications:
+      - when: handwriting in a language other than English
+        then: >-
+          Textract handwriting recognition is English only; test the Bedrock OCR
+          backend on samples. See docs/languages.md.
+        refs: [capability:ocr-backends, limitation:language-script-support]
+      - when: handwritten values matter for decisions
+        then: Measure accuracy on handwritten samples specifically and route low-confidence fields to review.
+        refs: [delivery:accuracy-baseline, capability:hitl-review-queues]
+    follow_ups: [image-quality, review-needs]
+
+  - id: image-quality
+    topic: Documents
+    text: >-
+      How good are the images: are some documents faxed, photographed with a
+      phone, skewed, very small or faint, or scanned sideways?
+    intent: Image quality limits OCR accuracy, and resolution settings trade fidelity against memory.
+    answer_type: enum
+    options: [mostly clean digital or scanned, mixed quality, mostly poor quality]
+    priority: should
+    phase: discovery
+    tests: [capability:ocr-backends]
+    implications:
+      - when: mixed or poor quality
+        then: >-
+          Keep the default rendering of 300 DPI (A4 renders to 2482x3510) and do not
+          lower resolution to save tokens; test the Bedrock OCR backend on the worst
+          samples. See docs/ocr-image-sizing-guide.md and docs/languages.md.
+        refs: [capability:ocr-backends, delivery:accuracy-baseline]
+      - when: unusually large pages such as legal sheets or plans
+        then: >-
+          The 2600x3600 ceiling binds on such pages; raise dpi and the ceiling
+          together, since the ceiling alone cannot raise resolution. See
+          docs/ocr-image-sizing-guide.md.
+        refs: [capability:ocr-backends]
+    follow_ups: [accuracy-target]
+
+  # ----------------------------------------------------------- Volume & timing
+  - id: monthly-volume
+    topic: Volume and performance
+    text: >-
+      How many documents and pages do you expect to process in a typical month,
+      per kind of document, and how do you expect that to change over the next
+      year?
+    intent: Monthly volume drives the Bedrock bill, which dominates per-document cost, and the quotas to request.
+    answer_type: number
+    unit: pages/month
+    priority: must
+    phase: pre-contract
+    tests: [capability:capacity-planning, capability:cost-reporting, prerequisite:service-quotas]
+    implications:
+      - when: any volume
+        then: >-
+          Measure cost on 20 to 50 representative documents first, then budget
+          monthly volume times the measured cost per document plus the always-on
+          floor, with 50% headroom. Measured v0.6.14 figures span roughly two orders
+          of magnitude, from $0.02 to $0.04 per document in Simple mode on a 20-document
+          real corpus extracted with Claude Sonnet 4.6, to $0.60 average in Advanced
+          mode with the shipped default (Claude Sonnet 5) on a synthetic bank-statement
+          grid. See docs/cost-calculator.md.
+        refs: [capability:cost-reporting, delivery:accuracy-baseline]
+      - when: low volume, or a pilot
+        then: >-
+          The stack costs money while idle (storage, logs, the KMS key, and an
+          OpenSearch Serverless collection if the Knowledge Base uses it); the docs
+          suggest a $500 starting budget for a pilot with no measurement yet. See
+          docs/cost-calculator.md.
+        refs: [capability:knowledge-base]
+    follow_ups: [peak-volume, retention]
+
+  - id: peak-volume
+    topic: Volume and performance
+    text: >-
+      What is the busiest hour you expect, in documents per hour, and do
+      documents arrive steadily or in large batches, for example at month end?
+    intent: >-
+      Peak rate, not monthly total, decides workflow concurrency and the Bedrock
+      tokens-per-minute and requests-per-minute quotas.
+    answer_type: number
+    unit: documents/hour
+    priority: must
+    phase: discovery
+    tests: [capability:capacity-planning, capability:load-testing, prerequisite:service-quotas, extension:bedrock-quotas]
+    implications:
+      - when: any peak
+        then: >-
+          Enter the hourly schedule in Capacity Planning, which computes per-model
+          tokens-per-minute and requests-per-minute needs from processed documents'
+          metering; it sizes pipeline mode only. See docs/capacity-planning.md.
+        refs: [capability:capacity-planning, extension:bedrock-quotas]
+      - when: bursts well above the steady rate
+        then: >-
+          MaxConcurrentWorkflows (default 100) caps concurrent documents and so
+          throughput and spend rate; documents above it wait in the queue. Rehearse
+          the burst with the CLI load test before go-live. See
+          docs/configuration.md and docs/idp-cli.md.
+        refs: [capability:load-testing, delivery:load-test]
+      - when: BDA mode is planned
+        then: Capacity Planning does not support BDA mode; size it from a load test instead. See docs/capacity-planning.md.
+        refs: [capability:bda-mode, delivery:load-test]
+    follow_ups: [latency-target, multi-tenant]
+
+  - id: latency-target
+    topic: Volume and performance
+    text: >-
+      How soon after a document arrives does its result need to be available, for
+      a typical document and for the largest one? Is a result within minutes
+      acceptable, or is it needed within seconds while someone waits?
+    intent: >-
+      Processing is queue-driven and asynchronous; per-document time grows with
+      pages, rows, extraction mode and review.
+    answer_type: range
+    unit: seconds
+    priority: must
+    phase: pre-contract
+    tests: [capability:capacity-planning, capability:advanced-extraction, capability:hitl-review-queues]
+    implications:
+      - when: an answer is needed within seconds, synchronously
+        then: >-
+          Documents are uploaded to S3, queued and processed by a Step Functions
+          workflow, with results written to the output bucket; there is no
+          request-response extraction call. Treat a seconds-level synchronous target
+          as a likely gap. See docs/architecture.md.
+        refs: [capability:pipeline-mode]
+      - when: minutes are acceptable
+        then: >-
+          Measured Advanced-mode wall-clock on v0.6.14 ranged from 37 s for a 1-page,
+          25-row statement to 374 s for 66 pages at the control model, and 434 s mean
+          at 66 pages with the shipped default. Capacity Planning judges a latency
+          target (1 to 3,600 s) against P99, not the median. See
+          docs/extraction-scaling-guide.md and docs/capacity-planning.md.
+        refs: [capability:advanced-extraction, capability:capacity-planning]
+      - when: documents are reviewed by people before release
+        then: A document held for review reaches its final status only after review and a second (finalize) run.
+        refs: [capability:hitl-review-queues]
+    follow_ups: [peak-volume, review-needs]
+
+  # --------------------------------------------------------------- Accuracy
+  - id: accuracy-target
+    topic: Accuracy and review
+    text: >-
+      What accuracy do you need, for each kind of document or for particular
+      fields, and how accurate is your current process, for example manual keying?
+    intent: >-
+      The solution gives no accuracy guarantee; accuracy is measured per field
+      against known-correct values, and the target decides how much tuning and
+      review is needed.
+    answer_type: text
+    priority: must
+    phase: pre-contract
+    tests: [capability:evaluation, capability:test-studio, capability:assessment-confidence]
+    implications:
+      - when: a target is stated
+        then: >-
+          Agree to measure it with the evaluation framework on a labelled test set
+          before committing to it; some fields matter more than others, and field
+          weighting expresses that. See docs/evaluation.md.
+        refs: [capability:evaluation, delivery:accuracy-baseline]
+      - when: no target is stated
+        then: Agree a measured baseline on the hardest class as the first milestone instead of a number.
+        refs: [delivery:accuracy-baseline]
+    follow_ups: [ground-truth, review-needs]
+
+  - id: ground-truth
+    topic: Accuracy and review
+    text: >-
+      Do you have documents whose correct values are already known, for example
+      records your team keyed and checked, that could be used to measure accuracy?
+      Roughly how many per kind of document?
+    intent: >-
+      Ground truth is what accuracy is measured against; without it, labels must
+      be produced first, which adds work before any accuracy claim.
+    answer_type: enum
+    options: ["yes, labelled values exist", some verified outputs exist, none]
+    priority: must
+    phase: discovery
+    tests: [capability:test-studio, capability:evaluation, extension:ground-truth-data]
+    implications:
+      - when: labelled values exist
+        then: Load them as a Test Studio test set and run it against the configuration. See docs/test-studio.md.
+        refs: [capability:test-studio, delivery:accuracy-baseline]
+      - when: none
+        then: >-
+          Use Test Studio draft labeling (the model drafts, people confirm) or the
+          Test Set Generator extension for synthetic labelled documents. See
+          docs/test-studio.md.
+        refs: [capability:test-studio, extension:ground-truth-data]
+      - when: deciding how many documents to label
+        then: >-
+          The language guidance suggests 50 to 100 representative documents for a
+          high-resource language and 5 to 10 times that for a low-resource one;
+          Test Studio estimates how much review a set still needs. See
+          docs/languages.md and docs/test-studio.md.
+        refs: [capability:test-studio]
+    follow_ups: [accuracy-target, pii]
+
+  - id: review-needs
+    topic: Accuracy and review
+    text: >-
+      Should a person check results before they are used: always, only when the
+      system is unsure, for a sample, or never?
+    intent: >-
+      Review queues route documents by confidence and missing required fields;
+      how often review triggers depends on the confidence model and thresholds.
+    answer_type: enum
+    options: [never, only when unsure, a sample, every document]
+    priority: must
+    phase: discovery
+    tests: [capability:hitl-review-queues, capability:assessment-confidence]
+    implications:
+      - when: only when unsure
+        then: >-
+          Turn on hitl.enabled and set per-field thresholds. With the default
+          confidence model (Amazon Nova Lite) review rarely triggers: on the v0.6.14
+          grid it scored 0 of 119,937 confidence values below 0.9; Claude Sonnet 5 as
+          confidence model scored about 638 below 0.9, at $160.70 against $90.33 for
+          the whole grid. No measurement supports a particular threshold; calibrate
+          on labelled documents. See docs/human-review.md.
+        refs: [capability:hitl-review-queues, capability:assessment-confidence, delivery:review-queue-setup]
+      - when: every document, or a sample
+        then: >-
+          The documented routing is by confidence alerts and missing required
+          fields; how to send every document, or a sample, to review is not
+          described and needs confirming during build. See docs/review-queues.md.
+        refs: [capability:hitl-review-queues]
+      - when: BDA mode
+        then: Without confidence scoring, only BDA's blueprint confidence can queue a document. See docs/human-review.md.
+        refs: [capability:bda-mode]
+      - when: review is on and other systems consume results
+        then: >-
+          A rejected document ends REJECTED, which is terminal but not success, and
+          hooks before the review point run twice and must be idempotent. See
+          docs/review-queues.md.
+        refs: [question:downstream-systems, extension:pipeline-hook-post-extraction]
+    follow_ups: [reviewer-roles, latency-target]
+
+  - id: reviewer-roles
+    topic: Accuracy and review
+    text: >-
+      Who will review or correct results, how many people, and should some of
+      them see only certain kinds of document, business units or clients?
+    intent: >-
+      Reviewers need a role, and visibility can be narrowed per configuration
+      profile; the answer sizes staffing and the access model.
+    answer_type: text
+    priority: should
+    phase: discovery
+    tests: [capability:hitl-review-queues, capability:web-ui, capability:configuration-profiles]
+    implications:
+      - when: dedicated reviewers
+        then: >-
+          Give them the Reviewer role (works every production queue within its
+          profile scope) or the Annotator role (works only the queues that list
+          it). Roles are Cognito groups and a user's permissions are the union of
+          their groups. See docs/rbac.md.
+        refs: [capability:hitl-review-queues]
+      - when: reviewers must see only some documents
+        then: Restrict them with configuration-profile scope (allowedConfigVersions), or with tenants for separate clients. See docs/rbac.md and docs/multi-tenancy.md.
+        refs: [capability:configuration-profiles, capability:multi-tenancy]
+      - when: reviewers sign in through company single sign-on
+        then: Map an identity-provider group to each review role.
+        refs: [question:identity-federation]
+    follow_ups: [identity-federation, multi-tenant]
+
+  - id: business-rules
+    topic: Accuracy and review
+    text: >-
+      Are there business rules a document must satisfy, for example totals that
+      must add up, dates within a range or required signatures, and what should
+      happen when a rule fails?
+    intent: >-
+      Rules can be checked by a model, by a deterministic solver, or by customer
+      code at a hook; the choice depends on whether the rule is semantic or
+      arithmetic.
+    answer_type: text
+    priority: should
+    phase: discovery
+    tests: [capability:rule-validation, capability:rule-validation-z3, extension:pipeline-hook-post-extraction]
+    implications:
+      - when: semantic or policy rules
+        then: Use rule validation, which evaluates extracted facts against rules with a model. See docs/rule-validation.md.
+        refs: [capability:rule-validation]
+      - when: arithmetic thresholds and comparisons
+        then: >-
+          Route those rules to the Z3 engine, which is deterministic; declare a
+          fractional parameter Real, not Int. See docs/rule-validation-z3.md.
+        refs: [capability:rule-validation-z3]
+      - when: rules that need the customer's own data or code
+        then: >-
+          Implement them in a hook; post-extraction runs in pipeline mode only,
+          postprocessing in both modes, and onError fail stops the document. See
+          docs/feature-platform.md.
+        refs: [extension:pipeline-hook-post-extraction, extension:pipeline-hook-postprocessing, extension:lambda-hook-model]
+    follow_ups: [review-needs, downstream-systems]
+
+  # ------------------------------------------------------- Deployment & security
+  - id: data-residency
+    topic: Deployment and security
+    text: >-
+      In which AWS Region, or in which country or geography, must your documents
+      be stored and processed, including by the AI models?
+    intent: >-
+      Published templates exist for a few Regions, model availability differs by
+      Region, and cross-Region inference profiles can process requests outside the
+      stack's Region.
+    answer_type: text
+    priority: must
+    phase: pre-contract
+    tests: [limitation:deployment-regions, extension:model-region-availability, capability:bedrock-model-choice]
+    implications:
+      - when: us-west-2, us-east-1, eu-central-1 or ca-central-1
+        then: One-click templates are published for these Regions. See docs/deployment.md.
+        refs: [deployment:cloudformation]
+      - when: another commercial Region
+        then: >-
+          No published template; building from source is the documented route, and
+          model availability in that Region has to be checked. That the stack works
+          there is not verified by the docs. See docs/deployment.md.
+        refs: [deployment:cli-deploy, extension:model-region-availability]
+      - when: an EU Region
+        then: >-
+          Model ids are mapped to EU inference profiles at deploy time; some US
+          models have only a fallback, and some third-party models are not available
+          at all. See docs/eu-region-model-support.md.
+        refs: [extension:model-region-availability]
+      - when: processing must stay inside one country
+        then: >-
+          Check every model id: us., eu. and global. inference profiles can serve a
+          request from other Regions, and a Canada stack keeps us. and global. ids
+          callable. See docs/canada-region-model-support.md and
+          https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html.
+        refs: [capability:bedrock-model-choice, extension:model-region-availability]
+    follow_ups: [aws-partition, retention]
+
+  - id: aws-partition
+    topic: Deployment and security
+    text: >-
+      Will this run in a standard (commercial) AWS account, in AWS GovCloud (US),
+      or somewhere else?
+    intent: GovCloud is built from source with a transformed template that removes services the partition lacks.
+    answer_type: enum
+    options: [commercial AWS, AWS GovCloud (US), other or not sure]
+    priority: must
+    phase: pre-contract
+    tests: [deployment:govcloud, limitation:govcloud-differences, deployment:headless]
+    implications:
+      - when: AWS GovCloud (US)
+        then: >-
+          Deploy from source with idp-cli deploy --govcloud (web UI served through
+          API Gateway, chat non-streaming) or --headless (no UI, Cognito, agents,
+          HITL or knowledge base). The BDA OCR backend and multi-document
+          discovery's embedding step are not available; the GovCloud preset pins
+          Nova Pro, Nova Lite and a GovCloud Claude Sonnet 4.5. See
+          docs/govcloud-deployment.md.
+        refs: [deployment:govcloud, deployment:headless, limitation:govcloud-differences]
+      - when: other or not sure
+        then: The docs describe the commercial and GovCloud partitions only; any other partition is unverified.
+        refs: [limitation:deployment-regions]
+    follow_ups: [network-isolation, data-residency]
+
+  - id: network-isolation
+    topic: Deployment and security
+    text: >-
+      Must the application be reachable only from your private network, for
+      example over a VPN, with no public endpoints? Must its functions run inside
+      your own VPC, and does that VPC have internet access?
+    intent: >-
+      VPC-secured and private-network deployments need VPC endpoints and change
+      which features are available.
+    answer_type: enum
+    options: [public internet is acceptable, public but restricted to our IP ranges, VPC only with internet access through NAT, fully private with no internet access]
+    priority: must
+    phase: pre-contract
+    tests: [deployment:vpc-secured, deployment:private-network]
+    implications:
+      - when: public but restricted to our IP ranges
+        then: Set WAFAllowedIPv4Ranges. See docs/configuration.md.
+        refs: [deployment:cloudformation]
+      - when: functions inside the customer's VPC
+        then: Use VPC-secured mode, which needs the documented gateway and interface endpoints and security groups. See docs/vpc-secured-mode.md.
+        refs: [deployment:vpc-secured]
+      - when: fully private
+        then: >-
+          Use the private-network deployment: the web UI is served by a private
+          REST API through an execute-api VPC endpoint, and the MCP Gateway and
+          Knowledge Base are turned off. Browsers still need to reach Cognito and
+          the jsDelivr CDN for the configuration editors. See
+          docs/deployment-private-network.md.
+        refs: [deployment:private-network, capability:mcp-server, capability:knowledge-base]
+    follow_ups: [identity-federation, aws-partition]
+
+  - id: identity-federation
+    topic: Deployment and security
+    text: >-
+      How should people sign in: with accounts created in the application, or
+      through your company's single sign-on such as Okta, Microsoft Entra ID or
+      PingOne? If single sign-on, does it use SAML or OpenID Connect, and can it
+      send group membership?
+    intent: Federation is set at stack creation and one of its settings cannot be changed afterwards.
+    answer_type: enum
+    options: [application accounts, SAML single sign-on, OpenID Connect single sign-on, not decided]
+    priority: should
+    phase: discovery
+    tests: [capability:web-ui]
+    implications:
+      - when: SAML or OpenID Connect
+        then: >-
+          Federation with PingOne, Okta and Entra ID is documented; a sign-in
+          trigger maps identity-provider groups to the five roles. Set
+          ExternalIdPEmailMutable to true when creating the stack and never change
+          it later; with false a federated user can sign in only once, and an
+          existing federated stack needs a new stack to fix it. See
+          docs/external-idp.md.
+        refs: [deployment:cloudformation]
+      - when: groups are mapped to roles
+        then: Configure the identity provider to send the group attribute for every federated user, including users in no group. See docs/external-idp.md.
+        refs: [question:reviewer-roles]
+    follow_ups: [reviewer-roles, multi-tenant]
+
+  - id: pii
+    topic: Deployment and security
+    text: >-
+      Do your documents contain personal or sensitive information, such as names,
+      identity numbers, health or financial details? Are there rules about who may
+      see it, whether it must be redacted, or where it may be stored or logged?
+    intent: >-
+      Personal data affects logging, access scope, redaction and which third-party
+      services may receive document content.
+    answer_type: text
+    priority: must
+    phase: discovery
+    tests: [extension:feature-platform-extension, extension:pipeline-hook-preprocessing, capability:configuration-profiles]
+    implications:
+      - when: redaction is required
+        then: >-
+          The PII Anonymization extension is experimental and unproven; validate its
+          output and do not rely on it as the only PII control. See
+          docs/extensions/pii-anonymizer.md.
+        refs: [extension:feature-platform-extension, extension:pipeline-hook-preprocessing]
+      - when: personal data must not reach logs
+        then: >-
+          Keep LogLevel at its default, WARN; INFO and DEBUG can write document
+          contents, PII and presigned URLs to CloudWatch. See docs/configuration.md.
+        refs: [deployment:cloudformation]
+      - when: personal data must not leave AWS
+        then: >-
+          Code Intelligence and External MCP agents send chat queries to third
+          parties and are opt-in per conversation; also check the model ids chosen.
+          See docs/agent-companion-chat.md.
+        refs: [capability:agent-companion-chat, capability:bedrock-model-choice]
+      - when: any personal data
+        then: >-
+          Data classification, residency and retention obligations remain the
+          customer's; review them against the Well-Architected template. See
+          docs/well-architected.md.
+        refs: [delivery:security-review]
+    follow_ups: [retention, data-residency]
+
+  - id: retention
+    topic: Deployment and security
+    text: >-
+      How long must documents and extracted results be kept, and must they be
+      deleted after a fixed period?
+    intent: The stack deletes documents and tracking records after a configured period; it is not a records archive.
+    answer_type: number
+    unit: days
+    priority: should
+    phase: discovery
+    tests: [limitation:not-a-document-management-system, capability:reporting-database]
+    implications:
+      - when: any period
+        then: >-
+          Set DataRetentionInDays (default 365) for documents and tracking records
+          and LogRetentionDays (default 30) for logs; agent memory also expires
+          after DataRetentionInDays. See docs/configuration.md.
+        refs: [deployment:cloudformation]
+      - when: records must be kept for years or under legal hold
+        then: Export results to the customer's own records system; the solution is not a document management system.
+        refs: [limitation:not-a-document-management-system, question:downstream-systems]
+    follow_ups: [downstream-systems]
+
+  - id: downstream-systems
+    topic: Integration and operations
+    text: >-
+      Where do the extracted results need to go afterwards, for example an ERP, a
+      case-management system, a database or a data lake, and how do those systems
+      accept data?
+    intent: Integration with downstream systems is customer-owned work and is often the largest single delivery item.
+    answer_type: list
+    priority: must
+    phase: discovery
+    tests: [extension:downstream-integration, extension:eventbridge-post-processing, extension:pipeline-hook-postprocessing, capability:reporting-database]
+    implications:
+      - when: results must be pushed to another system
+        then: >-
+          Use the EventBridge post-processing Lambda set at deployment
+          (PostProcessingLambdaHookFunctionArn), or the postprocessing pipeline hook
+          set per configuration profile, which runs in both modes. See
+          docs/post-processing-lambda-hook.md.
+        refs: [extension:eventbridge-post-processing, extension:pipeline-hook-postprocessing, delivery:downstream-integration-build]
+      - when: analytics or reporting
+        then: Query the reporting database (Glue tables over Parquet in S3, through Athena). See docs/reporting-database.md.
+        refs: [capability:reporting-database]
+      - when: another program pulls results
+        then: Use the SDK or CLI to submit documents and download results. See docs/idp-sdk.md and docs/idp-cli.md.
+        refs: [capability:idp-sdk, capability:idp-cli]
+      - when: review queues are on
+        then: Consumers should read review/status.json or its EventBridge event rather than poll for COMPLETED. See docs/review-queues.md.
+        refs: [capability:hitl-review-queues]
+    follow_ups: [operating-team]
+
+  - id: operating-team
+    topic: Integration and operations
+    text: >-
+      Who will deploy, upgrade and run the solution day to day, and how familiar
+      are they with AWS CloudFormation, AWS Lambda and Amazon Bedrock?
+    intent: >-
+      The solution is a community sample the customer owns and operates; upgrades
+      are frequent and often carry actions.
+    answer_type: text
+    priority: must
+    phase: pre-contract
+    tests: [capability:idp-cli, deployment:cloudformation]
+    implications:
+      - when: any team
+        then: >-
+          The customer deploys, owns and operates it, including upgrades, security
+          review and AWS charges; there is no service-level agreement. Releases
+          arrived about weekly from 0.6.6 to 0.6.15 and many carry action items, so
+          budget upgrade review time. See changes.yaml in this profile.
+        refs: [delivery:security-review]
+      - when: alerts must reach the team
+        then: >-
+          Alarms notify the AdminEmail address only after the subscription is
+          confirmed; a headless deployment creates no subscription and needs its own.
+          See docs/monitoring.md.
+        refs: [deployment:headless]
+    follow_ups: [downstream-systems]
+
+  - id: multi-tenant
+    topic: Integration and operations
+    text: >-
+      Will one deployment serve several business units or clients whose documents
+      must be kept apart from each other?
+    intent: >-
+      One stack can isolate tenants in the application, but shares processing,
+      throughput and logs; strict separation may need one stack or account per
+      tenant.
+    answer_type: boolean
+    priority: must
+    phase: pre-contract
+    tests: [capability:multi-tenancy]
+    implications:
+      - when: yes, tenants share an operator
+        then: >-
+          Declare tenants (Input-bucket prefixes plus a configuration-profile
+          pattern), audit, then turn on Strict isolation; tenant grants can be
+          manual, from an identity-provider claim or through an API. Isolation is
+          enforced by the application: Lambdas, tables, buckets, throughput and logs
+          are shared, and test sets carry no tenant. See docs/multi-tenancy.md.
+        refs: [capability:multi-tenancy]
+      - when: a tenant needs credentials that cannot reach other tenants' data, its own throughput or Region, or complete removal
+        then: Deploy one stack, or one account, per tenant. See docs/multi-tenancy.md.
+        refs: [deployment:cloudformation]
+    follow_ups: [reviewer-roles, peak-volume]
