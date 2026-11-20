@@ -319,7 +319,10 @@ class ProcessingIssue:
             ``"classification_invalid_class_fallback"`` (classification produced no
             usable class for one or more of the section's pages), or
             ``"classification_page_assigned_to_neighbour"`` (a packet call's page
-            ranges left pages out, and they were added to this section).
+            ranges left pages out, and they were added to this section), or
+            ``"classification_confidence_missing"`` (a class confidence was
+            requested and the reply gave none; one issue per document, on the
+            first unscored section, listing them all in ``details``).
         message: User-friendly one-liner.
         root_cause: Technical detail — model, output cap, rows affected, geometry
             mode, escalation chain tried.
@@ -365,7 +368,9 @@ class ProcessingIssue:
     #: it, but every writer composes it from a fixed template plus a page count or
     #: page list — never from an exception — so it is bounded by the section's page
     #: count rather than by document content, which is what makes the other two a
-    #: 400 KB risk and this one not.
+    #: 400 KB risk and this one not. ``classification_confidence_missing`` names
+    #: sections across the whole document instead, so it caps what it names itself
+    #: (``_MAX_SECTIONS_NAMED`` in ``classification/service.py``).
     MAX_ROOT_CAUSE_BYTES: ClassVar[int] = 4096
     ROOT_CAUSE_TAIL_BYTES: ClassVar[int] = 512
 
