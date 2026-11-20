@@ -596,8 +596,14 @@ def cli_samples(manifest_path: Path, out: Path) -> None:
 
 
 def fmt_check(binary: Binary, exe: Path, label: str, directory: Path) -> bool:
-    """``fmt -check -recursive -diff`` over ``directory``; True when nothing would change."""
-    env = {**os.environ, "TF_IN_AUTOMATION": "1", "TF_INPUT": "0", "CHECKPOINT_DISABLE": "1"}
+    """``fmt -check -recursive -diff`` over ``directory``; True when nothing would change.
+
+    ``fmt`` exits 0 over a directory holding nothing it reads, so an empty target
+    (a translation or a render that wrote nowhere) is refused rather than passed.
+    """
+    if not any(directory.rglob("*.tf")) and not any(directory.rglob("*.tfvars")):
+        raise GateError(f"fmt -check: {label} holds no .tf or .tfvars file")
+    env ={**os.environ, "TF_IN_AUTOMATION": "1", "TF_INPUT": "0", "CHECKPOINT_DISABLE": "1"}
     env.pop("TF_CLI_ARGS", None)
     env.pop("TF_CLI_ARGS_fmt", None)
     result = subprocess.run(  # nosec B603 - fixed argv, no shell
