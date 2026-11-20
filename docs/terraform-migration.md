@@ -185,7 +185,10 @@ upstream repository declares at tag `v0.6.9-tf.0`, except a VPC and its parts (t
 new deployment may have been pointed at them) and `aws_cloudformation_stack` (its
 custom resources run on delete). It also refuses a setting resource whose state does
 not record which bucket, table, key or pool it belongs to. It names each one. Nothing
-is skipped silently.
+is skipped silently. An old deployment that uses upstream's private network, MCP or
+test datasets meets the last two refusals; [Old deployments with a private network,
+MCP or test datasets](#old-deployments-with-a-private-network-mcp-or-test-datasets)
+gives the steps to run before `plan` so that it can go ahead.
 
 Some resources are kept rather than destroyed, so that destroying the old deployment
 does not take something the new one uses: the KMS key's alias, settings of the
@@ -597,6 +600,279 @@ The upstream repository documents how its resources are deleted, including delet
 protection on its Cognito resources. The adopted pool is no longer in the old state,
 so its deletion protection does not matter here. This step cannot be undone, which
 is why the backups under [Before you start](#before-you-start) matter.
+
+## Old deployments with a private network, MCP or test datasets
+
+`plan` refuses an old state that holds a VPC or any of its parts, or any
+`aws_cloudformation_stack`, because each needs a decision the command does not make
+for you: whether the network stays for the new deployment, and what the stack's
+custom resource does when it is deleted. Upstream creates these resources in three
+places, and each has a manual procedure below that you run **before**
+[step 1](#1-plan), in the old deployment's directory, so that the state `plan` reads
+no longer holds them. After that the migration is the one above, with the extra
+`--parameters` each procedure names. Supporting these shapes in the command itself is
+the next increment; the steps below are what it would automate.
+
+Run them inside the maintenance window, because each one changes the running old
+deployment, and before [step 3](#3-freeze-the-old-deployment): the MCP and
+test-dataset procedures run a targeted `terraform destroy` in the old directory, which
+the freeze rules out afterwards. Save the old state again when you are done, so that
+`plan` reads the state as it now is:
+
+```bash
+cd old-idp
+terraform state pull > ../old-idp.tfstate
+cd ..
+```
+
+The addresses below are those of upstream's `examples/` configurations, which call the
+upstream module as `module.genai_idp_accelerator`. If your root calls it something
+else, substitute that name. The commands that list addresses read them from the saved
+state rather than assuming them.
+
+How much of each procedure has been exercised is stated in its own section, under
+"What has been tested".
+
+### Private network (VPC)
+
+Upstream places its functions in a VPC in two ways, and the old state holds different
+resources for each:
+
+- **The upstream module's `private_network` input** (with `vpc_subnet_ids` and
+  `vpc_security_group_ids`): the VPC, subnets and security groups are yours, created
+  outside upstream, and upstream creates only the VPC endpoints its functions need,
+  under `module.genai_idp_accelerator.module.vpc_endpoints[0]`
+  (`aws_vpc_endpoint.interface["<service>"]`, and `s3_gateway[0]` and
+  `dynamodb_gateway[0]` when you gave it route tables).
+- **Upstream's `examples/bedrock-llm-processor-vpc` configuration**, when you did not
+  give it a `vpc`: it also creates the VPC itself in the example's root (`aws_vpc.main`,
+  `aws_subnet.isolated`, `aws_route_table.isolated`,
+  `aws_route_table_association.isolated`, `aws_security_group.lambda` and
+  `aws_security_group.vpc_endpoints`) and its endpoints under `module.vpc_endpoints[0]`.
+  Note that the migration command's resource mapping was measured against
+  `examples/unified-processor` only, so for this example the rest of the migration is
+  untried as well (see [How much of this has been tested](#how-much-of-this-has-been-tested)).
+
+In both cases the network should outlive the old deployment, because the new
+deployment is going to run in it. So these resources are removed from the old state,
+which leaves them in the account managed by neither deployment, and the new deployment
+is pointed at them with its VPC parameters. Nothing in the network is recreated, and
+the network holds no data, so nothing is at risk; what could go wrong is that the old
+destroy deletes a subnet or endpoint the new deployment now uses, which removing them
+from the old state prevents.
+
+1. List every network resource in the old state, and check the list:
+
+   ```bash
+   jq -r '.resources[] | select(.mode == "managed") | select(.type | test(
+       "^aws_(vpc|subnet|route_table|route_table_association|route|security_group|security_group_rule|vpc_security_group_(ingress|egress)_rule|vpc_endpoint|vpc_endpoint_route_table_association|internet_gateway|nat_gateway|eip|network_acl)$"))
+     | (if .module then .module + "." else "" end) + .type + "." + .name as $a
+     | .instances[] | $a + (if has("index_key") then
+         (if (.index_key | type) == "string" then "[\"" + .index_key + "\"]"
+          else "[" + (.index_key | tostring) + "]" end) else "" end)' \
+     old-idp.tfstate > network-addresses.txt
+   cat network-addresses.txt
+   ```
+
+   Every line should be a VPC, a subnet, a route table, a security group or an
+   endpoint. Look up anything else before you remove it.
+
+2. Write down the identifiers the new deployment needs, from the same state: the VPC
+   id, the subnets the functions ran in (upstream's `vpc_subnet_ids`), the security
+   group they used (`vpc_security_group_ids`; the new deployment takes one), and, if
+   the old REST API was private (`api.api_gateway_visibility = "PRIVATE"`), the id of
+   the `execute-api` endpoint:
+
+   ```bash
+   jq -r '.resources[] | select(.type == "aws_vpc_endpoint") | .instances[]
+     | .attributes | [.id, .service_name, .vpc_endpoint_type] | @tsv' old-idp.tfstate
+   ```
+
+3. Remove them from the old state, saving a copy first:
+
+   ```bash
+   cd old-idp
+   terraform state pull > ../old-idp-before-network-rm.tfstate
+   while IFS= read -r address; do
+     terraform state rm "$address"
+   done < ../network-addresses.txt
+   terraform state pull > ../old-idp.tfstate
+   cd ..
+   ```
+
+   To back out: `terraform state push -force ../old-idp-before-network-rm.tfstate` in
+   the old directory. `terraform state rm` changes nothing in AWS.
+
+4. Run [`plan`](#1-plan) with the VPC parameters (comma-separated subnet lists are
+   kept whole):
+
+   ```bash
+   idp-cli terraform migrate-from-genai-idp-terraform plan \
+       --stack-name my-idp --region us-west-2 \
+       --old-state old-idp.tfstate --admin-email admin@example.com \
+       --parameters "DeployInVPC=true,VpcId=vpc-0123456789abcdef0,PrivateSubnetIds=subnet-0aaa,subnet-0bbb,LambdaSecurityGroupId=sg-0123456789abcdef0"
+   ```
+
+   For a private REST API add `ApiGatewayVisibility=PRIVATE`,
+   `LambdaSubnetIds=<the same subnets>` and `ApiGatewayVpcEndpointId=<the execute-api
+   endpoint id>`. [VPC Secured Mode](./vpc-secured-mode.md) describes each parameter.
+
+Check two things about the network before you apply, because this repository's
+deployment needs more from it than upstream's did:
+
+- **Endpoints.** Upstream created only the endpoints its own functions used. Compare
+  the list from step 2 with [the endpoints VPC Secured Mode
+  requires](./vpc-secured-mode.md#required-vpc-endpoints): upstream's set does not
+  include `ecr.api`, `ecr.dkr` or `glue`, and `bedrock-data-automation-runtime` is
+  needed for BDA mode. Create the missing ones before `apply`, for example with
+  `scripts/create_vpc_endpoints.sh`, which skips the endpoints that exist.
+- **Outbound internet access.** This repository's container images are built by
+  CodeBuild inside the VPC during the deployment, which needs to reach public
+  container registries and PyPI through a NAT gateway, or internal mirrors (see
+  [VPC Secured Mode](./vpc-secured-mode.md#prerequisites)). The
+  `bedrock-llm-processor-vpc` example's network is fully isolated, with no internet
+  gateway and no NAT, so it cannot build the images as it stands.
+
+After the migration the network is managed by neither deployment. To manage it with
+Terraform again, import it into a root configuration of your own with `import` blocks,
+by the identifiers from step 2. **Never run `terraform apply` in the old directory**
+after step 3 above, as after the freeze: its configuration still declares the
+endpoints, and it would try to create a second set.
+
+#### What has been tested
+
+Checked without AWS: that the old state's VPC resources are what `plan` refuses, and
+that once they are removed `plan` maps the rest of the state as it does for a
+deployment without a private network. Not measured: a live migration of an old
+deployment in a VPC, the endpoint gap, or the CodeBuild build inside it.
+
+### MCP
+
+Upstream's MCP feature (`api.enable_mcp`, the `enable_mcp` variable of
+`examples/unified-processor`) lives in
+`module.genai_idp_accelerator.module.mcp_integration[0]`. It creates an Amazon
+Bedrock AgentCore gateway through a one-resource CloudFormation stack
+(`aws_cloudformation_stack.agentcore_gateway`), the gateway's functions and roles, two
+app clients in the user pool (`mcp_client` and `mcp_connector`), and an OAuth resource
+server in the pool (`aws_cognito_resource_server.mcp`, identifier
+`idp-mcp-connector`).
+
+None of it holds data; it is an access path. The new deployment creates its own
+gateway, clients and resource server when `EnableMCP=true`, so the old ones are
+destroyed **before** `plan`, for two reasons:
+
+- The resource server would otherwise be kept in the adopted pool (`plan` keeps every
+  setting of the pool), and Cognito refuses a second resource server with the same
+  identifier, so the new deployment's apply would fail creating its own:
+  `idp-mcp-connector already exists in user pool <id>`.
+- The stack's custom resource deletes the gateway when the stack is deleted, and
+  finds it by name. Deleting it now, while the old deployment's gateway manager
+  function still exists to answer the delete, is the clean way to do that.
+
+What changes for MCP users: from this step until the new deployment's apply there is
+no MCP endpoint, and afterwards the endpoint has a new URL, and the app clients have
+new client ids and secrets. Every MCP client has to be reconfigured with the new
+values (see [MCP server](./mcp-server.md)). Nothing else in the deployment is
+affected.
+
+1. Plan the targeted destroy, and read it before applying:
+
+   ```bash
+   cd old-idp
+   terraform plan -destroy -out=mcp-destroy.tfplan \
+       -target='module.genai_idp_accelerator.module.mcp_integration[0]'
+   terraform show -json mcp-destroy.tfplan | jq -r '.resource_changes[]
+     | select(.change.actions != ["no-op"]) | [(.change.actions | join(",")), .address] | @tsv'
+   ```
+
+   A targeted destroy also destroys whatever depends on the target. Every address
+   listed must be under `module.mcp_integration[0]`, or be a function, role, policy,
+   log group, permission or API Gateway resource (types `plan` recreates anyway). If
+   it lists a bucket, a table, the user pool, a user, a group or the KMS key, stop.
+
+2. Apply exactly that plan, then save the state again:
+
+   ```bash
+   terraform apply mcp-destroy.tfplan
+   terraform state pull > ../old-idp.tfstate
+   cd ..
+   ```
+
+   If the stack's delete fails (`DELETE_FAILED` on the stack), the gateway manager
+   function could not delete the gateway; its CloudWatch log names the error. Do not
+   remove the stack from the state to get past it: the stack would then be left with
+   a custom resource whose function the old destroy deletes.
+
+3. Run [`plan`](#1-plan) with `--parameters "EnableMCP=true"` (together with any other
+   parameters you pass), and the rest of the migration as above.
+
+4. After [step 7](#7-verify-the-new-deployment), give MCP clients the new deployment's
+   endpoint and credentials.
+
+To back out before the freeze, run `terraform apply` in the old directory, which
+creates a new gateway, new clients and a new resource server (with new values, as
+after the migration).
+
+#### What has been tested
+
+See the end of this section.
+
+### Test datasets
+
+Upstream's Test Studio can deploy two labelled datasets (`api.enable_w2_dataset` and
+`api.enable_fcc_dataset` on the upstream module; `examples/unified-processor` does not
+expose them, so a deployment has them only when its root sets them). Each is a
+one-resource CloudFormation stack under
+`module.genai_idp_accelerator.module.processing_environment_api[0]`
+(`aws_cloudformation_stack.w2_dataset[0]` and `fcc_dataset[0]`) whose custom resource
+downloads the dataset into the test-set bucket, under `fake-w2/` and
+`realkie-fcc-verified/`, and writes the test set's record (`testset#fake-w2` and
+`testset#realkie-fcc-verified`, sort key `metadata`) into the tracking table.
+
+The data is in the test-set bucket and the tracking table, both of which the migration
+adopts, so it stays. The stacks themselves hold nothing, and their custom resources
+leave the data in place when the stack is deleted (the deployers answer a delete
+without touching anything, read from upstream's `src/lambda/w2_dataset_deployer` and
+`fcc_dataset_deployer` at the pinned releases). This repository's module deploys both
+datasets on every deployment, with the same test-set ids, prefixes and dataset
+versions, and its deployer skips the download when the tracking table already records
+that version and the bucket holds its files, so on the new deployment's first apply it
+only rewrites each record's description, with the same text.
+
+1. Plan the targeted destroy of both stacks, and read it before applying:
+
+   ```bash
+   cd old-idp
+   terraform plan -destroy -out=datasets-destroy.tfplan \
+       -target='module.genai_idp_accelerator.module.processing_environment_api[0].aws_cloudformation_stack.w2_dataset[0]' \
+       -target='module.genai_idp_accelerator.module.processing_environment_api[0].aws_cloudformation_stack.fcc_dataset[0]'
+   terraform show -json datasets-destroy.tfplan | jq -r '.resource_changes[]
+     | select(.change.actions != ["no-op"]) | [(.change.actions | join(",")), .address] | @tsv'
+   ```
+
+   Leave out a `-target` for a dataset the old deployment does not have. The plan
+   should list the stacks and nothing else.
+
+2. Apply it and save the state again:
+
+   ```bash
+   terraform apply datasets-destroy.tfplan
+   terraform state pull > ../old-idp.tfstate
+   cd ..
+   ```
+
+3. Run [`plan`](#1-plan) and the rest of the migration as above. No parameter is
+   needed.
+
+[Step 2](#2-check-what-the-expiry-rules-would-delete) applies to the dataset files
+like any other object in the test-set bucket.
+
+To back out before the freeze, run `terraform apply` in the old directory, which
+creates the stacks again; the deployers find the datasets already there.
+
+#### What has been tested
+
+See the end of this section.
 
 ## Moving the deployment into your own root configuration
 
