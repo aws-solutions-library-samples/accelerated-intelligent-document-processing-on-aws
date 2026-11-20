@@ -74,7 +74,6 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_PAGE_CONTENT_REGEX,
 )
 from idp_common.config.schema_utils import deref_schema
-from idp_common.decision_model import DecisionModelError
 from idp_common.document_image_placeholder import (
     check_document_image_placeholder,
     section_prompt_can_be_sent,
@@ -7326,8 +7325,10 @@ class ClassificationService:
                     )
                     # A decision-model error reaching here is one its client did not
                     # report as retry_later (the labeler raises those as
-                    # TransientError), so its cause chain is not consulted.
-                    if is_transient_error(e) and not isinstance(e, DecisionModelError):
+                    # TransientError), and is_transient_error takes the client's
+                    # verdict rather than its cause chain, as the assessment step
+                    # does (#2112).
+                    if is_transient_error(e):
                         # Raised after the pool, so the step is retried (#2034).
                         transient.record(where, e)
                         continue
