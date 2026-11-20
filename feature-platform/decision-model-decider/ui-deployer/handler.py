@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
@@ -234,6 +235,24 @@ def _remove_config_preset() -> None:
     )
 
 
+#: Hosts a CloudFormation custom-resource ResponseURL can name: the pre-signed S3
+#: URL CloudFormation supplies is on an AWS endpoint in every partition.
+_RESPONSE_URL_HOST_SUFFIXES = (".amazonaws.com", ".amazonaws.com.cn")
+
+
+def _checked_response_url(url: str) -> str:
+    """The callback URL, refused unless it is https on an AWS endpoint.
+
+    CloudFormation always supplies a pre-signed https S3 URL. Checking that keeps a
+    malformed or tampered event from sending the response body anywhere else.
+    """
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host.endswith(_RESPONSE_URL_HOST_SUFFIXES):
+        raise ValueError("ResponseURL is not an https AWS endpoint")
+    return urllib.parse.urlunparse(parsed)
+
+
 def _send_response(
     event: Dict[str, Any],
     status: str,
@@ -253,7 +272,8 @@ def _send_response(
             "Data": data or {},
         }
     ).encode("utf-8")
-    req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT")
+    url = _checked_response_url(event["ResponseURL"])
+    req = urllib.request.Request(url, data=body, method="PUT")
     with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310  # nosec B310 - CloudFormation-supplied custom-resource callback URL (https), not user input
         resp.read()
 

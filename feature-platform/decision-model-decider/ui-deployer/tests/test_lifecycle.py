@@ -109,7 +109,7 @@ def handler(monkeypatch):
 def _event(request_type: str) -> dict:
     return {
         "RequestType": request_type,
-        "ResponseURL": "https://cloudformation-custom-resource-response.example/x",
+        "ResponseURL": "https://cloudformation-custom-resource-response-useast1.s3.amazonaws.com/x?X-Amz-Signature=abc",
         "StackId": "arn:aws:cloudformation:us-east-1:123456789012:stack/host-feature-decision-model-decider/abc",
         "RequestId": "r-1",
         "LogicalResourceId": "RegisterFeatureResource",
@@ -189,3 +189,30 @@ def test_delete_unregisters_and_removes_the_preset_even_when_one_fails(
         "features/decision-model-decider/v0.1.0/ui-bundle.js"
     )
     assert handler.responses[-1][2]["Status"] == "SUCCESS"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://cloudformation-custom-resource-response-useast1.s3.amazonaws.com/x",
+        "https://cloudformation-custom-resource-response-uswest2.s3.us-west-2.amazonaws.com/x",
+        "https://cloudformation-custom-resource-response-cnnorth1.s3.cn-north-1.amazonaws.com.cn/x",
+    ],
+)
+def test_the_response_url_check_accepts_cloudformations_https_s3_urls(handler, url):
+    assert handler._checked_response_url(url) == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://cloudformation-custom-resource-response-useast1.s3.amazonaws.com/x",
+        "https://attacker.example/x",
+        "https://amazonaws.com.attacker.example/x",
+        "https://s3.amazonaws.com@attacker.example/x",
+        "file:///etc/passwd",
+    ],
+)
+def test_the_response_url_check_refuses_anything_else(handler, url):
+    with pytest.raises(ValueError):
+        handler._checked_response_url(url)
