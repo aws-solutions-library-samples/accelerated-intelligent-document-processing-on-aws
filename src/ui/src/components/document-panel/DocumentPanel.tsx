@@ -7,6 +7,7 @@ import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import './DocumentPanel.css';
 import SectionsPanel from '../sections-panel';
 import PagesPanel from '../pages-panel';
@@ -254,6 +255,14 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
   );
 };
 
+const attributeMessages = defineMessages<{ label: NoMessageValues }>({
+  label: {
+    id: 'documentPanel.callerAttributes.label',
+    defaultMessage: 'Attributes',
+    description: 'Label of the document detail field listing the key-value attributes the caller attached at upload.',
+  },
+});
+
 /**
  * The caller-supplied attributes as a detail field, one `key: value` line each.
  *
@@ -262,9 +271,10 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
  * are rendered as React text children, never as HTML.
  */
 export const CallerAttributesField = ({ entries }: { entries?: CallerAttributeEntry[] }): React.JSX.Element | null => {
+  const intl = useIntl();
   if (!entries || entries.length === 0) return null;
   return (
-    <Field label="Attributes">
+    <Field label={intl.formatMessage(attributeMessages.label)}>
       {entries.map(({ key, value }) => (
         <Box key={key} fontSize="body-s">
           <Box variant="span" fontWeight="bold">
