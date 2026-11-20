@@ -1732,7 +1732,7 @@ def test_the_cli_takes_rotate_and_the_pinned_tags_only(tmp_path):
         "--work-dir",
         str(tmp_path),
     ]
-    assert tmt.parse_args(base).upstream_tag == tmt.UPSTREAM_TAG
+    assert tmt.parse_args(base).upstream_tag is None
     assert tmt.parse_args(base).upstream_commit is None
     assert tmt.parse_args([*base, "--upstream-tag", "rotate"]).upstream_tag == "rotate"
     with pytest.raises(SystemExit):
@@ -1814,7 +1814,11 @@ def test_a_clone_is_held_to_its_own_releases_commit(tmp_path, monkeypatch):
 def test_the_clone_asks_git_for_the_resolved_release(tmp_path, monkeypatch):
     r = tmt.upstream_release("v0.6.4-tf.0")
     git = _Git(r.commit, f"040000 tree {r.sources[1]}\tsources\n")
-    run = _cloning(tmp_path, monkeypatch, r.tag, git)
+    run = tmt.Run(_settings(tmp_path, upstream_tag="rotate"))
+    run.ctx["upstreamTag"] = r.tag  # resolved from the run's record, not the request
+    assert run.resolve_release() is None
+    (run.work / "upstream" / ".git").mkdir(parents=True)
+    monkeypatch.setattr(run, "sh", git)
     (run.work / "upstream" / ".git").rmdir()
     run.phase_upstream_clone()
     clone = next(c for c in git.calls if c[:2] == ["git", "clone"])
@@ -2216,3 +2220,162 @@ def test_leftover_check_is_quiet_when_the_run_broke_nothing(
     )
     run.phase_leftover_check()
     assert run.ctx["findings"] == []
+
+
+def test_no_tag_takes_the_recorded_release_else_the_newest():
+    assert tmt.resolve_upstream_tag(None, None, _monday()) == (tmt.UPSTREAM_TAG, None)
+    assert tmt.resolve_upstream_tag(None, "v0.6.4-tf.0", _monday()) == (
+        "v0.6.4-tf.0",
+        None,
+    )
+
+
+def test_an_explicit_commit_overrides_the_releases_pin(tmp_path, monkeypatch):
+    r = tmt.upstream_release("v0.6.4-tf.0")
+    other = "a" * 40
+    git = _Git(other, f"040000 tree {r.sources[1]}\tsources\n")
+    run = _cloning(tmp_path, monkeypatch, r.tag, git, upstream_commit=other)
+    assert run.phase_upstream_clone().startswith(f"{r.tag} at {other[:12]}")
+    run = _cloning(tmp_path / "b", monkeypatch, r.tag, _Git(r.commit, git.ls_tree))
+    run.s.upstream_commit = other
+    with pytest.raises(tmt.PhaseFailed, match="the tag has moved"):
+        run.phase_upstream_clone()
+
+
+def test_a_submodule_checked_out_elsewhere_is_refused(tmp_path, monkeypatch):
+    r = tmt.upstream_release("v0.6.9-tf.0")
+    git = _Git(r.commit, f"160000 commit {r.sources[1]}\tsources\n", "b" * 40)
+    run = _cloning(tmp_path, monkeypatch, r.tag, git)
+    with pytest.raises(tmt.PhaseFailed, match="sources/ checked out"):
+        run.phase_upstream_clone()
+
+
+def test_verify_after_old_destroy_keeps_earlier_findings_beside_a_healthy_role(
+    tmp_path, monkeypatch
+):
+    run = _verifying(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(ROLE),
+        _IamRoles([tmt.iam_role_name(ROLE)]),
+        apiGatewayRoleBeforeOldDestroy=ROLE,
+    )
+
+    class _Gone:
+        def head_bucket(self, **k):
+            raise RuntimeError("404")
+
+    run._boto_cache["s3"] = _Gone()
+    with pytest.raises(tmt.PhaseFailed, match="adopted bucket b is gone"):
+        run.phase_verify_after_old_destroy()
+
+
+class _WritableAccount(_ApiGatewayAccount):
+    """``get_account`` as above; ``update_account`` records the value, or raises."""
+
+    def __init__(self, setting, refuse=None):
+        super().__init__(setting)
+        self.refuse, self.updates = refuse, []
+
+    def update_account(self, patchOperations):  # noqa: N803 - boto3 casing
+        if self.refuse:
+            raise self.refuse
+        (op,) = patchOperations
+        assert (op["op"], op["path"]) == ("replace", "/cloudwatchRoleArn")
+        self.updates.append(op["value"])
+        self.settings = [op["value"]]
+
+
+#: The role upstream's deploy creates for the old deployment ``idpo1``: carries the
+#: run's old name, so the sweep selects it.
+SWEPT_ROLE = (
+    "arn:aws:iam::123456789012:role/idpo1-upstream/idpo1-x-api-apigw-cloudwatch"
+)
+
+
+def _sweeping(tmp_path, monkeypatch, account, start):
+    run = tmt.Run(_settings(tmp_path, old_name="idpo1", new_name="idp-m1"))
+    iam = _IamRoles([tmt.iam_role_name(SWEPT_ROLE), tmt.iam_role_name(OTHER_ROLE)])
+    run._boto_cache.update(apigateway=account, iam=iam)
+    if start is not None:
+        run.ctx["apiGatewayRoleAtStart"] = start
+    swept = []
+
+    def sweep(self):
+        swept.extend(
+            r for r in [tmt.iam_role_name(SWEPT_ROLE)] if self.owned(r, "roles")
+        )
+        return list(swept), []
+
+    monkeypatch.setattr(tmt.Sweeper, "sweep", sweep)
+    return run, swept
+
+
+def test_the_sweep_first_sets_the_regions_role_back_to_its_start(tmp_path, monkeypatch):
+    account = _WritableAccount(SWEPT_ROLE)
+    run, swept = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    assert account.updates == [OTHER_ROLE]
+    assert swept == [tmt.iam_role_name(SWEPT_ROLE)]
+    assert run.ctx["findings"] == []
+
+
+@pytest.mark.parametrize(
+    "start", [{"arn": "", "exists": None}, {"arn": OTHER_ROLE, "exists": False}]
+)
+def test_a_region_that_started_without_a_working_role_is_left_without_one(
+    tmp_path, monkeypatch, start
+):
+    account = _WritableAccount(SWEPT_ROLE)
+    run, _ = _sweeping(tmp_path, monkeypatch, account, start)
+    run.phase_sweep()
+    assert account.updates == [""]
+
+
+def test_a_refused_hand_back_keeps_the_named_role_and_says_so(tmp_path, monkeypatch):
+    account = _WritableAccount(
+        SWEPT_ROLE, refuse=RuntimeError("AccessDenied: PassRole")
+    )
+    run, swept = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    name = tmt.iam_role_name(SWEPT_ROLE)
+    assert swept == [] and run.ctx["apiGatewayRoleKept"] == name
+    (finding,) = run.ctx["findings"]
+    assert name in finding and OTHER_ROLE in finding and "update-account" in finding
+    # Kept out of the leftover inventory too, so a reap does not retry it.
+    assert not tmt.Sweeper(run, {}).owned(name, "roles")
+    assert tmt.Sweeper(run, {}).owned(name, "log_groups") is True
+
+
+@pytest.mark.parametrize(
+    ("setting", "start"),
+    [
+        (OTHER_ROLE, {"arn": OTHER_ROLE, "exists": True}),  # not the run's role
+        ("", {"arn": OTHER_ROLE, "exists": True}),
+        (SWEPT_ROLE, None),  # a run from before the start was recorded
+    ],
+)
+def test_the_sweep_leaves_a_setting_it_would_not_break_alone(
+    tmp_path, monkeypatch, setting, start
+):
+    account = _WritableAccount(setting)
+    run, _ = _sweeping(tmp_path, monkeypatch, account, start)
+    run.phase_sweep()
+    assert account.updates == []
+
+
+def test_a_sweep_that_cannot_read_the_setting_reports_it_and_sweeps(
+    tmp_path, monkeypatch
+):
+    account = _WritableAccount(RuntimeError("Throttling"))
+    run, swept = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    (finding,) = run.ctx["findings"]
+    assert "cannot read the API Gateway account settings" in finding
+    assert swept == [tmt.iam_role_name(SWEPT_ROLE)]

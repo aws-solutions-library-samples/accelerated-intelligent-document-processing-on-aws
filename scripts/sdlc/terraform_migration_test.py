@@ -35,8 +35,10 @@ repeatable:
    deployment's destroy, a second sign-in check against what is left and a check
    that the Region's API Gateway CloudWatch role is the one it was before the
    destroy and still exists, then the new deployment's ``idp-cli delete
-   --terraform`` and a sweep of what either retained, by name, after which the run
-   fails if it leaves that setting naming a role that no longer exists.
+   --terraform`` and a sweep of what either retained, by name. Before the sweep the
+   setting goes back to what it was when the run started (or, when that is refused,
+   the role it names is kept), and the run fails if it still leaves the setting
+   naming a role that no longer exists.
 
 Teardown runs in a ``finally``: a failed phase still destroys both deployments
 (new first, then old, since at that point both states may name the shared
@@ -145,7 +147,8 @@ class UpstreamRelease:
 #: constraints admit UPSTREAM_LOCK_FILE. Releases before v0.6.4-tf.0 fail the
 #: first test: their example has no ``enable_evaluation`` or ``enable_test_studio``.
 UPSTREAM_RELEASES: Tuple[UpstreamRelease, ...] = (
-    # The oldest release the run can exercise. Vendors sources/ as a tree.
+    # The oldest release that passes the three checks above, read from its
+    # files; it has not yet been through a live run. Vendors sources/ as a tree.
     UpstreamRelease(
         tag="v0.6.4-tf.0",
         commit="29b62a9ee0f0b53b26e4cc25e7d2bba629804a3b",
@@ -402,7 +405,9 @@ def rotated_upstream_tag(
     One release per Monday-to-Sunday week, in list order, so runs a week apart
     take consecutive releases and every release is covered once in
     ``len(releases)`` weekly runs. A rerun the same week gets the same release,
-    and ``--upstream-tag <that tag>`` reproduces it on any day."""
+    and ``--upstream-tag <that tag>`` reproduces it on any day. The date is read
+    when the driver starts, so a schedule firing just before Monday 00:00 UTC
+    can land either side of the boundary and repeat a release."""
     if not releases:
         raise ValueError("no upstream releases to rotate through")
     week = (day.toordinal() - 1) // 7  # date.min (ordinal 1) is a Monday
@@ -410,7 +415,7 @@ def rotated_upstream_tag(
 
 
 def resolve_upstream_tag(
-    requested: str, stored: Optional[str], day: date
+    requested: Optional[str], stored: Optional[str], day: date
 ) -> Tuple[Optional[str], Optional[str]]:
     """``(tag, None)`` for the release this invocation uses, or ``(None, why)``.
 
@@ -418,9 +423,10 @@ def resolve_upstream_tag(
     was cloned and deployed from that release, so a teardown or a resume on
     another one would plan the wrong configuration against its state. That holds
     for ``rotate`` (a run resumed in a later week, or reaped by a later build)
-    and is refused for an explicit tag that differs."""
+    and for no tag at all, and is refused for an explicit tag that differs. With
+    nothing recorded, no tag means the newest release."""
     if stored:
-        if requested not in (ROTATE_UPSTREAM_TAG, stored):
+        if requested not in (None, ROTATE_UPSTREAM_TAG, stored):
             return None, (
                 f"the upstream tag is {requested!r} here but {stored!r} in this "
                 "work directory's run"
@@ -429,7 +435,7 @@ def resolve_upstream_tag(
     elif requested == ROTATE_UPSTREAM_TAG:
         tag = rotated_upstream_tag(day)
     else:
-        tag = requested
+        tag = requested or UPSTREAM_TAG
     try:
         upstream_release(tag)
     except ValueError as e:
@@ -1038,8 +1044,9 @@ class Settings:
     terraform_bin: str
     module_url: str
     upstream_repo: str = UPSTREAM_REPO
-    #: A tag UPSTREAM_RELEASES pins, or ROTATE_UPSTREAM_TAG (resolve_upstream_tag).
-    upstream_tag: str = UPSTREAM_TAG
+    #: A tag UPSTREAM_RELEASES pins, ROTATE_UPSTREAM_TAG, or None for the release
+    #: the work directory's run recorded, else the newest (resolve_upstream_tag).
+    upstream_tag: Optional[str] = None
     #: Overrides the release's pinned commit; None holds the clone to the pin.
     upstream_commit: Optional[str] = None
     assume_role_arn: Optional[str] = None
@@ -2603,6 +2610,7 @@ class Run:
             set(names.get("bda_projects", [])) | set(self.ctx.get("bdaProjects") or [])
         )
         sweeper = Sweeper(self, names)
+        self.hand_back_api_gateway_role(sweeper)
         deleted, errors = sweeper.sweep()
         self.ctx["swept"] = deleted
         if errors:
@@ -2611,6 +2619,54 @@ class Run:
                 + "; ".join(errors[:10])
             )
         return f"{len(deleted)} retained resources deleted"
+
+    def hand_back_api_gateway_role(self, sweeper: "Sweeper") -> None:
+        """Before the sweep: if the Region's API Gateway CloudWatch role setting
+        names a role the sweep would delete, set it back to what it was when the
+        run started.
+
+        Upstream's deploy points the setting at its own role, and the migration
+        keeps both (destroying either would stop logging for every API in the
+        Region), so at teardown the setting names a role carrying this run's name.
+        Deleting that role while the setting still names it is the same harm. When
+        the setting cannot be set back (the run's role may pass only roles under
+        its name prefix), that role is kept out of the sweep, and of the leftover
+        inventory, and a finding names it with the command that finishes the job.
+        A Region that started with no role, or with one that no longer existed, is
+        left with none."""
+        start = self.ctx.get("apiGatewayRoleAtStart")
+        if start is None:
+            return
+        try:
+            arn = self.api_gateway_role()["arn"]
+        except Exception as e:  # noqa: BLE001 - leftover-check reports it again
+            self.finding(f"sweep: cannot read the API Gateway account settings: {e}")
+            return
+        if not arn or not sweeper.owned(iam_role_name(arn), "roles"):
+            return
+        target = start["arn"] if start.get("exists") is True else ""
+        try:
+            self.boto("apigateway").update_account(
+                patchOperations=[
+                    {"op": "replace", "path": "/cloudwatchRoleArn", "value": target}
+                ]
+            )
+        except Exception as e:  # noqa: BLE001 - reported, and the role is kept
+            role = iam_role_name(arn)
+            self.ctx["apiGatewayRoleKept"] = role
+            self.finding(
+                "sweep: could not set the Region's API Gateway CloudWatch role back "
+                f"to {target or 'unset'} ({e}), so {role}, which it names, is kept "
+                "and logging keeps working; run `aws apigateway update-account "
+                "--patch-operations op=replace,path=/cloudwatchRoleArn,"
+                f"value={target}` and then delete the role"
+            )
+            return
+        self.ctx["apiGatewayRoleRestored"] = target
+        print(
+            f"  the Region's API Gateway CloudWatch role is back to {target or 'unset'}",
+            flush=True,
+        )
 
     def phase_leftover_check(self) -> str:
         names = merge_names(
@@ -2945,7 +3001,7 @@ class Run:
             "region": self.s.region,
             "moduleUrl": self.s.module_url,
             "upstreamRepo": self.s.upstream_repo,
-            "upstreamTag": self.ctx.get("upstreamTag") or self.s.upstream_tag,
+            "upstreamTag": self.ctx.get("upstreamTag"),
             "upstreamCommit": self.ctx.get("upstreamCommit", ""),
             "terraformVersion": self.ctx.get("terraformVersion"),
             "phases": self.ctx["phases"],
@@ -2988,6 +3044,10 @@ class Sweeper:
 
     def owned(self, name: str, kind: str) -> bool:
         if name.startswith(f"{self.new}-iam"):
+            return False
+        if kind == "roles" and name == self.owner.ctx.get("apiGatewayRoleKept"):
+            # Named by the Region's API Gateway setting, which could not be set
+            # back (Run.hand_back_api_gateway_role): deleting it stops logging.
             return False
         return owned_name(name, self.old, self.new, self.recorded.get(kind, []))
 
@@ -3264,10 +3324,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
     p.add_argument("--upstream-repo", default=UPSTREAM_REPO)
     p.add_argument(
         "--upstream-tag",
-        default=UPSTREAM_TAG,
         choices=[r.tag for r in UPSTREAM_RELEASES] + [ROTATE_UPSTREAM_TAG],
         help=f"the release to migrate from; {ROTATE_UPSTREAM_TAG!r} takes this "
-        "week's (the scheduled run's choice)",
+        "week's (the scheduled run's choice); default: the release a resumed run "
+        f"recorded, else {UPSTREAM_TAG}",
     )
     p.add_argument(
         "--upstream-commit",

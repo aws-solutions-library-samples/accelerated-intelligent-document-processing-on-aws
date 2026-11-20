@@ -504,9 +504,19 @@ entry do not qualify. A resumed or reaped run keeps the release its context reco
 After the old deployment's destroy, `verify-after-old-destroy` also fails if the
 Region's API Gateway CloudWatch role setting was cleared or changed by the destroy, or
 names a role that no longer exists. The setting is one per account and Region, so a
-destroy that resets it stops API Gateway logging for every API there. `leftover-check`
-records a finding, failing the run, when the run leaves that setting naming a role that
-no longer exists and the Region was not already in that state when the run started.
+destroy that resets it stops API Gateway logging for every API there. Upstream's
+deploy points the setting at a role carrying the run's old name, and the migration
+keeps both, so before the sweep deletes that role the driver sets the setting back to
+its value when the run started (`hand_back_api_gateway_role`). If that is refused (the
+run's role may pass only roles under its name prefix), the role is kept out of the
+sweep and of the leftover inventory, and a finding names it with the command that
+finishes the job. `leftover-check` records a finding, failing the run, when the run
+still leaves the setting naming a role that no longer exists and the Region was not
+already in that state when it started.
+
+`rotated_upstream_tag` reads the UTC date when the driver starts, so a schedule that
+fires just before Monday 00:00 UTC can land either side of the week boundary and repeat
+a release. Keep the schedule clear of that hour.
 
 | Pipeline | `IDP_RUN_TERRAFORM_MIGRATION` | Runs |
 |---|---|---|
