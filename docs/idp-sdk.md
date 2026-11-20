@@ -719,6 +719,11 @@ and nothing else. A throttled or rejected table scan, or a table that does not e
 reaches you as an exception naming the cause, so a retry is your decision to make rather
 than something the result hides.
 
+Documents are selected by their tracking record's key, so a record whose `ObjectKey`
+attribute is a number, null or missing is selected with the rest of its batch, and a
+warning is logged naming it, instead of the call raising. A document with several
+processing runs appears once in `results` and is counted once in `total_count`.
+
 ```python
 # Delete entire batch
 result = client.batch.delete_documents(batch_id="batch-123")
@@ -1030,6 +1035,42 @@ Delete evaluation baseline for a document.
 ```python
 result = client.evaluation.delete_baseline(document_id="test-invoice-001.pdf")
 print(f"Deleted: {result['success']}")
+```
+
+---
+
+## Fit Check Operations
+
+### fit_check.run()
+
+Run a folder of sample documents through the stack and write `fit-report.json` and
+`fit-report.md`. The operation behind `idp-cli fit-check`; see
+[Fit Check](./fit-check.md) for what it uploads, the report fields and cleanup.
+
+**Parameters:**
+- `samples_dir` (str): Folder of sample documents
+- `stack_name` (str, optional): Stack name override
+- `description` (str, optional): Description of the documents, for Quick Start
+- `config_profile` (str, optional): Existing profile to use instead of generating a new one
+- `ground_truth_dir` (str, optional): Baseline folders, one per sample file name
+- `output_dir` (str, optional): Report folder (default `./fit-check-<timestamp>/`)
+- `cleanup` (bool): Delete the run's documents, baselines and generated profile when done
+- `max_documents` (int): Refuse to run when more files than this can be processed (default 50)
+- `timeout_seconds` (int): How long to wait for processing (default 3600)
+- `from_record` (str, optional): Rebuild the report from a `fit-run-record.json`, offline
+- `progress` (callable, optional): Receives one progress line at a time
+
+**Returns:** `FitCheckResult` with `report` (the `fit-report.json` content), the file
+paths, `config_profile`, `batch_id`, `guard` (the active profile's name and the
+before and after SHA-256 hashes) and `cleanup`.
+
+**Raises:** `IDPValidationError` when no sample can be processed or more than
+`max_documents` can; `IDPProcessingError` when no configuration could be generated;
+`IDPError` when the active profile or `Config#default` changed during the run.
+
+```python
+result = client.fit_check.run("./samples-to-check/", cleanup=True)
+print(result.report["summary"])
 ```
 
 ---
@@ -1915,6 +1956,30 @@ for arn in result.bda_orphaned_blueprint_arns:
     print(f"  ⚠ orphaned, run the cleanup to remove: {arn}")
 ```
 
+### config.bootstrap()
+
+Author a document class from a plain-language description and save it to a
+configuration profile: the stack-connected path of `idp-cli bootstrap`. It never
+activates the profile.
+
+**Parameters:**
+- `prompt` (str, required): Description of the document type
+- `stack_name` (str, optional): Stack name override
+- `class_name`, `field_hints`, `source_profile`, `target_profile`, `doc_count`,
+  `quality_threshold`, `augment`, `model_id`: as the `bootstrap` command's options
+- `generate_test_set` (bool): `False` skips the synthetic test set (default `True`)
+- `status_callback` (callable, optional): Receives `(percent, message)`
+
+**Returns:** `ConfigBootstrapResult` with `success`, `config_profile`, `class_schema`,
+`resolution_tier`, `catalog_match`, `test_set_id`, `docs_generated` and `error` (a
+non-fatal note when `success` is true).
+
+```python
+result = client.config.bootstrap(
+    "Invoices with vendor, number, date and total", target_profile="invoices-v1"
+)
+```
+
 ### config.delete()
 
 Delete a configuration profile, together with its revision history.
@@ -2195,7 +2260,9 @@ Discover document classes from a collection of documents using embedding-based c
 - `progress_callback` (callable, optional): Callback function for pipeline progress updates
 - `region` (str, optional): AWS region. Overrides the client's for this call, for both the Bedrock calls and the stack the schemas are saved into
 
-**Returns:** `MultiDocDiscoveryResult` with `status` (SUCCESS/PARTIAL/FAILED), `discovered_classes` (list of `DiscoveredClassResult`), `reflection_report`, `total_documents`, `total_clusters`, `noise_documents`, `config_version`, and `error`
+**Returns:** `MultiDocDiscoveryResult` with `status` (SUCCESS/PARTIAL/FAILED), `discovered_classes` (list of `DiscoveredClassResult`), `reflection_report`, `total_documents`, `total_clusters`, `noise_documents`, `noise_document_keys`, `failed_embeddings`, `failed_embedding_keys`, `config_version`, and `error`
+
+`noise_documents` counts the documents clustering left in no class: they were embedded, but their cluster was smaller than the minimum of two and was dropped as noise. `noise_document_keys` lists their paths. Documents whose embedding failed were never clustered and are counted in `failed_embeddings` and listed in `failed_embedding_keys` instead. `noise_documents` keeps its name and type, so code that reads it keeps working and now gets the noise count. Up to this release it carried the embedding-failure count, so code that used it to detect embedding failures should read `failed_embeddings`.
 
 **DiscoveredClassResult fields:** `cluster_id`, `classification`, `json_schema`, `document_count`, `sample_doc_ids`, `error`
 

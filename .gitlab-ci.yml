@@ -662,6 +662,12 @@ integration_tests:
   #     with terraform/tools/parity.py (terraform_parity_requested, honoured on a
   #     schedule only and refused without IDP_IAC=terraform). Meant for a weekly
   #     schedule: it adds one CloudFormation deployment to the run.
+  #   - the weekly Terraform VPC schedule        → auto, primary suite only, against
+  #     a Terraform deployment of the accelerator in the pipeline's persistent test
+  #     VPC (DeployInVPC=true with the IDP_TEST_* ids). The schedule carries
+  #     IDP_IAC=terraform AND IDP_TERRAFORM_VPC=true; terraform_vpc_requested
+  #     honours the second only on a schedule and refuses it without the first.
+  #     Inactive until the schedule is created; same resource_group.
   #   - the weekly Terraform-migration schedule  → auto, and NOT the primary suite:
   #     the build runs scripts/sdlc/terraform_migration_test.py instead, which
   #     deploys a pinned awslabs/genai-idp-terraform release, migrates it in place
@@ -1068,7 +1074,12 @@ integration_tests:
       if region_run:
           status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
       if terraform_run:
-          status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+          # The weekly Terraform VPC run is a Terraform run whose schedule also
+          # carries IDP_TERRAFORM_VPC=true (terraform_vpc_requested).
+          vpc_run = os.environ.get("IDP_TERRAFORM_VPC", "").strip().lower() == "true"
+          status = (
+              "🧱 WEEKLY TERRAFORM VPC RUN · " if vpc_run else "🧱 NIGHTLY TERRAFORM RUN · "
+          ) + status
       # The weekly Terraform-migration run, read the same way as the build reads it
       # (terraform_migration_requested in integration_test_deployment.py).
       migration_run = (
@@ -2241,7 +2252,12 @@ nightly_notification:
               and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
           )
           if terraform_run:
-              status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+              # The weekly Terraform VPC run is a Terraform run whose schedule also
+              # carries IDP_TERRAFORM_VPC=true (terraform_vpc_requested).
+              vpc_run = os.environ.get("IDP_TERRAFORM_VPC", "").strip().lower() == "true"
+              status = (
+                  "🧱 WEEKLY TERRAFORM VPC RUN · " if vpc_run else "🧱 NIGHTLY TERRAFORM RUN · "
+              ) + status
           # And the weekly Terraform-migration run, read exactly as the post in
           # integration_tests reads it.
           migration_run = (

@@ -2425,3 +2425,589 @@ def test_a_sweep_that_cannot_read_the_setting_reports_it_and_sweeps(
     (finding,) = run.ctx["findings"]
     assert "cannot read the API Gateway account settings" in finding
     assert swept == [tmt.iam_role_name(SWEPT_ROLE)]
+
+
+# -- the mcp-datasets variant ----------------------------------------------------
+
+_EXAMPLE_MAIN = """
+resource "aws_s3_bucket" "input_bucket" {
+  bucket = "x-{y}"
+}
+
+module "genai_idp_accelerator" {
+  source = "../.."
+
+  # A comment with a brace: {
+  api = {
+    enabled = true
+    label   = "not a } brace"
+    knowledge_base = {
+      enabled = var.create_knowledge_base
+    }
+    enable_test_studio = var.enable_test_studio
+  }
+
+  rbac = var.rbac
+}
+"""
+
+
+def test_the_variant_turns_mcp_on_and_the_base_run_keeps_it_off():
+    base = tmt.upstream_tfvars("gitf2", "run1", "us-west-2")
+    variant = tmt.upstream_tfvars(
+        "gitf2", "run1", "us-west-2", tmt.MCP_DATASETS_VARIANT
+    )
+    assert "enable_mcp                  = false" in base
+    assert "enable_mcp                  = true" in variant
+    assert base.replace("= false\n", "") != variant.replace("= true\n", "")
+
+
+def test_the_datasets_override_restates_the_api_argument_with_both_flags():
+    text = tmt.datasets_override(_EXAMPLE_MAIN)
+    assert text.count('module "genai_idp_accelerator" {') == 1
+    # The example's own api expression is kept whole, with the two flags inside it.
+    api = text.split("api = ", 1)[1]
+    assert 'label   = "not a } brace"' in api
+    assert "enable_test_studio = var.enable_test_studio" in api
+    assert "enable_w2_dataset  = true" in api and "enable_fcc_dataset = true" in api
+    # Nothing outside the api argument is restated (an override replaces whole
+    # arguments, so restating rbac or source would be harmless but is not wanted).
+    assert "rbac" not in text and "source" not in text
+    # The braces balance: the override is one module block holding one object.
+    body = text[text.index("module") :]
+    assert tmt._block_end(body, body.index("{")) == len(body.rstrip())
+
+
+@pytest.mark.parametrize(
+    "main_tf, reason",
+    [
+        ('module "other" {\n  api = {}\n}\n', "no module"),
+        ('module "genai_idp_accelerator" {\n  api = local.api\n}\n', "literal"),
+        (
+            'module "genai_idp_accelerator" {\n  api = {\n    enable_w2_dataset = true\n  }\n}\n',
+            "already sets",
+        ),
+        ('module "genai_idp_accelerator" {\n  api = {\n', "unclosed"),
+    ],
+)
+def test_the_datasets_override_refuses_a_layout_it_cannot_read(main_tf, reason):
+    with pytest.raises(ValueError, match=reason):
+        tmt.datasets_override(main_tf)
+
+
+def _rc(address, tf_type, actions=("delete",)):
+    return {
+        "address": address,
+        "type": tf_type,
+        "mode": "managed",
+        "change": {"actions": list(actions)},
+    }
+
+
+_MCP = tmt.FEATURE_DESTROY_TARGETS[0]
+
+
+def test_the_guides_targeted_destroy_is_accepted():
+    plan = {
+        "resource_changes": [
+            _rc(f"{_MCP}.aws_cloudformation_stack.agentcore_gateway[0]", "x")
+            | {"type": "aws_cloudformation_stack"},
+            _rc(
+                f"{_MCP}.aws_cognito_resource_server.mcp[0]",
+                "aws_cognito_resource_server",
+            ),
+            _rc(
+                f"{_MCP}.aws_lambda_function.agentcore_mcp_handler[0]",
+                "aws_lambda_function",
+            ),
+            _rc(
+                f"{_MCP}.aws_cognito_user_pool_client.mcp_client[0]",
+                "aws_cognito_user_pool_client",
+            ),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[2], "aws_cloudformation_stack"),
+            _rc(
+                "module.x.aws_lambda_function.unrelated_dependent",
+                "aws_lambda_function",
+            ),
+            _rc("data.aws_region.current", "aws_region", ("read",)) | {"mode": "data"},
+            _rc("module.x.aws_s3_bucket.kept", "aws_s3_bucket", ("no-op",)),
+        ]
+    }
+    assert tmt.feature_destroy_problems(plan) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Data the migration keeps.
+        _rc("module.x.aws_s3_bucket.test_sets", "aws_s3_bucket"),
+        _rc("module.x.aws_dynamodb_table.tracking", "aws_dynamodb_table"),
+        _rc("aws_cognito_user_pool.user_pool", "aws_cognito_user_pool"),
+        _rc("module.x.aws_cognito_user.admin", "aws_cognito_user"),
+        # A setting of a kept bucket or table.
+        _rc("module.x.aws_s3_bucket_policy.p", "aws_s3_bucket_policy"),
+        _rc("module.x.aws_dynamodb_table_item.i", "aws_dynamodb_table_item"),
+        # A stack the guide does not name, and a resource server outside MCP.
+        _rc("module.x.aws_cloudformation_stack.other[0]", "aws_cloudformation_stack"),
+        _rc("module.x.aws_cognito_resource_server.r", "aws_cognito_resource_server"),
+        # Anything but a delete.
+        _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack", ("create",)),
+        _rc(
+            f"{_MCP}.aws_lambda_function.f", "aws_lambda_function", ("delete", "create")
+        ),
+    ],
+)
+def test_a_targeted_destroy_beyond_the_guide_is_refused(change):
+    ok = _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack")
+    problems = tmt.feature_destroy_problems({"resource_changes": [ok, change]})
+    assert len(problems) == 1 and problems[0].startswith(change["address"])
+
+
+def test_a_targeted_destroy_that_deletes_nothing_is_refused():
+    assert tmt.feature_destroy_problems({"resource_changes": []}) == [
+        "the targeted destroy deletes nothing"
+    ]
+
+
+def test_the_dataset_keys_are_the_ones_both_deployers_write():
+    """Read from this repository's deployers, which the new deployment runs: the
+    verify phase's no-re-download check is about these keys."""
+    for test_set, prefix in tmt.DATASETS:
+        name = {"fake-w2": "w2", "realkie-fcc-verified": "fcc"}[test_set]
+        source = (
+            tmt.REPO_ROOT / "src" / "lambda" / f"{name}_dataset_deployer" / "index.py"
+        ).read_text()
+        assert re.search(
+            rf"^TEST_SET_ID = ['\"]{re.escape(test_set)}['\"]", source, re.M
+        )
+        assert re.search(
+            rf"^DATASET_PREFIX = ['\"]{re.escape(prefix)}['\"]", source, re.M
+        )
+
+
+def test_the_resource_server_identifier_is_the_modules():
+    template = (tmt.REPO_ROOT / "template.yaml").read_text()
+    block = template.split("  MCPResourceServer:\n", 1)[1].split("\n\n", 1)[0]
+    assert f"Identifier: {tmt.MCP_RESOURCE_SERVER}" in block
+
+
+def test_the_procedure_runs_before_plan_and_the_base_run_skips_it(tmp_path):
+    assert tmt.PHASES.index("pre-plan-features") < tmt.PHASES.index("migrate-plan")
+    assert tmt.PHASES.index("pre-plan-features") < tmt.PHASES.index("migrate-freeze")
+    run = tmt.Run(_settings(tmp_path))
+    assert run.phase_pre_plan_features() == "nothing to do for the base variant"
+    findings = []
+    assert run.verify_features(findings) == "" and findings == []
+
+
+def test_a_resumed_run_of_another_variant_is_refused():
+    recorded = {"oldName": "gitf2", "newName": "gitfnew2", "variant": "mcp-datasets"}
+    assert tmt.stored_name_problems(recorded, "gitf2", "gitfnew2", None, "base")
+    assert not tmt.stored_name_problems(
+        recorded, "gitf2", "gitfnew2", None, "mcp-datasets"
+    )
+    # A run recorded before variants existed was the base one.
+    old = {"oldName": "gitf2", "newName": "gitfnew2"}
+    assert not tmt.stored_name_problems(old, "gitf2", "gitfnew2", None, "base")
+    assert tmt.stored_name_problems(old, "gitf2", "gitfnew2", None, "mcp-datasets")
+    # A fresh work directory has recorded nothing.
+    assert not tmt.stored_name_problems({"runId": "x"}, "a", "b", None, "mcp-datasets")
+
+
+def test_the_variant_is_a_flag_and_the_makefile_passes_it():
+    argv = ["--old-name", "gitf2", "--new-name", "gitfnew2"]
+    argv += ["--terraform-module-url", "https://example.com/m.zip"]
+    argv += ["--terraform-bin", "/bin/true"]
+    assert tmt.parse_args(argv).variant == "base"
+    assert (
+        tmt.parse_args(argv + ["--variant", "mcp-datasets"]).variant == "mcp-datasets"
+    )
+    makefile = (tmt.REPO_ROOT / "Makefile").read_text()
+    assert (
+        "$(if $(VARIANT),--variant $(VARIANT),)"
+        in makefile.split("_TFMIG_ARGS =", 1)[1].split("\n\n", 1)[0]
+    )
+
+
+class _Gateways(_FakeClients):
+    def __init__(self):
+        super().__init__()
+        self.gateways = [
+            {"gatewayId": "g1", "name": "gitf2-abc-api-analytics-gateway"},
+            {"gatewayId": "g2", "name": "gitfnew2-analytics-gateway"},
+            {"gatewayId": "g3", "name": "someone-analytics-gateway"},
+        ]
+
+    def get_paginator(self, name):
+        if name == "list_gateways":
+            return _Pages("items", self.gateways)
+        if name == "list_gateway_targets":
+            return _Pages("items", [{"targetId": "t"}])
+        return super().get_paginator(name)
+
+    def list_buckets(self):
+        return {"Buckets": []}
+
+    def delete_gateway_target(self, gatewayIdentifier, targetId):
+        self.deleted.append(f"{gatewayIdentifier}/{targetId}")
+
+    def delete_gateway(self, gatewayIdentifier):
+        self.deleted.append(gatewayIdentifier)
+
+
+def test_the_variants_sweep_deletes_only_the_runs_gateways(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path, variant=tmt.MCP_DATASETS_VARIANT))
+    fake = _Gateways()
+    monkeypatch.setattr(run, "boto", fake)
+    deleted, errors = tmt.Sweeper(run, {}).sweep()
+    assert errors == []
+    assert fake.deleted == ["g1/t", "g1", "g2/t", "g2"]
+    # The base variant never lists gateways.
+    base = tmt.Run(_settings(tmp_path / "b"))
+    monkeypatch.setattr(base, "boto", fake)
+    assert tmt.Sweeper(base, {})._gateways() == []
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "variant, boundary, expected",
+    [
+        ("base", None, None),
+        ("mcp-datasets", None, "EnableMCP=true"),
+        ("base", "arn:b", "PermissionsBoundaryArn=arn:b"),
+        ("mcp-datasets", "arn:b", "PermissionsBoundaryArn=arn:b,EnableMCP=true"),
+    ],
+)
+def test_the_plan_phase_passes_the_variants_parameters(
+    tmp_path, monkeypatch, variant, boundary, expected
+):
+    run = tmt.Run(
+        _settings(tmp_path, variant=variant, upstream_permissions_boundary_arn=boundary)
+    )
+    seen = {}
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: "{}")
+    monkeypatch.setattr(run, "secrets", lambda: {"users": [{"username": "u"}]})
+
+    def migrate(phase, *args):
+        seen["args"] = list(args)
+        raise _Stop
+
+    monkeypatch.setattr(run, "migrate", migrate)
+    with pytest.raises(_Stop):
+        run.phase_migrate_plan()
+    args = seen["args"]
+    if expected is None:
+        assert "--parameters" not in args
+    else:
+        assert args[args.index("--parameters") + 1] == expected
+
+
+def test_the_variants_preflight_needs_pip3(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path, variant=tmt.MCP_DATASETS_VARIANT))
+    monkeypatch.setattr(run, "identity_problems", lambda: [])
+    monkeypatch.setattr(tmt.shutil, "which", lambda name: None)
+    with pytest.raises(tmt.PhaseFailed, match="pip3"):
+        run.phase_preflight()
+
+
+class _Control:
+    class exceptions:
+        class ValidationException(Exception):
+            pass
+
+    def __init__(self, busy):
+        self.busy, self.calls = busy, 0
+
+    def get_paginator(self, name):
+        return _Pages("items", [])
+
+    def delete_gateway(self, gatewayIdentifier):
+        self.calls += 1
+        if self.calls <= self.busy:
+            raise self.exceptions.ValidationException("targets still deleting")
+
+
+def test_a_gateway_delete_retries_while_its_targets_go_and_then_gives_up(monkeypatch):
+    monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
+    control = _Control(busy=2)
+    tmt.delete_gateway(control, "g", timeout=60)
+    assert control.calls == 3
+    with pytest.raises(_Control.exceptions.ValidationException):
+        tmt.delete_gateway(_Control(busy=10**6), "g", timeout=0)
+
+
+# -- the variant's phase bodies -------------------------------------------------
+
+_GATEWAY_STACK = f"{_MCP}.aws_cloudformation_stack.agentcore_gateway[0]"
+
+
+def _feature_state(with_datasets=False, env=None):
+    def resource(module, rtype, name, attrs):
+        return {
+            "mode": "managed",
+            "module": module,
+            "type": rtype,
+            "name": name,
+            "instances": [{"index_key": 0, "attributes": attrs}],
+        }
+
+    api = f"{tmt.UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    resources = [
+        resource(
+            _MCP,
+            "aws_cloudformation_stack",
+            "agentcore_gateway",
+            {"id": "arn:gw-stack", "name": "gw", "outputs": {"GatewayId": "gw-1"}},
+        )
+    ]
+    if with_datasets:
+        for name in ("w2_dataset", "fcc_dataset"):
+            resource_ = resource(
+                api,
+                "aws_cloudformation_stack",
+                name,
+                {"id": f"arn:{name}", "name": name},
+            )
+            resources.append(resource_)
+        resources.append(
+            resource(
+                api,
+                "aws_lambda_function",
+                "w2_dataset_deployer",
+                {
+                    "environment": [
+                        {
+                            "variables": env
+                            or {"TEST_SET_BUCKET": "tsb", "TRACKING_TABLE": "tt"}
+                        }
+                    ]
+                },
+            )
+        )
+    return {"resources": resources}
+
+
+class _NotFound(Exception):
+    pass
+
+
+class _FeatureClients:
+    """Cognito, CloudFormation and AgentCore, as the phase reads them."""
+
+    class exceptions:
+        ResourceNotFoundException = _NotFound
+
+    def __init__(self, gateway_left=False, server_left=False, gateways=1):
+        self.gateway_left, self.server_left = gateway_left, server_left
+        self.server_reads, self.gateways = 0, gateways
+
+    def __call__(self, service):
+        return self
+
+    def describe_resource_server(self, UserPoolId, Identifier):
+        self.server_reads += 1
+        if self.server_reads > 1 and not self.server_left:
+            raise _NotFound(Identifier)
+        return {}
+
+    def describe_stacks(self, StackName):
+        raise RuntimeError("Stack does not exist")
+
+    def get_gateway(self, gatewayIdentifier):
+        if not self.gateway_left:
+            raise _NotFound("ResourceNotFoundException")
+        return {}
+
+    def get_paginator(self, name):
+        items = [{"name": "gitfnew2-analytics-gateway"}] * self.gateways
+        return _Pages("items", items)
+
+
+def _feature_run(tmp_path, monkeypatch, plan, variant="mcp", clients=None, **kw):
+    run = tmt.Run(_settings(tmp_path, variant=variant))
+    run.ctx["old"] = {"user_pool_id": "pool-1"}
+    states = [_feature_state(variant == "mcp-datasets", **kw), {"resources": []}]
+    calls = []
+    monkeypatch.setattr(run, "old_state", lambda: states[0] if not calls else states[1])
+    monkeypatch.setattr(run, "terraform", lambda d, *args, log: calls.append(args[0]))
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: json.dumps(plan))
+    monkeypatch.setattr(run, "boto", clients or _FeatureClients())
+    return run, calls
+
+
+_CLEAN = {"resource_changes": [_rc(_GATEWAY_STACK, "aws_cloudformation_stack")]}
+
+
+def test_the_mcp_procedure_applies_a_clean_targeted_destroy(tmp_path, monkeypatch):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN)
+    assert "gateway" in run.phase_pre_plan_features()
+    assert calls == ["plan", "apply"]
+
+
+def test_a_targeted_destroy_beyond_the_guide_is_never_applied(tmp_path, monkeypatch):
+    plan = {
+        "resource_changes": _CLEAN["resource_changes"]
+        + [_rc("module.x.aws_s3_bucket.input", "aws_s3_bucket")]
+    }
+    run, calls = _feature_run(tmp_path, monkeypatch, plan)
+    with pytest.raises(tmt.PhaseFailed, match="beyond what the guide allows"):
+        run.phase_pre_plan_features()
+    assert calls == ["plan"]
+
+
+@pytest.mark.parametrize(
+    "clients, finding",
+    [
+        (_FeatureClients(gateway_left=True), "gateway gw-1 still exists"),
+        (_FeatureClients(server_left=True), "still in the pool"),
+    ],
+)
+def test_what_the_destroy_left_behind_is_a_finding(
+    tmp_path, monkeypatch, clients, finding
+):
+    run, _ = _feature_run(tmp_path, monkeypatch, _CLEAN, clients=clients)
+    with pytest.raises(tmt.PhaseFailed, match=finding):
+        run.phase_pre_plan_features()
+
+
+def test_an_old_state_without_the_variants_stacks_is_refused(tmp_path, monkeypatch):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN, variant="mcp-datasets")
+    monkeypatch.setattr(run, "old_state", lambda: _feature_state(False))
+    with pytest.raises(tmt.PhaseFailed, match="not the ones the variant"):
+        run.phase_pre_plan_features()
+    assert calls == []
+
+
+def _snapshot(record=True, objects=True, version="1.0", lm="t0"):
+    return {
+        t: {
+            "record": {"datasetVersion": version} if record else None,
+            "objects": {f"{p}input/a.png": ["e", lm]} if objects else {},
+        }
+        for t, p in tmt.DATASETS
+    }
+
+
+def test_datasets_that_never_deployed_stop_the_procedure_before_any_destroy(
+    tmp_path, monkeypatch
+):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN, variant="mcp-datasets")
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: _snapshot(objects=False))
+    with pytest.raises(tmt.PhaseFailed, match="did not deploy"):
+        run.phase_pre_plan_features()
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"TEST_SET_BUCKET": "tsb", "TRACKING_TABLE": "tt"},
+        {"TESTSET_BUCKET": "tsb", "TRACKING_TABLE": "tt"},
+    ],
+)
+def test_the_dataset_location_is_read_under_either_bucket_name(tmp_path, env):
+    run = tmt.Run(_settings(tmp_path))
+    insts = tmt.state_instances(_feature_state(True, env=env))
+    assert run.dataset_location(insts) == ("tsb", "tt")
+    with pytest.raises(tmt.PhaseFailed, match="names no test-set bucket"):
+        run.dataset_location(tmt.state_instances(_feature_state(True, env={"X": "y"})))
+
+
+@pytest.mark.parametrize("gateways, ok", [(1, True), (0, False), (2, False)])
+def test_verify_wants_exactly_one_new_gateway(tmp_path, monkeypatch, gateways, ok):
+    run = tmt.Run(_settings(tmp_path, variant="mcp"))
+    monkeypatch.setattr(run, "boto", _FeatureClients(gateways=gateways))
+    findings = []
+    run.verify_features(findings)
+    assert (findings == []) is ok
+
+
+@pytest.mark.parametrize(
+    "after, finding",
+    [
+        (_snapshot(), None),
+        (_snapshot(lm="t1"), "1 rewritten"),
+        (_snapshot(objects=False), "1 objects missing"),
+        (_snapshot(version="2.0"), "version changed"),
+        (_snapshot(record=False), "record is gone"),
+    ],
+)
+def test_verify_wants_the_datasets_kept_without_a_download(
+    tmp_path, monkeypatch, after, finding
+):
+    run = tmt.Run(_settings(tmp_path, variant="mcp-datasets"))
+    monkeypatch.setattr(run, "boto", _FeatureClients())
+    (tmp_path / "datasets-before.json").write_text(json.dumps(_snapshot()))
+    run.ctx["datasets"] = {"bucket": "tsb", "table": "tt"}
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: after)
+    findings = []
+    run.verify_features(findings)
+    if finding is None:
+        assert findings == []
+    else:
+        assert any(finding in f for f in findings), findings
+
+
+def test_verify_calls_the_variants_checks():
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(tmt.Run.phase_verify)))
+    called = {
+        n.func.attr
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    assert "verify_features" in called
+
+
+@pytest.mark.parametrize("variant, written", [("mcp", False), ("mcp-datasets", True)])
+def test_only_the_datasets_variant_writes_the_override(tmp_path, variant, written):
+    run = tmt.Run(_settings(tmp_path, variant=variant))
+    run.old_dir.mkdir(parents=True)
+    (run.old_dir / "main.tf").write_text(_EXAMPLE_MAIN)
+    run.prepare_old_root()
+    override = run.old_dir / tmt.DATASETS_OVERRIDE_FILE
+    assert override.exists() is written
+    if written:
+        assert "enable_w2_dataset  = true" in override.read_text()
+    assert ("enable_mcp                  = true") in (
+        run.old_dir / "terraform.tfvars"
+    ).read_text()
+
+
+def test_the_destroy_targets_only_what_the_variant_deployed(tmp_path, monkeypatch):
+    seen = []
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN)
+
+    def terraform(d, *args, log):
+        calls.append(args[0])
+        seen.append(args)
+
+    monkeypatch.setattr(run, "terraform", terraform)
+    run.phase_pre_plan_features()
+    assert [a for a in seen[0] if a.startswith("-target=")] == [f"-target={_MCP}"]
+
+
+def test_a_dataset_changed_by_the_destroy_is_a_finding(tmp_path, monkeypatch):
+    plan = {
+        "resource_changes": [
+            _rc(_GATEWAY_STACK, "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[2], "aws_cloudformation_stack"),
+        ]
+    }
+    run, _ = _feature_run(tmp_path, monkeypatch, plan, variant="mcp-datasets")
+    snaps = [_snapshot(), _snapshot(objects=False)]
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: snaps.pop(0))
+    with pytest.raises(tmt.PhaseFailed, match="dataset fake-w2 changed"):
+        run.phase_pre_plan_features()
+    # Unchanged datasets pass.
+    run, _ = _feature_run(tmp_path / "b", monkeypatch, plan, variant="mcp-datasets")
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: _snapshot())
+    assert "datasets unchanged" in run.phase_pre_plan_features()
