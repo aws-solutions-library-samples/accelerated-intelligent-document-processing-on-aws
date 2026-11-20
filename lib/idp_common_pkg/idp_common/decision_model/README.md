@@ -91,6 +91,56 @@ page stays whole when it fits (`classification/decision_model_labeler.py`). Both
 go through `fit_text`, and both check the question and images with `require_room`
 first.
 
+### Checking the constants against a deployed decider
+
+`CONTEXT_WINDOW_TOKENS`, `PROMPT_RESERVE_TOKENS` and `IMAGE_TOKENS` describe the
+remote model, and the unit suites cannot check them: their fake decision-model
+Lambdas (`tests/unit/decision_model/window_contract.py`) refuse any request over
+the window by the same estimate, so they check that callers cut to the budget, not
+that the budget is right. `make stacktest-decision-window`
+(`scripts/sdlc/decision_model_window_check.py`) asks a deployed Strands Decider
+instead. It measures what the decider adds around a state and what a page image
+costs, sends one request just under the window and one just over it, then sends
+the largest request each call site builds, with its own code, at the largest
+`max_pages` and the `max_input_tokens` cap. It fails when a request is refused for
+its size, when the decider's `usage.input_tokens` exceeds the estimate plus
+`PROMPT_RESERVE_TOKENS`, or when the window, the prompt or an image's cost no
+longer matches its constant. Run it after changing any of them, the estimate, a
+call site's request, or the decider's pinned model. It is live and on demand, in
+neither CI; [run-stack-tests](../../../../.claude/skills/run-stack-tests.md) has
+the options.
+
+What three runs measured, in us-east-1 in November 2026, against the extension's
+pinned model (the table and serial figures are from the third, the first to send
+those shapes):
+
+- The window is 4,096 tokens and holds the state and the **longest** question: a
+  state that fits beside one question was answered with two. The refusal is a
+  `ValueError` naming the state and question token counts, which the client raises
+  as `DecisionModelRefused`.
+- `usage.input_tokens` counts the state once and **every** question, so a
+  request with several questions can report more than 4,096 tokens and still fit.
+  Compare only a one-question request's usage with the window.
+- The decider added 77 tokens around a state for a one-line `noul` question: 68
+  for the question, most of it the decider's per-question template, and 9 once per
+  request. The decider's window counts a square page image at 448 px as 196 tokens
+  (its refusal message names the image's share), and the image added 199 to a
+  request's usage; a portrait page added 157 to usage. Both are under `IMAGE_TOKENS`.
+- **Extraction confidence overflows the window on dense table and serial text.**
+  At the default cap, a confidence request over one page of a markdown statement
+  table (`| 06/11/2026 | 39,595.05 | 49,865.35 |` rows) was refused at 4,159 and
+  4,170 tokens in `text` mode, and over a page of 17-character alphanumeric
+  serials at 4,293 and 4,304 in `text` mode and 4,189 and 4,200 in `both`. The
+  same table in `both` mode fit with 14 tokens to spare, and a table of figures
+  with 102. The estimate counts ASCII punctuation and letters at half a token
+  each; on these shapes the decider's tokenizer spends about 1.2 tokens for each
+  estimated one (measured offline with the model's tokenizer, and consistent with
+  the state counts in the refusal messages), and `PROMPT_RESERVE_TOKENS` does not absorb the difference.
+  Section classification fit on every shape (at most 3,659 tokens). Its question,
+  every class description counted as JSON, is estimated higher than the decider
+  counts it, which is inferred to be what leaves it the margin.
+  The estimate erred high on prose and CJK, by up to about 2,500 tokens.
+
 ## Backends
 
 `backend: lambda` (or empty) invokes a Lambda function directly, with the request as
