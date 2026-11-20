@@ -1800,6 +1800,17 @@ install-git-hooks: ## Install the shared-branch pre-push guard into this checkou
 		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
 	fi
 
+# `premerge` runs exactly the gates both CIs run -- the SHARED_GATES list in
+# scripts/tests/test_ci_gate_parity.py, read by scripts/premerge.py rather than
+# copied here -- and reports every failure rather than stopping at the first. A
+# hand-picked local run missed three of them once and the merge turned develop red
+# (#2115). It checks this working tree, not the merge result CI checks, so merge
+# the base in first. `PREMERGE_ARGS=--list` prints the plan without running it.
+PREMERGE_ARGS ?=
+.PHONY: premerge
+premerge: ## Run the full CI gate set (SHARED_GATES) locally, before merging
+	@python3 scripts/premerge.py $(PREMERGE_ARGS)
+
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."
 	@git add . && \
