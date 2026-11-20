@@ -173,7 +173,10 @@ UPSTREAM_EXAMPLE = "examples/unified-processor"
 #: Studio datasets, each of which puts an ``aws_cloudformation_stack`` in the old
 #: state that ``plan`` refuses; the run then performs the manual procedure in
 #: docs/terraform-migration.md ("Old deployments with a private network, MCP or
-#: test datasets") before ``plan`` (phase ``pre-plan-features``).
+#: test datasets") before ``plan`` (phase ``pre-plan-features``). Its one run so
+#: far (upstream v0.6.9-tf.0) failed at upstream-deploy: neither dataset stack's
+#: custom resource answered CloudFormation, so both stayed CREATE_IN_PROGRESS past
+#: Terraform's 30-minute timeout. The variant does not pass until that is resolved.
 BASE_VARIANT = "base"
 MCP_DATASETS_VARIANT = "mcp-datasets"
 VARIANTS = (BASE_VARIANT, MCP_DATASETS_VARIANT)

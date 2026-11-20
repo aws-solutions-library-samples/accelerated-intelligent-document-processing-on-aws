@@ -631,7 +631,11 @@ else, substitute that name. The commands that list addresses read them from the 
 state rather than assuming them.
 
 How much of each procedure has been exercised is stated in its own section, under
-"What has been tested".
+"What has been tested". **None of the three has been run end to end against a live
+old deployment.** The live test has a variant for MCP and the datasets
+(`make stacktest-terraform-migration VARIANT=mcp-datasets`), but its only run so far
+stopped at the upstream deploy, because upstream's dataset stacks did not complete.
+Rehearse in a non-production account first.
 
 ### Private network (VPC)
 
@@ -815,7 +819,16 @@ after the migration).
 
 #### What has been tested
 
-See the end of this section.
+Measured: Cognito refuses a second resource server with the identifier
+`idp-mcp-connector` in a pool that already has one (on a throwaway pool), which is why
+the old one must go. Upstream `v0.6.9-tf.0` with `enable_mcp = true` deploys its
+gateway stack, and destroying that stack completes (`DELETE_COMPLETE`), in a live
+deployment made by `make stacktest-terraform-migration VARIANT=mcp-datasets`. Checked
+without AWS: with the stack and the resource server removed from the old state, `plan`
+has no refusal left for them. Not measured: the targeted destroy on its own, the
+migration that follows it, and MCP clients working against the new deployment's
+gateway. The live run that would have measured them stopped earlier, at the upstream
+deploy, for the test-dataset reason below.
 
 ### Test datasets
 
@@ -867,12 +880,49 @@ only rewrites each record's description, with the same text.
 [Step 2](#2-check-what-the-expiry-rules-would-delete) applies to the dataset files
 like any other object in the test-set bucket.
 
+**A dataset stack may never have finished creating.** In a live deployment of
+upstream `v0.6.9-tf.0` with both datasets on, neither stack completed: CloudFormation
+reported that it never received a response from either custom resource, both stacks
+stayed in `CREATE_IN_PROGRESS` until Terraform's 30-minute timeout failed the apply,
+and destroying them later failed in the same way (`DELETE_FAILED`, no response). The
+cause was not established. Check each stack's status first:
+
+```bash
+aws cloudformation describe-stacks --region us-west-2 \
+    --stack-name <prefix>-api-w2-dataset --query 'Stacks[0].StackStatus'
+```
+
+A stack in `CREATE_COMPLETE` is handled by the steps above. For one in any failed
+state, the targeted destroy will hang in the same way, so delete the stack while
+keeping its custom resource, which only tells CloudFormation to stop waiting, and then
+remove it from the old state:
+
+```bash
+aws cloudformation delete-stack --region us-west-2 \
+    --stack-name <prefix>-api-w2-dataset --retain-resources W2DatasetDeployment
+cd old-idp
+terraform state rm 'module.genai_idp_accelerator.module.processing_environment_api[0].aws_cloudformation_stack.w2_dataset[0]'
+terraform state pull > ../old-idp.tfstate
+cd ..
+```
+
+Use `FccDatasetDeployment` for the `<prefix>-api-fcc-dataset` stack. A deployer that
+never answered may also never have written its dataset, so check the test-set bucket
+and the `testset#` record before you count on it being there. The new deployment's own
+deployers then download whatever is missing.
+
 To back out before the freeze, run `terraform apply` in the old directory, which
 creates the stacks again; the deployers find the datasets already there.
 
 #### What has been tested
 
-See the end of this section.
+Measured: the failure above, and that `delete-stack --retain-resources` removes a
+dataset stack in `DELETE_FAILED` (both stacks, in the same live run). Checked without
+AWS: the dataset stacks are what `plan` refuses, and once they are removed from the
+old state it has no refusal left. Read from the code rather than measured: that the
+deployers leave the data in place on delete, and that this repository's deployers find
+the data and skip the download. Not measured: the targeted destroy of a completed
+dataset stack and the migration after it.
 
 ## Moving the deployment into your own root configuration
 
