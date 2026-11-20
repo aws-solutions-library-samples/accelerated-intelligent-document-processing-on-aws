@@ -1882,24 +1882,22 @@ class TestASelectorFailureIsNotReportedAsSuccess:
         assert table.scan.call_count == 2
 
     @pytest.mark.parametrize(
-        "call, selector, failing_class",
-        [
-            (get_documents_by_batch, "batch-2", AttributeError),
-            (get_documents_by_pattern, "batch-2/*", TypeError),
-        ],
+        "call, selector",
+        [(get_documents_by_batch, "batch-2"), (get_documents_by_pattern, "batch-2/*")],
         ids=["batch", "pattern"],
     )
-    def test_a_fault_in_the_filter_loop_is_not_reported_as_a_complete_delete(
-        self, call, selector, failing_class
+    def test_a_record_with_no_readable_key_is_not_reported_as_a_complete_delete(
+        self, call, selector
     ):
         """The partial selection, which is the only case that deleted anything.
 
-        A record whose `ObjectKey` was stored as a number comes back as a `Decimal`, and
-        neither predicate can take one. The old handler sat *outside* the loop but
-        returned the list built so far, so of two matching documents the first was
-        selected, deleted and reported as a complete success — measured: one key
-        returned, one `delete_object`, `success=True`. Both predicates are covered
-        because they fail with different classes on the same record.
+        A record with neither a ``doc#`` partition key nor a string ``ObjectKey`` has
+        unknown membership, so it must stop the selection before the delete rather than
+        be skipped: the handler this replaced returned the list built so far, and of two
+        matching documents the first was deleted and reported as a complete success.
+        DynamoDB cannot return such a record from this scan (``PK`` is a string hash key
+        and the filter requires ``doc#``); a record that *does* carry ``PK`` is selected
+        by it, which ``TestSelectionReadsThePartitionKey`` covers.
         """
         table, s3 = _populated_table(), _s3()
         table.scan.return_value = {
@@ -1910,11 +1908,137 @@ class TestASelectorFailureIsNotReportedAsSuccess:
             ]
         }
 
-        with pytest.raises(failing_class):
+        with pytest.raises(TypeError, match="neither a 'doc#' partition key"):
             keys = call(table, selector)
             delete_documents(keys, table, s3, "in", "out")
 
         assert s3.delete_object.call_count == 0
+
+
+def _tracking_record(key: str, object_key=..., sk: str = "none") -> dict:
+    """A tracking record as `Table.scan` yields it: ``PK`` is always a string.
+
+    ``object_key`` defaults to ``key``, which is what every pipeline writer stores;
+    pass another value for a malformed record, or ``None`` for a ``NULL`` attribute.
+    Omit the attribute entirely with ``object_key=_ABSENT``.
+    """
+    item = {"PK": f"doc#{key}", "SK": sk}
+    if object_key is ...:
+        item["ObjectKey"] = key
+    elif object_key is not _ABSENT:
+        item["ObjectKey"] = object_key
+    return item
+
+
+_ABSENT = object()
+
+
+@pytest.mark.unit
+class TestSelectionReadsThePartitionKey:
+    """#2165: one record with an unreadable ``ObjectKey`` must not fail the delete.
+
+    Selection reads the document key from ``PK`` (the table's declared string hash key
+    and the identity the deleter addresses), so a record whose ``ObjectKey`` is a
+    number, ``NULL`` or absent is selected on the same terms as every other record,
+    and a warning counts it.
+    """
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [_numeric_object_key(), None, _ABSENT],
+        ids=["decimal", "null", "absent"],
+    )
+    @pytest.mark.parametrize(
+        "call, selector",
+        [(get_documents_by_batch, "batch-2"), (get_documents_by_pattern, "batch-2/*")],
+        ids=["batch", "pattern"],
+    )
+    def test_a_malformed_object_key_is_selected_by_its_partition_key(
+        self, call, selector, malformed, caplog
+    ):
+        table, s3 = _table(), _s3()
+        table.scan.return_value = {
+            "Items": [
+                _tracking_record("batch-2/a.pdf"),
+                _tracking_record("batch-2/m.pdf", object_key=malformed),
+                _tracking_record("batch-3/other.pdf", object_key=malformed),
+                _tracking_record("batch-2/b.pdf"),
+            ]
+        }
+
+        with caplog.at_level("WARNING", logger="idp_common.delete_documents"):
+            keys = call(table, selector)
+
+        assert keys == ["batch-2/a.pdf", "batch-2/m.pdf", "batch-2/b.pdf"]
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1, warnings
+        # Only the selected record is named: `batch-3/other.pdf` is just as malformed
+        # but outside the selection, and naming it would read as having deleted it.
+        assert warnings[0].startswith("1 selected tracking record(s)"), warnings[0]
+        assert "doc#batch-2/m.pdf" in warnings[0]
+        assert "batch-3" not in warnings[0]
+
+        result = delete_documents(keys, table, s3, "in", "out")
+        assert result["total_count"] == 3
+        assert [r["object_key"] for r in result["results"]] == keys
+
+    def test_well_formed_records_log_no_warning(self, caplog):
+        table = _table()
+        table.scan.return_value = {"Items": [_tracking_record("batch-2/a.pdf")]}
+        with caplog.at_level("WARNING", logger="idp_common.delete_documents"):
+            assert get_documents_by_batch(table, "batch-2") == ["batch-2/a.pdf"]
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_the_partition_key_wins_over_a_disagreeing_object_key(self):
+        """``PK`` is what the deleter rebuilds as ``doc#<key>``, so it is the identity."""
+        table = _table()
+        table.scan.return_value = {
+            "Items": [_tracking_record("batch-2/a.pdf", object_key="batch-9/a.pdf")]
+        }
+        assert get_documents_by_batch(table, "batch-2") == ["batch-2/a.pdf"]
+        assert get_documents_by_batch(table, "batch-9") == []
+
+    @pytest.mark.parametrize(
+        "call, selector",
+        [(get_documents_by_batch, "batch-2"), (get_documents_by_pattern, "*")],
+        ids=["batch", "pattern"],
+    )
+    def test_a_string_partition_key_that_is_not_a_document_is_refused(
+        self, call, selector
+    ):
+        """A ``list#`` row (excluded by the scan filter) must not be read as a document,
+        neither by slicing its ``PK`` nor by falling back to its ``ObjectKey``."""
+        table = _table()
+        table.scan.return_value = {
+            "Items": [
+                _tracking_record("batch-2/a.pdf"),
+                {"PK": "list#2026-11-20#s01", "SK": "x", "ObjectKey": "batch-2/x.pdf"},
+            ]
+        }
+        with pytest.raises(TypeError, match="neither a 'doc#' partition key"):
+            call(table, selector)
+
+    @pytest.mark.parametrize(
+        "call, selector",
+        [(get_documents_by_batch, "batch-2"), (get_documents_by_pattern, "batch-2/*")],
+        ids=["batch", "pattern"],
+    )
+    def test_a_document_with_run_records_is_selected_once(self, call, selector):
+        """Each output-version run adds a ``run#<id>`` record under the same ``PK``,
+        carrying ``ObjectKey`` too; selecting per record listed the document per run."""
+        table, s3 = _table(), _s3()
+        table.scan.return_value = {
+            "Items": [
+                _tracking_record("batch-2/a.pdf"),
+                _tracking_record("batch-2/a.pdf", sk="run#r1"),
+                _tracking_record("batch-2/b.pdf", sk="run#r1"),
+                _tracking_record("batch-2/a.pdf", sk="run#r2"),
+                _tracking_record("batch-2/b.pdf"),
+            ]
+        }
+        keys = call(table, selector)
+        assert keys == ["batch-2/a.pdf", "batch-2/b.pdf"]
+        assert delete_documents(keys, table, s3, "in", "out")["total_count"] == 2
 
 
 #: How the retryability partition below is expected to fall, by error code. Written out

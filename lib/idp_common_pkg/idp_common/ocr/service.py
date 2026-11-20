@@ -32,6 +32,7 @@ from idp_common.ocr.document_converter import (
     DocumentConverter,
     UnsupportedLegacyFormatError,
 )
+from idp_common.ocr.file_types import routed_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -2285,42 +2286,30 @@ class OcrService:
         Returns:
             File type string
         """
-        # Get file extension
-        ext = filename.lower().split(".")[-1] if "." in filename else ""
+        # Routed by extension first: idp_common.ocr.file_types holds that
+        # decision so a caller can ask it before an upload.
+        routed = routed_file_type(filename)
+        if routed is not None:
+            return routed
+        # Try to detect based on content
+        if content.startswith(b"%PDF"):
+            return "pdf"
+        elif content.startswith(b"PK"):
+            # Could be Excel or Word (both are ZIP-based)
+            if b"xl/" in content[:1000]:
+                return "xlsx"
+            elif b"word/" in content[:1000]:
+                return "docx"
 
-        # Check for specific document types
-        if ext == "txt":
+        # Default to treating as text if we can decode it
+        try:
+            content.decode("utf-8")
             return "txt"
-        elif ext == "csv":
-            return "csv"
-        elif ext in ["xlsx", "xls"]:
-            return "xlsx"
-        elif ext in ["docx", "doc"]:
-            return "docx"
-        elif ext in ["pdf"]:
-            return "pdf"
-        elif ext in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp"]:
-            return ext
-        else:
-            # Try to detect based on content
-            if content.startswith(b"%PDF"):
-                return "pdf"
-            elif content.startswith(b"PK"):
-                # Could be Excel or Word (both are ZIP-based)
-                if b"xl/" in content[:1000]:
-                    return "xlsx"
-                elif b"word/" in content[:1000]:
-                    return "docx"
+        except UnicodeDecodeError:
+            pass
 
-            # Default to treating as text if we can decode it
-            try:
-                content.decode("utf-8")
-                return "txt"
-            except UnicodeDecodeError:
-                pass
-
-            # Default to PDF for unknown binary files
-            return "pdf"
+        # Default to PDF for unknown binary files
+        return "pdf"
 
     def _textract_client_for_embedded_images(self):
         """A Textract client for OCR'ing an image embedded in a converted document.

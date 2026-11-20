@@ -39,6 +39,7 @@ export default defineConfig({
             },
             { label: "Hands-on Workshops", slug: "workshops" },
             { label: "Solution Profile", slug: "solution-profile" },
+            { label: "Fit Check", slug: "fit-check" },
           ],
         },
         {

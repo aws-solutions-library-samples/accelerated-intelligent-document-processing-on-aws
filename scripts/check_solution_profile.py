@@ -18,7 +18,8 @@ Two halves, and the first is the contract's own:
      the modes that reach the point;
    * every preset directory in ``config_library/unified/`` is tagged
      ``preset:<dir>`` on a capability;
-   * every file extension ``OcrService._detect_file_type`` routes is tagged
+   * every file extension ``routed_file_type`` (which ``OcrService._detect_file_type``
+     asks first) routes is tagged
      ``format:<ext>`` on a capability, or on a limitation for a format that is routed
      and then refused;
    * every model a tracked template offers is tagged ``model:<id>`` on a capability;
@@ -69,7 +70,9 @@ PROFILE_DIR = "solution-profile"
 VALIDATOR = "solution-profile/schema/v1/validate_profile.py"
 HOOK_REACHABILITY = "lib/idp_common_pkg/idp_common/config/hook_point_reachability.py"
 PRESETS_DIR = "config_library/unified"
-OCR_SERVICE = "lib/idp_common_pkg/idp_common/ocr/service.py"
+OCR_SERVICE = "lib/idp_common_pkg/idp_common/ocr/file_types.py"
+#: The function in ``OCR_SERVICE`` whose extension comparisons are the routed set.
+ROUTING_FUNCTION = "routed_file_type"
 RELEASE_SCRIPT = "scripts/aws-release.sh"
 CHANGELOG = "CHANGELOG.md"
 UPDATE_SKILL = ".claude/skills/update-solution-profile.md"
@@ -164,7 +167,10 @@ def preset_names(repo_root: Path) -> set[str]:
 
 
 def routed_file_extensions(repo_root: Path) -> set[str]:
-    """Every extension ``OcrService._detect_file_type`` routes by name.
+    """Every extension ``routed_file_type`` routes by name.
+
+    ``OcrService._detect_file_type`` asks ``routed_file_type`` before it looks at a
+    file's content, so this is the OCR step's whole by-name routing.
 
     Read from the function's AST: each string constant compared against ``ext`` with
     ``==`` or ``in``. That is the function's whole extension vocabulary, so a format
@@ -175,12 +181,12 @@ def routed_file_extensions(repo_root: Path) -> set[str]:
         (
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "_detect_file_type"
+            if isinstance(node, ast.FunctionDef) and node.name == ROUTING_FUNCTION
         ),
         None,
     )
     if func is None:
-        raise RuntimeError(f"{OCR_SERVICE}: _detect_file_type not found")
+        raise RuntimeError(f"{OCR_SERVICE}: {ROUTING_FUNCTION} not found")
     found: set[str] = set()
     for node in ast.walk(func):
         if not (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)):
@@ -198,7 +204,7 @@ def routed_file_extensions(repo_root: Path) -> set[str]:
                     found.add(item.value)
     if not found:
         raise RuntimeError(
-            f"{OCR_SERVICE}: _detect_file_type compares no extension constants"
+            f"{OCR_SERVICE}: {ROUTING_FUNCTION} compares no extension constants"
         )
     return found
 
@@ -448,7 +454,7 @@ def check_file_formats(profile: Profile, universe: set[str]) -> list[str]:
     refused = _tagged(profile.limitations, "format:")
     problems = [
         f"capabilities.yaml: no capability is tagged 'format:{ext}'. {OCR_SERVICE} "
-        f"_detect_file_type routes '.{ext}'; tag it on capability input-file-formats, or, "
+        f"{ROUTING_FUNCTION} routes '.{ext}'; tag it on capability input-file-formats, or, "
         f"if the format is routed and then refused, on a limitation"
         for ext in sorted(universe - set(supported) - set(refused))
     ]
@@ -458,7 +464,7 @@ def check_file_formats(profile: Profile, universe: set[str]) -> list[str]:
     ]
     problems += [
         f"'format:{ext}' is tagged on {(supported.get(ext, []) + refused.get(ext, []))}, but "
-        f"_detect_file_type in {OCR_SERVICE} does not route '.{ext}'"
+        f"{ROUTING_FUNCTION} in {OCR_SERVICE} does not route '.{ext}'"
         for ext in sorted((set(supported) | set(refused)) - universe)
     ]
     return problems

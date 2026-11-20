@@ -36,6 +36,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [publish](#publish)
   - [delete](#delete)
   - [bootstrap](#bootstrap)
+  - [fit-check](#fit-check)
   - [process](#process--run-inference)
   - [reprocess](#reprocess--rerun-inference)
   - [status](#status)
@@ -1084,6 +1085,22 @@ created and you can upload your own documents to build a test set. See the
 
 ---
 
+### `fit-check`
+
+Run a folder of sample documents through a deployed stack and write a structured
+fit report (`fit-report.json` and `fit-report.md`): per document its class, each
+field's presence and confidence, the solution-profile limitations the run observed,
+latency and an estimated cost. Without `--config-profile` it generates a **new**
+configuration profile with Discovery (or Quick Start from `--description`) and never
+changes the active one. See [Fit Check](./fit-check.md) for every option, the report
+fields, and what is uploaded, kept and removed by `--cleanup`.
+
+```bash
+idp-cli fit-check --stack-name my-idp-stack --samples ./samples-to-check/ --cleanup
+```
+
+---
+
 ### `process` / `run-inference`
 
 Process a batch of documents.
@@ -1718,6 +1735,12 @@ idp-cli delete-documents [OPTIONS]
 nothing, and that is all it means. A failure while finding the documents — a throttled or
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
+
+A document is found by its tracking record's key, so one record whose `ObjectKey`
+attribute is a number, null or missing is still
+selected with the rest of its batch rather than failing the whole command, and a
+warning in the log names it. A document with several processing runs is listed and
+counted once.
 
 **A delete that could not finish says so.** Each document's cleanup has several steps —
 the input object, every output version, the tracking-list row, the run records, the
