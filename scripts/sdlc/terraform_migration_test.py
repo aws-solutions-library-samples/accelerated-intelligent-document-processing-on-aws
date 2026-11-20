@@ -1609,6 +1609,13 @@ class Run:
         problems = self.identity_problems()
         if problems:
             raise PhaseFailed("; ".join(problems))
+        if self.s.variant == MCP_DATASETS_VARIANT and not shutil.which("pip3"):
+            # Upstream builds its AgentCore gateway manager with `pip3 install` in a
+            # local-exec, whatever build.lambda_local says.
+            raise PhaseFailed(
+                "the mcp-datasets variant needs pip3 on PATH: upstream's MCP "
+                "integration builds its gateway manager with it"
+            )
         ident = {"Account": self._account}
         self.ctx["account"] = ident["Account"]
         if self.s.expected_account and ident["Account"] != self.s.expected_account:
@@ -2154,6 +2161,224 @@ class Run:
 
     # Migration phases -------------------------------------------------------------------
 
+    # The guide's manual procedure for MCP and the test datasets --------------------
+
+    def dataset_snapshot(self, bucket: str, table: str) -> Dict[str, Any]:
+        """Each dataset's tracking-table record and every object under its prefix,
+        with the time it was written, so that a re-download (identical content,
+        hence an identical ETag) still shows."""
+        ddb, s3 = self.boto("dynamodb"), self.boto("s3")
+        out: Dict[str, Any] = {}
+        for test_set, prefix in DATASETS:
+            item = ddb.get_item(
+                TableName=table,
+                Key={"PK": {"S": f"testset#{test_set}"}, "SK": {"S": "metadata"}},
+                ConsistentRead=True,
+            ).get("Item")
+            objects: Dict[str, List[str]] = {}
+            for page in s3.get_paginator("list_objects_v2").paginate(
+                Bucket=bucket, Prefix=prefix
+            ):
+                for o in page.get("Contents", []):
+                    objects[o["Key"]] = [o["ETag"], o["LastModified"].isoformat()]
+            out[test_set] = {"record": item, "objects": objects}
+        return out
+
+    def dataset_problems(self, snap: Dict[str, Any]) -> List[str]:
+        """Why a dataset snapshot shows nothing to keep."""
+        problems = []
+        for test_set, _prefix in DATASETS:
+            record = snap[test_set]["record"]
+            if not record:
+                problems.append(f"no testset#{test_set} record")
+            elif (record.get("status") or {}).get("S") == "FAILED":
+                problems.append(f"testset#{test_set} is FAILED")
+            if not snap[test_set]["objects"]:
+                problems.append(f"no {test_set} objects")
+        return problems
+
+    def phase_pre_plan_features(self) -> str:
+        """The guide's MCP and test-dataset procedures: one targeted destroy of the
+        MCP integration and both dataset stacks in the old directory, checked as the
+        guide says to check it, then checks that it removed the gateway and the
+        resource server and left every dataset record and file as it was."""
+        if self.s.variant != MCP_DATASETS_VARIANT:
+            return f"nothing to do for the {self.s.variant} variant"
+        insts = state_instances(self.old_state())
+        stacks = {
+            i["address"]: i["attributes"]
+            for i in insts
+            if i["type"] == "aws_cloudformation_stack"
+        }
+        gateway_stack = (
+            f"{FEATURE_DESTROY_TARGETS[0]}.aws_cloudformation_stack.agentcore_gateway[0]"
+        )
+        wanted = {gateway_stack, *FEATURE_DESTROY_TARGETS[1:]}
+        if set(stacks) != wanted:
+            raise PhaseFailed(
+                "the old state's CloudFormation stacks are not the three the variant "
+                f"deploys: missing {sorted(wanted - set(stacks))}, "
+                f"unexpected {sorted(set(stacks) - wanted)}"
+            )
+        deployer = next(
+            (
+                i
+                for i in insts
+                if i["type"] == "aws_lambda_function"
+                and i["name"] == "w2_dataset_deployer"
+            ),
+            None,
+        )
+        if deployer is None:
+            raise PhaseFailed("the old state has no w2_dataset_deployer function")
+        env = deployer["attributes"]["environment"][0]["variables"]
+        bucket, table = env["TESTSET_BUCKET"], env["TRACKING_TABLE"]
+        gateway_id = (stacks[gateway_stack].get("outputs") or {}).get("GatewayId")
+        if not gateway_id:
+            raise PhaseFailed(f"{gateway_stack} records no GatewayId output")
+        pool_id = self.ctx["old"]["user_pool_id"]
+        cognito = self.boto("cognito-idp")
+        cognito.describe_resource_server(UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER)
+
+        before = self.dataset_snapshot(bucket, table)
+        empty = self.dataset_problems(before)
+        if empty:
+            raise PhaseFailed(
+                "the old deployment's datasets did not deploy, so the variant would "
+                "prove nothing about keeping them: " + "; ".join(empty)
+            )
+        write_private(
+            self.work / "datasets-before.json", json.dumps(before, default=str)
+        )
+        self.ctx["datasets"] = {"bucket": bucket, "table": table}
+
+        plan_file = "features-destroy.tfplan"
+        self.terraform(
+            self.old_dir,
+            "plan",
+            "-destroy",
+            "-input=false",
+            f"-out={plan_file}",
+            *(f"-target={t}" for t in FEATURE_DESTROY_TARGETS),
+            log="old-features-destroy.log",
+        )
+        plan = json.loads(
+            self.terraform_capture(self.old_dir, "show", "-json", plan_file)
+        )
+        destroyed = sorted(
+            rc["address"]
+            for rc in plan.get("resource_changes", [])
+            if (rc.get("change") or {}).get("actions") == ["delete"]
+        )
+        self.ctx["featureDestroy"] = destroyed
+        self.save()
+        problems = feature_destroy_problems(plan)
+        if problems:
+            (self.old_dir / plan_file).unlink(missing_ok=True)
+            raise PhaseFailed(
+                "the targeted destroy goes beyond what the guide allows: "
+                + "; ".join(problems)
+            )
+        self.terraform(
+            self.old_dir,
+            "apply",
+            "-input=false",
+            plan_file,
+            log="old-features-destroy.log",
+        )
+        (self.old_dir / plan_file).unlink(missing_ok=True)
+
+        findings: List[str] = []
+        left = sorted(
+            i["address"]
+            for i in state_instances(self.old_state())
+            if i["type"] == "aws_cloudformation_stack"
+        )
+        if left:
+            findings.append(f"the old state still holds stacks {left}")
+        cf = self.boto("cloudformation")
+        for address, attrs in stacks.items():
+            try:
+                status = cf.describe_stacks(StackName=attrs["id"])["Stacks"][0][
+                    "StackStatus"
+                ]
+            except Exception:  # noqa: BLE001 - gone
+                status = "DELETE_COMPLETE"
+            if status != "DELETE_COMPLETE":
+                findings.append(f"stack {attrs.get('name')} is {status}")
+        try:
+            self.boto("bedrock-agentcore-control").get_gateway(
+                gatewayIdentifier=gateway_id
+            )
+            findings.append(f"the old AgentCore gateway {gateway_id} still exists")
+        except Exception as e:  # noqa: BLE001 - expected: not found
+            if "ResourceNotFound" not in type(e).__name__ + str(e):
+                findings.append(f"cannot read the old gateway {gateway_id}: {e}")
+        try:
+            cognito.describe_resource_server(
+                UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER
+            )
+            findings.append(
+                f"the resource server {MCP_RESOURCE_SERVER} is still in the pool"
+            )
+        except cognito.exceptions.ResourceNotFoundException:
+            pass
+        after = self.dataset_snapshot(bucket, table)
+        for test_set, _prefix in DATASETS:
+            if after[test_set] != before[test_set]:
+                findings.append(
+                    f"dataset {test_set} changed: record "
+                    f"{'same' if after[test_set]['record'] == before[test_set]['record'] else 'differs'}, "
+                    f"{len(before[test_set]['objects'])} objects before, "
+                    f"{len(after[test_set]['objects'])} after"
+                )
+        if findings:
+            raise PhaseFailed("; ".join(findings))
+        counts = {t: len(before[t]["objects"]) for t, _ in DATASETS}
+        return (
+            f"destroyed {len(destroyed)} resources (gateway, resource server and both "
+            f"dataset stacks gone); datasets unchanged: {counts} objects"
+        )
+
+    def verify_features(self, findings: List[str]) -> str:
+        """For the mcp-datasets variant: the new deployment has its own gateway,
+        and every dataset record and file is as it was before the targeted destroy
+        (none rewritten, so the new deployment's deployers did not download them
+        again)."""
+        if self.s.variant != MCP_DATASETS_VARIANT:
+            return ""
+        name = f"{self.s.new_name}-analytics-gateway"
+        control = self.boto("bedrock-agentcore-control")
+        gateways = [
+            g
+            for page in control.get_paginator("list_gateways").paginate()
+            for g in page.get("items", [])
+            if g.get("name") == name
+        ]
+        if len(gateways) != 1:
+            findings.append(f"{len(gateways)} AgentCore gateways named {name}, not 1")
+        before = json.loads((self.work / "datasets-before.json").read_text())
+        loc = self.ctx["datasets"]
+        after = json.loads(
+            json.dumps(self.dataset_snapshot(loc["bucket"], loc["table"]), default=str)
+        )
+        for test_set, _prefix in DATASETS:
+            b, a = before[test_set], after[test_set]
+            missing = [k for k in b["objects"] if k not in a["objects"]]
+            rewritten = [
+                k for k in b["objects"] if k in a["objects"] and a["objects"][k] != b["objects"][k]
+            ]
+            if missing or rewritten:
+                findings.append(
+                    f"dataset {test_set}: {len(missing)} objects missing, "
+                    f"{len(rewritten)} rewritten"
+                )
+            if a["record"] is None:
+                findings.append(f"the testset#{test_set} record is gone")
+            elif a["record"].get("datasetVersion") != b["record"].get("datasetVersion"):
+                findings.append(f"the testset#{test_set} record's version changed")
+        return f"; new gateway {name}; datasets kept without a re-download"
+
     def phase_migrate_plan(self) -> str:
         old_state_file = self.work / "old.tfstate"
         write_private(
@@ -2572,12 +2797,14 @@ class Run:
             "oldRuns": len(old_runs),
         }
 
+        features = self.verify_features(findings)
         if findings:
             raise PhaseFailed("; ".join(findings))
         added = sum(c["added"] for c in report["buckets"].values())
         return (
             f"snapshot preserved ({added} objects added since); both users sign in with old passwords and keep "
             f"their scope; config edit kept; new document {statuses[key]} by the new deployment only"
+            + features
         )
 
     def _executions_since(
@@ -3319,6 +3546,21 @@ class Sweeper:
                 out.append(name)
         return out
 
+    def _gateways(self) -> List[Tuple[str, str]]:
+        """AgentCore gateways (id, name) under the run's names: upstream's MCP
+        integration names its gateway ``<prefix>-api-analytics-gateway`` and the
+        module ``<stack>-analytics-gateway``. Only the mcp-datasets variant creates
+        any, so the base variant does not need the service to be reachable."""
+        if self.owner.s.variant != MCP_DATASETS_VARIANT:
+            return []
+        control = self.owner.boto("bedrock-agentcore-control")
+        return sorted(
+            (g["gatewayId"], g["name"])
+            for page in control.get_paginator("list_gateways").paginate()
+            for g in page.get("items", [])
+            if self.owned(g.get("name", ""), "gateways")
+        )
+
     def inventory(self) -> List[str]:
         return (
             [f"stack {n}" for n in self._stacks()]
@@ -3329,6 +3571,7 @@ class Sweeper:
             + [f"role {n}" for n in self._roles()]
             + [f"kms key {k}" for k in self._keys()]
             + [f"bda project {a}" for a in self._bda()]
+            + [f"agentcore gateway {i} ({n})" for i, n in self._gateways()]
         )
 
     def sweep(self) -> Tuple[List[str], List[str]]:
@@ -3384,6 +3627,13 @@ class Sweeper:
                 f"bda project {arn}",
                 lambda a=arn: bda.delete_data_automation_project(projectArn=a),
             )
+        for gateway_id, name in self._gateways():
+            attempt(
+                f"agentcore gateway {gateway_id} ({name})",
+                lambda g=gateway_id: delete_gateway(
+                    self.owner.boto("bedrock-agentcore-control"), g
+                ),
+            )
         for key in self._keys():
             attempt(
                 f"kms key {key} (scheduled)",
@@ -3394,6 +3644,27 @@ class Sweeper:
                 f"role {role}", lambda r=role: delete_role(self.owner.boto("iam"), r)
             )
         return deleted, errors
+
+
+def delete_gateway(control, gateway_id: str, timeout: int = 300) -> None:
+    """Delete an AgentCore gateway: its targets first, which the service requires."""
+    for page in control.get_paginator("list_gateway_targets").paginate(
+        gatewayIdentifier=gateway_id
+    ):
+        for target in page.get("items", []):
+            control.delete_gateway_target(
+                gatewayIdentifier=gateway_id, targetId=target["targetId"]
+            )
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            control.delete_gateway(gatewayIdentifier=gateway_id)
+            return
+        except control.exceptions.ValidationException:
+            # Targets still deleting.
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(10)
 
 
 def empty_and_delete_bucket(s3, bucket: str) -> None:
@@ -3529,6 +3800,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
     )
     p.add_argument("--min-role-headroom", type=int, default=400)
     p.add_argument(
+        "--variant",
+        choices=VARIANTS,
+        default=BASE_VARIANT,
+        help=f"{MCP_DATASETS_VARIANT!r} also deploys upstream's MCP integration and "
+        "both Test Studio datasets, and runs the guide's manual procedure for them "
+        "before plan",
+    )
+    p.add_argument(
         "--accept-change",
         action="append",
         default=[],
@@ -3593,6 +3872,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         upstream_iam_path=a.upstream_iam_path,
         upstream_permissions_boundary_arn=a.upstream_permissions_boundary_arn,
         state_mirror=a.state_mirror,
+        variant=a.variant,
     )
 
 
