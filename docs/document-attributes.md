@@ -128,7 +128,7 @@ reached. A sidecar that cannot be used at all (wrong bucket, wrong key suffix,
 unreadable, too large, not a JSON object) is dropped as a whole.
 
 A whole-valued number read back from the tracking table is returned as an integer,
-so `2.0` is returned as `2`.
+so `2.0` is returned as `2` (and `-0.0` as `0`).
 
 ## Where attributes appear
 

@@ -716,3 +716,54 @@ def test_a_non_printable_string_travels_by_sidecar_and_arrives_intact(value):
     assert Document.from_s3_event(_event("in/d.pdf"), "out").attributes == {
         "note": value
     }
+
+
+@pytest.mark.unit
+@mock_aws
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"\\ud800": "x", "ok": "y"}',
+        b'{"\\udfffbad": "x", "ok": "y"}',
+        b'{"ok": "y", "Key\\ud83d": ["\\ud800"]}',
+    ],
+)
+def test_a_lone_surrogate_in_a_sidecar_key_is_dropped_not_raised(body):
+    """The key fails the rule; quoting it in the drop warning must not raise, or
+    the document is never queued."""
+    s3 = _s3()
+    s3.put_object(Bucket=BUCKET, Key="in/doc.pdf" + da.SIDECAR_SUFFIX, Body=body)
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="in/doc.pdf",
+        Body=b"%PDF",
+        Metadata={
+            "config-version": "v7",
+            da.SIDECAR_URI_METADATA_KEY: f"s3://{BUCKET}/in/doc.pdf"
+            + da.SIDECAR_SUFFIX,
+        },
+    )
+    doc = Document.from_s3_event(_event("in/doc.pdf"), "out")
+    assert doc.config_version == "v7"
+    assert doc.attributes == {"ok": "y"}
+    (issue,) = doc.processing_issues
+    json.dumps(issue.to_dict()).encode("utf-8")  # storable and renderable
+
+
+@pytest.mark.unit
+@mock_aws
+def test_the_configuration_pin_survives_an_attribute_read_that_raises(monkeypatch):
+    """Second layer behind the catch-all: attributes are read after the control
+    keys, so even an exception escaping them cannot cost the pin."""
+    s3 = _s3()
+    s3.put_object(
+        Bucket=BUCKET, Key="in/doc.pdf", Body=b"%PDF", Metadata={"config-version": "v7"}
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("escaped")
+
+    monkeypatch.setattr(da, "read_object_attributes", boom)
+    doc = Document.from_s3_event(_event("in/doc.pdf"), "out")
+    assert doc.config_version == "v7"
+    assert doc.attributes == {}

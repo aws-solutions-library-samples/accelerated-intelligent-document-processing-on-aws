@@ -123,7 +123,15 @@ class AttributeIntake:
 
 
 def _quote_key(key: Any) -> str:
+    """A caller's key made safe to store, log and render as a drop reason.
+
+    This is the one place untrusted text enters ``AttributeIntake.dropped``, so
+    it is where that text is made encodable: a lone surrogate (``"\\ud800"`` from
+    JSON) becomes its backslash escape. Left raw, it raised when the drop warning
+    was built, which stopped the document being queued at all.
+    """
     text = key if isinstance(key, str) else repr(key)
+    text = text.encode("utf-8", "backslashreplace").decode("utf-8")
     if len(text) > _KEY_QUOTE_CHARS:
         return text[:_KEY_QUOTE_CHARS] + "..."
     return text
