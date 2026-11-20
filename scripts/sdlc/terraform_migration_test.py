@@ -167,6 +167,35 @@ UPSTREAM_COMMIT = UPSTREAM_RELEASES[-1].commit
 #: What the scheduled CI run passes. A resumed run keeps the release it recorded.
 ROTATE_UPSTREAM_TAG = "rotate"
 UPSTREAM_EXAMPLE = "examples/unified-processor"
+#: Which old deployment the run migrates. ``base`` is the example with every
+#: data-owning feature on and MCP off, which is what the command handles by
+#: itself. ``mcp-datasets`` also turns on upstream's MCP integration and both Test
+#: Studio datasets, each of which puts an ``aws_cloudformation_stack`` in the old
+#: state that ``plan`` refuses; the run then performs the manual procedure in
+#: docs/terraform-migration.md ("Old deployments with a private network, MCP or
+#: test datasets") before ``plan`` (phase ``pre-plan-features``).
+BASE_VARIANT = "base"
+MCP_DATASETS_VARIANT = "mcp-datasets"
+VARIANTS = (BASE_VARIANT, MCP_DATASETS_VARIANT)
+#: The override file that turns the two datasets on (datasets_override).
+DATASETS_OVERRIDE_FILE = "zz_idp_ci_datasets_override.tf"
+#: The upstream module call in every upstream example.
+UPSTREAM_MODULE_CALL = "module.genai_idp_accelerator"
+#: What the guide's MCP and test-dataset procedures destroy before ``plan``.
+FEATURE_DESTROY_TARGETS = (
+    f"{UPSTREAM_MODULE_CALL}.module.mcp_integration[0]",
+    f"{UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    ".aws_cloudformation_stack.w2_dataset[0]",
+    f"{UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    ".aws_cloudformation_stack.fcc_dataset[0]",
+)
+#: The two datasets: test-set id (the tracking-table key ``testset#<id>``) and
+#: the test-set bucket prefix, the same in upstream's deployers and this
+#: repository's (src/lambda/{w2,fcc}_dataset_deployer/index.py).
+DATASETS = (("fake-w2", "fake-w2/"), ("realkie-fcc-verified", "realkie-fcc-verified/"))
+#: The OAuth resource server upstream's MCP integration puts in the pool, which
+#: the module creates too: Cognito refuses a second one with the same identifier.
+MCP_RESOURCE_SERVER = "idp-mcp-connector"
 #: Upstream ships no provider lock file, so its `>=` constraints would resolve to
 #: whatever the registry has on the day. This is the lock the passing run
 #: resolved, copied into the example before `init` so every run uses the same
@@ -292,6 +321,7 @@ PHASES = (
     "upstream-deploy",
     "seed",
     "old-ttl-off",
+    "pre-plan-features",
     "migrate-plan",
     "migrate-check-retention",
     "migrate-freeze",
@@ -547,9 +577,13 @@ def make_password(rng: Optional[secrets.SystemRandom] = None) -> str:
     return "".join(chars)
 
 
-def upstream_tfvars(old_name: str, run_id: str, region: str) -> str:
+def upstream_tfvars(
+    old_name: str, run_id: str, region: str, variant: str = BASE_VARIANT
+) -> str:
     """The upstream example's ``terraform.tfvars``: every feature that owns data
-    the migration has to keep is on, so each kept resource kind exists to check."""
+    the migration has to keep is on, so each kept resource kind exists to check.
+    The ``mcp-datasets`` variant turns MCP on as well (the test datasets are not an
+    input of the example; see :func:`datasets_override`)."""
     return (
         f'region      = "{region}"\n'
         f'prefix      = "{old_name}"\n'
@@ -562,12 +596,102 @@ def upstream_tfvars(old_name: str, run_id: str, region: str) -> str:
         "enable_test_studio          = true\n"
         "enable_agent_companion_chat = true\n"
         "enable_agent_analytics      = true\n"
-        "enable_mcp                  = false\n"
+        f"enable_mcp                  = {'true' if variant == MCP_DATASETS_VARIANT else 'false'}\n"
         "enable_finetuning           = false\n\n"
         "rbac   = { enabled = true }\n"
         "web_ui = { enabled = true }\n\n"
         f'tags = {{ Project = "terraform-migration-test", Run = "{run_id}" }}\n'
     )
+
+
+def _block_end(text: str, open_brace: int) -> int:
+    """The index just past the ``}`` closing the ``{`` at ``open_brace``, skipping
+    braces inside strings and ``#`` or ``//`` comments. ValueError when unclosed."""
+    depth, i, n = 0, open_brace, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c == "#" or text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ValueError("unclosed block")
+
+
+def datasets_override(main_tf: str) -> str:
+    """An override file for the upstream example that turns on both Test Studio
+    datasets. The example passes the upstream module a literal ``api = { ... }``
+    without the two flags, and Terraform's override files replace a module
+    argument whole, so the override restates the example's own ``api`` expression,
+    read from its ``main.tf``, with the flags added. Upstream's files stay as the
+    pinned commit has them. ValueError when the example's layout has changed."""
+    call = re.search(r'^module\s+"genai_idp_accelerator"\s*\{', main_tf, re.MULTILINE)
+    if not call:
+        raise ValueError('no module "genai_idp_accelerator" block')
+    body = main_tf[call.end() - 1 : _block_end(main_tf, call.end() - 1)]
+    api = re.search(r"^(\s*)api\s*=\s*\{", body, re.MULTILINE)
+    if not api:
+        raise ValueError("the module call has no literal api = { ... } argument")
+    end = _block_end(body, api.end() - 1)
+    expression = body[api.end() - 1 : end]
+    if re.search(r"\benable_(w2|fcc)_dataset\b", expression):
+        raise ValueError("the example already sets a dataset flag")
+    indent = api.group(1).lstrip("\n")
+    flags = (
+        f"{indent}  enable_w2_dataset  = true\n{indent}  enable_fcc_dataset = true\n"
+    )
+    expression = expression[:-1].rstrip() + "\n" + flags + indent + "}"
+    return (
+        "# Written by scripts/sdlc/terraform_migration_test.py (variant\n"
+        f"# {MCP_DATASETS_VARIANT}): the example's api argument with both Test Studio\n"
+        "# datasets on.\n"
+        'module "genai_idp_accelerator" {\n'
+        f"{indent}api = {expression}\n"
+        "}\n"
+    )
+
+
+def feature_destroy_problems(plan: Dict[str, Any]) -> List[str]:
+    """Each change in the targeted destroy of the MCP integration and the dataset
+    stacks that the guide's procedure does not allow: anything but a delete, and a
+    delete of anything but a resource of a type the migration command recreates
+    anyway, one of the dataset or gateway stacks, or the MCP integration's own
+    resource server. An empty plan is a problem too: the procedure would then have
+    destroyed nothing."""
+    from idp_sdk._core.terraform_migrate import RECREATE_SAFE_TYPES
+
+    mcp_module = FEATURE_DESTROY_TARGETS[0] + "."
+    problems: List[str] = []
+    deleted = 0
+    for rc in plan.get("resource_changes", []):
+        actions = (rc.get("change") or {}).get("actions", [])
+        if actions == ["no-op"] or rc.get("mode") == "data":
+            continue
+        address, tf_type = rc.get("address", ""), rc.get("type", "")
+        if actions != ["delete"]:
+            problems.append(f"{address}: {'/'.join(actions)}, not a delete")
+            continue
+        deleted += 1
+        if tf_type in RECREATE_SAFE_TYPES:
+            continue
+        if tf_type == "aws_cloudformation_stack" and address in FEATURE_DESTROY_TARGETS:
+            continue
+        if tf_type == "aws_cognito_resource_server" and address.startswith(mcp_module):
+            continue
+        problems.append(f"{address}: deletes a {tf_type}")
+    if not deleted:
+        problems.append("the targeted destroy deletes nothing")
+    return problems
 
 
 def state_instances(state: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -923,10 +1047,14 @@ def stored_name_problems(
     old_name: str,
     new_name: str,
     upstream_iam_path: Optional[str] = None,
+    variant: str = BASE_VARIANT,
 ) -> List[str]:
     """Each run name given on the command line that differs from the one the work
     directory's run recorded. The upstream IAM path counts as a name: a resumed
-    run under another path would plan every upstream role for replacement."""
+    run under another path would plan every upstream role for replacement. So does
+    the variant: a resumed run of another variant would apply a different old
+    configuration over the one deployed. A run recorded before variants existed
+    was the base one."""
     problems = []
     for key, given in (("oldName", old_name), ("newName", new_name)):
         stored = ctx.get(key)
@@ -938,6 +1066,12 @@ def stored_name_problems(
         problems.append(
             f"the upstream IAM path is {upstream_iam_path!r} here but "
             f"{ctx['upstreamIamPath']!r} in this work directory's run"
+        )
+    stored_variant = ctx.get("variant", BASE_VARIANT) if "oldName" in ctx else variant
+    if stored_variant != variant:
+        problems.append(
+            f"the variant is {variant!r} here but {stored_variant!r} in this work "
+            "directory's run"
         )
     return problems
 
@@ -1068,6 +1202,8 @@ class Settings:
     #: ``s3://<bucket>/<prefix>/`` (see parse_state_mirror), or None for a run
     #: whose states stay in its work directory.
     state_mirror: Optional[str] = None
+    #: One of VARIANTS: which old deployment the run migrates.
+    variant: str = BASE_VARIANT
 
 
 def first_party_pythonpath() -> str:
@@ -1449,7 +1585,11 @@ class Run:
         credentials are for another account than it ran in."""
         problems = validate_names(self.s.old_name, self.s.new_name)
         problems += stored_name_problems(
-            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+            self.ctx,
+            self.s.old_name,
+            self.s.new_name,
+            self.s.upstream_iam_path,
+            self.s.variant,
         )
         account = self.boto("sts").get_caller_identity()["Account"]
         if self.ctx.get("account") and self.ctx["account"] != account:
@@ -1588,8 +1728,18 @@ class Run:
         """Write what the upstream example's root needs beside upstream's own
         files: the tfvars, the IAM overrides, the backend and the provider lock.
         The same for the deploy and for a teardown in a rebuilt work directory."""
-        tfvars = upstream_tfvars(self.s.old_name, self.ctx["runId"], self.s.region)
+        tfvars = upstream_tfvars(
+            self.s.old_name, self.ctx["runId"], self.s.region, self.s.variant
+        )
         (self.old_dir / "terraform.tfvars").write_text(tfvars)
+        if self.s.variant == MCP_DATASETS_VARIANT:
+            try:
+                override = datasets_override((self.old_dir / "main.tf").read_text())
+            except ValueError as e:
+                raise PhaseFailed(
+                    f"cannot turn the test datasets on in the upstream example: {e}"
+                ) from e
+            (self.old_dir / DATASETS_OVERRIDE_FILE).write_text(override)
         if self.s.state_mirror:
             self.write_backend(self.old_dir, OLD_BACKEND_FILE, "old")
         lock = self.old_dir / ".terraform.lock.hcl"
@@ -2024,14 +2174,18 @@ class Run:
         ]
         if self.s.assume_role_arn:
             args += ["--terraform-assume-role-arn", self.s.assume_role_arn]
+        parameters = []
         if self.s.upstream_permissions_boundary_arn:
             # The new deployment's roles need the run's boundary too: the deploy
             # role creates a role only when it carries that boundary, and the
             # module attaches PermissionsBoundaryArn to every role it creates.
-            args += [
-                "--parameters",
-                f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}",
-            ]
+            parameters.append(
+                f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}"
+            )
+        if self.s.variant == MCP_DATASETS_VARIANT:
+            parameters.append("EnableMCP=true")
+        if parameters:
+            args += ["--parameters", ",".join(parameters)]
         if self.s.state_mirror:
             # Before the command's own `init`, so the new state is in the bucket
             # from its first write.
@@ -2944,7 +3098,11 @@ class Run:
 
     def execute(self) -> int:
         stored = stored_name_problems(
-            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+            self.ctx,
+            self.s.old_name,
+            self.s.new_name,
+            self.s.upstream_iam_path,
+            self.s.variant,
         )
         if stored:
             # Refuse before touching the context: overwriting its names would let a
@@ -2961,6 +3119,7 @@ class Run:
             oldName=self.s.old_name,
             newName=self.s.new_name,
             upstreamIamPath=self.s.upstream_iam_path,
+            variant=self.s.variant,
             region=self.s.region,
             moduleUrl=self.s.module_url,
         )
