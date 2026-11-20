@@ -332,6 +332,33 @@ def print_issue_table(title, issues):
     print(separator)
 
 
+def write_verdict(srt_dir, gating_count, scanners_incomplete, register_is_stale):
+    """Record the scan's verdict in ``.srt/verdict.json`` for ``badge.py``.
+
+    It is written once every check has run and before the exit decision, so the
+    file states exactly what the gate concluded. A run that stops earlier (setup
+    or dependency failure) writes none, and the badge reports that as no result.
+    """
+    if gating_count:
+        outcome = "open_high"
+    elif scanners_incomplete:
+        outcome = "incomplete"
+    elif register_is_stale:
+        outcome = "stale_register"
+    else:
+        outcome = "pass"
+    verdict = {
+        "outcome": outcome,
+        "open_high": gating_count,
+        "scanners_incomplete": bool(scanners_incomplete),
+        "register_is_stale": bool(register_is_stale),
+    }
+    (Path(srt_dir) / "verdict.json").write_text(
+        json.dumps(verdict, indent=1) + "\n", encoding="utf-8"
+    )
+    return verdict
+
+
 def run_command(cmd: str, cwd=None, capture_output=False):
     """Run shell command and return result."""
     try:
@@ -544,6 +571,8 @@ def main():
     register_is_stale = report_vacuous_suppressions(
         project_root, srt_dir, scan_started, is_ci
     )
+
+    write_verdict(srt_dir, len(gating_issues), scanners_incomplete, register_is_stale)
 
     if gating_issues:
         if is_ci:
