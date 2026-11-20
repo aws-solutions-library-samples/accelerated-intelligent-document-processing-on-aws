@@ -1608,8 +1608,14 @@ in `.claude/skills/infrastructure.md`.
 ### Required Bedrock Model Access
 
 Request access to these models in Amazon Bedrock before deployment:
-- **Amazon**: All Nova models, Titan Text Embeddings V2
-- **Anthropic**: Claude 3.x models, Claude 4.x models
+- **Amazon**: Nova 2 Lite, Nova Lite and Nova Pro; Titan Text Embeddings V2
+- **Anthropic**: Claude Sonnet 5 (and its 1M-context variant), Claude Opus 4.8 and
+  Opus 4.6 (1M context), Claude Sonnet 4.6, Claude Haiku 4.5
+- **Cohere**: Embed v4 (multi-document discovery)
+
+These are what the shipped defaults in
+`lib/idp_common_pkg/idp_common/config/system_defaults/` call; grep that directory
+for the current set rather than trusting this list.
 
 ### Key AWS Services Used
 

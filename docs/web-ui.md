@@ -35,6 +35,12 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
+## Welcome page and guided tour
+
+A new user lands on a **Welcome** page. It offers **Take the tour** and **Enter IDP Console**, and, where Quick Start is enabled (the default), **Quick Start** for an Admin (see [Quick Start](quick-start.md#web-ui)). **Don't show this again** hides it in that browser. An Annotator, or a Reviewer with no other role, lands on Home › Tasks instead, and is not offered the tour.
+
+**Take the tour** opens the Document List and walks through the main pages of the side navigation, one step each, with a line on what each page is for. It has a step only for the pages your role's side navigation shows, so it is shorter for an Author or a Viewer than for an Admin, and it ends on the last step it has for your role. Where Quick Start is enabled, an Admin's tour ends on the **Quick Start** button, and **Finish** opens Quick Start.
+
 ## Document List
 
 The default page lists processed documents, over a scope chosen with the **Load** menu:

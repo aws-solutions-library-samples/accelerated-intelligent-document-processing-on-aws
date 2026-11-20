@@ -55,7 +55,7 @@ If a GitHub MCP server is configured (e.g. for Cline), use its
 - `get_file_contents` on specific paths at `ref=refs/pull/<NN>/head` to read
   full files when the diff lacks enough context
 
-### GitLab MR (`gitlab.aws.dev/<group>/<project>/-/merge_requests/<NN>`)
+### GitLab MR (`code.aws.dev/<group>/<project>/-/merge_requests/<NN>`)
 
 Use the `glab` CLI:
 
@@ -73,9 +73,9 @@ PROJECT=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote_plus(sys.
   "<group>/<project>")
 TOKEN="${GITLAB_TOKEN:-$(yq -r .token ~/.config/glab-cli/config.yml 2>/dev/null)}"
 curl -sH "PRIVATE-TOKEN: $TOKEN" \
-  "https://gitlab.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>"
+  "https://code.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>"
 curl -sH "PRIVATE-TOKEN: $TOKEN" \
-  "https://gitlab.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>/changes"
+  "https://code.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>/changes"
 ```
 
 ### Collect at minimum

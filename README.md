@@ -167,8 +167,14 @@ the index instead of from `lib/`. See
 See the [Deployment Guide](./docs/deployment.md#testing-the-solution) for more detailed testing instructions.
 
 IMPORTANT: If you have not previously done so, you must [request access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) to the following Amazon Bedrock models:
-- Amazon: All Nova models, plus Titan Text Embeddings V2
-- Anthropic: Claude 3.x models, Claude 4.x models
+- Amazon: Nova 2 Lite, Nova Lite and Nova Pro; Titan Text Embeddings V2 (knowledge base)
+- Anthropic: Claude Sonnet 5 (including its 1M-context variant), Claude Opus 4.8 (1M
+  context), Claude Opus 4.6 (1M context), Claude Sonnet 4.6 and Claude Haiku 4.5
+- Cohere: Embed v4 (multi-document discovery)
+
+These are the models the shipped configuration defaults call. Request access to any
+other model your own configuration names, in the Region you deploy to. The GovCloud,
+EU and Canada guides list the defaults and inference-profile mappings used there.
 
 ## Updating an Existing Deployment
 
