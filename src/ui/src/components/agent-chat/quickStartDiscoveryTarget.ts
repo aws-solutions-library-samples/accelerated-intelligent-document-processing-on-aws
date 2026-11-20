@@ -28,8 +28,8 @@ export const newQuickStartProfileName = (now: Date, suffix: string = randomSuffi
  * with beside it, inactive. Otherwise the user is asked first, because activating
  * changes what every new document on the stack is processed with: an active preset
  * was chosen by someone, and any other profile may be in use.
- * An empty list is the latter case: every stack has 'default', so a caller who sees
- * none sees a list narrowed by their profile scope.
+ * An empty list is the latter case: every stack has 'default', so a list without it
+ * says nothing about what is active, and the user is asked.
  */
 export const activatesWithoutAsking = (versions: ReadonlyArray<ProfileSummary>, target: string): boolean => {
   if (versions.some((version) => version.isActive && version.versionName === target)) return true;

@@ -783,9 +783,10 @@ def request_document_generation(
     Args:
         schema_text: The approved schema as a JSON string.
         config_version: The config version the schema is written into and the
-            test set is attached to. Pass one saved in this conversation, never
-            'default' or a stack-managed profile: the generation job fails for
-            those. For a class already in another profile, use
+            test set is attached to. Pass one saved in this conversation.
+            'default' and stack-managed profiles are refused before anything
+            is queued: the result then has "refused": true and a "reason".
+            For a class already in another profile, use
             generate_from_existing_config instead.
         doc_count: Number of documents to generate.
         threshold: Quality threshold (1-10).
