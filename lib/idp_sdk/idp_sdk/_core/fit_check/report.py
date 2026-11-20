@@ -398,6 +398,10 @@ def _fmt(value: Any, digits: int = 3) -> str:
     return str(value)
 
 
+def _unit(value: Any, digits: int, unit: str) -> str:
+    return "n/a" if value is None else f"{_fmt(value, digits)}{unit}"
+
+
 def render_markdown(report: Dict[str, Any], record: Dict[str, Any]) -> str:
     s = report["summary"]
     cfg = report["configuration"]
@@ -468,8 +472,8 @@ def render_markdown(report: Dict[str, Any], record: Dict[str, Any]) -> str:
         lines.append("")
         lines.append(
             f"Format {d['format'] or 'none'}, pages {_fmt(d['pages'])}, latency "
-            f"{_fmt(d['latency_seconds'], 1)} s, estimated cost "
-            f"{_fmt(d['estimated_cost_usd'], 4)} USD."
+            f"{_unit(d['latency_seconds'], 1, ' s')}, estimated cost "
+            f"{_unit(d['estimated_cost_usd'], 4, ' USD')}."
         )
         if d["error"]:
             lines.append(f"Error: {d['error']}")
@@ -484,6 +488,8 @@ def render_markdown(report: Dict[str, Any], record: Dict[str, Any]) -> str:
                     f"| {f['name']} | {'yes' if f['present'] else 'no'} | "
                     f"{_fmt(f['confidence'])} | {_fmt(f['below_threshold'])} |"
                 )
+        if d["fields"] and (d["triggered_limitations"] or d["warnings"]):
+            lines.append("")
         for ref in d["triggered_limitations"]:
             lines.append(f"- Limitation `{ref}`")
         for w in d["warnings"]:
