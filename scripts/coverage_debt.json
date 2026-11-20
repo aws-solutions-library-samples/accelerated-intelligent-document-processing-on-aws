@@ -400,6 +400,7 @@
         "scripts/sdlc/check_retired_services.py": 94.34,
         "scripts/sdlc/codebuild_deployment.py": 42.37,
         "scripts/sdlc/cognito_srp.py": 82.19,
+        "scripts/sdlc/decision_model_window_check.py": 98.33,
         "scripts/sdlc/failure_agent.py": 54.04,
         "scripts/sdlc/generate_api_rbac_manifest.py": 31.87,
         "scripts/sdlc/integration_test_deployment.py": 30.22,
