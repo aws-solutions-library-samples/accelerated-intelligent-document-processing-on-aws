@@ -356,6 +356,7 @@ def handle_upload_discovery_document(event, context):
         # discovery rebuilds it; 'augment' (default) keeps existing classes.
         save_mode = arguments.get('saveMode') or 'augment'
         policy_group = _policy_group_argument(arguments, discovery_type, save_mode, page_ranges)
+        group_mode, superseded_rules = _policy_group_change_arguments(arguments, policy_group)
 
         if not file_name:
             raise ValueError("fileName is required")
@@ -380,6 +381,11 @@ def handle_upload_discovery_document(event, context):
 
         if save_mode == 'replace' and not skip_job_creation:
             _assert_replace_allowed(version)
+
+        # After the scope check, so the group's rule names are revealed (in a
+        # refusal) only to a caller who may read the profile anyway.
+        if not skip_job_creation:
+            _assert_policy_group_change_possible(version, policy_group, group_mode, superseded_rules)
 
         # Get bucket from arguments
         bucket_name = arguments.get('bucket')
@@ -420,7 +426,10 @@ def handle_upload_discovery_document(event, context):
                     create_discovery_job(job_id, object_key, gt_object_key, version, page_range=page_range, class_name_hint=page_label)
             else:
                 job_id = str(uuid.uuid4())
-                create_discovery_job(job_id, object_key, gt_object_key, version, discovery_type=discovery_type, policy_group=policy_group)
+                create_discovery_job(
+                    job_id, object_key, gt_object_key, version, discovery_type=discovery_type,
+                    policy_group=policy_group, policy_group_mode=group_mode, superseded_rules=superseded_rules,
+                )
         else:
             logger.info("skipJobCreation=True — returning presigned URL only, no jobs created")
 
@@ -465,6 +474,55 @@ def _policy_group_argument(arguments, discovery_type, save_mode='augment', page_
     return policy_group
 
 
+def _policy_group_change_arguments(arguments, policy_group):
+    """The request's ``policyGroupMode`` and ``supersededRules``, validated.
+
+    Returns ``(mode, superseded_rules)``: ``append`` and ``[]`` when the request
+    names neither. ``replace`` (the upload's rules become the group's whole
+    ruleset) and ``supersede`` (the named rules are removed and the upload's
+    added) need a ``policyGroup``; ``supersededRules`` belongs to ``supersede``
+    only. The rule is ``normalize_policy_group_change``'s, shared with the job
+    that saves the rules. Raises ValueError (HTTP 400).
+    """
+    mode = arguments.get('policyGroupMode')
+    superseded = arguments.get('supersededRules')
+    if not mode and not superseded:
+        return 'append', []
+    from idp_common.discovery.rules_discovery import normalize_policy_group_change
+
+    return normalize_policy_group_change(policy_group, mode, superseded)
+
+
+def _assert_policy_group_change_possible(version, policy_group, mode, superseded_rules):
+    """Refuse a replace or supersede the profile's group cannot satisfy (HTTP 400).
+
+    The group must exist in the profile, and every superseded rule must be one
+    of its rules now: a supersession that matches nothing would leave the user
+    believing a contradiction was resolved when it was not. The discovery job
+    checks again under its save lease, since the group can change before it
+    runs; this check is what turns the common case into an immediate refusal
+    instead of a failed job minutes later.
+    """
+    if mode == 'append' or not policy_group:
+        return
+    from idp_common.config.configuration_manager import ConfigurationManager
+    from idp_common.discovery.rules_discovery import (
+        PolicyGroupChangeRefused,
+        check_policy_group_change,
+    )
+
+    existing = ConfigurationManager().get_raw_configuration("Config", version=version) or {}
+    policy_classes = existing.get('policy_classes') or []
+    if not isinstance(policy_classes, list):
+        policy_classes = []
+    try:
+        check_policy_group_change(policy_classes, policy_group, mode, superseded_rules, version)
+    except PolicyGroupChangeRefused as e:
+        # The dispatcher maps a resolver error to a status by its class NAME, and
+        # only a plain ValueError (or KeyError) is a 400; the subclass would be a 500.
+        raise ValueError(str(e)) from None
+
+
 def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, prefix):
     # Sanitize file name to avoid URL encoding issues
     sanitized_file_name = file_name.replace(' ', '_')
@@ -503,7 +561,8 @@ def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, p
     return object_key, presigned_post
 
 
-def create_discovery_job(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None):
+def create_discovery_job(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None,
+                         policy_group_mode='append', superseded_rules=None):
     """
     Create a new discovery job entry in DynamoDB.
     
@@ -515,6 +574,8 @@ def create_discovery_job(job_id, document_key, ground_truth_key, version, discov
         discovery_type (str): Type of discovery - "classes" or "rules"
         page_range (str, optional): Page range string (e.g., "1-3") for multi-section discovery
         policy_group (str, optional): Validated policy group for a rules job
+        policy_group_mode (str): ``append``, ``replace`` or ``supersede``
+        superseded_rules (list, optional): Rule names a ``supersede`` removes
     """
     try:
         table_name = os.environ.get('DISCOVERY_TRACKING_TABLE')
@@ -560,17 +621,23 @@ def create_discovery_job(job_id, document_key, ground_truth_key, version, discov
 
         if policy_group:
             item['policyGroup'] = policy_group
+            if policy_group_mode and policy_group_mode != 'append':
+                item['policyGroupMode'] = policy_group_mode
+            if superseded_rules:
+                item['supersededRules'] = list(superseded_rules)
         
         table.put_item(Item=item)
         logger.info(f"Created discovery job: {job_id}" + (f" (pages {page_range})" if page_range else ""))
         
-        send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type=discovery_type, page_range=page_range, class_name_hint=class_name_hint, policy_group=policy_group)
+        send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type=discovery_type, page_range=page_range, class_name_hint=class_name_hint, policy_group=policy_group,
+                               policy_group_mode=policy_group_mode, superseded_rules=superseded_rules)
         
     except Exception as e:
         logger.error(f"Error creating discovery job: {str(e)}")
         # Don't fail the upload if job tracking fails
 
-def send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None):
+def send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None,
+                           policy_group_mode='append', superseded_rules=None):
     """
     Send a message to the discovery processing queue.
     
@@ -606,6 +673,10 @@ def send_discovery_message(job_id, document_key, ground_truth_key, version, disc
 
         if policy_group:
             message['policyGroup'] = policy_group
+            if policy_group_mode and policy_group_mode != 'append':
+                message['policyGroupMode'] = policy_group_mode
+            if superseded_rules:
+                message['supersededRules'] = list(superseded_rules)
         
         sqs_client.send_message(
             QueueUrl=queue_url,

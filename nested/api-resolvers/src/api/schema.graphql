@@ -2387,6 +2387,10 @@ type Mutation {
     discoveryType: String
     saveMode: String
     policyGroup: String
+    # How a grouped upload changes the group: append (default), replace, supersede
+    policyGroupMode: String
+    # For supersede: exact names of the group's rules this upload supersedes
+    supersededRules: [String]
   ): DisPresignedUrlResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   autoDetectSections(

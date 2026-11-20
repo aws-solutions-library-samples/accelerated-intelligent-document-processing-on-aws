@@ -170,7 +170,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape` |
+| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape`; its default prompts are files under `prompts/classification/` ([Default prompts](./classification.md#default-prompts)) |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
@@ -1338,7 +1338,9 @@ and accuracy figures behind each — see
 [Classification](./classification.md#choosing-granularity-modality-and-strategy).
 The authoritative list of every key with its shipped default and an inline
 rationale is
-`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`;
+for the prompts it holds a reference to each prompt's own file, listed under
+[Default prompts](./classification.md#default-prompts).
 
 ## Section Splitting
 

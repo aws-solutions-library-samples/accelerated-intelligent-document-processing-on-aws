@@ -12,7 +12,7 @@ import boto3
 import requests
 from aws_requests_auth.aws_auth import AWSRequestsAuth
 from idp_common.discovery.classes_discovery import ClassesDiscovery
-from idp_common.discovery.rules_discovery import RulesDiscovery
+from idp_common.discovery.rules_discovery import PolicyGroupChangeRefused, RulesDiscovery
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -61,6 +61,8 @@ def handler(event, context):
             page_range = message_body.get('pageRange')
             class_name_hint = message_body.get('classNameHint')
             policy_group = message_body.get('policyGroup')
+            policy_group_mode = message_body.get('policyGroupMode')
+            superseded_rules = message_body.get('supersededRules')
 
             logger.info(f"Processing discovery job: {job_id} with version: {version}, page_range: {page_range}, class_name_hint: {class_name_hint}")
 
@@ -73,10 +75,23 @@ def handler(event, context):
 
             # Route to the appropriate discovery handler
             if discovery_type == 'rules':
-                result = process_rules_discovery_job(job_id, document_key, bucket, version, policy_group)
+                result = process_rules_discovery_job(
+                    job_id, document_key, bucket, version, policy_group,
+                    policy_group_mode=policy_group_mode, superseded_rules=superseded_rules,
+                )
             else:
                 result = process_discovery_job(job_id, document_key, ground_truth_key, bucket, version, page_range, class_name_hint)
             results.append(result)
+
+        except PolicyGroupChangeRefused as e:
+            # Final, not retryable: the job is already marked FAILED with the
+            # reason. Handing the message back to SQS would repeat the
+            # extraction about every 15 minutes for a day and could apply a
+            # replace or supersede the user has already seen fail, once the
+            # group changed. So it is not reported as a batch item failure.
+            status = 'Failed'
+            logger.warning(f"Rules discovery job {job_id} refused, not retried: {e}")
+            results.append({'status': 'refused', 'error': str(e)})
 
         except Exception as e:
             status = 'Failed'
@@ -341,7 +356,8 @@ def process_discovery_job(job_id, document_key, ground_truth_key, bucket, versio
         raise
 
 
-def process_rules_discovery_job(job_id, document_key, bucket, version=None, policy_group=None):
+def process_rules_discovery_job(job_id, document_key, bucket, version=None, policy_group=None,
+                                policy_group_mode=None, superseded_rules=None):
     """
     Process a rules discovery job using RulesDiscovery.
 
@@ -356,6 +372,12 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None, poli
         version (str): Configuration profile to save the rules into
         policy_group (str, optional): User-named policy group. Uploads naming
             the same group append their rules to one policy class.
+        policy_group_mode (str, optional): ``append`` (default), ``replace``
+            (this upload's rules become the group's whole ruleset) or
+            ``supersede`` (the rules named in ``superseded_rules`` are removed
+            and this upload's rules added).
+        superseded_rules (list, optional): Exact rule names a ``supersede``
+            removes.
 
     Returns:
         dict: Processing result
@@ -363,7 +385,8 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None, poli
     try:
         logger.info(
             f"Processing rules discovery job {job_id}: "
-            f"document={document_key}, bucket={bucket}, policy_group={policy_group!r}"
+            f"document={document_key}, bucket={bucket}, policy_group={policy_group!r}, "
+            f"policy_group_mode={policy_group_mode!r}, superseded_rules={superseded_rules!r}"
         )
 
         region = os.environ.get("AWS_REGION")
@@ -399,6 +422,9 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None, poli
             input_bucket=bucket,
             input_prefix=document_key,
             policy_group=policy_group,
+            policy_group_mode=policy_group_mode,
+            superseded_rules=superseded_rules,
+            upload_id=job_id,
         )
 
         rule_classes = result.get("rules", [])
@@ -420,11 +446,18 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None, poli
         # UI stops displaying "Starting discovery processing..." and users can
         # jump to Configuration → Policy Schema to see the appended rules.
         saved_version = getattr(rules_discovery, "version", None) or "active version"
-        if policy_group:
+        if result.get("alreadySaved"):
+            # A repeated delivery of a job whose save already landed: say that,
+            # rather than describing a change this delivery did not make.
             success_message = (
-                f"Extracted {num_rules} rules — appended to policy group "
-                f"'{policy_group}' (policy class '{saved_type}') in version "
-                f"'{saved_version}'. View in Configuration → Policy Schema."
+                f"This job's rules were already saved to policy class '{saved_type}' in "
+                f"version '{saved_version}' by an earlier delivery of the same job; nothing "
+                f"was saved again. View in Configuration → Policy Schema."
+            )
+            result = {**result, "warnings": []}
+        elif policy_group:
+            success_message = _group_change_message(
+                num_rules, policy_group, saved_type, saved_version, result.get("groupChange") or {}
             )
         else:
             success_message = (
@@ -463,6 +496,36 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None, poli
         logger.error(f"Error processing rules discovery job {job_id}: {str(e)}")
         update_job_status(job_id, 'FAILED', str(e))
         raise
+
+
+def _group_change_message(num_rules, policy_group, saved_type, saved_version, change):
+    """The status line of a grouped rules-discovery job: what it did to the group.
+
+    ``change`` is ``RulesDiscovery``'s summary (``mode``, ``rules`` added and
+    ``superseded`` entries naming the upload that had supplied each), so a
+    replacement or supersession says which rules it removed and whose they were.
+    """
+    mode = change.get("mode") or "append"
+    where = f"policy group '{policy_group}' (policy class '{saved_type}') in version '{saved_version}'"
+    superseded = change.get("superseded") or []
+    shown = []
+    for s in superseded[:10]:
+        doc = s.get("document")
+        shown.append(f"{s.get('rule')} (from {doc})" if doc else str(s.get("rule")))
+    listed = ", ".join(shown) + (f" and {len(superseded) - 10} more" if len(superseded) > 10 else "")
+    if mode == "replace":
+        head = (
+            f"Extracted {num_rules} rules — replaced the {len(superseded)} rules of {where} "
+            f"with this upload's rules."
+        )
+        tail = f" Superseded: {listed}." if superseded else ""
+    elif mode == "supersede":
+        head = f"Extracted {num_rules} rules — added to {where}."
+        tail = f" Superseded as declared: {listed}."
+    else:
+        head = f"Extracted {num_rules} rules — appended to {where}."
+        tail = ""
+    return head + tail + " View in Configuration → Policy Schema."
 
 
 def update_job_status_via_appsync(job_id, status, error_message=None, discovered_class_name=None, status_message=None, multi_instance_hint=None):

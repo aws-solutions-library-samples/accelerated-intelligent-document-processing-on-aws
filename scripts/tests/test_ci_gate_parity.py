@@ -997,7 +997,9 @@ def test_the_recipe_slice_stops_at_the_recipe() -> None:
         "`make <gate>` can be found in the slice without lint-cicd invoking it. "
         "Narrow _lint_cicd_recipe()."
     )
-    assert 10 < len(recipe.splitlines()) < 120, (
+    # A plausibility bound, not a budget: the stray-target check above is what
+    # catches a widened slice. Each gate step in lint-cicd is about six lines.
+    assert 10 < len(recipe.splitlines()) < 140, (
         f"the lint-cicd slice is {len(recipe.splitlines())} lines, which is not a "
         "plausible length for one recipe — check _lint_cicd_recipe()."
     )

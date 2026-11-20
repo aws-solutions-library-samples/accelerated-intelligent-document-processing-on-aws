@@ -1709,8 +1709,9 @@ The service automatically:
 2. Includes them in classification prompts using the `{FEW_SHOT_EXAMPLES}` placeholder
 3. Formats examples appropriately for both classification and extraction tasks
 
-The shipped default `classification.combined.page.task_prompt` in
-`config/system_defaults/base-classification.yaml` **already contains
+The shipped default `classification.combined.page.task_prompt`
+(`config/system_defaults/prompts/classification/combined.page.task_prompt.txt`,
+referenced from `base-classification.yaml`) **already contains
 `{FEW_SHOT_EXAMPLES}`**, positioned after `<document-types>` and before
 `<<CACHEPOINT>>` (examples are static per config, so they belong in the cacheable
 prefix — which matters here because classification runs per page). Defining
