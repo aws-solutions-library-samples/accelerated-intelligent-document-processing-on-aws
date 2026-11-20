@@ -108,7 +108,7 @@ nightly schedule or on request.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu, then the `checkov` scan diff against the CloudFormation templates, `make terraform-scan-diff`), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
+| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu, then the `checkov` scan diff against the CloudFormation templates, `make terraform-scan-diff`, then the offline replay of the translator over each listed release's templates, `make terraform-replay-releases`, which is why the job checks out full history), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
@@ -281,7 +281,26 @@ variable, no Terraform run happens.
 |---|---|---|
 | Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
 | Nightly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `NIGHTLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+| A Terraform schedule that also carries `IDP_TERRAFORM_PARITY=true` | `terraform` | the same, plus a CloudFormation twin of the same commit compared with the Terraform deployment (see "Resource parity with a CloudFormation twin" below). Meant for a **weekly** schedule |
+| Weekly Terraform VPC schedule (`IDP_TERRAFORM_VPC=true` as well) | `terraform` | the same Terraform run, with the primary stack deployed into the persistent test VPC: `DeployInVPC=true` plus the `IDP_TEST_*` ids the VPC-requiring probes use (see below); labelled `WEEKLY TERRAFORM VPC RUN` in place of `NIGHTLY TERRAFORM RUN` |
 | Any schedule, with `IDP_IAC=terraform` set as a **project or group** CI/CD variable | `terraform`, inherited | every schedule becomes a Terraform run, the nightly included. Set the variable on the Terraform schedule only |
+
+**The weekly Terraform VPC variant.** A schedule carrying `IDP_TERRAFORM_VPC=true`
+beside `IDP_IAC=terraform` runs the same Terraform run with the primary stack in the
+pipeline's persistent test VPC, so the module's VPC configuration (Lambda functions
+in private subnets, the VPC-only resources of the pattern stack) is applied, re-planned
+and destroyed once a week. `terraform_vpc_requested` honours the variable on a
+schedule only and fails the job when the schedule does not also carry
+`IDP_IAC=terraform`; the build (`terraform_vpc_param_pairs` in
+`codebuild_deployment.py`) refuses the run before any sweep or deploy when the
+`IDP_TEST_*` ids are absent, rather than skipping as a VPC-requiring probe does,
+because the run exists only to deploy into a VPC. Both sides also refuse it beside
+`IDP_TERRAFORM_PARITY=true`, because the parity check's CloudFormation twin is
+deployed outside the VPC and every VPC setting would read as a difference. The API keeps its default
+visibility, so the primary suite reaches it unchanged. Like the other schedules it
+is a GitLab project setting and does nothing until it is created. The live apply
+this variant was added after is recorded under the limitations in
+[`docs/terraform.md`](../../../docs/terraform.md).
 
 It is the same `integration_tests` job, distinguished by the variable, as the probe
 and region runs are, so it holds the same `integration_deploy` resource group.
@@ -350,15 +369,94 @@ The plan's own text is kept in `terraform-replan.log` beside the deploy log. It 
 non-sensitive values as Terraform prints them, and on a failed run it reaches the
 failure analysis and the evidence bundle in the Terraform log tail, the same route
 the apply's output takes.
-`TERRAFORM_REPLAN_EXEMPT_CHANGES` lists the re-plan changes that are known defects
-and are reported without failing the run, one address each, registered in
-`scripts/tests/gate_exemptions.json`. It holds the API Gateway stage's
-access-log destination (#2006), accepted only as a plain update that adds `:*` to the
-stored ARN and touches nothing else on that resource; a pass that relied on it names
-the defect in the row.
-`scripts/sdlc/tests/test_terraform_replan_convergence.py` translates the template
-offline and fails once the generated module stops producing the shape an entry
-describes, so the entry goes when #2006 is fixed.
+No re-plan change is accepted as a known defect: every change fails the run. The
+API Gateway stage's access-log destination used to re-plan after every apply, because
+the translator wrote the log group's ARN in CloudFormation's `:*` form and the stage
+stores it without the suffix (#2006); the translator now writes the bare ARN there. The scheduled run deploys at the default
+`LogLevel` of `WARN`, which leaves the stage's access logs off, so its re-plan does not
+exercise that attribute; the translator's offline tests are what cover it.
+
+**Resource parity with a CloudFormation twin.** A Terraform schedule that also
+carries `IDP_TERRAFORM_PARITY=true` deploys the template the same build published as
+a second, CloudFormation stack, `<stack>-cfn`, with the parameters the Terraform
+deploy passes (`_primary_param_pairs`) and through the same CloudFormation deploy
+attempt the CloudFormation nightly uses. It starts at the same time as the Terraform
+deploy, on a thread of its own. After the Terraform deployment is healthy and its
+re-plan has run, `check_terraform_parity` in `codebuild_deployment.py` compares the
+two with `terraform/tools/parity.py` (`make terraform-parity`) as the run's Terraform
+deploy role, because the build role holds no Cloud Control grant. The verdict is the
+second row of the table, `Step 2c: Terraform deployment matches its CloudFormation
+twin (terraform/tools/parity.py)`, and the suite still runs after it. The twin is
+released for teardown straight after the comparison, so it is deleted while the
+suite runs.
+
+`integration_test_deployment.py` (`terraform_parity_requested`) honours the variable
+on a scheduled pipeline only and **fails the job** when the same schedule is not a
+Terraform run; the build refuses it the same way (`terraform_parity_unsupported_reason`)
+when it is set by hand without `IDP_IAC=terraform`. It reaches the build in
+`ci_run_options.json` as `terraform_parity`. Nothing in the repository turns it on.
+
+What fails the row is the tool's own verdict against
+`terraform/tools/parity_baseline.json`, unchanged:
+
+| Outcome | Row |
+|---|---|
+| no difference beyond what the baseline explains, and every baseline entry explained something | passes; the build log gives the counts, including how many differences the baseline explained and how many resources Cloud Control cannot read (listed by the tool, not compared) |
+| a property difference the baseline does not explain, a resource on one side only, or a baseline entry that explained nothing (stale) | fails, beginning `differs:` with the four counts, then each finding by resource and property path (at most `TERRAFORM_PARITY_LISTED_DIFFERENCES`, then a count) |
+| the twin did not deploy, had not finished `TERRAFORM_PARITY_TWIN_WAIT_SECONDS` after the Terraform deployment, or the comparison raised | fails, beginning `not compared:` with the reason, so it is not read as a difference |
+
+A difference the baseline should explain is fixed by adding one entry to the
+baseline, with its reason, which `scripts/tests/gate_exemptions.json` already
+registers; a real difference is fixed in the translator. ⚠️ The baseline was measured
+on one nested stack of the prototype and the tool has not been run against the full
+stack, so expect the first parity runs to fail on differences nobody has triaged yet.
+
+The findings name a resource and a property path, never a value. The tool's
+per-property text carries both sides' values, and some resources return a secret
+among the properties Cloud Control reads (a Cognito app client's secret), so the
+build log gets the same treatment as the re-plan's planned values.
+
+The twin is torn down on every path: its thread deletes it in a `finally` (straight
+away when its deploy failed), and `main()` joins that thread before the Terraform
+teardown. That order is also needed for correctness: the Terraform teardown switches
+boto3's default session to the deploy role, which the twin's teardown must not run
+under. A twin teardown finding is a teardown finding of the run, prefixed `parity
+twin:`. The join is bounded so it cannot spend the Terraform destroy's time: it waits
+at most what is left of the build's timeout less `TERRAFORM_TEARDOWN_RESERVE_SECONDS`
+(`terraform_parity_join_seconds`; without a readable timeout it waits). Past that, a
+teardown finding says so and the run goes on to the Terraform teardown with the twin's
+thread still deleting it. ⚠️ That one case gives up the ordering above: the twin's
+remaining calls can then run under the deploy role's default session, which holds
+broad grants, so they may succeed as the wrong principal or fail; which has not been
+verified. A failure leaves the twin to the startup stack sweep. So does a build killed outright: the sweep
+groups the twin with the run by its `idp-MMDD-HHMMSS` prefix.
+
+A twin that did not deploy is deleted at once, without the retention a failed
+primary stack gets, so the row names the first concrete failure from its captured
+CloudFormation events (resource, type, status and reason). The comparison's Cloud
+Control and Lambda clients use adaptive retries, so one throttled read does not cost
+the whole comparison.
+
+What it costs, as far as it is known. One more full CloudFormation deployment and
+deletion of the accelerator per parity run, standing from the start of the deploy to
+the end of the comparison plus its deletion, including one more of the account's 25
+GuardDuty Malware Protection plans for that time under the default
+`IDP_INTEGRATION_MALWARE_MODE`. The twin runs no steps, so it makes no suite calls to
+Bedrock, Textract or BDA. On wall clock, the two deploys overlap, so the run waits
+only for whatever the CloudFormation deploy takes beyond the Terraform deploy and its
+re-plan (at most `TERRAFORM_PARITY_TWIN_WAIT_SECONDS`), plus the comparison itself,
+one Cloud Control read per paired resource on each side. The comparison runs before
+the time check that guards the steps, so it is counted against what the steps have
+left. None of those times has been measured on the full stack, so no figure is
+given; the weekly run is the measurement. On a run that fails before the comparison,
+the join can also wait for the twin's deploy to finish before deleting it, up to the
+bound above.
+
+Put the variable on a **weekly** schedule, not on the nightly Terraform schedule, to
+keep the extra deployment off six nights in seven: either a separate weekly
+Terraform schedule carrying `IDP_IAC=terraform` and `IDP_TERRAFORM_PARITY=true`, with
+the nightly Terraform schedule's cron skipping that day, or the variable on the
+nightly schedule if a nightly cost is acceptable.
 
 **Scheduling it after the CloudFormation nightly.** Both runs hold
 `resource_group: integration_deploy`, so whichever reaches `integration_tests`
@@ -702,6 +800,70 @@ itself fails, the stack sweep keeps every Terraform-labelled run, and a migratio
 run whose new deployment never reached its label stack is not among those, so its
 `-iam` pre-stack can be reaped by name before its teardown has run.
 
+### Weekly Terraform-upgrade run: the newest release's module to this build's
+
+A weekly schedule carrying `IDP_RUN_TERRAFORM_UPGRADE=true` runs
+`scripts/sdlc/terraform_upgrade_test.py` (`make stacktest-terraform-upgrade`)
+**instead of** the primary suite. The driver deploys one release's Terraform module,
+seeds it, upgrades the same deployment in place with `idp-cli deploy --terraform` to
+the module the build just published, verifies that nothing was lost, and destroys it.
+What it proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack
+tiers) and in tier K of `.claude/skills/release-validation.md`.
+
+**FROM is the newest published release.** `resolve_terraform_upgrade_from` in
+`codebuild_deployment.py` reads the public release bucket's
+`idp-terraform-latest.json` for the run's Region, the pointer `idp-cli deploy
+--terraform` reads by default (its `TEMPLATE_URLS` and
+`idp_sdk.default_terraform_pointer_url`, imported rather than restated). Every publish
+overwrites that pointer, so the run takes only the pointer's `version` and `sha256`,
+from one read, and then deploys that version's own key,
+`<prefix>/<version>/terraform/idp-terraform-<version>.zip`, which no publish
+overwrites. The bytes there must hash to the pointer's `sha256`, and a pointer whose
+`moduleUrl` is not that key is refused rather than followed. The summary's first lines
+name the release and the URL. **TO** is the module this build published.
+
+**What it records and fails on.** The upgrade plan's add, change and destroy counts
+and every address it destroys or replaces (`destructive_changes`), whether or not the
+deploy guard refused the plan; a refusal fails the run, because the run never passes
+`--terraform-allow-replace-stateful`. After the upgrade's apply the `replan` phase
+re-plans the deployment and fails unless the plan is empty. It calls
+`check_terraform_convergence`, the nightly Terraform run's re-plan check, so the two
+runs judge convergence the same way.
+
+| Pipeline | `IDP_RUN_TERRAFORM_UPGRADE` | Runs |
+|---|---|---|
+| Every other pipeline, buttons included | not set, or ignored off a schedule | as before |
+| Weekly Terraform-upgrade schedule | `true` | the upgrade driver only: no primary suite, no headless check, no probes; labelled `WEEKLY TERRAFORM UPGRADE RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+
+It is kept apart the way the migration run is: inactive until a schedule on `develop`
+carrying the variable is created; honoured on a scheduled pipeline only
+(`terraform_upgrade_requested`), and refused beside `IDP_RUN_PROBES`,
+`IDP_TEST_REGION`, `IDP_IAC=terraform` or `IDP_RUN_TERRAFORM_MIGRATION`; carried to the
+build as `terraform_upgrade` in `ci_run_options.json` (`terraform_upgrade_mode`); not a
+merge gate, and in no shared gate; held to the `integration_deploy` resource group, so
+it serialises with the nightly runs; labelled by `label_terraform_upgrade_run`,
+`failure_subject` and both Slack posts (`⏫ WEEKLY TERRAFORM UPGRADE RUN`).
+
+**Credentials and time.** The build creates the run's `-iam` pre-stack the way a
+Terraform nightly does, and both deploys' providers assume its TFDeployRole
+(`--terraform-assume-role-arn`), with the pre-stack's boundary as the first deploy's
+`PermissionsBoundaryArn`; the upgrade repeats it from that deploy's variables, as a
+customer's would. The driver's own reads and seeding run as the build. A build whose
+timeout is below `TERRAFORM_UPGRADE_MIN_TIMEOUT_MINUTES` is refused before publish
+(`terraform_upgrade_timeout_shortfall`); the driver's deadline leaves
+`TERRAFORM_UPGRADE_RESERVE_SECONDS` of the build's own limit for its teardown and the
+`-iam` cleanup, and the monitor watches as long as it does for the migration run.
+
+⚠️ **A build that dies mid-run has no state-based reaper.** The driver keeps its
+Terraform state in its work directory, which goes with the build. The run's name is
+the build's `idp-MMDD-HHMMSS` stack name, so the startup sweeps by name and age
+(stacks, buckets, IAM roles and policies) reap what they cover, and everything else
+the deployment created (tables, user pools, keys, state machines and the rest) stays
+until someone deletes it. The driver's own failure teardown runs within the deadline
+on every failure that leaves the build alive, so this is the case of the build itself
+being killed. The migration run's `--state-mirror` and its reaper are the model for
+closing it.
+
 ### Weekly load probe: real volume and concurrency against an existing stack
 
 The failures that occur in one call out of a few hundred, only under throttling, or
@@ -967,6 +1129,7 @@ GitHub's own Merge button runs no code from this tree.
 | **Weekly region schedule** (eu-central-1, ca-central-1) | ✅ | — | ✅ auto | ✅ auto¹, in that region | — | — | — |
 | **Nightly Terraform schedule** (`IDP_IAC=terraform`) | ✅ | — | ✅ auto | ✅ auto¹, against a Terraform deployment | — | — | — |
 | **Weekly Terraform-migration schedule** (`IDP_RUN_TERRAFORM_MIGRATION=true`) | ✅ | — | ✅ auto | ✅ auto¹, the migration driver instead of the primary suite | — | — | — |
+| **Weekly Terraform-upgrade schedule** (`IDP_RUN_TERRAFORM_UPGRADE=true`) | ✅ | — | ✅ auto | ✅ auto¹, the upgrade driver instead of the primary suite | — | — | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied

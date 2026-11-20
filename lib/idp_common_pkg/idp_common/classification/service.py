@@ -44,6 +44,9 @@ from idp_common.classification.class_confidence import (
 from idp_common.classification.decision_model_labeler import (
     DecisionModelSectionLabeler,
 )
+from idp_common.classification.embeddings_labeler import (
+    EmbeddingSectionLabeler,
+)
 from idp_common.classification.models import (
     ClassificationResult,
     DocumentClassification,
@@ -456,10 +459,12 @@ def _is_content_filter_block(error: BaseException) -> bool:
 
 def _content_filter_detail(error: BaseException) -> str:
     """The issue text for a classification reply a content filter withheld."""
+    from idp_common.utils.bedrock_utils import content_block_wording
+
+    blocker, remedy = content_block_wording(error, "classification model")
     return (
-        "Amazon Bedrock's content filter withheld the classification model's "
-        f"reply ({type(error).__name__}: {error}). Review the page(s), or use a "
-        "different classification model"
+        f"{blocker[0].upper()}{blocker[1:]} the classification model's "
+        f"reply ({type(error).__name__}: {error}). Review the page(s), or {remedy}"
     )
 
 
@@ -1470,6 +1475,11 @@ class ClassificationService:
                                 # keep failing the document as before.
                                 page_result = self._content_filtered_page_result(
                                     page_id, document.pages.get(page_id), e
+                                )
+                                # A reply withheld by stop reason was billed; its
+                                # usage rides on the exception.
+                                combined_metering = utils.merge_metering_data(
+                                    combined_metering, utils.failure_metering(e)
                                 )
                                 all_page_results.append(page_result)
                                 # The section builder writes the page's
@@ -3394,7 +3404,7 @@ class ClassificationService:
             Dictionary with response and metering data
         """
         try:
-            return bedrock.invoke_model(
+            response = bedrock.invoke_model(
                 model_id=config["model_id"],
                 system_prompt=config["system_prompt"],
                 content=content,
@@ -3422,6 +3432,14 @@ class ClassificationService:
             # names; this is the class.
             _annotate_image_refusal(exc, content, config)
             raise
+        # A reply the content filter or a guardrail withheld arrives as a 200
+        # whose text is empty, cut short, or the guardrail's own message. Raised
+        # as a block, so every classification path handles it as it handles a
+        # blocked ValidationException rather than reading that text as a class.
+        from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+        raise_if_output_withheld(response)
+        return response
 
     def _create_unclassified_result(
         self,
@@ -7445,6 +7463,13 @@ class ClassificationService:
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
+                        # A reply withheld by stop reason was billed; its usage
+                        # rides on the exception (empty for any other error).
+                        metering.update(
+                            utils.merge_metering_data(
+                                metering, utils.failure_metering(e)
+                            )
+                        )
         transient.raise_first(metering)
 
         if not verdicts:
@@ -7503,11 +7528,14 @@ class ClassificationService:
         section_cfg = (
             self.config.classification.split_then_classify.section_classification
         )
-        decision_labeler = (
-            DecisionModelSectionLabeler(self, section_cfg)
-            if section_cfg.method == "decision_model"
-            else None
-        )
+        # The non-LLM labelers share one contract (``label(...)`` returning the LLM
+        # path's tuple, calling ``llm_label`` only for a low-confidence answer), so
+        # one variable carries whichever the method selects.
+        decision_labeler: Optional[Any] = None
+        if section_cfg.method == "decision_model":
+            decision_labeler = DecisionModelSectionLabeler(self, section_cfg)
+        elif section_cfg.method == "embeddings":
+            decision_labeler = EmbeddingSectionLabeler(self, section_cfg)
         # Checked once, before the pool: a refusal inside a segment's call would be
         # recorded as that segment's failure and the document would carry on with
         # every section unclassified. Only when the prompt can be sent: the
@@ -7644,6 +7672,12 @@ class ClassificationService:
                             issues[index] = {
                                 "error": f"{where}: {_content_filter_detail(e)}"
                             }
+                            # A reply withheld by stop reason was billed.
+                            metering.update(
+                                utils.merge_metering_data(
+                                    metering, utils.failure_metering(e)
+                                )
+                            )
                         continue
                     error_msg = (
                         f"Section classification failed for segment {index + 1} "
@@ -7653,6 +7687,13 @@ class ClassificationService:
                     with lock:
                         errors.append(error_msg)
                         issues[index] = {"error": error_msg}
+        # Calls no section's result carries (the embeddings method's references,
+        # and the embedding calls of a section that then failed) are collected
+        # here, after every section has finished or failed, so a failed or retried
+        # section cannot take their cost with it.
+        take_shared = getattr(decision_labeler, "take_unreported_metering", None)
+        if take_shared is not None:
+            metering = utils.merge_metering_data(metering, take_shared())
         transient.raise_first(metering)
 
         logger.info(

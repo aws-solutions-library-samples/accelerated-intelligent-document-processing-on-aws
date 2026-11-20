@@ -940,6 +940,17 @@ Replacing a role is not contained to the role: custom resources that take its AR
 updated, and their results are unknown until apply, which is the case the previous
 section's third item handles.
 
+In release 0.6.15 and earlier, any upgrade that changed the CloudFront
+security-headers policy (its Content-Security-Policy, for example)
+stopped part way through the apply at
+`awscc_cloudfront_response_headers_policy.security_headers_policy`, with a Cloud
+Control `ValidationException` naming `XSSProtection`: the provider sent back the
+empty object it had stored for that unset header. The policy now sets
+`X-XSS-Protection: 0` explicitly, so upgrading to a release with the fix updates
+the policy in place, including on a deployment that an earlier failure left part
+way, and so do later changes to it. CloudFormation deployments were never
+affected.
+
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade
 actions apply to both.
@@ -1041,8 +1052,9 @@ in `terraform/translator`, and a test fails when it is out of date.
 | cfn_nag `W78` | Point-in-time recovery not required for concurrency tracking table as data is transient | `ConcurrencyTable` |
 | cfn_nag `W84` | LogGroup does not require KMS Key Id | `ReadPreviousIDPPatternFunctionLogGroup` |
 | cfn_nag `W84` | LogGroup does not require KMS Key Id, since it's only logging checks on stack name length | `StacknameCheckFunctionLogGroup` |
+| cfn_nag `W84` | Logs one key ARN verdict per stack operation; encrypting it with the key it checks would make the check wait for that key | `CustomerManagedKmsKeyCheckFunctionLogGroup` |
 | cfn_nag `W89` | Dispatcher only calls SFN StartExecution + SSM DeleteParameter + urllib to CFN — no VPC needed | `DataMartMigrationDispatcherFunction` |
-| cfn_nag `W89` | Function does not require VPC access | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction`, `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `CompleteSectionReviewFunction`, `FinetuningDeploymentHandlerFunction`, `FinetuningJobCreatorFunction`, `FinetuningJobStatusCheckerFunction`, `FinetuningJobsResolverFunction`, `FinetuningListDocumentsFunction`, `FinetuningMergeDataFunction`, `FinetuningProcessDocumentFunction`, `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryAnalyzeFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryClusterFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryEmbedFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoverySaveFunction`, `MultiDocDiscoveryPrepareFunction`, `ReadPreviousIDPPatternFunction`, `UserManagementFunction`, `UserSyncFunction` |
+| cfn_nag `W89` | Function does not require VPC access | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction`, `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `CompleteSectionReviewFunction`, `CustomerManagedKmsKeyCheckFunction`, `FinetuningDeploymentHandlerFunction`, `FinetuningJobCreatorFunction`, `FinetuningJobStatusCheckerFunction`, `FinetuningJobsResolverFunction`, `FinetuningListDocumentsFunction`, `FinetuningMergeDataFunction`, `FinetuningProcessDocumentFunction`, `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryAnalyzeFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryClusterFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryEmbedFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoverySaveFunction`, `MultiDocDiscoveryPrepareFunction`, `ReadPreviousIDPPatternFunction`, `UserManagementFunction`, `UserSyncFunction` |
 | cfn_nag `W89` | Function does not require VPC access as it has no network access | `StacknameCheckFunction` |
 | cfn_nag `W89` | Function does not require VPC access as it only interacts with AWS services via APIs | `APIRESOLVERSTACK/AbortTestRunsResolverFunction`, `APIRESOLVERSTACK/AbortWorkflowResolverFunction`, `APIRESOLVERSTACK/AgentChatResolverFunction`, `APIRESOLVERSTACK/AgentRequestHandlerFunction`, `APIRESOLVERSTACK/ConfigurationResolverFunction`, `APIRESOLVERSTACK/CopyToBaselineResolverFunction`, `APIRESOLVERSTACK/CreateDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteAgentChatSessionFunction`, `APIRESOLVERSTACK/DeleteDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteTestsResolverFunction`, `APIRESOLVERSTACK/DiscoveryUploadResolverFunction`, `APIRESOLVERSTACK/DocumentVersionsResolverFunction`, `APIRESOLVERSTACK/GetAgentChatMessagesFunction`, `APIRESOLVERSTACK/GetFileContentsResolverFunction`, `APIRESOLVERSTACK/GetSampleDocumentResolverFunction`, `APIRESOLVERSTACK/GetStepFunctionExecutionResolverFunction`, `APIRESOLVERSTACK/ListAgentChatSessionsFunction`, `APIRESOLVERSTACK/ListDocumentsByDateRangeResolverFunction`, `APIRESOLVERSTACK/ProcessChangesResolverFunction`, `APIRESOLVERSTACK/QueryKnowledgeBaseResolverFunction`, `APIRESOLVERSTACK/ReprocessDocumentResolverFunction`, `APIRESOLVERSTACK/SendChatDocumentMessageResolverFunction`, `APIRESOLVERSTACK/TestResultsResolverFunction`, `APIRESOLVERSTACK/TestRunnerFunction`, `APIRESOLVERSTACK/TestSetResolverFunction`, `APIRESOLVERSTACK/UploadResolverFunction`, `AgentChatProcessorFunction`, `AgentCoreGatewayManagerFunction`, `AgentCoreMCPHandlerFunction`, `AgentProcessorFunction`, `BlueprintOptimizationFunction`, `CalculateCapacityFunction`, `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction`, `CognitoUserPoolEmailDomainVerifyFunction`, `DOCUMENTKB/CreateOSSIndexLambdaFunction`, `DOCUMENTKB/GetAdjustedStackNameFunction`, `DOCUMENTKB/GetSeedUrlsFunction`, `DOCUMENTKB/S3VectorManagerFunction`, `DOCUMENTKB/StartIngestionJobFunction`, `DashboardMergerFunction`, `DiscoveryProcessorFunction`, `ExternalIdPGroupMappingFunction`, `FccDatasetDeployerFunction`, `GetDomainLambda`, `InitializeConcurrencyTableLambda`, `LookupFunction`, `McpCredentialManagerFunction`, `McpDefaultCredentialFunction`, `McpIdentityInterceptorFunction`, `McpInterceptorAttachFunction`, `MeteringHourMigrationFunction`, `OcrBenchmarkDeployerFunction`, `PATTERNSTACK/BDAOCRProjectFunction`, `PATTERNSTACK/CodeBuildTrigger`, `PATTERNSTACK/EvaluationFunction`, `PostProcessingDecompressor`, `QueueProcessor`, `QueueSender`, `ResolveOIDCClientSecretFunction`, `ReviewQueueSweeperFunction`, `RvlCdipNmpDeployerFunction`, `SaveReportingDataFunctionV2`, `StartUICodeBuild`, `TestFileCopierFunction`, `TestRunSweeperFunction`, `TestSetBucketAutoDeleteFunction`, `TestSetBucketNotificationFunction`, `TestSetFileCopierFunction`, `UpdateConfigurationFunction`, `UpdateSettingsFunction`, `W2DatasetDeployerFunction`, `WorkflowTracker` |
 | cfn_nag `W89` | Function does not require VPC access as it only interacts with DynamoDB | `BackfillWorkerFunction` |
@@ -1071,7 +1083,7 @@ in `terraform/translator`, and a test fails when it is out of date.
 | cfn_nag `W92` | Function does not require reserved concurrency; it runs only during stack operations | `McpDefaultCredentialFunction`, `McpInterceptorAttachFunction` |
 | cfn_nag `W92` | Lambda function does not need reserved concurrency | `APIRESOLVERSTACK/SyncBdaIdpResolverFunction`, `TestSetZipExtractorFunction` |
 | cfn_nag `W92` | One-shot per stack update; no ReservedConcurrentExecutions required | `DataMartMigrationDispatcherFunction` |
-| cfn_nag `W92` | Reserved concurrency not required | `ApiHandlerFunction`, `BatchPreProcessorFunction`, `ConfigurationCopyFunction`, `ReadPreviousIDPPatternFunction`, `StacknameCheckFunction` |
+| cfn_nag `W92` | Reserved concurrency not required | `ApiHandlerFunction`, `BatchPreProcessorFunction`, `ConfigurationCopyFunction`, `CustomerManagedKmsKeyCheckFunction`, `ReadPreviousIDPPatternFunction`, `StacknameCheckFunction` |
 | cfn_nag `W92` | Reserved concurrency not required; scales on demand | `APIRESOLVERSTACK/HttpApiDispatcherFunction` |
 | cfn_nag `W92` | ReservedConcurrentExecutions=12 pins concurrency (was 1, bumped to accommodate the migration state machine's Map MaxConcurrency=8 + 3 scheduled crons + 1 headroom); the setting is present, not absent | `DataMartRollupFunction` |
 | checkov `CKV_AWS_173` | Env vars are non-sensitive (table names, ARNs) | `APIRESOLVERSTACK/HttpApiDispatcherFunction` |
@@ -1082,7 +1094,7 @@ in `terraform/translator`, and a test fails when it is out of date.
 | checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (bucket name, prefix, log level) | `VersionCheckResolverFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (bucket names and log level) | `TestFileCopierFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level and feature flags) | `CalculateCapacityFunction` |
-| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level only) | `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `ReadPreviousIDPPatternFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level only) | `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `CustomerManagedKmsKeyCheckFunction`, `ReadPreviousIDPPatternFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain only configuration | `DataMartMigrationDispatcherFunction`, `DataMartRollupFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain only non-sensitive configuration | `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain only non-sensitive configuration values (log levels, table names) - no secrets or PII | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction` |
@@ -1139,8 +1151,12 @@ CloudFormation deployment of the same version, but these things differ:
   inputs are not known until apply is checked during the apply; see
   [Using the module beside your own resources](#using-the-module-beside-your-own-resources).
 - The full stack has been applied, re-planned with no changes, and destroyed with both
-  Terraform and OpenTofu, in a development account. The headless and GovCloud
-  modules are validated offline on every pull request, but neither has been applied.
+  Terraform and OpenTofu, in a development account. The standard module has also been
+  applied with `DeployInVPC=true` into a VPC with private subnets, NAT egress and an
+  `execute-api` interface endpoint, in `us-east-1` with Terraform: it re-planned with no
+  changes, processed a sample document end to end with the pipeline's functions in the
+  VPC, and was destroyed. The headless and GovCloud modules are validated offline on
+  every pull request, but neither has been applied.
 - `terraform validate` and `plan` print deprecation warnings for `hash_key` and
   `range_key` on the DynamoDB tables. They are warnings from version 6 of the `aws`
   provider and do not affect the deployment.

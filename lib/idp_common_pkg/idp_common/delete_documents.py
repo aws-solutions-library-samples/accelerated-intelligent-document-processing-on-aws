@@ -1116,6 +1116,69 @@ def _scan_all_document_keys(
     return items
 
 
+_DOC_PK_PREFIX = "doc#"
+
+
+def _document_keys(
+    items: List[Dict[str, Any]], selects: Callable[[str], bool]
+) -> List[str]:
+    """The distinct document keys ``selects`` accepts among scanned records, in order.
+
+    The key is read from the record's partition key, ``PK = "doc#<key>"``, not from
+    its ``ObjectKey`` attribute. ``PK`` is the table's hash key and is declared as a
+    string, so DynamoDB guarantees every record has one of that type, and it is the
+    identity the deleter addresses (``delete_single_document`` rebuilds
+    ``doc#<key>``). ``ObjectKey`` is an ordinary attribute with no type guarantee: a
+    record written by hand or by an older tool can hold a number (read back as a
+    ``Decimal``), a ``NULL``, or nothing at all.
+
+    ⚠️ **Skipping such a record would make the selection partial, and raising on it
+    made one record fail the whole delete** (#2165). Reading ``PK`` does neither: the
+    record is selected or not on the same terms as every other, and a warning counts
+    the *selected* records whose ``ObjectKey`` could not be read, because that
+    attribute is still wrong and other readers of the table use it. ``ObjectKey`` is
+    the fallback only for a record whose ``PK`` is not a string, which DynamoDB never
+    returns for this table. A string ``PK`` without the ``doc#`` prefix (which the scan
+    filter ``begins_with(PK, "doc#")`` excludes), or a record with no usable key at
+    all, raises ``TypeError``: its membership is unknown and this list feeds a delete.
+
+    Keys are de-duplicated because one document owns several records under the same
+    ``PK``: the ``SK = "none"`` document record plus one ``run#<id>`` record per
+    output-version run, each carrying ``ObjectKey``. Selecting per record would hand
+    the deleter the same document once per run and inflate its counts.
+    """
+    keys: List[str] = []
+    seen: set = set()
+    unreadable: List[str] = []
+    for item in items:
+        pk = item.get("PK")
+        object_key = item.get("ObjectKey")
+        if isinstance(pk, str) and pk.startswith(_DOC_PK_PREFIX):
+            key = pk[len(_DOC_PK_PREFIX) :]
+            readable = isinstance(object_key, str)
+        elif not isinstance(pk, str) and isinstance(object_key, str):
+            key, readable = object_key, True
+        else:
+            raise TypeError(
+                "tracking record has neither a 'doc#' partition key nor a string "
+                f"ObjectKey (PK={pk!r}, ObjectKey={object_key!r}); its membership "
+                "in the selection is unknown"
+            )
+        if key in seen or not selects(key):
+            continue
+        seen.add(key)
+        keys.append(key)
+        if not readable:
+            unreadable.append(pk)
+    if unreadable:
+        logger.warning(
+            f"{len(unreadable)} selected tracking record(s) have a missing or "
+            "non-string ObjectKey and were selected by their partition key instead: "
+            f"{', '.join(unreadable[:10])}" + (" ..." if len(unreadable) > 10 else "")
+        )
+    return keys
+
+
 # ⚠️ Neither selector below catches anything, and that is a decision per exception
 # class rather than a missing handler. Both used to wrap the scan and the filter loop in
 # `except Exception: log; return object_keys`, and every class that can arise in there
@@ -1165,20 +1228,16 @@ def get_documents_by_batch(
         ValueError: ``batch_id`` is empty.
         botocore.exceptions.ClientError: the table scan was rejected or throttled.
         botocore.exceptions.BotoCoreError: the scan could not be issued at all.
-        AttributeError: a scanned record's ``ObjectKey`` is not a string — a
-            ``Decimal`` is what an attribute written as ``N`` deserializes to.
-            Raised rather than skipped: this list feeds a delete, and a record the
-            predicate cannot read is a record whose membership is unknown.
+        TypeError: a scanned record has neither a ``doc#`` partition key nor a
+            string ``ObjectKey``, so its membership is unknown. DynamoDB cannot
+            return such a record from this table (see :func:`_document_keys`).
     """
     batch_id = _require_selector("batch_id", batch_id)
 
-    object_keys = []
-    for item in _scan_all_document_keys(tracking_table, status_filter):
-        object_key = item.get("ObjectKey", "")
-        if _is_in_batch(object_key, batch_id):
-            object_keys.append(object_key)
-
-    return object_keys
+    return _document_keys(
+        _scan_all_document_keys(tracking_table, status_filter),
+        lambda key: _is_in_batch(key, batch_id),
+    )
 
 
 def get_documents_by_pattern(
@@ -1205,21 +1264,16 @@ def get_documents_by_pattern(
         nothing else: a failure raises rather than returning ``[]``.
 
     Raises:
-        TypeError: ``pattern`` is not a string, or a scanned record's ``ObjectKey``
-            is not one — ``fnmatch`` answers the same class for both, so read the
-            message to tell the caller's bug from a malformed record. The record is
-            not skipped: this list feeds a delete, and one the predicate cannot read
-            is one whose membership is unknown.
+        TypeError: ``pattern`` is not a string, or a scanned record has neither
+            a ``doc#`` partition key nor a string ``ObjectKey`` (see
+            :func:`_document_keys`); read the message to tell them apart.
         ValueError: ``pattern`` is empty.
         botocore.exceptions.ClientError: the table scan was rejected or throttled.
         botocore.exceptions.BotoCoreError: the scan could not be issued at all.
     """
     pattern = _require_selector("pattern", pattern)
 
-    object_keys = []
-    for item in _scan_all_document_keys(tracking_table, status_filter):
-        object_key = item.get("ObjectKey", "")
-        if fnmatch.fnmatch(object_key, pattern):
-            object_keys.append(object_key)
-
-    return object_keys
+    return _document_keys(
+        _scan_all_document_keys(tracking_table, status_filter),
+        lambda key: fnmatch.fnmatch(key, pattern),
+    )

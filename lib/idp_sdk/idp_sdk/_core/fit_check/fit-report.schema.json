@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/fit-report.schema.json",
+  "title": "GenAI IDP Accelerator fit-check report",
+  "description": "fit-report.json written by idp-cli fit-check. See docs/fit-check.md. Refs are solution-profile refs (limitation:<id>, capability:<id>) from the profile of the version that ran. Costs are estimates. Confidence is the model's own estimate and is not accuracy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "solution",
+    "stack",
+    "configuration",
+    "documents",
+    "evaluation",
+    "summary"
+  ],
+  "$defs": {
+    "ref": {
+      "type": "string",
+      "pattern": "^(limitation|capability):[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "nullableNumber": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "present",
+        "confidence",
+        "below_threshold"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "present": {
+          "type": "boolean"
+        },
+        "confidence": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "below_threshold": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "format",
+        "pages",
+        "status",
+        "class",
+        "fields",
+        "triggered_limitations",
+        "warnings",
+        "latency_seconds",
+        "estimated_cost_usd",
+        "error"
+      ],
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        },
+        "pages": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "refused"
+          ]
+        },
+        "class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "triggered_limitations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          },
+          "uniqueItems": true
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "latency_seconds": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "estimated_cost_usd": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "evaluationClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "documents",
+        "precision",
+        "recall",
+        "f1_score",
+        "accuracy"
+      ],
+      "properties": {
+        "class": {
+          "type": "string"
+        },
+        "documents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "precision": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "recall": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "f1_score": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "accuracy": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "solution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "profile_version"
+      ],
+      "properties": {
+        "id": {
+          "const": "genai-idp-accelerator"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The stack's solution version, as its CloudFormation description states it"
+        },
+        "profile_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The solution-profile version that version publishes (a PEP 440 suffix written with a hyphen)"
+        }
+      }
+    },
+    "stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "region",
+        "mode"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "pipeline",
+            "bda"
+          ]
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "generated_by",
+        "classes"
+      ],
+      "properties": {
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generated_by": {
+          "enum": [
+            "discovery",
+            "quick-start",
+            "existing-profile",
+            null
+          ]
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/document"
+      }
+    },
+    "evaluation": {
+      "description": "null when no ground truth was given. Otherwise the mean of the evaluation step's per-document overall metrics.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "documents_evaluated",
+            "documents_without_result",
+            "precision",
+            "recall",
+            "f1_score",
+            "accuracy",
+            "by_class"
+          ],
+          "properties": {
+            "method": {
+              "type": "string"
+            },
+            "documents_evaluated": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "documents_without_result": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "precision": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "recall": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "f1_score": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "accuracy": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "by_class": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/evaluationClass"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documents",
+        "succeeded",
+        "failed",
+        "classes",
+        "triggered_limitations",
+        "latency_seconds",
+        "estimated_cost_usd_per_page"
+      ],
+      "properties": {
+        "documents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "succeeded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Every document that did not succeed, including those refused before upload"
+        },
+        "refused": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Additive to the contract: how many of the failed documents were refused before upload"
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "class",
+              "documents",
+              "mean_confidence",
+              "fields_below_threshold"
+            ],
+            "properties": {
+              "class": {
+                "type": "string"
+              },
+              "documents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "mean_confidence": {
+                "$ref": "#/$defs/nullableNumber"
+              },
+              "fields_below_threshold": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "triggered_limitations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref",
+              "documents"
+            ],
+            "properties": {
+              "ref": {
+                "$ref": "#/$defs/ref"
+              },
+              "documents": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "latency_seconds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "p50",
+            "p90"
+          ],
+          "properties": {
+            "p50": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "p90": {
+              "$ref": "#/$defs/nullableNumber"
+            }
+          }
+        },
+        "estimated_cost_usd_per_page": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    }
+  }
+}

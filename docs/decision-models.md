@@ -43,7 +43,16 @@ each document starts, with the LLM, and the decision model names each section.
 
 ### 1. Deploy a decision model on Lambda
 
-Deploy the Strands Decider's Lambda recipe in the account and region of your stack.
+The quickest way is to install the
+[Decision Model: Strands Decider](./extensions/decision-model-decider.md)
+extension from the **Extensions** catalog. It builds the Strands Decider's Lambda
+image in your account from pinned source and model commits, deploys it as
+`GENAIIDP-decider` with images enabled, and adds an inactive configuration profile,
+`decision-model-decider`, that selects it for section classification. Its stack's
+`DeciderEndpoint` output is the ARN for step 2.
+
+To deploy it yourself instead, deploy the Strands Decider's Lambda recipe in the
+account and region of your stack.
 Follow its [Lambda guide](https://github.com/strands-labs/strands-decider/tree/main/deploy/lambda)
 and deploy it **with images** (`-c vision=true`), because section classification
 works best on page images.

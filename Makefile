@@ -827,6 +827,18 @@ terraform-check: ## Translate template.yaml to Terraform offline, then init + va
 		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
 		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
 	@$(MAKE) --no-print-directory terraform-scan-diff
+	@$(MAKE) --no-print-directory terraform-replay-releases
+
+# The current translator over the template tree of every release listed in
+# terraform/tools/replay_releases.json, each at the commit recorded there, offline:
+# a translator change that breaks the translation of a release a deployment may
+# still be on fails here rather than at that deployment's upgrade. It reads the
+# repository's own history (git archive of the recorded commits), so it needs a
+# clone holding them and no network; both CI jobs check out full history for it.
+# Add a release to the file when it is tagged.
+TERRAFORM_REPLAY_JOBS ?= 4
+terraform-replay-releases: ## Replay the current translator offline over the template tree of each release in terraform/tools/replay_releases.json; fail on any failure
+	@$(PYTHON) terraform/tools/replay_releases.py --check --jobs $(TERRAFORM_REPLAY_JOBS)
 
 # The static-scan diff: checkov over the CloudFormation templates and over the
 # Terraform generated from them, failing when the Terraform side has a finding the
@@ -846,6 +858,8 @@ terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templat
 # main and nested stacks, read through Cloud Control and diffed, with explained
 # differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
 # credentials and both deployments, so it is a release-validation tier, not a CI gate.
+# A Terraform schedule carrying IDP_TERRAFORM_PARITY=true runs the same comparison
+# against a CloudFormation twin it deploys itself (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
 	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
 	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
@@ -1066,6 +1080,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# CustomerManagedKmsKeyArn check (#2016): a change on update is refused in either
+	@# direction, a supplied key is checked on create. Real botocore clients behind
+	@# Stubbers with an explicit region.
+	cd src/lambda/customer_managed_kms_key_check && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
 	@# filters) and the custom resource that attaches it to the gateway. moto for
 	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
@@ -1156,6 +1174,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/image-build && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider

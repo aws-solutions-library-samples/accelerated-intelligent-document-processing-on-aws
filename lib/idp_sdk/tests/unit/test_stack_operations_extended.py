@@ -106,6 +106,7 @@ class FakeDeployer:
         self.delete_result = {}
         self.cleanup_result = {}
         self.exists_result = True
+        self.parameters_result = {}
         self.status_result = None
         self.status_results = None
         self.in_progress_result = None
@@ -132,6 +133,10 @@ class FakeDeployer:
     def _stack_exists(self, name):
         self.calls["_stack_exists"] = name
         return self.exists_result
+
+    def _get_stack_parameters(self, name):
+        self.calls["_get_stack_parameters"] = name
+        return self.parameters_result
 
     def _get_stack_status(self, name):
         self.calls.setdefault("_get_stack_status", []).append(name)
@@ -741,6 +746,21 @@ class TestSimpleReads:
         IDPClient(region=REGION).stack.exists(stack_name="other")
 
         assert deployer.calls["_stack_exists"] == "other"
+
+    def test_get_parameters_returns_the_deployers_mapping_for_the_named_stack(
+        self, deployer, aws_credentials
+    ):
+        deployer.parameters_result = {"CustomerManagedKmsKeyArn": ""}
+
+        assert _client().stack.get_parameters() == {"CustomerManagedKmsKeyArn": ""}
+        assert deployer.calls["_get_stack_parameters"] == STACK_NAME
+
+    def test_get_parameters_honours_a_stack_name_override(
+        self, deployer, aws_credentials
+    ):
+        IDPClient(region=REGION).stack.get_parameters(stack_name="other")
+
+        assert deployer.calls["_get_stack_parameters"] == "other"
 
     def test_get_status_returns_the_raw_cloudformation_status(
         self, deployer, aws_credentials

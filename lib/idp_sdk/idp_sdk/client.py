@@ -166,6 +166,7 @@ class IDPClient:
             DiscoveryOperation,
             DocumentOperation,
             EvaluationOperation,
+            FitCheckOperation,
             ManifestOperation,
             McpOperation,
             PublishOperation,
@@ -186,6 +187,7 @@ class IDPClient:
         self.testing: TestingOperation = TestingOperation(self)
         self.search: SearchOperation = SearchOperation(self)
         self.evaluation: EvaluationOperation = EvaluationOperation(self)
+        self.fit_check: FitCheckOperation = FitCheckOperation(self)
         self.assessment: AssessmentOperation = AssessmentOperation(self)
         self.publish: PublishOperation = PublishOperation(self)
         self.chat: ChatOperation = ChatOperation(self)

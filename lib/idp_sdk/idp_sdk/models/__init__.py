@@ -34,6 +34,7 @@ from .batch import (
 from .chat import ChatResponse
 from .config import (
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -76,6 +77,7 @@ from .evaluation import (
     FieldComparison,
     UseAsBaselineResult,
 )
+from .fit_check import FitCheckResult
 from .manifest import ManifestDocument, ManifestResult, ManifestValidationResult
 from .mcp import McpCredential, McpCredentialIssued
 from .publish import PublishResult, TemplateTransformResult
@@ -179,6 +181,7 @@ __all__ = [
     "ConfigListResult",
     "ConfigRevisionInfo",
     "ConfigRevisionListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     # Discovery models
@@ -211,6 +214,7 @@ __all__ = [
     "FieldComparison",
     "EvaluationMetrics",
     "UseAsBaselineResult",
+    "FitCheckResult",
     "DeleteResult",
     # Publish models
     "PublishResult",

@@ -331,16 +331,21 @@ def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
     `terraform validate` reports)."""
     bridges = sorted(standard_module.rglob("bridge.tf"))
     assert len(bridges) > 1, bridges
-    root_key = "awscc_kms_key.customer_managed_encryption_key.arn"
+    # The deployment key: the supplied CustomerManagedKmsKeyArn, else the key
+    # the stack creates (#2016).
+    root_key = (
+        "(local.c_use_supplied_kms_key ? var.customer_managed_kms_key_arn : "
+        "one(awscc_kms_key.customer_managed_encryption_key[*].arn))"
+    )
     for bridge in bridges:
         text = bridge.read_text()
         where = bridge.relative_to(standard_module)
-        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S+)$", text, re.M)
+        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
         assert kms, f"{where}: the bridge log group is not encrypted"
         target = re.search(r"^\s*target_bucket\s*=\s*(\S+)$", text, re.M)
         assert target, f"{where}: the bridge bucket has no access logging"
         # The bridge bucket takes the same key as the bridge log group.
-        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S+)$", text, re.M)
+        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
         assert bucket_key, f"{where}: the bridge bucket is not encrypted with a key"
         assert bucket_key.group(1) == kms.group(1), where
         if bridge.parent == standard_module:
@@ -656,3 +661,91 @@ def test_each_rule_refuses_its_combination_at_plan_when_terraform_is_cached(
         if got != want or other or (run.returncode == 0) != (not want):
             wrong.append((label, run.returncode, sorted(got), sorted(want), other))
     assert not wrong, wrong
+
+
+@pytest.mark.parametrize("variant", [v for t, v in TEMPLATE_VARIANTS])
+def test_only_the_stage_destination_drops_the_log_group_arn_suffix(variant, tmp_path):
+    """#2006: in every published variant, an API Gateway stage's access-log
+    destination names the log group's ARN as the provider reads it back, without
+    CloudFormation's ``:*``, and every other use of a log group's ARN keeps the
+    suffix (an IAM statement on a log group's streams needs it)."""
+    root = _translate(tmp_path / "m", variant)
+    arn_use = re.compile(r"aws_cloudwatch_log_group\.[a-z0-9_]+(\[\*\])?\.arn")
+    bare, suffixed = [], 0
+    for module in _modules(root):
+        for line in _module_text(module).splitlines():
+            if not arn_use.search(line):
+                continue
+            if re.search(r"\.arn\)?\}:\*", line):
+                suffixed += 1
+            else:
+                bare.append(line.strip())
+    stages = [
+        line.strip()
+        for module in _modules(root)
+        for block in re.split(r"\n(?=resource )", _module_text(module))
+        if block.startswith('resource "awscc_apigateway_stage"')
+        for line in block.splitlines()
+        if "destination_arn" in line
+    ]
+    assert all(not s.endswith(':*"') for s in stages), stages
+    assert bare == [s for s in stages if arn_use.search(s)], bare
+    assert suffixed > 0
+
+
+# ------------------------------------- security headers round trip (#1997)
+def _security_header_members() -> list[str]:
+    """Every member of ``security_headers_config`` in the vendored awscc schema."""
+    schema = json.loads((REPO / "terraform/translator/schemas/awscc.json").read_text())
+    (provider,) = [
+        v
+        for v in schema["provider_schemas"].values()
+        if "awscc_cloudfront_response_headers_policy" in v["resource_schemas"]
+    ]
+    config = provider["resource_schemas"]["awscc_cloudfront_response_headers_policy"][
+        "block"
+    ]["attributes"]["response_headers_policy_config"]["nested_type"]["attributes"]
+    return sorted(config["security_headers_config"]["nested_type"]["attributes"])
+
+
+def _braced(text: str, opener: str) -> str:
+    """The ``{...}`` object that ``opener`` (ending in ``{``) starts in ``text``."""
+    start = text.index(opener) + len(opener) - 1
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        depth += {"{": 1, "}": -1}.get(ch, 0)
+        if depth == 0:
+            return text[start : i + 1]
+    raise AssertionError(f"unbalanced object after {opener!r}")
+
+
+@pytest.mark.parametrize("variant", [v for t, v in TEMPLATE_VARIANTS])
+def test_every_security_header_the_policy_can_carry_is_set(variant, tmp_path):
+    """#1997: awscc stores a ``security_headers_config`` member the
+    configuration leaves unset as an empty object, and sends it back on every
+    in-place update; Cloud Control then refuses the update because the empty
+    object lacks its required keys (measured for ``xss_protection``). So the
+    first change to the policy after a deployment failed ``terraform apply``.
+    Setting every member keeps an empty object out of state. A member a newer
+    awscc schema adds fails here until the template sets it."""
+    members = _security_header_members()
+    assert "xss_protection" in members, members
+    blocks = [
+        block
+        for module in _modules(_translate(tmp_path / "m", variant))
+        for block in re.split(r"\n(?=resource |data |module )", _module_text(module))
+        if block.startswith('resource "awscc_cloudfront_response_headers_policy"')
+    ]
+    # Only the standard variant serves the UI through CloudFront (headless has
+    # no UI, govcloud serves it through API Gateway).
+    assert len(blocks) == (1 if variant is None else 0), len(blocks)
+    for block in blocks:
+        config = _braced(block, "security_headers_config = {")
+        unset = [m for m in members if not re.search(rf"^\s*{m} = \{{", config, re.M)]
+        assert not unset, unset
+        # The header the template documents: X-XSS-Protection: 0.
+        xss = _braced(config, "xss_protection = {")
+        assert sorted(ln.strip() for ln in xss[1:-1].strip().splitlines()) == [
+            "override = true",
+            "protection = false",
+        ], xss
