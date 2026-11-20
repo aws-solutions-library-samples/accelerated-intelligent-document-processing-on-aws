@@ -222,6 +222,44 @@ def iac_requested(environ: dict | None = None) -> str:
     return value
 
 
+#: The weekly Terraform VPC schedule: a Terraform run (``IDP_IAC=terraform``) whose
+#: primary stack is deployed into the pipeline's persistent test VPC
+#: (``DeployInVPC=true`` and the test VPC's subnet, security group and execute-api
+#: endpoint ids). The same name codebuild_deployment.py reads in terraform_vpc_mode.
+#: Reaches the build in ci_run_options.json as ``terraform_vpc``.
+TERRAFORM_VPC_VARIABLE = "IDP_TERRAFORM_VPC"
+
+
+def terraform_vpc_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly Terraform VPC run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError when the schedule does not also carry
+    ``IDP_IAC=terraform``: the VPC settings are applied by the Terraform deploy
+    path only, so a CloudFormation run carrying the variable would report a VPC
+    result for a deployment that was not in a VPC. Raises too beside
+    ``IDP_TERRAFORM_PARITY=true``, whose CloudFormation twin is not in the VPC.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_VPC_VARIABLE, "")).strip().lower() != "true":
+        return False
+    if iac_requested(env) != IAC_TERRAFORM:
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true needs {IAC_VARIABLE}=terraform on the "
+            "same schedule: the VPC settings are applied by the Terraform deploy only."
+        )
+    if str(env.get(TERRAFORM_PARITY_VARIABLE, "")).strip().lower() == "true":
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true cannot be combined with "
+            f"{TERRAFORM_PARITY_VARIABLE}=true: the parity check's CloudFormation "
+            "twin is deployed outside the VPC, so every VPC setting would read as a "
+            "difference. Give each its own schedule."
+        )
+    return True
+
+
 #: The weekly Terraform-migration schedule: the build runs
 #: scripts/sdlc/terraform_migration_test.py instead of the primary suite (the same
 #: name codebuild_deployment.py reads in terraform_migration_mode). Reaches the
@@ -688,6 +726,7 @@ def write_ci_run_options(
         "terraform_migration": terraform_migration_requested(env),
         "terraform_parity": terraform_parity_requested(env),
         "terraform_upgrade": terraform_upgrade_requested(env),
+        "terraform_vpc": terraform_vpc_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -1085,6 +1124,7 @@ def main():
         migration = terraform_migration_requested()
         parity = terraform_parity_requested()
         upgrade = terraform_upgrade_requested()
+        vpc = terraform_vpc_requested()
     except ValueError as e:
         print(f"❌ {e}")
         sys.exit(1)
@@ -1098,8 +1138,14 @@ def main():
             "⏫ Weekly Terraform-upgrade run — upgrading a deployment of the newest "
             "published release's module to this build's instead of the primary suite"
         )
-    if iac == IAC_TERRAFORM:
+    if iac == IAC_TERRAFORM and vpc:
+        print(
+            "🧱 Weekly Terraform VPC run — deploying the accelerator with Terraform "
+            "into the persistent test VPC"
+        )
+    elif iac == IAC_TERRAFORM:
         print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
+    if iac == IAC_TERRAFORM:
         if parity:
             print(
                 "🪞 With the parity check — a CloudFormation twin of the same commit "

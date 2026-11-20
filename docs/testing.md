@@ -533,7 +533,10 @@ CloudFormation nightly by that variable alone, so it leaves the UX review stack 
 the nightly first-time-user stories to the CloudFormation nightly, and the two runs
 queue for the same deploy lock rather than overlapping. Straight after its apply it
 plans the deployment again, and a plan that is not empty fails the run, naming the
-changed addresses. To run that mode by hand, set
+changed addresses. A weekly schedule carrying `IDP_TERRAFORM_VPC=true` as well, while
+it is active, runs the same Terraform run with the stack deployed into the
+pipeline's persistent test VPC (`DeployInVPC=true`), labelled
+`WEEKLY TERRAFORM VPC RUN`. To run that mode by hand, set
 `IDP_IAC=terraform` for the deploy driver, `scripts/sdlc/codebuild_deployment.py`;
 how it differs from the CloudFormation run, and the CI pipeline-stack update it
 needs before the schedule is turned on, are in the coverage document below.
