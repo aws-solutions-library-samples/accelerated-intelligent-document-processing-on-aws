@@ -115,9 +115,15 @@ reading which one you have:
   bucket's lifecycle rule expires them eventually; the cost of leaving them is storage
   until it does.
 - **The input-object delete failed.** The document is likewise removed from the list, and
-  **the originally uploaded file is still in the input bucket**. This is the case worth
-  acting on if the reason for deleting was that the document should not be held — the
-  remedy is the same `idp-cli` delete, or removing that one object.
+  **the originally uploaded file, or some of its versions, is still in the input bucket**.
+  This is the case worth acting on if the reason for deleting was that the document should
+  not be held — the remedy is the same `idp-cli` delete, or removing every version of that
+  one object.
+
+A successful delete removes the uploaded file **with every version of it**: the input
+bucket is versioned, and the delete purges each version and delete marker of the
+document's exact key rather than leaving the upload behind as a noncurrent version. A
+deleted document cannot be recovered from the input bucket.
 
 A selection where some documents were removed and others were not reports the failure for
 the whole call and names each document it could not finish; the ones that were removed are
