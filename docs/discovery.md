@@ -526,8 +526,13 @@ The pipeline returns a `MultiDocDiscoveryResult` containing:
 | `reflection_report` | Markdown report analyzing all discovered classes |
 | `total_documents` | Total documents processed |
 | `num_clusters` | Number of clusters found |
-| `num_failed_embeddings` | Documents that failed embedding |
+| `num_failed_embeddings` | Documents that failed embedding; they were never clustered |
+| `failed_embedding_keys` | The paths or S3 keys of those documents |
+| `noise_document_keys` | Documents that were embedded but left in no class, because clustering put them in a cluster smaller than `min_cluster_size` and dropped it as noise. Disjoint from `failed_embedding_keys` |
+| `num_noise_documents` | The length of `noise_document_keys` |
 | `num_successful_schemas` / `num_failed_schemas` | Schema generation success/failure counts |
+
+A noise document is a sample no discovered class covers. Add another document of the same type to the collection and run discovery again if you need a class for it.
 
 #### Web UI
 

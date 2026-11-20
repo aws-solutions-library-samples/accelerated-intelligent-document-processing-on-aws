@@ -282,7 +282,25 @@ variable, no Terraform run happens.
 | Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
 | Nightly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `NIGHTLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
 | A Terraform schedule that also carries `IDP_TERRAFORM_PARITY=true` | `terraform` | the same, plus a CloudFormation twin of the same commit compared with the Terraform deployment (see "Resource parity with a CloudFormation twin" below). Meant for a **weekly** schedule |
+| Weekly Terraform VPC schedule (`IDP_TERRAFORM_VPC=true` as well) | `terraform` | the same Terraform run, with the primary stack deployed into the persistent test VPC: `DeployInVPC=true` plus the `IDP_TEST_*` ids the VPC-requiring probes use (see below); labelled `WEEKLY TERRAFORM VPC RUN` in place of `NIGHTLY TERRAFORM RUN` |
 | Any schedule, with `IDP_IAC=terraform` set as a **project or group** CI/CD variable | `terraform`, inherited | every schedule becomes a Terraform run, the nightly included. Set the variable on the Terraform schedule only |
+
+**The weekly Terraform VPC variant.** A schedule carrying `IDP_TERRAFORM_VPC=true`
+beside `IDP_IAC=terraform` runs the same Terraform run with the primary stack in the
+pipeline's persistent test VPC, so the module's VPC configuration (Lambda functions
+in private subnets, the VPC-only resources of the pattern stack) is applied, re-planned
+and destroyed once a week. `terraform_vpc_requested` honours the variable on a
+schedule only and fails the job when the schedule does not also carry
+`IDP_IAC=terraform`; the build (`terraform_vpc_param_pairs` in
+`codebuild_deployment.py`) refuses the run before any sweep or deploy when the
+`IDP_TEST_*` ids are absent, rather than skipping as a VPC-requiring probe does,
+because the run exists only to deploy into a VPC. Both sides also refuse it beside
+`IDP_TERRAFORM_PARITY=true`, because the parity check's CloudFormation twin is
+deployed outside the VPC and every VPC setting would read as a difference. The API keeps its default
+visibility, so the primary suite reaches it unchanged. Like the other schedules it
+is a GitLab project setting and does nothing until it is created. The live apply
+this variant was added after is recorded under the limitations in
+[`docs/terraform.md`](../../../docs/terraform.md).
 
 It is the same `integration_tests` job, distinguished by the variable, as the probe
 and region runs are, so it holds the same `integration_deploy` resource group.

@@ -1332,7 +1332,7 @@ idp-cli status [OPTIONS]
 - `--document-id`: Single document ID (check individual document)
 
 **Optional Filters and Display:**
-- `--object-status`: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING, PROCESSING)
+- `--object-status`: Only show documents whose current status is exactly this value, for example `COMPLETED`, `FAILED`, `QUEUED`, `RUNNING` or a step such as `OCR` or `EXTRACTING`. The accepted values are the statuses a document can be recorded with, and `idp-cli status --help` lists them. Without it, documents in every status are shown.
 - `--show-details`: Show detailed document information in table format
 - `--get-time`: Calculate and display timing statistics (processing time, queue time, total time)
 - `--include-metering`: Include Lambda metering statistics (GB-seconds by stage) - requires `--get-time`
@@ -1719,8 +1719,9 @@ idp-cli delete-documents [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--status-filter`: Only delete documents with this status (use with --batch-id or --pattern)
-  - Options: `FAILED`, `COMPLETED`, `PROCESSING`, `QUEUED`
+- `--status-filter`: Only delete documents whose current status is exactly this value (use with --batch-id or --pattern).
+  - Accepts any status a document can be recorded with, for example `FAILED`, `COMPLETED` or `QUEUED`; `idp-cli delete-documents --help` lists them all.
+  - A document still being processed carries the name of its current step, such as `RUNNING`, `OCR` or `EXTRACTING`. There is no `PROCESSING` status, and the option refuses that value.
 - `--dry-run`: Show what would be deleted without actually deleting
 - `--force`, `-y`: Skip confirmation prompt
 - `--region`: AWS region (optional)
@@ -1735,6 +1736,12 @@ idp-cli delete-documents [OPTIONS]
 nothing, and that is all it means. A failure while finding the documents — a throttled or
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
+
+A document is found by its tracking record's key, so one record whose `ObjectKey`
+attribute is a number, null or missing is still
+selected with the rest of its batch rather than failing the whole command, and a
+warning in the log names it. A document with several processing runs is listed and
+counted once.
 
 **A delete that could not finish says so.** Each document's cleanup has several steps —
 the input object, every output version, the tracking-list row, the run records, the
@@ -3491,7 +3498,7 @@ Unlike `discover` (which analyzes one document at a time), `discover-multidoc` a
 
 **Requires:** `pip install -e "lib/idp_common_pkg[multi_document_discovery]"` (scikit-learn, scipy, numpy, strands-agents)
 
-**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. For discovering schemas from individual documents, use [`discover`](#discover) instead.
+**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. The summary lists the documents left in no class this way, and separately the documents whose embedding failed. For discovering schemas from individual documents, use [`discover`](#discover) instead.
 
 **Usage:**
 ```bash

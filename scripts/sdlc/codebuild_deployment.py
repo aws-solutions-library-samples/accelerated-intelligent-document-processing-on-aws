@@ -4804,6 +4804,59 @@ def terraform_unsupported_reason(environ: dict | None = None) -> str | None:
     return None
 
 
+#: The weekly Terraform VPC run: a Terraform run whose primary stack is deployed
+#: into the persistent test VPC (the ids _test_vpc_params reads). The schedule
+#: carries IDP_TERRAFORM_VPC=true beside IDP_IAC=terraform, and the choice reaches
+#: the build in ci_run_options.json as ``terraform_vpc``.
+TERRAFORM_VPC_VARIABLE = "IDP_TERRAFORM_VPC"
+TERRAFORM_VPC_RUN_LABEL = "WEEKLY TERRAFORM VPC RUN"
+
+
+def terraform_vpc_mode(
+    environ: dict | None = None, options: dict | None = None
+) -> bool:
+    """Whether this build deploys the Terraform primary stack into the test VPC:
+    IDP_TERRAFORM_VPC in the environment (a run started by hand), else the
+    schedule's choice in ci_run_options.json. main() writes the answer back."""
+    env = os.environ if environ is None else environ
+    value = str(env.get(TERRAFORM_VPC_VARIABLE, "")).strip().lower()
+    if not value and isinstance(options, dict):
+        value = "true" if options.get("terraform_vpc") is True else ""
+    return value == "true"
+
+
+def terraform_vpc_param_pairs(environ: dict | None = None) -> list[str]:
+    """The `--parameters` pairs a Terraform VPC run adds to the primary ones.
+
+    Empty when this is not a VPC run. Raises ValueError when it is one and the
+    persistent test VPC's ids are absent: unlike a requires_vpc probe, which
+    skips, this run exists only to deploy into a VPC, so deploying without one
+    would report a VPC result for a stack that was not in a VPC.
+    """
+    env = os.environ if environ is None else environ
+    if not terraform_vpc_mode(env):
+        return []
+    if not terraform_run(env):
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true needs {IAC_VARIABLE}=terraform: the "
+            "VPC settings are applied by the Terraform deploy only"
+        )
+    if terraform_parity_mode(env):
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true cannot be combined with "
+            f"{TERRAFORM_PARITY_VARIABLE}=true: the parity check's CloudFormation "
+            "twin is deployed outside the VPC"
+        )
+    vpc = _test_vpc_params(env)
+    if vpc is None:
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true, but the persistent test VPC is not "
+            "configured (IDP_TEST_VPC_ID / IDP_TEST_PRIVATE_SUBNET_IDS / "
+            "IDP_TEST_LAMBDA_SG_ID / IDP_TEST_APIGW_VPCE_ID)"
+        )
+    return [f"{key}={value}" for key, value in vpc.items()]
+
+
 def terraform_work_directory(stack_name: str, environ: dict | None = None) -> str:
     """The absolute ``--terraform-dir`` for this run's deployment."""
     env = os.environ if environ is None else environ
@@ -5996,8 +6049,9 @@ def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
         return result
 
     print("Step 1: Deploying with Terraform...")
-    param_pairs = _primary_param_pairs(
-        permissions_boundary_arn, _integration_malware_mode()
+    param_pairs = (
+        _primary_param_pairs(permissions_boundary_arn, _integration_malware_mode())
+        + terraform_vpc_param_pairs()
     )
     try:
         stage_terraform_root(stack_name, admin_email, terraform, param_pairs)
@@ -11252,7 +11306,7 @@ PROBE_VARIANTS = [
 ]
 
 
-def _test_vpc_params():
+def _test_vpc_params(environ: dict | None = None):
     """Resolve the persistent-test-VPC CFN params from env, or None if unset.
 
     Returns the dict of VPC params a requires_vpc probe must pass, populated
@@ -11263,10 +11317,11 @@ def _test_vpc_params():
     values — idp-cli's --parameters parser splits only on commas followed by a
     `key=`, so an embedded subnet list survives.
     """
-    vpc_id = os.environ.get("IDP_TEST_VPC_ID", "").strip()
-    subnets = os.environ.get("IDP_TEST_PRIVATE_SUBNET_IDS", "").strip()
-    sg_id = os.environ.get("IDP_TEST_LAMBDA_SG_ID", "").strip()
-    vpce_id = os.environ.get("IDP_TEST_APIGW_VPCE_ID", "").strip()
+    env = os.environ if environ is None else environ
+    vpc_id = env.get("IDP_TEST_VPC_ID", "").strip()
+    subnets = env.get("IDP_TEST_PRIVATE_SUBNET_IDS", "").strip()
+    sg_id = env.get("IDP_TEST_LAMBDA_SG_ID", "").strip()
+    vpce_id = env.get("IDP_TEST_APIGW_VPCE_ID", "").strip()
     if not (vpc_id and subnets and sg_id and vpce_id):
         return None
     return {
@@ -12132,6 +12187,13 @@ def label_terraform_run(summary_text: str, environ: dict | None = None) -> str:
     """The summary, headed with TERRAFORM_RUN_LABEL on a Terraform run."""
     if not terraform_run(environ):
         return summary_text
+    if terraform_vpc_mode(environ):
+        return (
+            f"🧱 {TERRAFORM_VPC_RUN_LABEL} — the primary suite ran against a "
+            "Terraform deployment of the accelerator in the persistent test VPC "
+            "(DeployInVPC=true). This is not the CloudFormation nightly result.\n\n"
+            + summary_text
+        )
     return (
         f"🧱 {TERRAFORM_RUN_LABEL} — the primary suite ran against a Terraform "
         "deployment of the accelerator. This is not the CloudFormation nightly "
@@ -12165,7 +12227,13 @@ def failure_subject(stack_name: str, environ: dict | None = None) -> str:
     if region is not None:
         labels.append(f"{REGION_RUN_LABEL.lower()} · {region}")
     if terraform_run(environ):
-        labels.append(TERRAFORM_RUN_LABEL.lower())
+        labels.append(
+            (
+                TERRAFORM_VPC_RUN_LABEL
+                if terraform_vpc_mode(environ)
+                else TERRAFORM_RUN_LABEL
+            ).lower()
+        )
     env = os.environ if environ is None else environ
     if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() == "true":
         labels.append(TERRAFORM_MIGRATION_RUN_LABEL.lower())
@@ -13352,6 +13420,9 @@ def main():
         os.environ[IAC_VARIABLE] = iac
         migration = terraform_migration_mode(options=run_options)
         os.environ[TERRAFORM_MIGRATION_VARIABLE] = "true" if migration else ""
+        os.environ[TERRAFORM_VPC_VARIABLE] = (
+            "true" if terraform_vpc_mode(options=run_options) else ""
+        )
         if migration:
             refusal = (
                 terraform_migration_unsupported_reason()
@@ -13384,6 +13455,12 @@ def main():
         else:
             print("IaC: CloudFormation")
         parity = resolve_terraform_parity(run_options, stack_name)
+        # The VPC run is refused here, before a sweep or a deploy, rather than at
+        # the deploy: after the parity choice is in the environment, because it
+        # refuses that combination, and on either IaC branch, because it refuses a
+        # CloudFormation run too.
+        if terraform_vpc_param_pairs():
+            print("🧱 Weekly Terraform VPC run: DeployInVPC=true in the test VPC")
     except Exception as e:  # noqa: BLE001
         refusal_text = label_ci_run(f"❌ Run refused before deploying anything: {e}")
         print(refusal_text)

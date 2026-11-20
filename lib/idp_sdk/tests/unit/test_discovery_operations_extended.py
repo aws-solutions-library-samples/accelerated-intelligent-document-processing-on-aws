@@ -1722,7 +1722,8 @@ def _pipeline_result(
     failed=0,
     documents=10,
     clusters=1,
-    noise=0,
+    noise_keys=(),
+    failed_embedding_keys=(),
 ):
     """A stand-in for `MultiDocumentDiscovery`'s dataclass result."""
     if successful is None:
@@ -1732,9 +1733,11 @@ def _pipeline_result(
         reflection_report="# Reflection",
         total_documents=documents,
         num_clusters=clusters,
-        num_failed_embeddings=noise,
+        num_failed_embeddings=len(failed_embedding_keys),
         num_successful_schemas=successful,
         num_failed_schemas=failed,
+        noise_document_keys=list(noise_keys),
+        failed_embedding_keys=list(failed_embedding_keys),
     )
 
 
@@ -1766,7 +1769,8 @@ class TestRunMultiDoc:
                 ],
                 documents=7,
                 clusters=1,
-                noise=2,
+                noise_keys=["odd.pdf", "other.pdf"],
+                failed_embedding_keys=["broken.pdf"],
             )
         )
 
@@ -1783,6 +1787,9 @@ class TestRunMultiDoc:
         assert result.total_documents == 7
         assert result.total_clusters == 1
         assert result.noise_documents == 2
+        assert result.noise_document_keys == ["odd.pdf", "other.pdf"]
+        assert result.failed_embeddings == 1
+        assert result.failed_embedding_keys == ["broken.pdf"]
         assert result.reflection_report == "# Reflection"
         assert result.config_version is None
         discovered = result.discovered_classes[0]
@@ -1790,6 +1797,58 @@ class TestRunMultiDoc:
         assert discovered.document_count == 7
         assert discovered.sample_doc_ids == ["1", "2"]
         assert pipeline.call_args.kwargs["region"] == "eu-west-1"
+
+    def test_failed_embeddings_are_not_reported_as_noise(self, tmp_path):
+        """A document whose embedding failed was never clustered, so it is not noise.
+
+        `noise_documents` once carried the embedding-failure count, which made a
+        run with failures and no noise report noise, and a run with noise and no
+        failures report none.
+        """
+        pipeline = _multi_doc(
+            _pipeline_result(
+                [], documents=3, clusters=0, failed_embedding_keys=["a", "b"]
+            )
+        )
+
+        with patch(
+            "idp_common.discovery.multi_document_discovery.MultiDocumentDiscovery",
+            pipeline,
+        ):
+            result = IDPClient().discovery.run_multi_doc(document_dir=str(tmp_path))
+
+        assert result.noise_documents == 0
+        assert result.noise_document_keys == []
+        assert result.failed_embeddings == 2
+        assert result.failed_embedding_keys == ["a", "b"]
+
+    def test_an_idp_common_without_the_noise_fields_reports_no_noise(self, tmp_path):
+        """An older idp_common result has only the seven original fields.
+
+        The SDK must neither crash on the missing attributes nor fall back to
+        reporting embedding failures as noise.
+        """
+        old_shape = SimpleNamespace(
+            discovered_classes=[],
+            reflection_report="# Reflection",
+            total_documents=4,
+            num_clusters=0,
+            num_failed_embeddings=2,
+            num_successful_schemas=0,
+            num_failed_schemas=0,
+        )
+
+        with patch(
+            "idp_common.discovery.multi_document_discovery.MultiDocumentDiscovery",
+            _multi_doc(old_shape),
+        ):
+            result = IDPClient().discovery.run_multi_doc(document_dir=str(tmp_path))
+
+        assert result.status == "SUCCESS"
+        assert result.noise_documents == 0
+        assert result.noise_document_keys == []
+        assert result.failed_embeddings == 2
+        assert result.failed_embedding_keys == []
 
     def test_model_overrides_reach_the_pipeline_config(self, tmp_path):
         """Only the overrides that were given appear, so the rest stay defaulted.

@@ -785,7 +785,10 @@ Add `--terraform-dir DIR` if you deployed with a directory other than the defaul
 `--terraform-assume-role-arn` keeps that role in `main.tf`, so the delete uses it
 too; pass `--terraform-assume-role-arn` to the delete to set or change it, which
 rewrites the two provider blocks before `init`. The command empties the deployment's buckets the
-way the CloudFormation delete path does, then removes from Terraform state every
+way the CloudFormation delete path does, except the module's custom-resource bridge
+buckets (`cfn_bridge`, created with `force_destroy`): those hold the physical ID of each
+custom resource, which the resource's delete needs, and `terraform destroy` empties
+them itself after the custom resources are deleted. It then removes from Terraform state every
 resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 `RetainExceptOnCreate`), and then runs `terraform destroy`. Removing a resource from
 state means Terraform forgets it without deleting it, so the resources CloudFormation
@@ -841,6 +844,17 @@ staging bucket when `EnableJobsApi` is `true`:
 terraform state list | grep -E '^module\.idp\..*(aws|awscc)_s3_bucket\.' \
   | grep -v '\.cfn_bridge$'
 ```
+
+Leave the bridge buckets alone even if they hold objects: each custom resource's
+physical ID is recorded there, and the custom-resource bridge refuses to delete a
+custom resource whose record is missing, failing the destroy with a message naming
+the resource and the missing record. That refusal is part of the bridge the
+deployment applied, so a deployment applied from a module released before it instead
+deletes the resource with an invented ID and ignores a failure; apply the current
+module first, or keep the bridge buckets intact, to avoid leaving resources behind. If that happens, either put the record back
+(`state/<stack_name>/<LogicalId>.json` in that module's bridge bucket, holding
+`{"PhysicalResourceId": "<id>"}`) and run `terraform destroy` again, or delete the
+resource yourself and `terraform state rm` its `aws_lambda_invocation` first.
 
 Buckets of your own in the same root configuration need the same treatment. Then run
 `terraform destroy`. Retained resources keep running up costs (storage, mostly) until
@@ -1151,8 +1165,12 @@ CloudFormation deployment of the same version, but these things differ:
   inputs are not known until apply is checked during the apply; see
   [Using the module beside your own resources](#using-the-module-beside-your-own-resources).
 - The full stack has been applied, re-planned with no changes, and destroyed with both
-  Terraform and OpenTofu, in a development account. The headless and GovCloud
-  modules are validated offline on every pull request, but neither has been applied.
+  Terraform and OpenTofu, in a development account. The standard module has also been
+  applied with `DeployInVPC=true` into a VPC with private subnets, NAT egress and an
+  `execute-api` interface endpoint, in `us-east-1` with Terraform: it re-planned with no
+  changes, processed a sample document end to end with the pipeline's functions in the
+  VPC, and was destroyed. The headless and GovCloud modules are validated offline on
+  every pull request, but neither has been applied.
 - `terraform validate` and `plan` print deprecation warnings for `hash_key` and
   `range_key` on the DynamoDB tables. They are warnings from version 6 of the `aws`
   provider and do not affect the deployment.
