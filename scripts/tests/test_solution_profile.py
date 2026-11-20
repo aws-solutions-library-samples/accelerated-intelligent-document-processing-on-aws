@@ -455,6 +455,26 @@ def test_an_action_item_with_no_action_required_fails(profile):
     assert any(version in p and "action_required is empty" in p for p in problems)
 
 
+@pytest.mark.unit
+def test_an_evidence_anchor_that_names_no_heading_fails(tmp_path):
+    profile_dir = tmp_path / "solution-profile"
+    shutil.copytree(PROFILE, profile_dir)
+    path = profile_dir / "limitations.yaml"
+    text = path.read_text(encoding="utf-8")
+    good = "docs/extraction-scaling-guide.md#2-request-too-large-refused-at-66-pages"
+    assert good in text, "the mutation anchor moved; update this test"
+    path.write_text(
+        text.replace(good, "docs/extraction-scaling-guide.md#no-such-heading", 1)
+    )
+    assert check.check_evidence_anchors(REPO_ROOT, PROFILE) == []
+    problems = check.check_evidence_anchors(REPO_ROOT, profile_dir)
+    assert len(problems) == 1
+    assert (
+        "#no-such-heading" in problems[0]
+        and "simple-extraction-page-limit" in problems[0]
+    )
+
+
 # ---------------------------------------------------------------------------
 # The build
 # ---------------------------------------------------------------------------

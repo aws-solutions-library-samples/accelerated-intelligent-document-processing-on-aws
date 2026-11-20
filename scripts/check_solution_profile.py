@@ -60,6 +60,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import yaml
 
@@ -515,6 +516,64 @@ def check_changes(profile: Profile, releases: list[tuple[str, str]]) -> list[str
     return problems
 
 
+MARKDOWN_LINKS = "scripts/check_markdown_links.py"
+
+
+def _evidence(node: Any, item_id: str = "") -> Iterable[tuple[str, str]]:
+    """Yield ``(enclosing item id, evidence entry)`` for every ``evidence`` list."""
+    if isinstance(node, dict):
+        here = str(node.get("id", item_id))
+        for key, value in node.items():
+            if key == "evidence" and isinstance(value, list):
+                yield from ((here, v) for v in value if isinstance(v, str))
+            else:
+                yield from _evidence(value, here)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _evidence(item, item_id)
+
+
+@functools.lru_cache(maxsize=None)
+def _anchors_of(repo_root: Path, rel: str) -> frozenset[str]:
+    """The fragment ids ``rel`` exposes, read by the Markdown link gate's own reader."""
+    name = "_check_markdown_links"
+    links = sys.modules.get(name)
+    if links is None:
+        spec = importlib.util.spec_from_file_location(name, repo_root / MARKDOWN_LINKS)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load {MARKDOWN_LINKS}")
+        links = importlib.util.module_from_spec(spec)
+        sys.modules[name] = links  # its dataclasses resolve their module through it
+        spec.loader.exec_module(links)
+    return frozenset(links.anchors((repo_root / rel).read_text(encoding="utf-8")))
+
+
+def check_evidence_anchors(repo_root: Path, profile_dir: Path) -> list[str]:
+    """Every ``<path>.md#<anchor>`` evidence entry names a heading that file has.
+
+    The validator checks that an evidence path exists, not that its anchor does, and
+    an anchor that resolves nowhere sends a reader to the top of a long page. Slugs
+    come from ``scripts/check_markdown_links.py``, which matches github-slugger (what
+    GitHub and the docs site use), so there is one slugifier in the repository.
+    """
+    problems = []
+    for path in sorted(profile_dir.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for item_id, entry in _evidence(data):
+            if entry.startswith("https://") or "#" not in entry:
+                continue
+            rel, fragment = entry.split("#", 1)
+            if not rel.endswith(".md") or not (repo_root / rel).is_file():
+                continue
+            headings = _anchors_of(repo_root, rel)
+            if fragment not in headings and unquote(fragment) not in headings:
+                problems.append(
+                    f"{path.name}: {item_id}: evidence anchor '#{fragment}' matches "
+                    f"no heading in {rel}"
+                )
+    return problems
+
+
 # ---------------------------------------------------------------------------
 # Running
 # ---------------------------------------------------------------------------
@@ -535,7 +594,7 @@ def cross_check(repo_root: Path, profile_dir: Path) -> list[str]:
     problems: list[str] = []
     for _name, derive, check in CROSS_CHECKS:
         problems += check(profile, derive(repo_root))
-    return problems
+    return problems + check_evidence_anchors(repo_root, profile_dir)
 
 
 @functools.lru_cache(maxsize=None)
