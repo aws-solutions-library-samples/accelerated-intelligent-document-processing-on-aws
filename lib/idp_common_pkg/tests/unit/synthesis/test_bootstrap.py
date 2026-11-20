@@ -48,6 +48,9 @@ class _FakeConfigManager:
     def get_raw_configuration(self, config_type, version):
         return self.saved.get(version)
 
+    def list_config_versions(self):
+        return [{"versionName": name, "managed": False} for name in self.saved]
+
     def save_raw_configuration(
         self, config_type, config_dict, version, description=None
     ):
@@ -100,6 +103,43 @@ class TestMergeClassIntoVersion:
         assert len(cm.saved["v1"]["classes"]) == 1
         bootstrap.merge_class_into_version(VALID_SCHEMA, "v1", config_manager=cm)
         assert len(cm.saved["v1"]["classes"]) == 1
+
+
+class TestProtectedProfiles:
+    @staticmethod
+    def _manager(versions):
+        cm = Mock()
+        cm.list_config_versions.return_value = versions
+        cm.get_raw_configuration.return_value = {"classes": []}
+        return cm
+
+    def test_default_is_refused(self):
+        cm = self._manager([{"versionName": "default", "managed": False}])
+        with pytest.raises(bootstrap.ProtectedProfileError, match="'default'"):
+            bootstrap.merge_class_into_version(
+                VALID_SCHEMA, "default", config_manager=cm
+            )
+        cm.save_raw_configuration.assert_not_called()
+
+    def test_a_stack_managed_profile_is_refused(self):
+        cm = self._manager([{"versionName": "docsplit", "managed": True}])
+        with pytest.raises(bootstrap.ProtectedProfileError, match="stack-managed"):
+            bootstrap.merge_class_into_version(
+                VALID_SCHEMA, "docsplit", config_manager=cm
+            )
+        cm.save_raw_configuration.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "versions",
+        [[], [{"versionName": "team-invoices", "managed": False}]],
+        ids=["new profile", "existing user profile"],
+    )
+    def test_a_user_profile_is_written(self, versions):
+        cm = self._manager(versions)
+        bootstrap.merge_class_into_version(
+            VALID_SCHEMA, "team-invoices", config_manager=cm
+        )
+        cm.save_raw_configuration.assert_called_once()
 
 
 class TestRunBootstrap:

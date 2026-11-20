@@ -30,7 +30,8 @@ A conversational agent:
 
 For the **highest-fidelity** result, you can attach your own example documents in
 the chat; they run through [Discovery](discovery.md), which infers schemas from
-the *real* documents instead of a prompt-only draft.
+the *real* documents instead of a prompt-only draft, and saves them into a new
+configuration profile of their own.
 
 Quick Start is available two ways:
 
@@ -97,10 +98,21 @@ ends the conversation.
    zip, through multi-document Discovery, in the background; the agent
    summarizes the discovered document types when they're ready. A schema inferred
    from a real document is higher-fidelity than a prompt-only draft.
+
+   Discovery saves what it finds into a **new** profile named
+   `quickstart-<date>-<time>` (UTC), one per conversation, and never into
+   a profile that already exists. On a stack with no configuration of its own yet
+   (nothing active, or only `default`), that profile becomes active straight away.
+   Otherwise the agent asks before making it the active profile, because the
+   active profile is what every new document on the stack is processed with.
 5. **Activate.** When you approve, the agent creates a configuration profile and
    **activates** it, then confirms it's ready. Upload a document from **Upload
    Documents** in the side navigation and it's processed with your new
    configuration.
+
+Quick Start never writes into `default` or into a stack-managed profile (a preset
+the stack deployed, which a stack update replaces). It adds a class to another
+existing profile only when you name that profile and ask it to.
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see
@@ -154,8 +166,8 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 | `--stack-name` | Target CloudFormation stack. **Omit for local mode** (print schema, no save). |
 | `--class-name` | Document class name to use as the schema `$id` / document type. |
 | `--field-hint` | A field the schema must include. Repeatable: `--field-hint X --field-hint Y`. |
-| `--config-profile` (alias: `--config-version`) | Existing configuration profile to source catalog classes from / merge the new class into. |
-| `--target-profile` (alias: `--target-version`) | Name of the configuration profile to create (default: `bootstrap-<class>`). |
+| `--config-profile` (alias: `--config-version`) | Existing configuration profile whose classes are searched for a template to adapt. Nothing is written to it. |
+| `--target-profile` (alias: `--target-version`) | Configuration profile to create, or to add the class to (default: `bootstrap-<class>`). `default` and stack-managed profiles are refused. |
 | `--count`, `-c` | Number of synthetic documents to generate (default: `3`). |
 | `--threshold` | Generation quality threshold, 1–10 (default: `7`). |
 | `--augment` | Apply scan/fax-style image augmentation to generated documents. |
@@ -203,7 +215,8 @@ minutes per document at the default quality threshold, more at higher thresholds
    IDP format.
 3. **Configuration profile.** The new class is merged into the target profile (creating it
    if needed; default name `bootstrap-<class>`), replacing any class with the same
-   id. In the UI, the agent then activates the profile.
+   id. `default` and stack-managed profiles are refused as targets. In the UI, the
+   agent then activates the profile.
 4. **(Optional) Test set.** If the generator is available, N documents are
    generated, their field names validated against the schema (extras pruned), and
    the packet is registered as a [test set](creating-custom-test-sets.md) named for

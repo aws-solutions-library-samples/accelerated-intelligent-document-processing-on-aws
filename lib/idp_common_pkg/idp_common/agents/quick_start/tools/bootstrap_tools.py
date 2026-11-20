@@ -308,9 +308,14 @@ def create_config_version_impl(schema_text: str, version_name: str = "") -> str:
 
     version = version_name or bootstrap_mod._default_version_name(schema)
     config_manager = ConfigurationManager()
-    bootstrap_mod.merge_class_into_version(
-        schema, version, config_manager=config_manager
-    )
+    try:
+        bootstrap_mod.merge_class_into_version(
+            schema, version, config_manager=config_manager
+        )
+    except bootstrap_mod.ProtectedProfileError as e:
+        return json.dumps(
+            {"config_version": version, "activated": False, "error": str(e)}
+        )
     return json.dumps({"config_version": version, "activated": False})
 
 
@@ -481,12 +486,14 @@ def generate_from_existing_config_impl(
         "jobId": job_id,
         "prompt": "",
         "targetVersion": version_name,
+        "configVersion": version_name,
+        "className": class_name,
+        "fromExistingConfig": True,
         "docCount": _clamp_doc_count(doc_count),
         "threshold": _clamp_threshold(threshold),
         "augment": augment,
         "scenario": scenario or "",
         "generateDocs": True,
-        "preauthoredSchema": schema,
         "allowedFieldNames": allowed,
     }
     _enqueue_generation(queue_url, message)

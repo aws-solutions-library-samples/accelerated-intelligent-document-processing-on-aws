@@ -508,6 +508,21 @@ template passes the parameter to the resolver and to both processors as
 `QUICK_START_ENABLED`, and an unset variable reads as the parameter's default,
 `true`.
 
+Every profile write Quick Start makes goes through
+`synthesis.bootstrap.merge_class_into_version`, which `idp-cli bootstrap` and the Test
+Set Generator's processor share. It calls `refuse_protected_profile` first, which
+raises `ProtectedProfileError` for `default` and for any profile
+`list_config_versions` reports as `managed`: a stack update records a new revision of
+a managed profile from its preset, so a class written there would be lost, and a
+class in `default` applies to every document. `create_config_version` returns the
+refusal as an `error` rather than raising. Generating a test set from a class that
+already exists (`generate_from_existing_config`, or the generator's own
+generate-from-configuration) sends `fromExistingConfig`, and the processor writes
+nothing back to that profile. Documents attached in the panel go to Discovery with a
+new `quickstart-<date>-<time>` profile as the target, one per conversation, chosen in
+`AgentChatLayout.tsx`; the panel activates it only when the stack has no
+configuration of its own yet, and otherwise leaves the agent to ask.
+
 Its system prompt names screens and navigation paths (Upload Documents,
 Configuration › View/Edit Configuration, Test Studio › Test Sets, Agent Chat), so a
 change that renames one of them updates the prompt in the same change.

@@ -8630,13 +8630,13 @@ def abort_test_run(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Existing configuration profile to source catalog classes from / merge into; --config-version is the former name and still works",
+    help="Existing configuration profile whose classes are searched for a template to adapt (nothing is written to it); --config-version is the former name and still works",
 )
 @click.option(
     "--target-profile",
     "--target-version",
     "target_version",
-    help="Name of the configuration profile to create (default: bootstrap-<class>); --target-version is the former name and still works",
+    help="Configuration profile to create or add the class to (default: bootstrap-<class>; default and stack-managed profiles are refused); --target-version is the former name and still works",
 )
 @click.option(
     "--count", "-c", default=3, show_default=True, help="Documents to generate"

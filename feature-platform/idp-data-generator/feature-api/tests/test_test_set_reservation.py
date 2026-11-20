@@ -446,6 +446,50 @@ class TestTheProcessorReleasesAnUnusedClaim:
         assert invocations == []
         assert _row(aws, "w2-synthetic")["status"] == "FAILED"
 
+    def test_a_class_from_a_managed_profile_generates_and_leaves_the_profile_alone(
+        self, api, processor, aws, monkeypatch
+    ):
+        """The class already lives in the profile, so nothing is written back to it.
+
+        Writing it back would put the bridge's annotation-stripped schema over the
+        configured class, and bootstrap refuses a stack-managed profile outright.
+        """
+        import idp_common.config.configuration_manager as cm
+
+        claimed = self._claim(api)
+        real_merge = processor.bootstrap_mod.merge_class_into_version
+        invocations = self._real_job(processor, monkeypatch)
+        monkeypatch.setattr(
+            processor.bootstrap_mod, "merge_class_into_version", real_merge
+        )
+        saves = []
+
+        class _ManagedConfig:
+            def get_raw_configuration(self, _kind, _version):
+                return {"classes": [{"$id": "W2", "type": "object", "properties": {}}]}
+
+            def list_config_versions(self):
+                return [{"versionName": "lending-package-sample", "managed": True}]
+
+            def save_raw_configuration(self, *args, **kwargs):
+                saves.append((args, kwargs))
+
+        monkeypatch.setattr(cm, "ConfigurationManager", _ManagedConfig)
+        job = {
+            **claimed,
+            "fromExistingConfig": True,
+            "configVersion": "lending-package-sample",
+            "targetVersion": "lending-package-sample",
+            "className": "W2",
+        }
+
+        out = processor.handler(_record(job), None)
+
+        assert out == {"batchItemFailures": []}
+        assert len(invocations) == 1
+        assert saves == []
+        assert _row(aws, "w2-synthetic")["status"] == "GENERATING"
+
     def test_a_job_with_no_generator_runtime_fails_the_claim(
         self, api, processor, aws, monkeypatch
     ):

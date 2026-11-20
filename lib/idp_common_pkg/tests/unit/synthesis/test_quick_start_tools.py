@@ -194,7 +194,10 @@ class TestGenerateFromExistingConfig:
         assert sent["body"]["targetVersion"] == "v1"
         assert sent["body"]["docCount"] == 2
         assert "NetPay" in sent["body"]["allowedFieldNames"]
-        assert sent["body"]["preauthoredSchema"]["title"] == "Paystub"
+        assert sent["body"]["fromExistingConfig"] is True
+        assert sent["body"]["configVersion"] == "v1"
+        assert sent["body"]["className"] == "Paystub"
+        assert "preauthoredSchema" not in sent["body"]
 
     def test_generate_from_existing_missing_class(self):
         from idp_common.agents.quick_start.tools import bootstrap_tools as bt
