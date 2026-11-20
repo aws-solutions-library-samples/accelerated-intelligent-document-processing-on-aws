@@ -347,6 +347,62 @@ class TestTheUploadTargetIsConstrained:
 
 
 @pytest.mark.unit
+class TestABrowserUploadCannotClaimToBeAnInternalProducer:
+    """#597: only named ``submission-source`` values skip a prefix mapping, and a
+    browser upload must not be able to carry one.
+
+    What stops it is S3, not this resolver: a presigned POST is refused when the
+    form carries a field its signed policy does not list. So the property this
+    resolver owns, and that is pinned here, is the POLICY -- every condition on a
+    metadata field is an exact match on a value the resolver chose, no condition
+    is a ``starts-with`` (which would let the browser supply a value), and
+    ``submission-source`` is in neither the policy nor the fields. Whether S3
+    enforces its own policy rules is not something an offline test can show.
+    """
+
+    @staticmethod
+    def _policy(result):
+        import base64
+
+        presigned = json.loads(result["presignedUrl"])
+        return presigned["fields"], json.loads(
+            base64.b64decode(presigned["fields"]["policy"])
+        )
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            {"fileName": "x.pdf"},
+            {"fileName": "x.pdf", "prefix": "acme", "version": "chosen"},
+            {"fileName": "x.pdf", "version": "chosen", "revision": 3},
+        ],
+    )
+    def test_the_policy_admits_no_metadata_the_browser_chooses(
+        self, resolver, arguments
+    ):
+        index, _ = resolver
+        fields, policy = self._policy(
+            index.handler(_event("uploadDocument", arguments))
+        )
+
+        assert not any(k.startswith("x-amz-meta-submission") for k in fields)
+        for condition in policy["conditions"]:
+            if isinstance(condition, list):
+                # The only list-form condition the resolver writes is the size range;
+                # `starts-with` / `eq` with a prefix would hand the value to the client.
+                assert condition[0] == "content-length-range", condition
+                continue
+            for name, value in condition.items():
+                assert "submission" not in name.lower(), condition
+                if name.lower().startswith("x-amz-meta-"):
+                    assert name in (
+                        "x-amz-meta-config-version",
+                        "x-amz-meta-config-revision",
+                    ), condition
+                    assert fields[name] == value, condition
+
+
+@pytest.mark.unit
 class TestTheAllowListFailsClosed:
     def test_an_unconfigured_allow_list_refuses_every_upload(self, monkeypatch):
         for name in (

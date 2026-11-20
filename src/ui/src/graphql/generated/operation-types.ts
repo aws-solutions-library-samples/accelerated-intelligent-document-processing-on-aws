@@ -360,6 +360,23 @@ export type ConfigPrefixMapping = {
   updatedBy?: Maybe<Scalars['String']['output']>;
 };
 
+export type ConfigPrefixMappingHistoryEntry = {
+  action: Scalars['String']['output'];
+  actor?: Maybe<Scalars['String']['output']>;
+  after?: Maybe<ConfigPrefixMapping>;
+  before?: Maybe<ConfigPrefixMapping>;
+  prefix: Scalars['String']['output'];
+  seq: Scalars['Int']['output'];
+  timestamp?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
+export type ConfigPrefixMappingHistoryResponse = {
+  entries?: Maybe<Array<Maybe<ConfigPrefixMappingHistoryEntry>>>;
+  error?: Maybe<ConfigurationError>;
+  nextBefore?: Maybe<Scalars['Int']['output']>;
+  success: Scalars['Boolean']['output'];
+};
+
 export type ConfigPrefixMappingMutationResponse = {
   error?: Maybe<ConfigurationError>;
   mapping?: Maybe<ConfigPrefixMapping>;
@@ -586,6 +603,7 @@ export type Document = DynamoDbBase & {
   PageCount?: Maybe<Scalars['Int']['output']>;
   Pages?: Maybe<Array<Maybe<Page>>>;
   ProcessingIssueCount?: Maybe<Scalars['Int']['output']>;
+  ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;
   QueuedTime?: Maybe<Scalars['AWSDateTime']['output']>;
   RuleValidationResult?: Maybe<Scalars['AWSJSON']['output']>;
   RuleValidationResultUri?: Maybe<Scalars['String']['output']>;
@@ -2097,6 +2115,7 @@ export type Query = {
    */
   listCatalogFeatures?: Maybe<Array<CatalogFeature>>;
   listChatSessions?: Maybe<ChatSessionConnection>;
+  listConfigPrefixMappingHistory?: Maybe<ConfigPrefixMappingHistoryResponse>;
   listConfigPrefixMappings?: Maybe<ConfigPrefixMappingsResponse>;
   listConfigProfileRevisions?: Maybe<ConfigProfileRevisionsResponse>;
   listConfigurationLibrary?: Maybe<ConfigurationLibraryResponse>;
@@ -2338,6 +2357,13 @@ export type QueryListChatSessionsArgs = {
   limit?: InputMaybe<Scalars['Int']['input']>;
   nextToken?: InputMaybe<Scalars['String']['input']>;
   surface?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryListConfigPrefixMappingHistoryArgs = {
+  before?: InputMaybe<Scalars['Int']['input']>;
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  prefix?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -4438,6 +4464,15 @@ export type ListChatSessionsQueryVariables = Exact<{
 
 
 export type ListChatSessionsQuery = { listChatSessions?: { nextToken?: string | null, items?: Array<{ sessionId: string, title: string, createdAt: string, updatedAt: string, messageCount: number, lastMessage?: string | null } | null> | null } | null };
+
+export type ListConfigPrefixMappingHistoryQueryVariables = Exact<{
+  prefix?: InputMaybe<Scalars['String']['input']>;
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  before?: InputMaybe<Scalars['Int']['input']>;
+}>;
+
+
+export type ListConfigPrefixMappingHistoryQuery = { listConfigPrefixMappingHistory?: { success: boolean, nextBefore?: number | null, entries?: Array<{ seq: number, timestamp?: string | null, actor?: string | null, prefix: string, action: string, before?: { prefix: string, configProfile: string, configRevision?: number | null, metadataPrecedence?: string | null, enabled?: boolean | null, description?: string | null } | null, after?: { prefix: string, configProfile: string, configRevision?: number | null, metadataPrecedence?: string | null, enabled?: boolean | null, description?: string | null } | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ListConfigPrefixMappingsQueryVariables = Exact<{ [key: string]: never; }>;
 

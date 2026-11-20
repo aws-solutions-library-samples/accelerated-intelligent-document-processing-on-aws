@@ -318,28 +318,28 @@ it is instrumented: five metrics in the stack's own namespace (`<StackName>`). T
 | `PrefixMappingConflict` | A mapping and the upload's own metadata disagreed, and one of them won | `Winner` (`prefix-mapping` or `metadata`) |
 | `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document at ingest | none |
 | `PrefixMappingLookupFailed` | The mapping set could not be read | none |
-| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that no longer exists | none |
+| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that does not exist, and the document was refused | none |
 
 All five publish only on the event, so no data means it has not happened.
 
 ⚠️ **Two of these do not mean quite what their names suggest, and both differences
 matter when you build a graph on them.** `PrefixMappingApplied` is published whenever a
 mapping *matched the key* — which includes the case where the conflict mode handed the
-decision to the upload's own metadata, and the case where the mapped profile turned out
-to be missing. So it counts documents a mapping was consulted for, not documents a
-mapping decided. For the latter, subtract both `PrefixMappingConflict` filtered to
-`Winner=metadata` and `PrefixMappingUnresolvable`. And `PrefixMappingConflict` is published
-only when the document *proceeded*: a refusal returns before it, so a refused document
-publishes `PrefixMappingRejected` alone and appears in neither of the other two. Summing
+decision to the upload's own metadata. So it counts documents a mapping was consulted
+for, not documents a mapping decided. For the latter, subtract `PrefixMappingConflict`
+filtered to `Winner=metadata`. And `PrefixMappingConflict` is published only when the
+document *proceeded*: a refusal returns before it, so a document refused by a "Refuse the
+conflict" mapping publishes `PrefixMappingRejected` alone, and one refused because its
+mapping names a missing profile publishes `PrefixMappingUnresolvable` alone. Summing
 conflicts to count disagreements therefore undercounts by exactly the refusals.
 
 **Three of the five are alarmed**, with different thresholds for different reasons.
 `PrefixMappingLookupFailed` and `PrefixMappingUnresolvable` alarm on the **first**
-occurrence: both mean documents are being processed under something *other* than what an
-admin configured, and neither is visible anywhere else — the documents succeed, report
-success, and carry extraction from the wrong configuration. This is the same shape as
-the stale-output purge above, a quiet failure whose only signal has to be a metric,
-because the document's own status is green. `PrefixMappingRejected` alarms on **volume**
+occurrence. The first means documents are being processed with no mapping applied: they
+succeed and report success, and the only per-document trace is a warning processing
+issue (`config_prefix_mapping_lookup_failed`), which is why the metric is what an
+operator is alerted by. The second means every document arriving at a mapped prefix is
+being refused until the mapping or its profile is fixed. `PrefixMappingRejected` alarms on **volume**
 instead, covered below.
 
 `PrefixMappingLookupFailed` is quiet by construction, because resolution deliberately
@@ -374,9 +374,9 @@ scope **even when a mapping was going to win**, which is why such an upload gets
 rather than silently having its choice overridden. Nothing is emitted for it, because
 nothing degraded: the refusal is the control working.
 
-`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that has
-been deleted. The document still processes — under the profile its upload named, or the
-active one — and the log line names which mapping is stale.
+`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that does
+not exist. The document is refused and recorded as Failed, with a reason naming the
+mapping's prefix and the missing profile, and the log line names which mapping is stale.
 `putConfigPrefixMapping` refuses a mapping naming something that does not exist, so this
 is always a *later* deletion rather than a typo at creation.
 

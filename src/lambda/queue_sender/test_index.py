@@ -10,6 +10,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 # The real Status enum, before idp_common is stubbed below. Mocking it would make
 # every status assertion here compare one MagicMock attribute against another,
@@ -19,14 +20,23 @@ sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "../../../lib/idp_common_pkg")
 )
 from idp_common import testrun_status as real_testrun_status  # noqa: E402
+from idp_common.config import prefix_mappings as real_prefix_mappings  # noqa: E402
 from idp_common.config import tenants as real_tenants  # noqa: E402
 from idp_common.job_completion import parse_job_document_id  # noqa: E402
-from idp_common.models import Status  # noqa: E402
+from idp_common.models import (  # noqa: E402
+    ProcessingIssue,
+    Status,
+    serialize_issue_list,
+)
 
 # idp_common and aws_xray_sdk are heavy/AWS-dependent; mock them before import.
 sys.modules["idp_common"] = MagicMock()
 mock_models_module = MagicMock()
 mock_models_module.Status = Status
+# Real, for the same reason as Status: the ingest-time processing issue (#597) is
+# behaviour under test, and a MagicMock issue serializes to whatever is asked of it.
+mock_models_module.ProcessingIssue = ProcessingIssue
+mock_models_module.serialize_issue_list = serialize_issue_list
 sys.modules["idp_common.models"] = mock_models_module
 sys.modules["idp_common.docs_service"] = MagicMock()
 sys.modules["idp_common.document_versions"] = MagicMock()
@@ -48,7 +58,11 @@ sys.modules["idp_common.config.configuration_manager"] = MagicMock()
 # that needs no AWS. What is tested HERE is the wiring: what this Lambda asks for,
 # what it does with the answer, and what it emits — which is the half that suite
 # cannot see.
-sys.modules["idp_common.config.prefix_mappings"] = MagicMock()
+mock_prefix_mappings = MagicMock()
+# Real: which submission-source values are this deployment's own producers (#597).
+mock_prefix_mappings.is_internal_producer = real_prefix_mappings.is_internal_producer
+mock_prefix_mappings.SOURCE_REJECTED = real_prefix_mappings.SOURCE_REJECTED
+sys.modules["idp_common.config.prefix_mappings"] = mock_prefix_mappings
 # The tenant RULE (`ingest_rejection_reason`) and the mode switch
 # (`is_strict_isolation`, read from TENANT_ISOLATION_MODE) are the real ones; only
 # the store is stubbed. The rule's own matrix is in
@@ -2451,6 +2465,191 @@ class TestTheNullVersionIdFallback:
 
 
 @pytest.mark.unit
+def index_status():
+    import index
+
+    return index.Status
+
+
+def _issue_document(key="k"):
+    """A document double whose issue list is a real list, so what the handler
+    appends to it is what the test reads back."""
+    document = MagicMock()
+    document.id = key
+    document.input_key = key
+    document.config_version = None
+    document.config_revision = None
+    document.submission_source = None
+    document.processing_issues = []
+    document.to_json.return_value = "{}"
+    return document
+
+
+class TestPrefixMappingLookupFailureIsRecordedOnTheDocument:
+    """#597, item 2: the fall-back stays, and the document says it happened."""
+
+    @staticmethod
+    def _run(document, list_error=None, config_table=True):
+        import index
+
+        env = {} if config_table else {"CONFIG_TABLE": ""}
+        with (
+            patch.dict(os.environ, env),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "delete_current_output_objects"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "PrefixMappingStore") as mock_store,
+            patch.object(index, "ConfigurationManager"),
+            patch.object(index.Document, "from_s3_event", return_value=document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            if list_error is not None:
+                mock_store.return_value.list.side_effect = list_error
+            else:
+                mock_store.return_value.list.return_value = []
+            index.handler(make_event(document.input_key), None)
+        metrics = [
+            datum["MetricName"]
+            for call in mock_cw.put_metric_data.call_args_list
+            for datum in call.kwargs.get("MetricData", [])
+        ]
+        return metrics, mock_sqs, mock_doc_service
+
+    def test_a_failed_read_flags_the_document_and_still_processes_it(self):
+        document = _issue_document()
+        metrics, mock_sqs, mock_doc_service = self._run(
+            document, list_error=RuntimeError("throttled")
+        )
+        assert "PrefixMappingLookupFailed" in metrics
+        assert mock_sqs.send_message.called is True
+        [issue] = document.processing_issues
+        assert isinstance(issue, ProcessingIssue)
+        assert (issue.stage, issue.severity, issue.code) == (
+            "ingest",
+            "warning",
+            "config_prefix_mapping_lookup_failed",
+        )
+        assert issue.root_cause == "RuntimeError"
+        assert "no mapping was applied" in issue.message
+        # Recorded BEFORE the row is created, so the row carries it.
+        created = mock_doc_service.create_document.call_args.args[0]
+        assert created.processing_issues == [issue]
+
+    def test_an_aws_error_is_recorded_by_code_and_never_by_message(self):
+        """The issue is shown to anyone who can see the document; an AWS error
+        message can carry a role ARN, and with it an account id."""
+        document = _issue_document()
+        secret = "arn:aws:sts::123456789012:assumed-role/x/y is not authorized"
+        error = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": secret}},
+            "GetItem",
+        )
+        self._run(document, list_error=error)
+        [issue] = document.processing_issues
+        assert issue.root_cause == "ClientError: AccessDeniedException"
+        assert "123456789012" not in issue.root_cause + issue.message
+
+    def test_an_unset_config_table_is_flagged_too(self):
+        document = _issue_document()
+        metrics, mock_sqs, _ = self._run(document, config_table=False)
+        assert "PrefixMappingLookupFailed" in metrics
+        assert mock_sqs.send_message.called is True
+        [issue] = document.processing_issues
+        assert issue.code == "config_prefix_mapping_lookup_failed"
+
+    def test_a_successful_read_records_nothing(self):
+        document = _issue_document()
+        metrics, _, _ = self._run(document)
+        assert "PrefixMappingLookupFailed" not in metrics
+        assert document.processing_issues == []
+
+
+class TestAMappingRefusalAtTheVerdict:
+    """A refusal discovered when the malware verdict re-resolves (the mapping or
+    its profile changed during the scan) must not be admitted unpinned: that would
+    process the document under the active profile, the fall-through #597 removed.
+    A quarantine is not overwritten with it."""
+
+    @staticmethod
+    def _run(assignment, threats=False):
+        import index
+
+        doc = _mock_document("acme/x.pdf")
+        doc.submission_source = None
+        doc.config_assignment_error = None
+        doc.processing_issues = []
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "resolve_configuration", return_value=assignment),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = _row_double()
+            event = (
+                make_scan_result_event(
+                    key="acme/x.pdf",
+                    result_status="THREATS_FOUND",
+                    threats=[{"name": "EICAR"}],
+                )
+                if threats
+                else make_scan_result_event(key="acme/x.pdf")
+            )
+            index.handler(event, None)
+        return doc, mock_sqs, mock_doc_service
+
+    def test_a_clean_verdict_for_a_now_unresolvable_mapping_is_refused(self):
+        doc, mock_sqs, mock_doc_service = self._run(
+            FakeAssignment(
+                profile=None,
+                rejected=True,
+                unresolvable=True,
+                source="rejected",
+                reason="Refused: that profile does not exist.",
+            )
+        )
+        assert doc.status == Status.FAILED
+        mock_sqs.send_message.assert_not_called()
+        extra = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]
+        assert extra["ConfigAssignmentError"] == "Refused: that profile does not exist."
+        assert extra["ConfigSource"] == "rejected"
+
+    def test_a_quarantine_is_not_overwritten_by_a_routing_refusal(self):
+        doc, mock_sqs, mock_doc_service = self._run(
+            FakeAssignment(profile=None, rejected=True, unresolvable=True),
+            threats=True,
+        )
+        assert doc.status == Status.QUARANTINED
+        mock_sqs.send_message.assert_not_called()
+        extra = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]
+        assert "ConfigAssignmentError" not in extra
+
+    def test_an_admitted_document_replaces_the_rows_ingest_issues(self):
+        """The row's issues describe the resolution it is admitted under."""
+        doc, mock_sqs, mock_doc_service = self._run(FakeAssignment(profile="lending"))
+        assert doc.status == Status.QUEUED
+        extra = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]
+        assert extra["ProcessingIssues"] == []
+        assert extra["ProcessingIssueCount"] == 0
+
+
 class TestConfigPrefixMappings:
     """What this Lambda asks the resolver for, and what it does with the answer.
 
@@ -2577,10 +2776,31 @@ class TestConfigPrefixMappings:
         assert "PrefixMappingConflict" in result["metrics"]
         assert result["enqueued"] is True
 
-    def test_a_stale_mapping_emits_a_metric_and_does_not_strand_the_document(self):
-        result = self._run(FakeAssignment(unresolvable=True))
+    def test_a_stale_mapping_fails_the_document_with_its_own_metric(self):
+        """#597: a mapping naming a profile that does not exist refuses the
+        document. It is counted as Unresolvable -- the alarm that names a stale
+        mapping -- and not as Rejected, which keeps meaning a conflict refusal."""
+        result = self._run(
+            FakeAssignment(
+                profile=None,
+                rejected=True,
+                unresolvable=True,
+                source="rejected",
+                mapping_prefix="acme/invoices/",
+                reason="Refused: that profile does not exist.",
+            )
+        )
         assert "PrefixMappingUnresolvable" in result["metrics"]
-        assert result["enqueued"] is True
+        assert "PrefixMappingRejected" not in result["metrics"]
+        assert result["enqueued"] is False
+        assert result["created"] is True
+        assert result["response"]["refused"] == "config_prefix_mapping_unresolvable"
+        document = result["document"]
+        assert document.status is index_status().FAILED
+        assert document.config_assignment_error == (
+            "Refused: that profile does not exist."
+        )
+        assert document.config_mapping_prefix == "acme/invoices/"
 
     def test_a_reject_records_a_failed_document_and_does_not_enqueue(self):
         result = self._run(
