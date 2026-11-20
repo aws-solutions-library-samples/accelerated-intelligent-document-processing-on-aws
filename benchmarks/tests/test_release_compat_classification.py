@@ -587,6 +587,36 @@ def test_a_decision_model_cell_is_still_refused_against_a_release_without_it():
     )
 
 
+def test_an_embeddings_block_is_inert_unless_the_cell_selects_embeddings():
+    """``embeddings`` (#1657) is read only under ``method: embeddings``, and
+    ``low_confidence`` under either non-LLM method, so a release that drops them
+    from an ``llm`` cell runs the same cell, while an ``embeddings`` cell is still
+    refused there."""
+    section: dict = {"method": "llm", "embeddings": {"temperature": 0.034}}
+    classification = {"split_then_classify": {"section_classification": section}}
+    base = "classification.split_then_classify.section_classification."
+    assert release_model_check._unselected_method_block(
+        classification, base + "embeddings.temperature"
+    )
+    assert release_model_check._unselected_method_block(
+        classification, base + "low_confidence.min_confidence"
+    )
+    section["method"] = "embeddings"
+    assert not release_model_check._unselected_method_block(
+        classification, base + "embeddings.temperature"
+    )
+    assert not release_model_check._unselected_method_block(
+        classification, base + "low_confidence.min_confidence"
+    )
+    section["method"] = "decision_model"
+    assert release_model_check._unselected_method_block(
+        classification, base + "embeddings.temperature"
+    )
+    assert not release_model_check._unselected_method_block(
+        classification, base + "low_confidence.min_confidence"
+    )
+
+
 def test_a_page_order_other_than_scan_is_still_refused_against_a_release_without_it():
     """The prior-behaviour skip is bounded by the value: ``pageOrder: scan`` is what
     a release without the key does, so dropping it is inert, while

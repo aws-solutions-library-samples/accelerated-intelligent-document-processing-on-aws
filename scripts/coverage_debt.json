@@ -120,6 +120,7 @@
         "idp_common/classification/__init__.py": 100.0,
         "idp_common/classification/class_confidence.py": 98.63,
         "idp_common/classification/decision_model_labeler.py": 88.73,
+        "idp_common/classification/embeddings_labeler.py": 91.25,
         "idp_common/classification/forced_class.py": 100.0,
         "idp_common/classification/models.py": 88.46,
         "idp_common/classification/page_order.py": 100.0,

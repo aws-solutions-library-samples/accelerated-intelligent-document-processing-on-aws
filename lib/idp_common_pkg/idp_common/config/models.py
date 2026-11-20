@@ -2426,10 +2426,14 @@ def _implemented_method(
         return "llm"
     v_str = str(v).strip().lower()
     if v_str not in implemented:
+        pointer = (
+            f" {planned} is declared but not yet implemented; see GitHub issue #1329."
+            if planned
+            else ""
+        )
         raise ValueError(
             f"{path} must be one of {', '.join(repr(m) for m in implemented)}, got "
-            f"{v!r}. {planned} is declared but not yet implemented; see GitHub "
-            "issue #1329."
+            f"{v!r}.{pointer}"
         )
     return v_str
 
@@ -2726,11 +2730,91 @@ class SectionClassificationLLMConfig(ClassificationClassAssigningSettings):
     )
 
 
-class EmbeddingsConfig(BaseModel):
-    """Section classification by embedding similarity. **Declared, not implemented.**"""
+#: What ``section_classification.embeddings`` compares a section's page images
+#: against (``EmbeddingsConfig.references``).
+EMBEDDING_REFERENCE_SOURCES = ("examples", "descriptions")
 
-    model: str = Field(default="", description="A multimodal embeddings model.")
-    min_similarity: float = Field(default=0.0, ge=0.0, le=1.0)
+
+class EmbeddingsConfig(BaseModel):
+    """Section classification by embedding similarity (``method: embeddings``).
+
+    The section's page images are embedded and compared, by cosine similarity, with
+    reference vectors for each class: the class's few-shot example images
+    (``references: examples``) or its name and description (``references:
+    descriptions``). A class's score is its best-matching reference. The scores are
+    turned into a probability per class by a softmax at ``temperature``, and the
+    top probability is the section's confidence. A section whose best similarity is
+    below ``min_similarity``, or whose confidence is below
+    ``low_confidence.min_confidence``, is classified by the LLM block instead, which
+    is why ``method: embeddings`` requires ``low_confidence.on_low_confidence: llm``.
+    See ``idp_common.classification.embeddings_labeler``.
+    """
+
+    model: str = Field(
+        default="",
+        description=(
+            "A multimodal Bedrock embeddings model. Empty uses the Cohere Embed v4 "
+            "profile callable from the stack's Region (the multi-document discovery "
+            "default)."
+        ),
+    )
+    min_similarity: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "A section whose best cosine similarity to any class is below this is "
+            "classified by the LLM. 0 sends none on similarity alone."
+        ),
+    )
+    references: str = Field(
+        default="examples",
+        description=(
+            "'examples' compares a section with each class's few-shot example images "
+            "(x-aws-idp-examples); a class with none is never chosen by embeddings. "
+            "'descriptions' compares it with each class's name and description."
+        ),
+    )
+    temperature: float = Field(
+        default=0.034,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "The softmax temperature that turns the per-class similarities into "
+            "probabilities. Smaller is more confident. 0.034 was fitted on a held-out "
+            "split for Cohere Embed v4 with example images at 512 px; refit it when "
+            "the model, the image size or the references change."
+        ),
+    )
+    max_image_dimension: int = Field(
+        default=512,
+        ge=256,
+        le=2048,
+        description=(
+            "Page images are downscaled to fit this many pixels on their longer side "
+            "before they are embedded. Cohere Embed v4 bills an image by its pixel "
+            "count, so this decides the embedding cost."
+        ),
+    )
+
+    @field_validator("references", mode="before")
+    @classmethod
+    def validate_references(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "examples"
+        v_str = str(v).strip().lower()
+        if v_str not in EMBEDDING_REFERENCE_SOURCES:
+            raise ValueError(
+                "classification.split_then_classify.section_classification.embeddings."
+                f"references must be one of {', '.join(EMBEDDING_REFERENCE_SOURCES)}, "
+                f"got {v!r}"
+            )
+        return v_str
+
+    @field_validator("max_image_dimension", mode="before")
+    @classmethod
+    def parse_max_image_dimension(cls, v: Any) -> int:
+        return _parse_int_param(v, 512) or 512
 
 
 class DecisionModelConfig(ExternalModelConfig):
@@ -2938,8 +3022,9 @@ class SectionClassificationConfig(BaseModel):
     method: str = Field(
         default="llm",
         description=(
-            "'llm' (one LLM call per section) or 'decision_model' (one choice "
-            "question per section, see `decision_model`). 'embeddings' is declared."
+            "'llm' (one LLM call per section), 'decision_model' (one choice "
+            "question per section, see `decision_model`) or 'embeddings' (page "
+            "images compared with class references, see `embeddings`)."
         ),
     )
     pages: str = Field(
@@ -2965,9 +3050,41 @@ class SectionClassificationConfig(BaseModel):
         return _implemented_method(
             v,
             "classification.split_then_classify.section_classification.method",
-            ("llm", "decision_model"),
-            "'embeddings'",
+            ("llm", "decision_model", "embeddings"),
+            "",
         )
+
+    @model_validator(mode="after")
+    def embeddings_need_an_llm_fallback(self) -> Self:
+        """Embeddings label only what they are sure of; the LLM labels the rest.
+
+        A similarity is not evidence the way an LLM's answer is: an embedding
+        always has a nearest class, including for a section of no configured
+        class. So the method ships only with the LLM fallback, and only with a
+        threshold that can send a section to it.
+        """
+        if self.method != "embeddings":
+            return self
+        path = "classification.split_then_classify.section_classification"
+        if self.low_confidence.on_low_confidence != "llm":
+            raise ValueError(
+                f"{path}.method is 'embeddings', which needs "
+                f"{path}.low_confidence.on_low_confidence 'llm': a section the "
+                "embeddings are not sure of is classified by the LLM settings, never "
+                "given the fallback class"
+            )
+        if (
+            not self.low_confidence.min_confidence
+            and not self.embeddings.min_similarity
+        ):
+            raise ValueError(
+                f"{path}.method is 'embeddings' but neither "
+                f"{path}.low_confidence.min_confidence nor "
+                f"{path}.embeddings.min_similarity is above 0, so no section could "
+                "ever be sent to the LLM. Set at least one (docs/classification.md "
+                "gives measured starting values)."
+            )
+        return self
 
     @model_validator(mode="after")
     def decision_model_needs_an_endpoint(self) -> Self:

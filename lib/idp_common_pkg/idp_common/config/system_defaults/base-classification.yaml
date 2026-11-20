@@ -194,11 +194,23 @@ classification:
         label_map: {}
         # none (the only value today): probabilities are used as returned.
         score_calibration: none
-      # What a decision-model answer below min_confidence does. 0 keeps every answer.
+      # What a decision-model or embeddings answer below min_confidence does. 0 keeps
+      # every answer. method: embeddings requires on_low_confidence: llm.
       low_confidence:
         min_confidence: 0.0
         # fallback_class | llm (the llm block above classifies the section again)
         on_low_confidence: fallback_class
+      # method: embeddings — the section's page images are compared with each class's
+      # references, and the sections below a threshold go to the llm block above
+      # (docs/classification.md, "Section classification by embeddings"). Left out of
+      # the shipped defaults so a configuration that does not use it is unchanged;
+      # these are the code defaults:
+      # embeddings:
+      #   model: ''                 # empty: Cohere Embed v4 for the Region
+      #   references: examples      # examples (x-aws-idp-examples images) | descriptions
+      #   min_similarity: 0.0       # below it the LLM labels the section
+      #   temperature: 0.034        # softmax over similarities; refit per model/references
+      #   max_image_dimension: 512  # px, longer side; Cohere bills images by pixels
   # ── Advanced: known document shape ───────────────────────────────────────────
   # By default every document is treated as a packet and its section
   # boundaries are detected. These ASSERT the shape instead.
