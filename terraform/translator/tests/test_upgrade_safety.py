@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from idp_tf import completeness, create_only, moved, safety, translate
 from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
-from idp_tf.hcl import norm
 from idp_tf.cli import VENDORED_SCHEMA, main, render_tree, tree_checks, tree_resources
+from idp_tf.hcl import norm
 from idp_tf.translate import Translator
 
 REPO = Path(__file__).resolve().parents[3]
