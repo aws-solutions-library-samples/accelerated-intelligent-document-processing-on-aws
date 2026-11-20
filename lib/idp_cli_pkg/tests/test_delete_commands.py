@@ -197,7 +197,10 @@ def _seed_documents(stack_name="dd-stack", with_outputs=True, documents=None):
                 "PK": f"doc#{key}",
                 "SK": "none",
                 "ObjectKey": key,
-                "Status": status,
+                # The attribute DocumentDynamoDBService writes. Seeding "Status"
+                # here once let --status-filter pass against a name no real
+                # record carries (#2189).
+                "ObjectStatus": status,
                 "QueuedTime": "2026-01-01T00:00:00.000Z",
             }
         )

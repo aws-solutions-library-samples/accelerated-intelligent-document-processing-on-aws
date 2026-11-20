@@ -740,6 +740,11 @@ So:
 - A document is selected once. Each output-version run adds a `run#<id>` record under
   the document's `PK`, so the scan sees a document once per run plus once for the
   document record, and the selectors de-duplicate the keys, keeping first-seen order.
+- `status_filter` is matched exactly against the document record's `ObjectStatus`, the
+  attribute `DocumentDynamoDBService` writes the status to (#2189). Run records carry
+  no status, so they never select a document for a status its document record does not
+  have. The filter is evaluated by DynamoDB during the scan, so a value no document
+  holds selects nothing rather than raising.
 
 Callers need not add their own handling to stay safe, but should expect to see these:
 `idp_sdk`'s `batch.delete_documents()` re-raises as `IDPProcessingError` and

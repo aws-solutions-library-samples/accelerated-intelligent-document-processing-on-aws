@@ -702,7 +702,7 @@ Permanently delete documents and their associated data from InputBucket, OutputB
   `batch-1/a.pdf` and **not** `batch-10/b.pdf`. Use `pattern` for substring or
   wildcard selection.
 - `pattern` (str, optional): Wildcard pattern to match document keys (e.g., `"batch-123/*.pdf"`, `"*invoice*"`)
-- `status_filter` (str, optional): Filter by document status (e.g., "FAILED", "COMPLETED")
+- `status_filter` (str, optional): Only select documents whose current status is exactly this value (e.g., "FAILED", "COMPLETED")
 - `stack_name` (str, optional): Stack name override
 - `dry_run` (bool, optional): If True, simulate deletion without actually deleting (default: False)
 - `continue_on_error` (bool, optional): Continue deleting if one document fails (default: True)
