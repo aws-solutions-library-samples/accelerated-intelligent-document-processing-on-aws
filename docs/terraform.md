@@ -940,6 +940,17 @@ Replacing a role is not contained to the role: custom resources that take its AR
 updated, and their results are unknown until apply, which is the case the previous
 section's third item handles.
 
+In release 0.6.15 and earlier, any upgrade that changed the CloudFront
+security-headers policy (its Content-Security-Policy, for example)
+stopped part way through the apply at
+`awscc_cloudfront_response_headers_policy.security_headers_policy`, with a Cloud
+Control `ValidationException` naming `XSSProtection`: the provider sent back the
+empty object it had stored for that unset header. The policy now sets
+`X-XSS-Protection: 0` explicitly, so upgrading to a release with the fix updates
+the policy in place, including on a deployment that an earlier failure left part
+way, and so do later changes to it. CloudFormation deployments were never
+affected.
+
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade
 actions apply to both.
