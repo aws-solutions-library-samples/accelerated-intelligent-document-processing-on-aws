@@ -719,6 +719,11 @@ and nothing else. A throttled or rejected table scan, or a table that does not e
 reaches you as an exception naming the cause, so a retry is your decision to make rather
 than something the result hides.
 
+Documents are selected by their tracking record's key, so a record whose `ObjectKey`
+attribute is a number, null or missing is selected with the rest of its batch, and a
+warning is logged naming it, instead of the call raising. A document with several
+processing runs appears once in `results` and is counted once in `total_count`.
+
 ```python
 # Delete entire batch
 result = client.batch.delete_documents(batch_id="batch-123")

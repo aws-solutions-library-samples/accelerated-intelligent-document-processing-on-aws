@@ -1736,6 +1736,12 @@ nothing, and that is all it means. A failure while finding the documents — a t
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
 
+A document is found by its tracking record's key, so one record whose `ObjectKey`
+attribute is a number, null or missing is still
+selected with the rest of its batch rather than failing the whole command, and a
+warning in the log names it. A document with several processing runs is listed and
+counted once.
+
 **A delete that could not finish says so.** Each document's cleanup has several steps —
 the input object, every output version, the tracking-list row, the run records, the
 tracking record — and a step that fails is reported per document rather than being
