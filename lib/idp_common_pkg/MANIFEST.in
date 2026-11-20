@@ -2,6 +2,8 @@
 recursive-include idp_common/config/system_defaults *.yaml
 include idp_common/config/system_defaults/*.yaml
 include idp_common/config/system_defaults/*.md
+# One file per default prompt, referenced from the base-*.yaml files
+recursive-include idp_common/config/system_defaults/prompts *.txt
 
 # Exclude build artifacts
 global-exclude build/*

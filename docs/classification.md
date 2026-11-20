@@ -631,9 +631,10 @@ the retry correct it) is available in
 - Better suited for packets where context spans multiple pages
 - Selected with `classification.combined.granularity: packet`
 
-The packet task prompt lives in
-`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
-under `classification.combined.packet.task_prompt`, and the configuration panel
+The default packet task prompt is
+[`combined.packet.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.task_prompt.txt)
+(`classification.combined.packet.task_prompt`; see
+[Default prompts](#default-prompts) for the others), and the configuration panel
 exposes it under *Packet settings* once the combined call's granularity is `packet`. It
 instructs the model to:
 
@@ -1755,6 +1756,38 @@ contract: the output it must ask for, the placeholders it can use and where
 `<<CACHEPOINT>>` goes. Comments are removed before a prompt is sent; see
 [Comments in a prompt](configuration.md#comments-in-a-prompt).
 
+### Default prompts
+
+Each default classification prompt is its own plain-text file, named by its key
+path under `classification`. The file is the text the stack sends when your
+configuration does not set that prompt (less its `{# ... #}` comments), and the
+configuration editor's help text for each prompt field links to the same file.
+
+| Prompt | Default |
+|---|---|
+| Combined call, page granularity: system prompt | [`combined.page.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.system_prompt.txt) |
+| Combined call, page granularity: task prompt | [`combined.page.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.task_prompt.txt) |
+| Combined call, packet granularity: system prompt | [`combined.packet.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.system_prompt.txt) |
+| Combined call, packet granularity: task prompt | [`combined.packet.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.task_prompt.txt) |
+| Combined call: confidence block, `topk` mode, page granularity | [`combined.llm.confidence.task_prompt_topk.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk.txt) |
+| Combined call: confidence block, `verbalized` mode, page granularity | [`combined.llm.confidence.task_prompt_verbalized.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized.txt) |
+| Combined call: confidence block, `topk` mode, packet granularity | [`combined.llm.confidence.task_prompt_topk_packet.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk_packet.txt) |
+| Combined call: confidence block, `verbalized` mode, packet granularity | [`combined.llm.confidence.task_prompt_verbalized_packet.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized_packet.txt) |
+| Splitting call, page granularity: system prompt | [`split_then_classify.splitting.llm.page.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.system_prompt.txt) |
+| Splitting call, page granularity: task prompt | [`split_then_classify.splitting.llm.page.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.task_prompt.txt) |
+| Splitting call, packet granularity: system prompt | [`split_then_classify.splitting.llm.packet.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.system_prompt.txt) |
+| Splitting call, packet granularity: task prompt | [`split_then_classify.splitting.llm.packet.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.task_prompt.txt) |
+| Section classification: system prompt | [`split_then_classify.section_classification.llm.system_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.system_prompt.txt) |
+| Section classification: task prompt | [`split_then_classify.section_classification.llm.task_prompt.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.task_prompt.txt) |
+| Section classification: confidence block, `topk` mode | [`split_then_classify.section_classification.llm.confidence.task_prompt_topk.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_topk.txt) |
+| Section classification: confidence block, `verbalized` mode | [`split_then_classify.section_classification.llm.confidence.task_prompt_verbalized.txt`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_verbalized.txt) |
+
+The classification defaults (`base-classification.yaml`) reference these files
+rather than holding the text, and the reference is resolved when the defaults are
+loaded, so a stored, downloaded or exported configuration carries the prompt text
+itself. How the reference works is described in the
+[system defaults README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/README.md#default-prompts-in-their-own-files).
+
 ### System Prompts
 
 Define overall model behavior and constraints:
@@ -1807,10 +1840,10 @@ which produces an error if it is missing.**
 - **The output shape the active call's parser reads.** A page call is parsed for
   `class` and `document_boundary`; a packet call is parsed for a `segments` array
   of `ordinal_start_page`/`ordinal_end_page`/`type`. Asking for the wrong one
-  fails the parse rather than the validation. The shipped prompts in
-  `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
-  are the reference for both shapes, and the split-then-classify splitting prompts there
-  drop `class`/`type` entirely because that call assigns no class.
+  fails the parse rather than the validation. The shipped
+  [default prompts](#default-prompts) are the reference for both shapes, and the
+  split-then-classify splitting prompts drop `class`/`type` entirely because that
+  call assigns no class.
 - **Both `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`, unless you mean to drop one.**
   An unset `modality.text` or `modality.images` is **inferred from this call's
   task prompt**, so deleting `{DOCUMENT_IMAGE}` turns images off for the call
