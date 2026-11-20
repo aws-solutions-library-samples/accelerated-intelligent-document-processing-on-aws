@@ -1820,6 +1820,86 @@ def test_a_modified_skill_is_reported_in_the_prompt(mod) -> None:
     assert "could NOT be pinned" not in plain
 
 
+def _stale_mr(mod):
+    return mod.MergeRequest(
+        iid=4,
+        title="t",
+        author="a",
+        source_branch="s",
+        target_branch="develop",
+        head_sha="abc",
+        web_url="u",
+        draft=False,
+    )
+
+
+@pytest.mark.unit
+def test_the_prompt_says_when_the_head_is_behind_its_target(mod) -> None:
+    """CI on a stale base can pass while the merged tree fails (#2115)."""
+    merge_request = _stale_mr(mod)
+    behind = mod.build_prompt(merge_request, "m", "d", False, [], [], 3)
+    assert "3 commit(s) behind `develop`" in behind
+    assert "make premerge" in behind
+    for current in (0, None):
+        prompt = mod.build_prompt(merge_request, "m", "d", False, [], [], current)
+        assert "behind `develop`" not in prompt
+        assert "make premerge" not in prompt
+
+
+@pytest.mark.unit
+def test_the_review_passes_the_commit_count_to_the_prompt() -> None:
+    """The note is inert unless review_one hands build_prompt the count."""
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "build_prompt"
+    ]
+    assert calls, "build_prompt is never called"
+    for call in calls:
+        arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
+        passed = [
+            argument
+            for argument in arguments
+            if isinstance(argument, ast.Call)
+            and isinstance(argument.func, ast.Name)
+            and argument.func.id == "commits_behind"
+        ]
+        assert passed, "a build_prompt call does not pass commits_behind(...)"
+        assert [ast.unparse(a) for a in passed[0].args] == [
+            "merge_request.iid",
+            "merge_request.target_branch",
+        ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [(0, "7\n", 7), (0, "0\n", 0), (128, "", None), (0, "garbage", None)],
+)
+def test_commits_behind_reads_rev_list_and_fails_quiet(
+    mod, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, expected
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, cwd=None, env=None, timeout=300):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+    assert mod.commits_behind(12, "develop") == expected
+    assert calls == [
+        [
+            "git",
+            "rev-list",
+            "--count",
+            "refs/ai-review/12..refs/ai-review/target-develop",
+        ]
+    ]
+
+
 @pytest.mark.unit
 def test_the_prompt_names_both_skill_files(mod) -> None:
     """The deferral only works if the model is told to read both."""
