@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_sdk._core.ids import generate_timestamped_id
 from idp_sdk._core.manifest_parser import parse_manifest
 from idp_sdk._core.stack_info import StackInfo, tracking_table_name
 
@@ -621,16 +622,15 @@ class BatchProcessor:
 
     def _generate_batch_id(self, prefix: str) -> str:
         """
-        Generate batch ID from prefix and timestamp
+        Generate a batch ID from a prefix, a timestamp and a random suffix
 
         Args:
             prefix: Batch prefix (e.g., 'cli-batch', 'experiment-v1')
 
         Returns:
-            Batch ID in format: {prefix}-{YYYYMMDD-HHMMSS}
+            Batch ID in format: {prefix}-{YYYYMMDD-HHMMSS}-{8 hex}
         """
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        return f"{prefix}-{timestamp}"
+        return generate_timestamped_id(prefix)
 
     def _copy_s3_file(
         self,

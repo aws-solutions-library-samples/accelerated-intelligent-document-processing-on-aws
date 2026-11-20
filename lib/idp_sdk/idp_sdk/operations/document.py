@@ -10,6 +10,7 @@ from typing import List, Optional, Union
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_sdk._core.ids import generate_timestamped_id
 from idp_sdk.exceptions import (
     IDPProcessingError,
     IDPResourceNotFoundError,
@@ -75,8 +76,7 @@ class DocumentOperation:
             document_id = os.path.splitext(filename)[0]
 
         # Generate unique batch prefix for single document
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        batch_id = f"single-doc-{timestamp}"
+        batch_id = generate_timestamped_id("single-doc")
         s3_key = f"{batch_id}/{filename}"
 
         try:
