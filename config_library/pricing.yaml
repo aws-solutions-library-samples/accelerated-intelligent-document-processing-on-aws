@@ -184,6 +184,25 @@ pricing:
         price: "0.0"
 
   # ---------------------------------------------------------------------------
+  # Document conversion (text, CSV, Excel, Word) — NOT a chargeable AWS call
+  # ---------------------------------------------------------------------------
+  # The OCR step emits `OCR/converted/document_conversion` = 1 page for every page
+  # it renders from a text, CSV, Excel or Word file instead of sending it to an OCR
+  # service (`OcrService._process_converted_page` in
+  # lib/idp_common_pkg/idp_common/ocr/service.py). The conversion runs inside the
+  # OCR Lambda with local libraries (`idp_common/ocr/document_converter.py`: PIL,
+  # python-docx, pandas) and calls no AWS API, so there is no per-page charge to
+  # price. Its only cost is the Lambda compute it uses, which the same function
+  # already meters as `OCR/lambda/requests` and `OCR/lambda/duration` (priced
+  # below), so pricing the page here would count that compute twice. The row
+  # states the zero rather than being absent because a missing entry records a
+  # NULL cost and reports the document's spend as incomplete (issue #2167).
+  - name: converted/document_conversion
+    units:
+      - name: pages
+        price: "0.0"
+
+  # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Amazon Nova (US)
   # ---------------------------------------------------------------------------
   #
