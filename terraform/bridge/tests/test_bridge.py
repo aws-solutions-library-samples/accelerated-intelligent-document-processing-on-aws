@@ -149,19 +149,48 @@ def test_a_replacement_on_update_deletes_the_old_physical_resource(bridge):
     }
 
 
-def test_delete_clears_the_record(bridge):
-    s3, lam = wire(bridge, [("SUCCESS", "phys-1", {}, "")])
+def test_a_delete_keeps_the_record_so_a_repeated_delete_is_not_refused(bridge):
+    """A Delete whose result Terraform never saved is sent again; with the
+    record gone it would be refused as unrecorded although it had succeeded."""
+    s3, lam = wire(
+        bridge, [("SUCCESS", "phys-1", {}, ""), ("SUCCESS", "phys-1", {}, "")]
+    )
     s3.objects["state/stk/Thing.json"] = b'{"PhysicalResourceId": "phys-1"}'
     bridge.handler(event("delete", {}), context())
-    assert lam.events[0]["RequestType"] == "Delete"
-    assert "state/stk/Thing.json" not in s3.objects
+    bridge.handler(event("delete", {}), context())
+    assert [e["RequestType"] for e in lam.events] == ["Delete", "Delete"]
+    assert [e["PhysicalResourceId"] for e in lam.events] == ["phys-1", "phys-1"]
 
 
-def test_an_unrecorded_delete_still_reaches_the_handler_and_never_fails(bridge):
-    s3, lam = wire(bridge, [("FAILED", "", {}, "boom")])
-    out = bridge.handler(event("delete", {}), context())
-    assert lam.events[0]["RequestType"] == "Delete"
-    assert out["PhysicalResourceId"] == ""
+def test_an_unrecorded_delete_is_refused_without_calling_the_handler(bridge):
+    """With no recorded physical id there is nothing true to send. An invented
+    one sent the knowledge-base handler's DeleteKnowledgeBase to an id that does
+    not exist, and the bridge swallowed the failure, so destroy succeeded and
+    the knowledge base stayed. A handler that reads an unknown id as already
+    deleted would report SUCCESS and leak the same way, so the handler is not
+    called at all."""
+    s3, lam = wire(bridge, [("SUCCESS", "", {}, "")])
+    with pytest.raises(RuntimeError) as err:
+        bridge.handler(event("delete", {}), context())
+    assert lam.events == []
+    message = str(err.value)
+    assert message.startswith("Thing Delete refused")
+    assert "s3://bucket/state/stk/Thing.json is missing" in message
+    assert "arn:handler" in message
+    # Both ways out are named: restore the record, or remove it from state.
+    assert 'the record back as {"PhysicalResourceId": "<id>"}' in message
+    assert "delete the resource yourself and remove this" in message
+    assert "(terraform state rm)" in message
+
+
+def test_a_recorded_delete_failure_fails_the_destroy(bridge):
+    s3, lam = wire(bridge, [("FAILED", "", {}, "still in use")])
+    s3.objects["state/stk/Thing.json"] = b'{"PhysicalResourceId": "phys-1"}'
+    with pytest.raises(RuntimeError, match="Thing Delete failed: still in use"):
+        bridge.handler(event("delete", {}), context())
+    assert lam.events[0]["PhysicalResourceId"] == "phys-1"
+    # Kept, so a destroy run again still knows what to delete.
+    assert "state/stk/Thing.json" in s3.objects
 
 
 def test_a_failed_response_fails_the_apply_with_the_reason(bridge):

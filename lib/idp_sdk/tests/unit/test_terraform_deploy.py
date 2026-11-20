@@ -752,6 +752,15 @@ STATE = {
                             "type": "awscc_s3_bucket",
                             "values": {"bucket_name": "tfidp-output"},
                         },
+                        {
+                            "address": "module.idp.aws_s3_bucket.cfn_bridge",
+                            "mode": "managed",
+                            "type": "aws_s3_bucket",
+                            "values": {
+                                "bucket": "tfidp-cfnbridge-1",
+                                "force_destroy": True,
+                            },
+                        },
                     ],
                     "child_modules": [
                         {
@@ -799,6 +808,45 @@ class TestRetained:
             STATE, exclude=["module.idp.aws_s3_bucket.logging_bucket"]
         )
         assert [b["bucket_name"] for b in buckets] == ["tfidp-input", "tfidp-output"]
+
+    def test_buckets_to_empty_leave_out_the_custom_resource_bridge_buckets(self):
+        """The bridge buckets hold each custom resource's physical ID until its
+        Delete runs; emptying one first sends every Delete in that module
+        without its ID. The fixture has the shape and the four bridge buckets
+        (root and three child modules, all ``force_destroy``) of a real
+        deployment's state."""
+        bridges = [
+            ("module.idp", "tfidp-cfnbridge-1"),
+            ("module.idp.module.documentkb[0]", "tfidp-documentkb-cfnbridge-2"),
+            ("module.idp.module.patternstack", "tfidp-patternsta-cfnbridge-3"),
+            (
+                "module.idp.module.multidocdiscoverystack",
+                "tfidp-multidocdi-cfnbridge-4",
+            ),
+        ]
+        children = [
+            {
+                "address": module,
+                "resources": [
+                    {
+                        "address": f"{module}.aws_s3_bucket.cfn_bridge",
+                        "mode": "managed",
+                        "type": "aws_s3_bucket",
+                        "values": {"bucket": name, "force_destroy": True},
+                    },
+                    {
+                        "address": f"{module}.aws_s3_bucket.data",
+                        "mode": "managed",
+                        "type": "aws_s3_bucket",
+                        "values": {"bucket": f"{name}-data", "force_destroy": False},
+                    },
+                ],
+            }
+            for module, name in bridges
+        ]
+        state = {"values": {"root_module": {"child_modules": children}}}
+        names = [b["bucket_name"] for b in tf.state_buckets(state)]
+        assert names == [f"{name}-data" for _, name in bridges]
 
     def test_report_has_the_cloudformation_shape(self):
         remove, _ = tf.retained_state_addresses(

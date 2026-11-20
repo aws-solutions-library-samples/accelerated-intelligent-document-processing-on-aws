@@ -473,7 +473,9 @@ class StackOperation:
 
         In ``terraform_dir`` (default ``./idp-terraform/<stack_name>``): runs
         ``init``; empties the deployment's S3 buckets that will be destroyed,
-        with the helper the CloudFormation delete uses; removes every address in
+        with the helper the CloudFormation delete uses, except those with
+        ``force_destroy`` (the custom-resource bridge buckets), which destroy
+        empties only after the custom resources that read them; removes every address in
         the module's ``retainedAddresses`` (as ``module.idp.<address>``) from
         the state, skipping any not in it; then runs ``destroy -auto-approve``.
 

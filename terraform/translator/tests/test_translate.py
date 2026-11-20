@@ -622,6 +622,21 @@ def test_the_bridge_bucket_aborts_incomplete_uploads_bucket_wide():
     assert "days_after_initiation = 1" in rule
 
 
+def test_the_bridge_bucket_is_force_destroy_and_named_by_the_bridge_function():
+    """``idp-cli delete --terraform`` leaves ``force_destroy`` buckets for
+    destroy to empty, and that is what keeps the bridge's physical-ID records
+    until every custom resource's Delete has run (idp_sdk ``state_buckets``).
+    Destroy deletes the bucket after the function naming it, and every
+    invocation depends on the function, so both halves are needed."""
+    from idp_tf.static_files import bridge_tf
+
+    bridge = bridge_tf(None)
+    bucket = _block(bridge, 'resource "aws_s3_bucket" "cfn_bridge"')
+    assert "force_destroy = true" in bucket
+    function = _block(bridge, 'resource "aws_lambda_function" "cfn_bridge"')
+    assert "BRIDGE_BUCKET = aws_s3_bucket.cfn_bridge.id" in function
+
+
 def test_a_parameter_named_like_a_bridge_variable_does_not_collide(schema):
     t = queue(QueueName={"Ref": "CfnBridgeKmsKeyArn"})
     t["Parameters"] = {"CfnBridgeKmsKeyArn": {"Type": "String"}}

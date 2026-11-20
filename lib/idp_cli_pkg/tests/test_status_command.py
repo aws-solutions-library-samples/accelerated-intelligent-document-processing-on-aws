@@ -173,8 +173,11 @@ class TestStatusCommandSearch:
                 ["status", "--stack-name", "test-stack", "--batch-id", "batch-123"],
             )
 
-            # Verify search was called multiple times (once per status)
-            assert mock_tracking_searcher.search_by_pk_and_status.call_count == 5
+            # One search over every status (#2195): a per-status list missed every
+            # step status, so a document mid-pipeline was not found.
+            mock_tracking_searcher.search_by_pk_and_status.assert_called_once_with(
+                pk="batch-123", object_status=None
+            )
 
     def test_status_with_batch_id_no_results(
         self, runner, mock_batch_processor, mock_tracking_searcher
