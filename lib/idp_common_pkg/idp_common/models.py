@@ -480,6 +480,59 @@ class ProcessingIssue:
         )
 
 
+def serialize_issue_list(issues: List[ProcessingIssue]) -> List[Dict[str, Any]]:
+    """A list of issues in the tracking table's camelCase item shape.
+
+    The shape ``idp_common.dynamodb.service.serialize_processing_issues`` writes
+    for a section, mirroring the GraphQL ``ProcessingIssue`` type.
+
+    Also used for the *document-level* list (``Document.processing_issues``), which
+    is persisted as the item's top-level ``ProcessingIssues``. That list exists for
+    the one stage with no section to hang an issue on -- ingest, where
+    ``queue_sender`` records that the prefix-mapping read failed (#597).
+    """
+    issues_data: List[Dict[str, Any]] = []
+    for issue in issues:
+        issue_item: Dict[str, Any] = {
+            "stage": issue.stage,
+            "severity": issue.severity,
+            "code": issue.code,
+            "message": issue.message,
+        }
+        if issue.root_cause:
+            issue_item["rootCause"] = issue.root_cause
+        if issue.details:
+            issue_item["details"] = json.dumps(issue.details, default=str)
+        issues_data.append(issue_item)
+    return issues_data
+
+
+def deserialize_issue_list(
+    issues_data: Any, section_id: Optional[str] = None
+) -> List[ProcessingIssue]:
+    """The inverse of :func:`serialize_issue_list`."""
+    issues: List[ProcessingIssue] = []
+    for iss in issues_data or []:
+        details = iss.get("details")
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except (json.JSONDecodeError, TypeError):
+                details = {}
+        issues.append(
+            ProcessingIssue(
+                stage=iss.get("stage", ""),
+                severity=iss.get("severity", "info"),
+                code=iss.get("code", ""),
+                message=iss.get("message", ""),
+                root_cause=iss.get("rootCause", ""),
+                section_id=section_id,
+                details=details or {},
+            )
+        )
+    return issues
+
+
 @dataclass
 class Section:
     """Represents a section of pages with the same classification."""

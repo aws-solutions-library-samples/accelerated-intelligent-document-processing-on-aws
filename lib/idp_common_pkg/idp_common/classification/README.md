@@ -619,6 +619,49 @@ classification:
 
 `page` remains available when you want one section per page without inference.
 
+### Printed page order (`document_shape.pageOrder`)
+
+`pageOrder: printed_page_numbers` classifies a document's pages in the order of their
+printed page numbers rather than their scan order (GitHub issue
+[#623](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/623)).
+The user-facing behaviour, the recognised formats and the fallback reasons are in
+[docs/classification.md](../../../../docs/classification.md#page-order); this section
+is how the service does it.
+
+- **Reading the numbers** is `page_order.py`, which calls no model and has no AWS
+  dependency: `read_printed_page_number(text)` reads one page's header and footer
+  lines, and `plan_printed_page_order(page_ids, texts)` returns a `PageOrderPlan`
+  whose `order` is the page IDs in printed order, or `None` with a `reason_code`.
+  The text is each page's `parsed_text_uri`, read once per page in parallel; a
+  transient read error is raised so the step retries, rather than being taken as a
+  page with no text.
+- **Classifying in that order** happens in `classify_document`, after the zero-call
+  short-circuits and before the strategy dispatch (`_dispatch_classification`). The
+  dispatch runs unchanged over a **view** of the document whose page `str(i)` is the
+  *i*-th printed page. Every path orders pages by integer page ID, and the
+  unwindowed packet path reads the model's ordinals as page IDs, so a view keyed
+  1..N in printed order is the one input they all handle without being told about
+  the setting — a sort key threaded through each path would have to find every
+  site, and the packet one is not a sort.
+- **Mapping back** (`_merge_printed_order_view`) copies each view page's state onto
+  the original page under its own ID, maps every section's `page_ids` to the original
+  IDs (ascending), orders and numbers the sections by their first original page as a
+  scan-order run does (evaluation pairs sections by `section_id`), rewrites page references in the issues and errors classification
+  wrote during the run (`page N`, `pages N-M`, and the exact page list each issue
+  recorder embeds beside `details["page_ids"]`), re-keys
+  `metadata["failed_page_exceptions"]`, and recomputes `page_indices` on the original
+  IDs. Issues that were already on the document's sections are left alone. It runs in
+  a `finally`, so a raised failure is also reported against the original pages.
+- **When the numbers cannot be trusted**, the document is dispatched as it is and
+  `_record_page_order_not_applied` puts a `classification_page_order_not_applied`
+  warning on the first section, with `details.reason_code` and
+  `details.problem_page_ids`. The outcome is in `document.metadata["page_order"]`
+  either way.
+
+The DynamoDB classification cache stores page results under the view's IDs. That is
+consistent across a retry because the order is a deterministic function of the OCR
+text, which a retry reads unchanged.
+
 ## Regex-Based Classification for Enhanced Performance
 
 The classification service now supports optional regex-based pattern matching to provide significant performance improvements and deterministic classification for known document patterns. This feature enables instant classification without LLM API calls when regex patterns match.

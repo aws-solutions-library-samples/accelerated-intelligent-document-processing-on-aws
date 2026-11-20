@@ -2156,6 +2156,14 @@ Resources:
                     default: "ALL"
                     order: 1
                     showWhen: [{ field: "sectionSplitting", value: "disabled" }]
+                  pageOrder:
+                    type: string
+                    title: Page order
+                    description: "'Scan order': pages are classified in the order they were scanned. 'Printed page numbers': each page's printed page number is read from the header and footer lines of its OCR text (no model call) and the pages are classified in that order, so a form whose pages were scanned apart is kept together. Pages are reordered only when every page has exactly one number and the numbers form one gap-free run; otherwise the scan order is kept and a warning on the first section says why. Page numbers in the results, the page viewer and extraction are unchanged. [Page order](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#page-order)"
+                    enum: ["scan", "printed_page_numbers"]
+                    enumLabels: { scan: "Scan order (default)", printed_page_numbers: "Printed page numbers" }
+                    default: "scan"
+                    order: 2
               postHook:
                 type: array
                 collapsible: true

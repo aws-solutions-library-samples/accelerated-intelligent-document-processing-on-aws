@@ -17,10 +17,13 @@ Classification methods:
   across the entire document packet at once.
 """
 
+import copy
+import dataclasses
 import functools
 import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -47,6 +50,12 @@ from idp_common.classification.models import (
     DocumentType,
     PageClassification,
     Segment,
+)
+from idp_common.classification.page_order import (
+    PAGE_ORDER_ISSUE_CODE,
+    PAGE_ORDER_PRINTED,
+    PageOrderPlan,
+    plan_printed_page_order,
 )
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
@@ -113,6 +122,11 @@ STAGE_CALL_PATH = {
     STAGE_SPLITTING: "split_then_classify.splitting.llm",
     STAGE_SECTION_CLASSIFICATION: "split_then_classify.section_classification.llm",
 }
+
+
+def _numeric_id(page_id: str) -> float:
+    """Sort key for page IDs: numeric where they are numbers, last otherwise."""
+    return int(page_id) if str(page_id).isdigit() else float("inf")
 
 
 def _stage_llm(classification: Any, stage: str) -> Any:
@@ -694,6 +708,9 @@ class ClassificationService:
                 document_shape.sectionSplitting,
             )
             self.max_pages_for_classification = "ALL"
+        # Whether the model sees the pages in scan order or in the order their
+        # printed page numbers give (GitHub #623). See classification/page_order.py.
+        self.page_order = document_shape.pageOrder
 
         # The page-reading call's granularity: the combined call's under
         # combined, the splitting call's under split_then_classify. Section
@@ -3980,6 +3997,21 @@ class ClassificationService:
             document = self._update_document_status(document)
             return document
 
+        if self.page_order == PAGE_ORDER_PRINTED and len(document.pages) > 1:
+            return self._classify_in_printed_page_order(
+                document, forced_class=forced_class
+            )
+        return self._dispatch_classification(document, forced_class=forced_class)
+
+    def _dispatch_classification(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
+        """Run the configured strategy over ``document``'s pages in page-ID order.
+
+        The part of :meth:`classify_document` that calls the model, split out so
+        :meth:`_classify_in_printed_page_order` can run it over a re-keyed view of
+        the document without either path knowing about the other.
+        """
         # Check for limited page classification
         # "ALL" means use all pages, otherwise parse as int
         max_pages_str = str(self.max_pages_for_classification).upper()
@@ -4050,6 +4082,351 @@ class ClassificationService:
             return self.packet_classify_document(document, forced_class=forced_class)
 
         return self._classify_pages_multimodal(document, forced_class=forced_class)
+
+    # ── Printed page order (classification.document_shape.pageOrder) ─────────
+
+    def _read_page_texts_for_order(
+        self, document: Document
+    ) -> Dict[str, Optional[str]]:
+        """Each page's OCR text, as the page-number reader needs it.
+
+        The text OCR already wrote (``parsed_text_uri``); no model is called. A
+        page with no text URI, or whose text cannot be read, maps to ``None``,
+        which the reader reports as a page with no text. A transient read error is
+        raised instead, so the step is retried rather than classified in a
+        different order from the one a retry would choose.
+        """
+
+        def read(page: Any) -> Optional[str]:
+            if not page.parsed_text_uri:
+                return None
+            try:
+                return s3.get_text_content(page.parsed_text_uri)
+            except Exception as e:
+                reraise_if_transient(e, f"reading page {page.page_id} text")
+                logger.warning(
+                    "Page %s text could not be read for printed-page ordering: %s",
+                    page.page_id,
+                    e,
+                )
+                return None
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                page_id: executor.submit(read, page)
+                for page_id, page in document.pages.items()
+            }
+            return {page_id: future.result() for page_id, future in futures.items()}
+
+    def _classify_in_printed_page_order(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
+        """Classify ``document`` with its pages in printed-page-number order.
+
+        The page numbers are read from the OCR text by
+        :func:`~idp_common.classification.page_order.plan_printed_page_order`.
+        When they cannot be trusted for the whole document, the pages are
+        classified in scan order exactly as with ``pageOrder: scan``, and a
+        warning issue on the first section says why.
+
+        When they can, and the printed order differs from the scan order, the
+        pages are classified through a **view** of the document whose page *i* is
+        the *i*-th printed page, with page ID ``str(i)``. Every path below
+        :meth:`classify_document` orders pages by integer page ID and the packet
+        path reads a model's ordinals as page IDs, so a view keyed this way is the
+        one input they all handle unchanged. The result is then mapped back onto
+        ``document``: pages keep their own IDs, every section's ``page_ids`` name
+        the original pages (ascending, as any other section's are), and the page
+        references in classification's processing issues, errors and failure
+        metadata are rewritten to the original IDs. Sections are ordered and
+        numbered by their first original page, as in scan order. So everything
+        downstream —
+        extraction, assessment, the page viewer, evaluation — sees the same page
+        IDs it would have seen without the setting; what changed is which pages
+        were grouped into which section.
+
+        ``document.metadata["page_order"]`` records the outcome either way.
+        """
+        scan_ids = sorted(document.pages, key=_numeric_id)
+        plan = plan_printed_page_order(
+            scan_ids, self._read_page_texts_for_order(document)
+        )
+
+        if plan.order is None:
+            logger.warning(
+                "pageOrder is %s but the pages of document %s keep their scan "
+                "order: %s",
+                PAGE_ORDER_PRINTED,
+                document.id,
+                plan.reason,
+            )
+            result = self._dispatch_classification(document, forced_class=forced_class)
+            self._record_page_order_not_applied(result, plan)
+            result.metadata = result.metadata or {}
+            result.metadata["page_order"] = {
+                "setting": PAGE_ORDER_PRINTED,
+                "applied": False,
+                "reason_code": plan.reason_code,
+                "reason": plan.reason,
+            }
+            return result
+
+        if plan.order == scan_ids:
+            logger.info(
+                "Printed page numbers of document %s already run in scan order",
+                document.id,
+            )
+            result = self._dispatch_classification(document, forced_class=forced_class)
+            result.metadata = result.metadata or {}
+            result.metadata["page_order"] = {
+                "setting": PAGE_ORDER_PRINTED,
+                "applied": True,
+                "reordered": False,
+            }
+            return result
+
+        logger.info(
+            "Classifying document %s in printed page order; scan page IDs in "
+            "printed order: %s",
+            document.id,
+            ", ".join(plan.order),
+        )
+        # Issues already on the document's sections name original pages; only
+        # those classification writes during this run name the view's.
+        carried = {
+            id(issue)
+            for section in document.sections or []
+            for issue in section.processing_issues or []
+        }
+        view = self._printed_order_view(document, plan.order)
+        errors_before = len(view.errors)
+        result: Optional[Document] = None
+        try:
+            result = self._dispatch_classification(view, forced_class=forced_class)
+        finally:
+            # Mapped back on failure too, so the errors and failure metadata the
+            # handler reads before re-raising name the original pages.
+            self._merge_printed_order_view(
+                document,
+                result or view,
+                plan.order,
+                errors_before,
+                carried,
+                renumber=result is not None,
+            )
+        document.metadata["page_order"] = {
+            "setting": PAGE_ORDER_PRINTED,
+            "applied": True,
+            "reordered": True,
+            "printed_order": list(plan.order),
+        }
+        return document
+
+    @staticmethod
+    def _printed_order_view(document: Document, order: List[str]) -> Document:
+        """A shallow copy of ``document`` whose page ``str(i)`` is ``order[i-1]``.
+
+        Pages are copied (so the copy can carry its own ``page_id``) but share
+        their URIs with the originals; anything classification writes onto a page
+        is copied back by :meth:`_merge_printed_order_view`. Existing sections are
+        carried in under the view's IDs, so a path that leaves them untouched
+        hands them back unchanged.
+        """
+        to_view = {pid: str(i) for i, pid in enumerate(order, start=1)}
+        view = copy.copy(document)
+        view.pages = {}
+        for original_id in order:
+            page = copy.copy(document.pages[original_id])
+            page.page_id = to_view[original_id]
+            view.pages[page.page_id] = page
+        view.sections = []
+        for section in document.sections or []:
+            carried = copy.copy(section)
+            carried.page_ids = [to_view.get(str(p), str(p)) for p in section.page_ids]
+            view.sections.append(carried)
+        view.errors = list(document.errors)
+        view.metadata = dict(document.metadata or {})
+        return view
+
+    def _merge_printed_order_view(
+        self,
+        document: Document,
+        view: Document,
+        order: List[str],
+        errors_before: int,
+        carried: Set[int],
+        renumber: bool = True,
+    ) -> None:
+        """Copy a classified view's results back onto ``document``, by original ID.
+
+        ``carried`` holds the ``id()`` of every processing issue the document had
+        before classification ran; those already name original pages and are left
+        alone. With ``renumber`` (a completed run), sections are put in order of
+        their first original page and numbered from 1, as a scan-order run numbers
+        them: evaluation pairs sections by ``section_id``, so a document whose
+        grouping is unchanged must get the same IDs either way. A run that raised
+        leaves the sections as they were.
+        """
+        to_original = {str(i): pid for i, pid in enumerate(order, start=1)}
+
+        for view_id, view_page in view.pages.items():
+            original_id = to_original.get(view_id)
+            if original_id is None or original_id not in document.pages:
+                continue
+            state = dict(vars(view_page))
+            state["page_id"] = original_id
+            vars(document.pages[original_id]).update(state)
+
+        for section in view.sections or []:
+            section.page_ids = sorted(
+                (to_original.get(str(p), str(p)) for p in section.page_ids),
+                key=_numeric_id,
+            )
+            for issue in section.processing_issues or []:
+                if id(issue) not in carried:
+                    self._translate_issue_pages(issue, to_original)
+        sections = list(view.sections or [])
+        if renumber:
+            sections.sort(
+                key=lambda sec: min(
+                    (_numeric_id(p) for p in sec.page_ids), default=float("inf")
+                )
+            )
+            for number, section in enumerate(sections, start=1):
+                old_id, new_id = section.section_id, str(number)
+                section.section_id = new_id
+                for issue in section.processing_issues or []:
+                    if id(issue) not in carried and issue.section_id == old_id:
+                        issue.section_id = new_id
+        document.sections = sections
+
+        document.errors = list(view.errors[:errors_before]) + [
+            self._translate_page_refs(error, to_original)
+            for error in view.errors[errors_before:]
+        ]
+
+        metadata = dict(view.metadata or {})
+        failed = metadata.get("failed_page_exceptions")
+        if isinstance(failed, dict):
+            metadata["failed_page_exceptions"] = {
+                to_original.get(str(k), k): v for k, v in failed.items()
+            }
+        document.metadata = metadata
+
+        for f in dataclasses.fields(Document):
+            if f.name not in ("pages", "sections", "errors", "metadata"):
+                setattr(document, f.name, getattr(view, f.name))
+
+        # Offsets are relative to the document's pages, so they are recomputed on
+        # the original IDs rather than carried over from the view.
+        self._calculate_and_store_page_indices(document)
+
+    #: A page range and a single page, as classification's own messages write them.
+    _PAGE_REFS = (r"\bpages (?P<lo>\d+)-(?P<hi>\d+)\b", r"\bpage (?P<one>\d+)(?!\d)")
+
+    @classmethod
+    def _translate_page_refs(
+        cls,
+        text: str,
+        to_original: Dict[str, str],
+        listed: Optional[Tuple[str, str]] = None,
+    ) -> str:
+        """Rewrite the view's page IDs in ``text`` to the original ones, in one pass.
+
+        Translates ``page N`` and ``pages N-M`` (a range of view IDs becomes the
+        list of original IDs it covers), plus, when ``listed`` is given as
+        ``(view_list, original_list)``, the exact comma-separated page list an
+        issue recorder embedded after ``(`` or ``pages ``. One pass, so a
+        rewritten reference is never rewritten again.
+        """
+        if not isinstance(text, str) or not text:
+            return text
+        alternatives = list(cls._PAGE_REFS)
+        if listed:
+            alternatives.append(
+                r"(?:(?<=\()|(?<=pages ))(?P<list>"
+                + re.escape(listed[0])
+                + r")(?![\d,\-])"
+            )
+        pattern = re.compile("|".join(alternatives))
+
+        def substitute(match: "re.Match[str]") -> str:
+            if match.group("lo") is not None:
+                lo, hi = int(match.group("lo")), int(match.group("hi"))
+                covered = [str(i) for i in range(lo, hi + 1)]
+                if lo > hi or not all(p in to_original for p in covered):
+                    return match.group(0)
+                ids = sorted((to_original[p] for p in covered), key=_numeric_id)
+                return "pages " + ", ".join(ids)
+            if match.group("one") is not None:
+                one = match.group("one")
+                return "page " + to_original.get(one, one)
+            assert listed is not None
+            return listed[1]
+
+        return pattern.sub(substitute, text)
+
+    @classmethod
+    def _translate_issue_pages(
+        cls, issue: ProcessingIssue, to_original: Dict[str, str]
+    ) -> None:
+        """Rewrite an issue written during the view's run to the original page IDs."""
+        details = dict(issue.details or {})
+        listed: Optional[Tuple[str, str]] = None
+        view_ids = details.get("page_ids")
+        if isinstance(view_ids, list) and view_ids:
+            original_ids = sorted(
+                (to_original.get(str(p), str(p)) for p in view_ids), key=_numeric_id
+            )
+            listed = (", ".join(str(p) for p in view_ids), ", ".join(original_ids))
+            details["page_ids"] = original_ids
+            issue.details = details
+        issue.message = cls._translate_page_refs(issue.message, to_original, listed)
+        issue.root_cause = cls._translate_page_refs(
+            issue.root_cause, to_original, listed
+        )
+
+    def _record_page_order_not_applied(
+        self, document: Document, plan: PageOrderPlan
+    ) -> None:
+        """Say, on the first section, why the printed page numbers were not used.
+
+        On a section because ``ProcessingIssues`` is a Section field (see
+        :meth:`_record_unclassified_page_issues`); on the first one because the
+        reason concerns the whole document's page order rather than any section.
+        The pages it names are in ``details["problem_page_ids"]`` rather than
+        ``page_ids``, because they need not be in this section.
+        """
+        if not document.sections:
+            return
+        section = document.sections[0]
+        issue = ProcessingIssue(
+            stage="classification",
+            severity="warning",
+            code="classification_page_order_not_applied",
+            message=(
+                "Pages were classified in scan order, not in the order of their "
+                f"printed page numbers, because {plan.reason}. Sections were "
+                "formed from the scan order, as they are with pageOrder 'scan'."
+            ),
+            root_cause=(
+                f"classification.document_shape.pageOrder is {PAGE_ORDER_PRINTED}; "
+                f"reason: {plan.reason_code}"
+            ),
+            section_id=section.section_id,
+            details={
+                "reason_code": plan.reason_code,
+                "problem_page_ids": list(plan.problem_page_ids),
+            },
+        )
+        section.processing_issues = [
+            pi
+            for pi in (section.processing_issues or [])
+            if not (
+                getattr(pi, "stage", None) == "classification"
+                and getattr(pi, "code", None) == PAGE_ORDER_ISSUE_CODE
+            )
+        ] + [issue]
 
     def classify_pages(self, pages: Dict[str, Dict[str, Any]]) -> ClassificationResult:
         """
