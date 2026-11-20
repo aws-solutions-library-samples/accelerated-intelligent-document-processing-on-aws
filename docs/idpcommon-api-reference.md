@@ -438,9 +438,14 @@ saved = discovery.save_to_config(discovered_classes, config_version="lending",
 | `reflection_report` | `str` | Markdown reflection report |
 | `total_documents` | `int` | Total documents processed |
 | `num_clusters` | `int` | Number of clusters found |
-| `num_failed_embeddings` | `int` | Documents that failed embedding |
+| `num_failed_embeddings` | `int` | Documents that failed embedding, and so were never clustered |
 | `num_successful_schemas` | `int` | Clusters with successful schema generation |
 | `num_failed_schemas` | `int` | Clusters where schema generation failed |
+| `noise_document_keys` | `List[str]` | Documents clustering labelled noise (`-1`): embedded, but their cluster was smaller than `min_cluster_size` and was dropped. Defaults to an empty list |
+| `failed_embedding_keys` | `List[str]` | Documents whose embedding failed. Defaults to an empty list |
+| `num_noise_documents` | `int` (property) | `len(noise_document_keys)` |
+
+`to_dict()` includes `num_noise_documents`, `noise_document_keys` and `failed_embedding_keys` alongside `num_failed_embeddings`. The two lists are disjoint: only embedded documents are clustered.
 
 Each entry in `discovered_classes` contains:
 
