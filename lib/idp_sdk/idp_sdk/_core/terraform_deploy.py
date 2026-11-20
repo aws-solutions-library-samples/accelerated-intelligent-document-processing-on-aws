@@ -570,7 +570,11 @@ def variable_specs(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _hcl_value(value: Any) -> str:
     """A tfvars value. JSON is valid HCL for strings, numbers and lists once
-    template sequences (``${``, ``%{``) are escaped."""
+    template sequences (``${``, ``%{``) are escaped. A non-empty object is spaced
+    as ``terraform fmt`` spaces one (``{ "k" : "v" }``), which is still JSON."""
+    if isinstance(value, dict) and value:
+        items = (f"{_hcl_value(str(k))} : {_hcl_value(v)}" for k, v in value.items())
+        return "{ " + ", ".join(items) + " }"
     text = json.dumps(value)
     return text.replace("${", "$${").replace("%{", "%%{")
 
@@ -649,18 +653,13 @@ def render_provider_blocks(
     object attribute (``assume_role = { role_arn = ... }``).
     """
     lines: List[str] = []
-    for name in ("aws", "awscc"):
+    # Already as `terraform fmt` lays it out: it does not align `region`'s `=`
+    # with that of `assume_role = {`, whose value spans lines.
+    for name, opener in (("aws", "  assume_role {"), ("awscc", "  assume_role = {")):
         lines.append(f'provider "{name}" {{')
-        if assume_role_arn and name == "awscc":
-            # Two consecutive attributes, so `terraform fmt` aligns their `=`.
-            lines += _aligned(
-                [("region", json.dumps(region)), ("assume_role", "{")], "  "
-            )
-        else:
-            lines.append(f"  region = {json.dumps(region)}")
-            if assume_role_arn:
-                lines.append("  assume_role {")
+        lines.append(f"  region = {json.dumps(region)}")
         if assume_role_arn:
+            lines.append(opener)
             lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
             lines.append("  }")
         if default_tags and name == "aws":
@@ -1105,7 +1104,8 @@ def _write_parameters_file(
 
 
 _VARIABLE_HEADER = re.compile(r'^variable "([^"]+)" \{$')
-_DEFAULT_LINE = re.compile(r"^  default = (.*)$")
+# The module's `=` are aligned as `terraform fmt` aligns them, so padded.
+_DEFAULT_LINE = re.compile(r"^  default\s+= (.*)$")
 
 
 def module_variable_defaults(variables_tf: str) -> Dict[str, Any]:

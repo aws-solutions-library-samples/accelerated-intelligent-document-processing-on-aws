@@ -509,6 +509,7 @@ def write_cli_samples(manifest_path: Path, out: Path) -> None:
             spec["variable"], cfn_type, sample.get(cfn_type, "a,b" if "List" in cfn_type else "x")
         )
     url = "https://example.com/idp-terraform-0.0.0.zip"
+    tags = {"team": "idp", "cost-center": "1234"}
     minimal = {"stack_name": values["stack_name"]}
     sensitive = next((n for n, s in specs.items() if s.get("sensitive")), None)
     if sensitive:
@@ -525,10 +526,10 @@ def write_cli_samples(manifest_path: Path, out: Path) -> None:
                 values,
                 specs,
                 "arn:aws:iam::111122223333:role/idp-deployer",
-                tags={"team": "idp", "cost-center": "1234"},
+                tags=tags,
             ),
             "terraform.tfvars": deploy.render_tfvars(
-                {**values, deploy.TAGS_VARIABLE: {"team": "idp"}}
+                {**values, deploy.TAGS_VARIABLE: tags}
             ),
             "backend.tf": deploy.render_backend_tf(
                 {
