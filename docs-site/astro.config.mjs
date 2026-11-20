@@ -277,6 +277,7 @@ export default defineConfig({
           items: [
             { label: "Threat Model", slug: "threat-model" },
             { label: "Malware Scanning", slug: "malware-scanning" },
+            { label: "Customer Managed KMS Key", slug: "customer-managed-kms-key" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",

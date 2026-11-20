@@ -175,6 +175,29 @@ STABLE_CUSTOM_OUTPUTS: dict[tuple[str, str, str], str] = {
     ),
 }
 
+# Custom-resource attributes whose handler returns one of the resource's own
+# properties unchanged: (custom type, attribute) -> property. Terraform reads the
+# property instead of the invocation's result, so a reference to the attribute
+# neither waits for the bridge (which would put every key reference, the bridge's
+# own log group included, behind the check the bridge runs) nor is unknown at plan.
+# CloudFormation still orders every reference after the check, which is what the
+# attribute is for there.
+ECHOED_CUSTOM_ATTRS: dict[tuple[str, str], str] = {
+    # src/lambda/customer_managed_kms_key_check/index.py returns
+    # {"KeyArn": ResourceProperties.KeyArn} on every SUCCESS.
+    ("Custom::CustomerManagedKmsKeyCheck", "KeyArn"): "KeyArn",
+}
+
+
+def echoed_property(res: dict[str, Any], attr: str) -> Any:
+    """The property a custom resource's ``attr`` echoes, or None."""
+    prop = ECHOED_CUSTOM_ATTRS.get((str(res.get("Type", "")), attr))
+    props = res.get("Properties") or {}
+    if prop is None or prop not in props:
+        return None
+    return props[prop]
+
+
 # Resource attributes that are one of the resource's own properties, read back.
 # Rendering a STABLE_CUSTOM_OUTPUTS key inlines the property instead of reading
 # the attribute, which is unknown whenever the property is.
@@ -591,6 +614,11 @@ class Translator:
 
     def getatt(self, name: str, attr: str) -> str:
         plan = self.plans.get(name)
+        if plan is not None and plan.kind == "custom":
+            # Before the opaque form: the echoed property is known at plan.
+            echoed = echoed_property(self.t["Resources"][name], attr)
+            if echoed is not None:
+                return self.expr(echoed)
         if self._opaque and plan is not None:
             return hcl.string(f"opaque-{name}-{attr}")
         if plan is None:
@@ -1192,10 +1220,16 @@ class Translator:
         self.emitted: dict[str, str] = {}
         # Before any resource renders: it decides which DependsOn edges drop.
         for lid, check in sorted(self._bridge_dropped()):
+            enforced = (
+                f"idp-cli deploy --terraform refuses at plan the change {check} "
+                f"refuses (a changed creation-fixed parameter, or a planned "
+                f"deletion of the stateful key)"
+                if self._creation_fixed_check(check)
+                else f"stack_name's validation enforces {check} at plan"
+            )
             note = (
                 f"{lid}: DependsOn {check} left out, so the custom-resource "
-                f"bridge can use the key; stack_name's validation enforces "
-                f"{check} at plan"
+                f"bridge can use the key; {enforced}"
             )
             if note not in self.report.warnings:  # render() may run again
                 self.report.warn(note)
@@ -1465,8 +1499,14 @@ class Translator:
                 if k == "Ref" and isinstance(x, str):
                     out.add(x)
                 elif k == "Fn::GetAtt":
-                    name = x[0] if isinstance(x, list) else str(x).split(".", 1)[0]
-                    out.add(name)
+                    name, attr = (
+                        (x[0], x[1]) if isinstance(x, list) else str(x).split(".", 1)
+                    )
+                    echoed = echoed_property(resources.get(name) or {}, attr)
+                    if echoed is not None:
+                        out |= self._template_refs(echoed)
+                    else:
+                        out.add(name)
                 elif k == "Fn::Sub":
                     text = x[0] if isinstance(x, list) else x
                     if isinstance(text, str):
@@ -1493,6 +1533,26 @@ class Translator:
             and limit >= STACK_NAME_MAX_LENGTH
         )
 
+    def _creation_fixed_check(self, lid: str) -> bool:
+        """True for the root's ``Custom::CustomerManagedKmsKeyCheck``.
+
+        The deployment's key waits for it under CloudFormation so that clearing
+        ``CustomerManagedKmsKeyArn`` on an existing stack is refused before a
+        stack key is created. Under Terraform that edge would make the bridge
+        unable to use the key at all (the bridge runs the check), and the
+        changes the check refuses are refused at plan instead: ``idp-cli deploy
+        --terraform`` refuses a changed creation-fixed parameter
+        (``CREATION_FIXED_PARAMETERS``), and setting it on an existing
+        deployment plans the deletion of the key, which the plan guard refuses
+        as stateful. The check itself still runs through the bridge.
+        """
+        res = self.t.get("Resources", {}).get(lid, {})
+        return (
+            self.is_root
+            and res.get("Type") == "Custom::CustomerManagedKmsKeyCheck"
+            and not res.get("Condition")
+        )
+
     def _bridge_usable(self, value: Any) -> set[tuple[str, str]] | None:
         """Whether the bridge's own resources may reference ``value``.
 
@@ -1517,7 +1577,7 @@ class Translator:
                 return None
             deps = res.get("DependsOn", [])
             for d in [deps] if isinstance(deps, str) else deps:
-                if self._plan_enforced_check(d):
+                if self._plan_enforced_check(d) or self._creation_fixed_check(d):
                     drop.add((lid, d))
                 else:
                     todo.append(d)
@@ -1531,9 +1591,14 @@ class Translator:
         most often set at ``path``, rendered as HCL, with the ``DependsOn``
         edges to drop for it (see ``_bridge_usable``); None if none sets one.
 
-        A value carrying ``Fn::If`` is ignored: the bridge has no condition of
-        its own to mirror it with. With ``acyclic``, so is a value the bridge
-        cannot wait for. Ties go to the first in template order.
+        A resource with a ``Condition`` is ignored: the bridge has no condition
+        of its own to mirror it with. A value carrying ``Fn::If`` is counted
+        only when it names nothing but parameters and resources (no
+        ``AWS::NoValue``), so it renders as a conditional expression the bridge
+        can use as it stands; that is the shape every key reference takes once
+        ``CustomerManagedKmsKeyArn`` can supply the key. With ``acyclic``, a
+        value the bridge cannot wait for is ignored too. Ties go to the first in
+        template order.
         """
         counts: dict[str, int] = {}
         drops: dict[str, set[tuple[str, str]]] = {}
@@ -1545,7 +1610,10 @@ class Translator:
                 v: Any = res.get("Properties", {})
                 for key in path:
                     v = v.get(key) if isinstance(v, dict) else None
-                if v is None or "Fn::If" in json.dumps(v, default=str):
+                if v is None:
+                    continue
+                text = json.dumps(v, default=str)
+                if "Fn::If" in text and "AWS::NoValue" in text:
                     continue
                 drop = self._bridge_usable(v) if acyclic else set()
                 if drop is None:

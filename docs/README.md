@@ -127,6 +127,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Role-Based Access Control](./rbac.md) - Server-side role enforcement at the API layer, UI controls, and configuration-profile scoping
 - [External Identity Provider](./external-idp.md) - Federating sign-in from a SAML or OIDC identity provider through Amazon Cognito
 - [Malware Scanning](./malware-scanning.md) - Scanning incoming documents before they are processed
+- [Customer Managed KMS Key](./customer-managed-kms-key.md) - Encrypting a new deployment's data with a KMS key you supply, and the key policy it needs
 - [VPC Secured Mode](./vpc-secured-mode.md) - Running the solution in a VPC-secured environment for network isolation
 - [Deploying in a Private Network](./deployment-private-network.md) - Runbook for a fully private or air-gapped deployment
 - [Installing First-Party Packages Safely](./dependency-confusion.md) - Why the packages in `lib/` must be installed from a local checkout, never by bare name

@@ -1109,6 +1109,108 @@ def test_a_list_parameter_is_never_given_the_emptiness_stand_in():
     assert 'ids__cond = compact(split(",", var.ids))' in module
 
 
+# ---------------------------------- a supplied deployment key (#2016)
+def _supplied_key_template() -> dict:
+    """The main template's shape: a key created only when no ARN is supplied,
+    a check that echoes the ARN and that the key waits on, and a log group and a
+    bucket that use the supplied ARN (through the check) or the created key."""
+    t = _bridge_template(key_waits_on=["Check", "KeyCheck"], with_bucket=False)
+    t["Parameters"] = {"KeyArnParam": {"Type": "String", "Default": ""}}
+    t["Conditions"] = {
+        "UseSupplied": {"Fn::Not": [{"Fn::Equals": [{"Ref": "KeyArnParam"}, ""]}]},
+        "CreateOwn": {"Fn::Equals": [{"Ref": "KeyArnParam"}, ""]},
+    }
+    r = t["Resources"]
+    r["KeyCheck"] = {
+        "Type": "Custom::CustomerManagedKmsKeyCheck",
+        "Properties": {
+            "ServiceToken": {"Fn::GetAtt": ["CheckFunction", "Arn"]},
+            "KeyArn": {"Ref": "KeyArnParam"},
+        },
+    }
+    r["Key"]["Condition"] = "CreateOwn"
+    chosen_arn = {
+        "Fn::If": [
+            "UseSupplied",
+            {"Fn::GetAtt": ["KeyCheck", "KeyArn"]},
+            {"Fn::GetAtt": ["Key", "Arn"]},
+        ]
+    }
+    r["Group"]["Properties"]["KmsKeyId"] = chosen_arn
+    r["Data"] = {
+        "Type": "AWS::S3::Bucket",
+        "Properties": {
+            "BucketEncryption": {
+                "ServerSideEncryptionConfiguration": [
+                    {
+                        "ServerSideEncryptionByDefault": {
+                            "SSEAlgorithm": "aws:kms",
+                            "KMSMasterKeyID": {
+                                "Fn::If": [
+                                    "UseSupplied",
+                                    {"Fn::GetAtt": ["KeyCheck", "KeyArn"]},
+                                    {"Ref": "Key"},
+                                ]
+                            },
+                        }
+                    }
+                ]
+            }
+        },
+    }
+    return t
+
+
+def test_a_supplied_key_reads_the_parameter_not_the_checks_result(vendored):
+    """The check echoes its KeyArn, so Terraform reads the variable: nothing
+    waits for the invocation, and the value is known at plan."""
+    tr = Translator(_supplied_key_template(), vendored)
+    main = tr.render()["main.tf"]
+    group = _block(main, 'resource "aws_cloudwatch_log_group" "group"')
+    assert (
+        "kms_key_id = (local.c_use_supplied ? var.key_arn_param : "
+        "one(awscc_kms_key.key[*].arn))"
+    ) in group
+    assert "aws_lambda_invocation.key_check" not in group
+
+
+def test_a_key_reference_through_fn_if_is_still_an_arn_for_s3(vendored):
+    """``Ref`` on a key is its id; the provider's S3 encryption takes an ARN,
+    on each branch of a conditional reference alike."""
+    tr = Translator(_supplied_key_template(), vendored)
+    main = tr.render()["main.tf"]
+    assert (
+        "kms_master_key_id = (local.c_use_supplied ? var.key_arn_param : "
+        "one(awscc_kms_key.key[*].arn))"
+    ) in main
+
+
+def test_the_bridge_uses_a_conditional_key_and_drops_the_checks_edge(vendored):
+    tr = Translator(_supplied_key_template(), vendored)
+    files = tr.render()
+    assert tr.bridge_kms_key() == (
+        "(local.c_use_supplied ? var.key_arn_param : one(awscc_kms_key.key[*].arn))"
+    )
+    assert tr.bridge_dropped_deps == {("Key", "Check"), ("Key", "KeyCheck")}
+    key = _block(files["main.tf"], 'resource "awscc_kms_key" "key"')
+    assert "aws_lambda_invocation.key_check" not in key
+    assert any(
+        "DependsOn KeyCheck left out" in w and "creation-fixed" in w
+        for w in tr.report.warnings
+    )
+
+
+def test_a_conditional_value_with_a_novalue_branch_is_not_the_bridges_key(vendored):
+    t = _bridge_template(key_waits_on=None, with_bucket=False)
+    t["Conditions"] = {"C": {"Fn::Equals": ["a", "a"]}}
+    t["Resources"]["Group"]["Properties"]["KmsKeyId"] = {
+        "Fn::If": ["C", {"Fn::GetAtt": ["Key", "Arn"]}, {"Ref": "AWS::NoValue"}]
+    }
+    tr = Translator(t, vendored)
+    tr.render()
+    assert tr.bridge_kms_key() is None
+
+
 def _stage_logging_template(destination: Any, conditional: bool = False) -> dict:
     setting = {"DestinationArn": destination, "Format": "{}"}
     return {

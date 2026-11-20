@@ -358,6 +358,11 @@ To update an existing GenAIIDP deployment to a new version:
 12. Click "Update stack"
 13. Monitor the update process in the CloudFormation console
 
+> **Note**: `CustomerManagedKmsKeyArn` cannot be changed by an update. A stack
+> created with its own key keeps it, and a stack created with a supplied key keeps
+> that one; an update that sets, clears or changes the parameter is refused and
+> rolled back. See [Customer Managed KMS Key](./customer-managed-kms-key.md).
+
 > **Note**: Updating the stack may cause some resources to be replaced, which could lead to brief service interruptions. Consider updating during a maintenance window if the solution is being used in production.
 
 > **Note**: When you upgrade to a release that includes the alerts subscription,

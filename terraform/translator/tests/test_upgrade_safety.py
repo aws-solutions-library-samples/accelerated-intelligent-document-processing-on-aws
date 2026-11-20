@@ -835,6 +835,18 @@ def test_every_ignore_changes_the_translator_emits_is_declared(standard_tree, sc
     assert _emitted_ignore_changes(standard_tree) == expected
 
 
+def test_the_key_check_feeds_no_create_only_property(standard):
+    """#2016: every supplied-key reference reads CustomerManagedKmsKeyCheck.KeyArn,
+    which the handler echoes from its KeyArn property, so Terraform renders the
+    variable and no create-only property waits on the invocation's result. Were
+    the echo not followed here, every queue, function and repository that takes
+    the key would be reported as replaced on any change to the check."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    edges = meta["customOutputEdges"]
+    assert edges, "no custom-output edges at all; the check reads nothing"
+    assert not [e for e in edges if "CustomerManagedKmsKeyCheck" in e["sources"]]
+
+
 def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard):
     """#2011: `idp-cli delete --terraform` leaves `retainedAddresses` in place, so
     the key that encrypts the retained buckets must be listed with them; the
@@ -853,7 +865,8 @@ def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard)
             main,
             re.M | re.S,
         )
-        if f"{key}." in body
+        # One instance since CustomerManagedKmsKeyArn can supply the key (#2016).
+        if f"{key}." in body or f"{key}[*]." in body
     }
     kept = {
         a.split(".", 1)[1]
