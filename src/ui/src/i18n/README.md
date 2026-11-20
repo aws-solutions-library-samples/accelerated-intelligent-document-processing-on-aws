@@ -87,7 +87,10 @@ intl.formatMessage(messages.count, { count: rows.length });
   module-level label becomes a `defineMessages` descriptor formatted at render time.
 - **Text the UI sends to an agent.** A label shown for text the UI sends (a suggested prompt) is a
   message; the text sent stays English and is read from the descriptor's `defaultMessage`, so it
-  is written once.
+  is written once. When the text sent is itself the message shown (Quick Start's upload summary
+  and attachment note), there is no label to translate: a chat message has one text, both sent
+  and shown. Such text stays English and counted by the string-debt gate, with a comment at its
+  builder, so in every locale the transcript shows it in English as the user's own message.
 
 ### Cloudscape and Amplify strings
 
