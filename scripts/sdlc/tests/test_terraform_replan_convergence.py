@@ -414,6 +414,7 @@ def test_a_failed_replan_fails_the_run_after_the_suite(cbd, suite, status):
     result = deploy(verdict)
     assert ran == ["stk"], "the suite still runs beside a failed re-plan"
     assert result["success"] is False and result["failure_type"] == "deploy"
+    assert result["convergence_failed"] is True
     assert f"the {status} detail" in result["error"]
     row = result["step_results"][cbd.TERRAFORM_CONVERGENCE_STEP]
     assert row == {"status": "failed", "error": f"the {status} detail"}
@@ -515,11 +516,38 @@ def test_a_shortfall_keeps_the_replan_row(cbd, suite, monkeypatch):
     assert "the drift detail" in summary and "OVERALL: FAIL" in summary
 
 
-def test_a_shortfall_without_a_replan_carries_no_row(cbd, suite, monkeypatch):
+def test_a_shortfall_without_a_replan_reports_only_the_refusal(cbd, suite, monkeypatch):
     deploy, _ = suite
     monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda s: "no time")
     result = deploy(None)
-    assert "step_results" not in result and result["convergence_failed"] is False
+    assert result["convergence_failed"] is False
+    assert result["step_results"] == {
+        cbd.TERRAFORM_STEPS_REFUSED_ROW: {"status": "failed", "error": "no time"}
+    }
+
+
+@pytest.mark.parametrize("plan", [None, "known"], ids=["empty", "known-defect"])
+def test_a_converged_run_refused_for_time_still_fails_the_summary(
+    cbd, suite, monkeypatch, plan
+):
+    deploy, ran = suite
+    monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda s: "no time")
+    verdict = (
+        cbd.judge_terraform_replan(0, None)
+        if plan is None
+        else cbd.judge_terraform_replan(2, _plan(_stage_change()))
+    )
+    result = deploy(verdict)
+    assert ran == [] and result["success"] is False
+    assert result["convergence_failed"] is False
+    rows = result["step_results"]
+    assert rows[cbd.TERRAFORM_CONVERGENCE_STEP]["status"] == "passed"
+    assert rows[cbd.TERRAFORM_STEPS_REFUSED_ROW] == {
+        "status": "failed",
+        "error": "no time",
+    }
+    summary = cbd.build_consolidated_summary("stk", result, [], True, {})
+    assert "OVERALL: FAIL" in summary and "no time" in summary
 
 
 def test_a_pass_on_a_known_defect_names_it_in_the_row(cbd, suite):

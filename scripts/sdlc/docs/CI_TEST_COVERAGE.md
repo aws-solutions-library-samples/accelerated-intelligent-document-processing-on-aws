@@ -335,7 +335,7 @@ empty: a module whose plan never empties would otherwise pass every gate. The re
 is the first row of the primary suite's table, `Step 2b: Terraform re-plan after
 apply is empty`, and the suite still runs after it, so a night that does not
 converge also reports what the steps found. The row is kept when the run is refused
-before the steps for lack of time, and a failure names the re-plan to the failure
+before the steps for lack of time, beside a failed row for the refusal, and a failure names the re-plan to the failure
 analysis, so it is not read as a failed apply. The plan runs with `-lock=false`: it
 writes no state and its saved plan is never applied, and a plan killed by the
 timeout would otherwise leave the S3 lock file behind and block the run's destroy.

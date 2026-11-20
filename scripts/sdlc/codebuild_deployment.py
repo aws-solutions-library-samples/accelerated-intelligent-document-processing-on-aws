@@ -4697,6 +4697,8 @@ TERRAFORM_REPLAN_TIMEOUT_SECONDS = 45 * 60
 TERRAFORM_REPLAN_LISTED_CHANGES = 25
 #: The step_results row the re-plan's verdict is reported under.
 TERRAFORM_CONVERGENCE_STEP = "Step 2b: Terraform re-plan after apply is empty"
+#: The step_results row a Terraform run refused before the steps reports under.
+TERRAFORM_STEPS_REFUSED_ROW = "Steps not started (too little build time left)"
 
 
 def _log_group_arn_gains_wildcard(before, after) -> bool:
@@ -6394,7 +6396,16 @@ def deploy_and_test_stack(
                     "iac": IAC_TERRAFORM,
                     "error": f"Terraform run refused before the steps: {shortfall}",
                     "convergence_failed": convergence_failed,
-                    **({"step_results": convergence_rows} if convergence_rows else {}),
+                    # The refusal is a failed row of its own: the summary reads
+                    # the rows in preference to `success`, so the re-plan's row
+                    # alone, when it passed, would render this run as a pass.
+                    "step_results": {
+                        **convergence_rows,
+                        TERRAFORM_STEPS_REFUSED_ROW: {
+                            "status": "failed",
+                            "error": shortfall,
+                        },
+                    },
                 }
 
         # Run tests 3-10 in parallel (Step 4 BDA now uses config-sync-bda + --config-version, no activation race)
