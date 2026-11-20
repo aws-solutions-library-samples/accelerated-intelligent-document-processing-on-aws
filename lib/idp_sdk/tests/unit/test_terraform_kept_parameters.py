@@ -132,7 +132,8 @@ class TestKeptValues:
         )
         values = _write(tmp_path, recorded=LABEL_PARAMETERS)
         assert values["enable_mcp"] == "true"
-        assert 'enable_mcp = "true"' in (tmp_path / "terraform.tfvars").read_text()
+        tfvars = tf.parse_tfvars((tmp_path / "terraform.tfvars").read_text())
+        assert tfvars["enable_mcp"] == "true"
         assert values.kept_from["EnableMCP"] == tf.SOURCE_LABEL_STACK
         report = _text(_report(values))
         assert (
@@ -155,9 +156,9 @@ class TestKeptValues:
         assert values["admin_email"] == "b@example.com"
         assert "AdminEmail" not in values.kept
         assert values.upgrade and not values.local
-        tfvars = (fresh / "terraform.tfvars").read_text()
-        assert 'log_level = "DEBUG"' in tfvars
-        assert "max_concurrent_workflows = 50" in tfvars
+        tfvars = tf.parse_tfvars((fresh / "terraform.tfvars").read_text())
+        assert tfvars["log_level"] == "DEBUG"
+        assert tfvars["max_concurrent_workflows"] == 50
 
     def test_the_second_operator_is_told_noecho_values_are_not_recorded(self, tmp_path):
         values = _write(tmp_path / "b", recorded=LABEL_PARAMETERS)
@@ -327,6 +328,8 @@ class TestModuleDefaults:
             "empty": [],
             "tricky": 'q"${x}%{y}\\',
             "secret": "",
+            # The module's tags input, which every translated module declares.
+            "tags": {},
         }
 
     def test_an_unreadable_default_is_left_out(self):
@@ -415,7 +418,8 @@ class TestDeployOperation:
         _install(tmp_path, OLD_DEFAULTS)
         with caplog.at_level(logging.INFO):
             _deploy(monkeypatch, tmp_path, LABEL_PARAMETERS)
-        assert 'enable_mcp = "true"' in (tmp_path / "terraform.tfvars").read_text()
+        tfvars = tf.parse_tfvars((tmp_path / "terraform.tfvars").read_text())
+        assert tfvars["enable_mcp"] == "true"
         assert "EnableMCP = true (from the label stack" in caplog.text
         assert "NewSetting = on" in caplog.text
         recorded = json.loads((tmp_path / tf.PARAMETERS_FILE).read_text())
@@ -436,10 +440,10 @@ class TestDeployOperation:
     ):
         fresh = tmp_path / "b"
         _deploy(monkeypatch, fresh, LABEL_PARAMETERS, email="b@example.com")
-        tfvars = (fresh / "terraform.tfvars").read_text()
-        assert 'log_level = "DEBUG"' in tfvars
-        assert "max_concurrent_workflows = 50" in tfvars
-        assert 'enable_mcp = "true"' in tfvars
+        tfvars = tf.parse_tfvars((fresh / "terraform.tfvars").read_text())
+        assert tfvars["log_level"] == "DEBUG"
+        assert tfvars["max_concurrent_workflows"] == 50
+        assert tfvars["enable_mcp"] == "true"
 
     def test_a_legacy_deployment_without_a_label_stack_warns(
         self, monkeypatch, tmp_path, caplog

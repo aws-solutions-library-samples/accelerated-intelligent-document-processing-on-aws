@@ -100,6 +100,13 @@ also tell a reader exactly what the release covers:
 | `format:<ext>` | a capability, or a limitation | A file extension the OCR step routes: on a capability when it is processed, on a limitation when it is routed and then refused |
 | `model:<id>` | a capability | A model the deployment templates offer, without its Region prefix or variant suffix |
 
+### Measure fit on sample documents
+
+The profile says where the accelerator stops; [Fit Check](./fit-check.md) measures
+it on a customer's own samples. `idp-cli fit-check` runs them through a deployed
+stack and writes a report whose `triggered_limitations` are refs into this profile
+(`limitation:<id>`), from the profile of the release that ran.
+
 ## The gap taxonomy
 
 For each requirement the accelerator does not meet as it stands, choose the most

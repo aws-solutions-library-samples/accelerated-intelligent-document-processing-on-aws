@@ -4,7 +4,7 @@
 """Configuration operations for IDP SDK."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
@@ -14,6 +14,7 @@ from idp_sdk.exceptions import (
 )
 from idp_sdk.models import (
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -1186,6 +1187,96 @@ class ConfigOperation:
                 bda_unsent_classes=bda_unsent_classes,
                 error=str(e),
             )
+
+    def bootstrap(
+        self,
+        prompt: str,
+        stack_name: Optional[str] = None,
+        *,
+        class_name: Optional[str] = None,
+        field_hints: Optional[List[str]] = None,
+        source_profile: Optional[str] = None,
+        target_profile: Optional[str] = None,
+        doc_count: int = 3,
+        quality_threshold: int = 7,
+        augment: bool = False,
+        model_id: Optional[str] = None,
+        generate_test_set: bool = True,
+        status_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> ConfigBootstrapResult:
+        """Author a document class from a description and save it to a profile.
+
+        The stack-connected half of ``idp-cli bootstrap`` (Quick Start's CLI
+        path): ``idp_common.synthesis.bootstrap.run_bootstrap`` searches the
+        catalog for a close class, authors a JSON Schema from ``prompt``, merges it
+        into ``target_profile`` (created when it does not exist, from the default
+        profile) and, when the document generator is installed and a test-set
+        bucket is known, generates a small labelled synthetic test set. It never
+        activates the profile.
+
+        Args:
+            prompt: Plain-language description of the document type.
+            stack_name: Optional stack name override.
+            class_name: Document class name to use as ``$id``.
+            field_hints: Fields the schema must include.
+            source_profile: Existing profile whose classes seed the catalog.
+            target_profile: Profile to write (default ``bootstrap-<class>``).
+            doc_count: Synthetic documents to generate.
+            quality_threshold: Generation quality threshold (1-10).
+            augment: Apply image augmentation to generated documents.
+            model_id: Bedrock model override for authoring and generation.
+            generate_test_set: ``False`` skips the synthetic test set even when
+                the generator and a ``TEST_SET_BUCKET`` are available.
+            status_callback: ``callable(percent, message)`` for progress.
+
+        Returns:
+            ConfigBootstrapResult. ``success`` false carries ``error``; ``success``
+            true may still carry a non-fatal note in ``error``.
+        """
+        import os
+
+        from idp_common.config.configuration_manager import ConfigurationManager
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        name = self._client._require_stack(stack_name)
+        # Table AND bucket: the save cuts a revision, and a save without
+        # CONFIGURATION_BUCKET cannot record one (#1778).
+        config_table = self._configure_config_env(name)
+        os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+        config_manager = ConfigurationManager(region=self._client._region)
+        test_set_bucket = (
+            os.environ.get("TEST_SET_BUCKET") if generate_test_set else None
+        )
+
+        request = bootstrap_mod.BootstrapRequest(
+            prompt=prompt,
+            class_name=class_name,
+            field_hints=list(field_hints or []),
+            config_version=source_profile,
+            target_version=target_profile,
+            doc_count=doc_count,
+            quality_threshold=quality_threshold,
+            augment=augment,
+            model_id=model_id,
+        )
+        result = bootstrap_mod.run_bootstrap(
+            request,
+            config_manager=config_manager,
+            test_set_bucket=test_set_bucket,
+            status_cb=status_callback,
+        )
+        return ConfigBootstrapResult(
+            success=result.success,
+            config_profile=result.config_version,
+            class_schema=result.schema,
+            resolution_tier=result.resolution_tier,
+            catalog_match=result.catalog_match,
+            test_set_id=result.test_set_id,
+            docs_generated=result.docs_generated,
+            generator_available=result.generator_available,
+            messages=list(result.messages),
+            error=result.error,
+        )
 
     def delete(
         self,

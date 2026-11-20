@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from idp_tf import completeness, moved, safety, translate
+from idp_tf import completeness, create_only, moved, safety, translate
 from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
 from idp_tf.cli import VENDORED_SCHEMA, main, render_tree, tree_checks, tree_resources
+from idp_tf.hcl import norm
 from idp_tf.translate import Translator
 
 REPO = Path(__file__).resolve().parents[3]
@@ -194,6 +195,65 @@ def test_a_value_that_is_not_create_only_is_no_edge(schema):
     assert [e for e in safety.custom_output_edges(tr)] == []
 
 
+# ------------------------------------- B2: types Cloud Control cannot update
+def eic_fragment(**props) -> dict:
+    """An EventInvokeConfig the way the templates write one: OnFailure set,
+    OnSuccess unset, which Lambda reads back as an empty object (#2183)."""
+    return {
+        "Resources": {
+            "Fn": FN,
+            "Dlq": {"Type": "AWS::SQS::Queue", "Properties": {}},
+            "Eic": {
+                "Type": "AWS::Lambda::EventInvokeConfig",
+                "Properties": {
+                    "FunctionName": {"Ref": "Fn"},
+                    "Qualifier": "$LATEST",
+                    "MaximumRetryAttempts": 2,
+                    "DestinationConfig": {
+                        "OnFailure": {"Destination": {"Fn::GetAtt": ["Dlq", "Arn"]}}
+                    },
+                    **props,
+                },
+            },
+        }
+    }
+
+
+def _lifecycle(block: str) -> str:
+    return block[block.index("lifecycle {") :]
+
+
+def test_an_event_invoke_config_is_replaced_rather_than_updated(schema):
+    tr = translated(eic_fragment(), schema)
+    main_tf = tr.emitted["Eic"]
+    head, resource = main_tf.split('resource "awscc_lambda_event_invoke_config"')
+    life = _lifecycle(resource)
+    # Every settable property is ignored by the update and drives a replacement
+    # through the key, so awscc never sends Cloud Control an update.
+    assert "ignore_changes = [maximum_retry_attempts, destination_config]" in life
+    assert "replace_triggered_by = [terraform_data.eic_settings_key]" in life
+    assert 'resource "terraform_data" "eic_settings_key"' in head
+    assert "maximum_retry_attempts = 2" in head
+    assert "destination_config" in head and "awscc_sqs_queue.dlq.arn" in head
+    # The create-only properties replace the resource anyway; they stay out
+    # of both lists so their own diff still reads as one.
+    assert "function_name" not in life and "qualifier" not in life
+    assert "function_name" not in head and "qualifier" not in head
+
+
+def test_a_conditional_event_invoke_config_keys_on_its_own_instance(schema):
+    t = eic_fragment()
+    t["Conditions"] = {"On": {"Fn::Equals": ["a", "a"]}}
+    t["Resources"]["Eic"]["Condition"] = "On"
+    main_tf = translated(t, schema).emitted["Eic"]
+    head, resource = main_tf.split('resource "awscc_lambda_event_invoke_config"')
+    assert "count = " in head and "count = " in resource
+    assert (
+        "replace_triggered_by = [terraform_data.eic_settings_key[count.index]]"
+        in _lifecycle(resource)
+    )
+
+
 # ------------------------------------------------------- whole standard template
 @pytest.fixture(scope="module")
 def standard(tmp_path_factory) -> Path:
@@ -231,7 +291,8 @@ def test_every_stateful_edge_in_the_standard_template_is_handled(standard):
     # stack's output that is a custom resource's.
     assert any("PATTERNSTACK:BDAOCRProject" in e["sources"] for e in edges)
     text = (standard / "modules" / "documentkb" / "main.tf").read_text()
-    assert "ignore_changes = [knowledge_base_id]" in text
+    # The written module is laid out by `terraform fmt`'s rules: `=` may be padded.
+    assert re.search(r"^\s*ignore_changes\s+= \[knowledge_base_id\]$", text, re.M)
 
 
 def test_no_declaration_is_stale_for_the_standard_template(standard):
@@ -751,7 +812,7 @@ def test_the_mappers_that_ignore_changes_are_pinned():
 
 
 RESOURCE_HEADER = re.compile(r'^resource "([^"]+)" "[^"]+" \{$', re.M)
-IGNORE_CHANGES = re.compile(r"ignore_changes = \[([^\]]*)\]")
+IGNORE_CHANGES = re.compile(r"ignore_changes\s+= \[([^\]]*)\]")
 
 
 def _emitted_ignore_changes(root: Path) -> dict[str, set[str]]:
@@ -784,6 +845,14 @@ def _translate_owned_ignores(schema: AwsccSchema) -> dict[str, set[str]]:
         found = schema.hint(cfn_type).attr(prop)
         assert found is not None, (cfn_type, prop)
         owned.setdefault(awscc_type_name(cfn_type), set()).add(found[0])
+    # Tags the registry makes create-only are set at creation and kept
+    # (translate.tags_are_create_only), for every type the vendored schemas cover.
+    for cfn_type in create_only._load():
+        if not schema.has(cfn_type):
+            continue
+        tag = schema.tag_attribute(cfn_type)
+        if tag and translate.tags_are_create_only(cfn_type, tag[0]):
+            owned.setdefault(awscc_type_name(cfn_type), set()).add(tag[0])
     return owned
 
 
@@ -824,7 +893,35 @@ def test_every_ignore_changes_the_translator_emits_is_declared(standard_tree, sc
     owned = _translate_owned_ignores(schema)
     assert not set(owned) & set(expected), "a type would be counted twice"
     expected.update(owned)
-    assert _emitted_ignore_changes(standard_tree) == expected
+    emitted = _emitted_ignore_changes(standard_tree)
+    # translate.UPDATED_BY_REPLACEMENT ignores whichever settable properties
+    # the template sets, so it is bounded by the type's settable attributes
+    # rather than pinned to a list, and must reach the HCL at least once.
+    for cfn_type in translate.UPDATED_BY_REPLACEMENT:
+        tf_type = awscc_type_name(cfn_type)
+        assert tf_type not in expected, "a type would be counted twice"
+        fixed = {norm(p[0]) for p in create_only.paths(cfn_type)}
+        hint = schema.hint(cfn_type)
+        settable = {
+            tf_name
+            for key, (tf_name, _) in hint.attrs.items()
+            if key not in fixed and key not in hint.computed_only
+        }
+        got = emitted.pop(tf_type, set())
+        assert got and got <= settable, (cfn_type, got, settable)
+    assert emitted == expected
+
+
+def test_the_key_check_feeds_no_create_only_property(standard):
+    """#2016: every supplied-key reference reads CustomerManagedKmsKeyCheck.KeyArn,
+    which the handler echoes from its KeyArn property, so Terraform renders the
+    variable and no create-only property waits on the invocation's result. Were
+    the echo not followed here, every queue, function and repository that takes
+    the key would be reported as replaced on any change to the check."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    edges = meta["customOutputEdges"]
+    assert edges, "no custom-output edges at all; the check reads nothing"
+    assert not [e for e in edges if "CustomerManagedKmsKeyCheck" in e["sources"]]
 
 
 def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard):
@@ -845,7 +942,8 @@ def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard)
             main,
             re.M | re.S,
         )
-        if f"{key}." in body
+        # One instance since CustomerManagedKmsKeyArn can supply the key (#2016).
+        if f"{key}." in body or f"{key}[*]." in body
     }
     kept = {
         a.split(".", 1)[1]

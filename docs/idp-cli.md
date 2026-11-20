@@ -36,6 +36,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [publish](#publish)
   - [delete](#delete)
   - [bootstrap](#bootstrap)
+  - [fit-check](#fit-check)
   - [process](#process--run-inference)
   - [reprocess](#reprocess--rerun-inference)
   - [status](#status)
@@ -404,6 +405,7 @@ idp-cli deploy [OPTIONS]
 - `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
 - `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
+- `--terraform-state`: `local` (default) keeps the Terraform state in `terraform.tfstate` in `--terraform-dir`; `s3` keeps it in an encrypted, versioned S3 bucket `idp-tf-<stack-name>-<account>-<region>` that the CLI creates if missing (and never deletes), locked with the DynamoDB table `idp-tf-lock-<stack-name>`. A directory that already holds a local state is refused with `s3`; moving it is not supported yet. Used with `--terraform`; refused without it. See [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3)
 
 **Note:** `--from-code`, `--template-url`, and `--template-file` are mutually exclusive. Use `--from-code` for development/testing from local source, `--template-url` for production deployments from a pre-published template, and `--template-file` to deploy a locally-built template.
 
@@ -552,6 +554,7 @@ Notes and caveats:
 - **Format:** comma-separated `key=value` pairs. Tag keys may contain spaces and the characters `. : / + - _` (a value may itself contain `=`; only the first `=` splits key from value). Commas inside a tag value are not supported.
 - **Update behavior:** re-running `deploy` with `--tags` **replaces** the stack's entire tag set with what you pass. Omitting `--tags` on an update **preserves** the existing tags (unlike a bare AWS API call, which would clear them).
 - **Not every resource type accepts propagated tags.** CloudFormation propagation is best-effort — a small number of resource types (e.g. some Cognito, CloudFront, and custom resources) do not receive stack tags. This is an AWS platform limitation, not a configuration option.
+- **With `--terraform`:** the Terraform module applies the tags to every taggable resource the same way; omitting `--tags` keeps the tags of the previous deploy from the same `--terraform-dir`. See [Tagging the deployment](terraform.md#tagging-the-deployment).
 - **Cost allocation:** to use these tags in AWS Cost Explorer / cost allocation reports you must additionally activate them as *cost allocation tags* in the Billing console (a one-time, account-level step); this CLI option does not do that for you.
 
 ```bash
@@ -898,6 +901,11 @@ Proceeding with stack deletion...
 
 #### The retained KMS key
 
+A stack deployed with a key of your own ([`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md))
+created no key, so nothing in this section applies to it: `delete` names the supplied
+key, says it is yours and that the retained data stays encrypted with it, and prints
+no deletion steps.
+
 The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
 data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would
 leave every object in the retained buckets unreadable once its deletion window ended.
@@ -1077,6 +1085,22 @@ created and you can upload your own documents to build a test set. See the
 
 ---
 
+### `fit-check`
+
+Run a folder of sample documents through a deployed stack and write a structured
+fit report (`fit-report.json` and `fit-report.md`): per document its class, each
+field's presence and confidence, the solution-profile limitations the run observed,
+latency and an estimated cost. Without `--config-profile` it generates a **new**
+configuration profile with Discovery (or Quick Start from `--description`) and never
+changes the active one. See [Fit Check](./fit-check.md) for every option, the report
+fields, and what is uploaded, kept and removed by `--cleanup`.
+
+```bash
+idp-cli fit-check --stack-name my-idp-stack --samples ./samples-to-check/ --cleanup
+```
+
+---
+
 ### `process` / `run-inference`
 
 Process a batch of documents.
@@ -1104,6 +1128,7 @@ idp-cli run-inference [OPTIONS]
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
+- `--attribute KEY=VALUE` (repeatable) and `--attributes-file <json>`: [Document attributes](./document-attributes.md) stored with every document and returned with its results. Values given with `--attribute` are strings and override the file's value for the same key; a manifest's `attributes` column overrides both per row. An invalid set is refused before anything is uploaded. Not accepted with `--test-set`
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
@@ -1307,7 +1332,7 @@ idp-cli status [OPTIONS]
 - `--document-id`: Single document ID (check individual document)
 
 **Optional Filters and Display:**
-- `--object-status`: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING, PROCESSING)
+- `--object-status`: Only show documents whose current status is exactly this value, for example `COMPLETED`, `FAILED`, `QUEUED`, `RUNNING` or a step such as `OCR` or `EXTRACTING`. The accepted values are the statuses a document can be recorded with, and `idp-cli status --help` lists them. Without it, documents in every status are shown.
 - `--show-details`: Show detailed document information in table format
 - `--get-time`: Calculate and display timing statistics (processing time, queue time, total time)
 - `--include-metering`: Include Lambda metering statistics (GB-seconds by stage) - requires `--get-time`
@@ -1396,6 +1421,15 @@ When using `--get-time`, the command calculates:
 For each metric, you'll see:
 - Average, Median, Min, Max, Standard Deviation, Total
 - ObjectKey for min/max values (helps identify outliers)
+
+With `--format json`, `--get-time` writes these statistics to stdout as one JSON object
+instead of the tables: `processing_time`, `queue_time` and `total_time` (each with
+`average`, `median`, `min`, `min_key`, `max`, `max_key`, `stdev` and `total`, in
+seconds), `valid_count` and `missing_data_count`, plus `metering` and `metering_count`
+when `--include-metering` is given. `success` is `false`, with an `error` message, when
+no matching document has the timestamps the statistics need. The exit code is `0` in
+either case, as it is for the table form. `--format json` is still ignored with
+`--wait`.
 
 **Lambda Metering:**
 
@@ -1694,8 +1728,9 @@ idp-cli delete-documents [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--status-filter`: Only delete documents with this status (use with --batch-id or --pattern)
-  - Options: `FAILED`, `COMPLETED`, `PROCESSING`, `QUEUED`
+- `--status-filter`: Only delete documents whose current status is exactly this value (use with --batch-id or --pattern).
+  - Accepts any status a document can be recorded with, for example `FAILED`, `COMPLETED` or `QUEUED`; `idp-cli delete-documents --help` lists them all.
+  - A document still being processed carries the name of its current step, such as `RUNNING`, `OCR` or `EXTRACTING`. There is no `PROCESSING` status, and the option refuses that value.
 - `--dry-run`: Show what would be deleted without actually deleting
 - `--force`, `-y`: Skip confirmation prompt
 - `--region`: AWS region (optional)
@@ -1710,6 +1745,12 @@ idp-cli delete-documents [OPTIONS]
 nothing, and that is all it means. A failure while finding the documents — a throttled or
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
+
+A document is found by its tracking record's key, so one record whose `ObjectKey`
+attribute is a number, null or missing is still
+selected with the rest of its batch rather than failing the whole command, and a
+warning in the log names it. A document with several processing runs is listed and
+counted once.
 
 **A delete that could not finish says so.** Each document's cleanup has several steps —
 the input object, every output version, the tracking-list row, the run records, the
@@ -3466,7 +3507,7 @@ Unlike `discover` (which analyzes one document at a time), `discover-multidoc` a
 
 **Requires:** `pip install -e "lib/idp_common_pkg[multi_document_discovery]"` (scikit-learn, scipy, numpy, strands-agents)
 
-**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. For discovering schemas from individual documents, use [`discover`](#discover) instead.
+**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. The summary lists the documents left in no class this way, and separately the documents whose embedding failed. For discovering schemas from individual documents, use [`discover`](#discover) instead.
 
 **Usage:**
 ```bash

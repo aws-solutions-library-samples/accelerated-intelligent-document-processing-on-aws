@@ -37,7 +37,7 @@ call that uses it:
 | `fallback_class` | always | the one class assigned when no class can be decided; extraction reads it too |
 | `combined` | `combined` | `granularity`, `page`, `packet`, `llm` (class-assigning model settings) |
 | `split_then_classify.splitting` | `split_then_classify` | `method`, `llm` (`granularity`, `page`, `packet`, `boundary_hints`, model settings), `boundary_model` (declared, not implemented) |
-| `split_then_classify.section_classification` | `split_then_classify` | `method`, `pages`, `k`, `llm` (prompts + class-assigning model settings), `embeddings`, `decision_model`, `low_confidence` (declared, not implemented) |
+| `split_then_classify.section_classification` | `split_then_classify` | `method`, `pages`, `k`, `llm` (prompts + class-assigning model settings), `embeddings`, `decision_model`, `low_confidence` |
 | `document_shape` | always | `sectionSplitting`, `maxPagesForClassification` |
 
 A model-settings block (`ClassificationModelSettings`) is the model, its
@@ -324,6 +324,50 @@ question and images that are over the limit on their own are refused the same wa
 by `decision_model.require_room` before the request is built, in every `input`
 mode, so an `images` request is refused locally with the reason instead of being
 sent and refused by the decider.
+
+#### Section classification by embeddings
+
+With `section_classification.method: embeddings`, `EmbeddingSectionLabeler`
+(`embeddings_labeler.py`) embeds each section's selected page images (the pages
+`pages`/`k` pick, downscaled to `embeddings.max_image_dimension` on the longer side)
+with a Bedrock multimodal embeddings model, averages them into one unit vector, and
+compares it by cosine similarity with each class's reference vectors:
+`references: examples` uses the class's `x-aws-idp-examples` images (read through
+the few-shot builder's path rules, so an S3 prefix or a `CONFIGURATION_BUCKET`
+relative path works the same way), `references: descriptions` embeds
+`"<class>: <description>"` as text. A class's similarity is its best reference.
+`softmax_probabilities` turns the similarities into a probability per class at
+`embeddings.temperature`; the top one is the section's confidence and the
+distribution is its `classification_candidates`.
+
+The embeddings label a section only when its best similarity is at least
+`embeddings.min_similarity` and its probability at least
+`low_confidence.min_confidence`. Anything else, and a section none of whose pages
+has a loadable image, is labelled by the `llm` block through the same
+`llm_label` callback the decision-model labeler uses. The validator requires
+`low_confidence.on_low_confidence: llm` and one threshold above 0. The
+`classification_reason` on the section's pages starts `Embeddings (<model>): ...`
+either way, and ends `..., so labeled by the LLM: <the LLM's reason>` when the LLM
+labelled it, which is how a run's fallback rate is read back.
+
+Model calls go through `BedrockClient.generate_embedding`, whose `usage` argument
+returns the `x-amzn-bedrock-input-token-count` header, and are metered under
+`SectionClassification/bedrock/<model>`. A failed call fails its section; one the
+client still raises as transient after its own retries reaches the section pool's
+transient handling, so the step is retried, and the LLM is not called instead. Reference vectors are cached
+for the process (`REFERENCE_CACHE_SIZE`, least recently used out) keyed on the
+model, the input type and a hash of the bytes or text. Their metering accumulates
+on the labeler call by call and `_classify_segments` collects it once with
+`take_unreported_metering()` after every section has finished or failed, before a
+transient failure is raised, so a document is charged for exactly the reference
+calls it made, including when the section that triggered them failed or the step
+is retried. A section whose LLM fallback or later page embedding fails hands its
+own completed embedding calls to the same collection.
+A class with references of another dimension than the section's is refused rather
+than compared. Fewer than two classes with references fails every section with a
+message naming the cause. The figures behind the documented thresholds come from
+`benchmarks/harness/embedding_labeling_bench.py`; see
+[docs/classification.md](../../../../docs/classification.md#section-classification-by-embeddings).
 
 #### Which placeholders a stage is allowed to render
 
@@ -1709,8 +1753,9 @@ The service automatically:
 2. Includes them in classification prompts using the `{FEW_SHOT_EXAMPLES}` placeholder
 3. Formats examples appropriately for both classification and extraction tasks
 
-The shipped default `classification.combined.page.task_prompt` in
-`config/system_defaults/base-classification.yaml` **already contains
+The shipped default `classification.combined.page.task_prompt`
+(`config/system_defaults/prompts/classification/combined.page.task_prompt.txt`,
+referenced from `base-classification.yaml`) **already contains
 `{FEW_SHOT_EXAMPLES}`**, positioned after `<document-types>` and before
 `<<CACHEPOINT>>` (examples are static per config, so they belong in the cacheable
 prefix — which matters here because classification runs per page). Defining

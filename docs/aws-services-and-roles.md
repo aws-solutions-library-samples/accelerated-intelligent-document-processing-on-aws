@@ -130,9 +130,10 @@ Deploying this solution requires an IAM role/user with the following permissions
 > access. See also [Deployment → Administrator Access Requirements](./deployment.md#administrator-access-requirements).
 >
 > That role is a **deployment** role, not a least-privilege one. It still holds
-> `cloudformation:*` plus service wildcards on 25 services, because a
-> CloudFormation service role must be able to create, update, **and roll back**
-> every resource type in every optional feature of the templates. What contains
+> `cloudformation:*` plus a service wildcard for each service the templates
+> deploy, because a CloudFormation service role must be able to create, update,
+> **and roll back** every resource type in every optional feature of the
+> templates. What contains
 > it is not narrow actions but three constraints, which its own template now
 > requires: a mandatory `CreatedRolePermissionsBoundaryArn` (its `iam:CreateRole`
 > grant carries an `iam:PermissionsBoundary` condition, so it cannot mint a role
@@ -406,6 +407,11 @@ The solution creates various IAM roles to run different components of the system
   * KMS on the stack CMK
   * See [Reporting SQL Layer](reporting-sql-layer.md) §2.3 for the migration's purpose (backwards-compat upgrade to the `hour`-partitioned metering layout)
 
+* **Customer Managed KMS Key Check Role** (`CustomerManagedKmsKeyCheckFunction`, the `Custom::CustomerManagedKmsKeyCheck` handler that keeps [`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md) a creation-time choice):
+  * `cloudformation:DescribeStacks` on the stack's own stack ARN only, to tell a new stack from an existing one being updated and an update from a rollback
+  * `kms:DescribeKey` on the supplied key's ARN only, and only when a key is supplied
+  * No data-plane access and no other KMS action
+
 * **Control-Plane Lambda cost-telemetry (in-band, all control-plane Lambdas that hit Athena or Bedrock):**
   * `cloudwatch:PutMetricData` scoped to namespace `IDPControlPlane` (already granted via the existing app-metrics grant)
   * The `idp_common.metrics.emit_control_plane_cost_metric` helper emits `IDPControlPlane/{AthenaBytesScanned,BedrockInputTokens,BedrockOutputTokens}` with dims `[Component, FunctionName, Model?]` for the rollup Lambda to aggregate.
@@ -477,7 +483,7 @@ When deploying this solution, consider the following security best practices:
 
 1. **Encryption**:
    * Enable SSE-KMS encryption for all S3 buckets
-   * Use customer-managed CMKs for sensitive data
+   * Use customer-managed CMKs for sensitive data; to use a centrally managed key of your own rather than the one the stack creates, see [Customer Managed KMS Key](./customer-managed-kms-key.md)
    * Enable encryption for DynamoDB tables
 
 2. **Network Security**:

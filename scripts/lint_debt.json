@@ -326,7 +326,6 @@
     }
   },
   "formatDebt": [
-    "lib/idp_common_pkg/idp_common/bedrock/client.py",
     "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
     "lib/idp_common_pkg/idp_common/config/constants.py",
     "lib/idp_common_pkg/idp_common/image/__init__.py",
@@ -485,6 +484,6 @@
   "highWaterMark": {
     "lintDebtFiles": 70,
     "lintFindings": 170,
-    "formatDebtFiles": 155
+    "formatDebtFiles": 154
   }
 }

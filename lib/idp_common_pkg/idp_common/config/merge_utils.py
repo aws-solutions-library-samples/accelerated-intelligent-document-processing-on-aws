@@ -366,6 +366,94 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
     return content if content is not None else {}
 
 
+#: The one key of a ``{_file: <path>}`` mapping in a system defaults file, which
+#: stands for the text of ``<path>``. See :func:`_resolve_file_references`.
+FILE_REFERENCE_KEY = "_file"
+
+#: Where a defaults file's ``_file`` references may point, relative to the
+#: system_defaults directory, and the one suffix they may name. Both are packaged
+#: (``pyproject.toml`` ``package-data`` and ``MANIFEST.in``), and
+#: ``tests/unit/config/test_default_prompt_files.py`` builds a wheel to prove it.
+DEFAULT_PROMPTS_DIR = "prompts"
+DEFAULT_PROMPT_SUFFIX = ".txt"
+
+
+def _read_referenced_file(reference: Any, defaults_dir: Path) -> str:
+    """The text a ``{_file: <reference>}`` mapping stands for.
+
+    The file's text with one trailing newline removed, so a prompt file can end
+    in a newline like any text file and still resolve to the string the
+    ``|-``/``>-`` block it replaced held. Read in text mode, so a CRLF checkout
+    (``core.autocrlf``) resolves to the same LF text a YAML scalar would. The
+    path is relative to
+    ``defaults_dir``, must stay inside its ``prompts/`` directory and must end in
+    ``.txt``: those are the files the package ships, so a reference outside them
+    would resolve in a checkout and fail in the Lambda layer.
+    """
+    if not isinstance(reference, str) or not reference:
+        raise ValueError(
+            f"A {{{FILE_REFERENCE_KEY}: ...}} reference in the system defaults must "
+            f"be a non-empty relative path, got {reference!r}"
+        )
+    prompts_root = (defaults_dir / DEFAULT_PROMPTS_DIR).resolve()
+    target = (defaults_dir / reference).resolve()
+    # An absolute path, a `..` climb and a symlink out of prompts/ all resolve
+    # outside prompts_root; prompts/ itself has no `.txt` suffix.
+    if (
+        not target.is_relative_to(prompts_root)
+        or target.suffix != DEFAULT_PROMPT_SUFFIX
+    ):
+        raise ValueError(
+            f"System defaults file reference {reference!r} must name a "
+            f"'{DEFAULT_PROMPT_SUFFIX}' file under '{DEFAULT_PROMPTS_DIR}/'"
+        )
+    if not target.is_file():
+        raise FileNotFoundError(f"Referenced defaults file not found: {target}")
+    text = target.read_text(encoding="utf-8")
+    return text[:-1] if text.endswith("\n") else text
+
+
+def _resolve_file_references(node: Any, defaults_dir: Path) -> Any:
+    """Replace every ``{_file: <path>}`` mapping in ``node`` with that file's text.
+
+    Applied to each system defaults file as it is read, BEFORE inheritance and
+    merging, so everything downstream — the merged defaults, a preset merged
+    over them, the stored Default record, an exported or generated configuration
+    — carries the prompt text and never the reference (GitHub #1652). Only the
+    shipped defaults are resolved: an operator's configuration never is, so no
+    configuration can make this read a file.
+
+    A mapping that holds ``_file`` beside any other key is refused rather than
+    resolved or merged, because either reading would silently drop something.
+    """
+    if isinstance(node, dict):
+        if FILE_REFERENCE_KEY in node:
+            if len(node) != 1:
+                raise ValueError(
+                    f"A {{{FILE_REFERENCE_KEY}: ...}} mapping in the system defaults "
+                    f"must hold no other key, got {sorted(node)}"
+                )
+            return _read_referenced_file(node[FILE_REFERENCE_KEY], defaults_dir)
+        return {
+            key: _resolve_file_references(value, defaults_dir)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_resolve_file_references(item, defaults_dir) for item in node]
+    return node
+
+
+def load_system_defaults_file(name: str) -> Dict[str, Any]:
+    """One system defaults file, as written but with its file references resolved.
+
+    For a reader that needs a single ``base-*.yaml`` rather than a pattern's
+    merged defaults; ``_inherits`` is left in place. Reading the YAML directly
+    would return ``{_file: ...}`` mappings where the prompts are.
+    """
+    defaults_dir = get_system_defaults_dir()
+    return _resolve_file_references(load_yaml_file(defaults_dir / name), defaults_dir)
+
+
 def _resolve_inheritance(
     config: Dict[str, Any],
     defaults_dir: Path,
@@ -415,7 +503,9 @@ def _resolve_inheritance(
             raise FileNotFoundError(f"Inherited file not found: {inherit_path}")
 
         # Load inherited config and recursively resolve its inheritance
-        inherited_config = load_yaml_file(inherit_path)
+        inherited_config = _resolve_file_references(
+            load_yaml_file(inherit_path), defaults_dir
+        )
         inherited_config = _resolve_inheritance(
             inherited_config, defaults_dir, resolved_files.copy()
         )
@@ -457,7 +547,9 @@ def load_system_defaults(pattern: str = "pattern-2") -> Dict[str, Any]:
 
     # Load pattern-specific defaults
     pattern_path = defaults_dir / f"{pattern}.yaml"
-    pattern_config = load_yaml_file(pattern_path)
+    pattern_config = _resolve_file_references(
+        load_yaml_file(pattern_path), defaults_dir
+    )
 
     # Recursively resolve all inheritance
     result = _resolve_inheritance(pattern_config, defaults_dir)

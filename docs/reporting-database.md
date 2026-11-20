@@ -372,7 +372,9 @@ When a document is processed and a new section type (classification) is detected
 1. Creates a new Glue table for that section type (e.g., `document_sections_invoice`, `document_sections_receipt`, `document_sections_w2`)
 2. Configures the table with appropriate schema based on the extracted data
 3. Sets up partition projection for efficient date-based queries
-4. Updates the table schema if new fields are detected in subsequent documents
+4. Adds a column to the table when a later document has a field the table does not have yet
+
+The table's columns accumulate across documents. A field that one document of a class has and the next does not stays a column, so queries written against it keep working; columns are never removed or renamed by processing. Glue stores column names in lowercase, and the comparison with a document's field names ignores case, so a document whose fields the table already has causes no table update. When a column's type in the table differs from the type the reporting step writes to the Parquet files (for example a `timestamp` column recorded as `string`), the next document of that class corrects the column's type in place. A new table likewise gets one column per name ignoring case, so two field names in one document that differ only by case become a single column. An update keeps the table-level parameters already on the table, such as those the document sections crawler records, and sets only the ones the reporting step manages (the Parquet classification and the partition projection settings).
 
 **Important:** Section type names are normalized to lowercase for consistency with case-sensitive S3 paths. For example, a section classified as "W2" will create a table named `document_sections_w2` with data stored in `document_sections/w2/`.
 
@@ -386,7 +388,7 @@ Document sections are stored in dynamically created tables based on the section 
 | section_id | string | Unique identifier for the section |
 | document_id | string | Unique identifier for the document |
 | section_classification | string | Type/class of the section |
-| section_confidence | double | Confidence score for the section classification |
+| section_confidence | string | Confidence score for the section classification, written as a string like every other non-timestamp section column (cast before comparing); null when the classifier produced no score |
 | timestamp | timestamp | When the document was processed |
 | config_version | string | Configuration profile used for processing |
 
@@ -394,7 +396,7 @@ Document sections are stored in dynamically created tables based on the section 
 The remaining columns are dynamically inferred from the JSON extraction results and vary by section type. Common patterns include:
 - Nested JSON objects are flattened using dot notation (e.g., `customer.name`, `customer.address.street`)
 - Arrays are converted to JSON strings
-- Primitive values (strings, numbers, booleans) are preserved as their native types
+- Every other value is stored as a string, including numbers and booleans, so cast before aggregating; only `timestamp` and `evaluation_date` are written with a timestamp type
 
 **Partitioning:**
 Each section type table is partitioned by date (YYYY-MM-DD format) for efficient querying.

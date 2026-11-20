@@ -1180,11 +1180,15 @@ extraction-stage issues with one error-severity `extraction_failed` issue naming
 the block, and returns without touching `document.errors`, so the ProcessSections
 Map iteration succeeds and the collate step completes the document (#2038). The
 assessment service reads `metadata.content_filtered` and gives its skip the same
-reason. With `hitl.enabled`, the issue is a human-review reason
+reason. The same handling applies to a reply withheld by stop reason
+(`bedrock_utils.ModelOutputWithheld`, raised after the Simple-mode model call and
+by agentic extraction when its last regeneration round is withheld). With
+`hitl.enabled`, the issue is a human-review reason
 (`review_queues.reasons.failed_extraction_issue`): an `extraction_failed` reason in
 queue mode and a pending section in legacy HITL, so the document is held for review
-rather than completing with the section empty. Not covered: `run_one_section_shard` on the Distributed Map path, where a
-blocked shard still fails `ExtractionShardMap`.
+rather than completing with the section empty. Not covered: `run_one_section_shard`
+on the Distributed Map path, where a blocked or withheld shard still fails
+`ExtractionShardMap`.
 
 Three properties it relies on, and one it deliberately does not do:
 

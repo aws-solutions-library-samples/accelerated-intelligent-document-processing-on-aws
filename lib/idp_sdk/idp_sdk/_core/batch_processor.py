@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_sdk._core import document_attributes as doc_attributes
 from idp_sdk._core.ids import generate_timestamped_id
 from idp_sdk._core.manifest_parser import parse_manifest
 from idp_sdk._core.stack_info import StackInfo, tracking_table_name
@@ -91,6 +92,7 @@ class BatchProcessor:
         config_revision: Optional[int] = None,
         config_path: Optional[str] = None,
         batch_prefix: Optional[str] = None,
+        attributes: Optional[Dict] = None,
     ) -> Dict:
         """
         Universal entry point for batch processing - routes to appropriate method
@@ -107,6 +109,8 @@ class BatchProcessor:
             config_version: Configuration version to use
             config_path: Optional path to configuration YAML file
             batch_prefix: Alias for output_prefix (for CLI compatibility)
+            attributes: Caller-supplied document attributes applied to every
+                document; a manifest row's own ``attributes`` override them per key
 
         Returns:
             Dictionary with batch processing results
@@ -127,6 +131,7 @@ class BatchProcessor:
                 number_of_files,
                 config_version,
                 config_revision,
+                attributes=attributes,
             )
         elif directory:
             return self.process_batch_from_directory(
@@ -138,6 +143,7 @@ class BatchProcessor:
                 number_of_files,
                 config_version,
                 config_revision,
+                attributes=attributes,
             )
         elif s3_uri:
             return self.process_batch_from_s3_uri(
@@ -149,6 +155,7 @@ class BatchProcessor:
                 config_version=config_version,
                 config_revision=config_revision,
                 number_of_files=number_of_files,
+                attributes=attributes,
             )
         else:
             raise ValueError("Must specify one of: manifest_path, directory, or s3_uri")
@@ -161,6 +168,7 @@ class BatchProcessor:
         number_of_files: Optional[int] = None,
         config_version: Optional[str] = None,
         config_revision: Optional[int] = None,
+        attributes: Optional[Dict] = None,
     ) -> Dict:
         """
         Process batch of documents from manifest
@@ -199,6 +207,7 @@ class BatchProcessor:
             manifest_path,
             config_version,
             config_revision,
+            attributes=attributes,
         )
 
     def process_batch_from_directory(
@@ -211,6 +220,7 @@ class BatchProcessor:
         number_of_files: Optional[int] = None,
         config_version: Optional[str] = None,
         config_revision: Optional[int] = None,
+        attributes: Optional[Dict] = None,
     ) -> Dict:
         """
         Process batch of documents from local directory
@@ -255,6 +265,7 @@ class BatchProcessor:
             config_version,
             config_revision,
             base_dir=dir_path,
+            attributes=attributes,
         )
 
     def process_batch_from_s3_uri(
@@ -267,6 +278,7 @@ class BatchProcessor:
         config_version: Optional[str] = None,
         config_revision: Optional[int] = None,
         number_of_files: Optional[int] = None,
+        attributes: Optional[Dict] = None,
     ) -> Dict:
         """
         Process batch of documents from S3 URI
@@ -322,6 +334,7 @@ class BatchProcessor:
             s3_uri,
             config_version,
             config_revision,
+            attributes=attributes,
         )
 
     def _process_documents(
@@ -333,6 +346,7 @@ class BatchProcessor:
         config_version: Optional[str] = None,
         config_revision: Optional[int] = None,
         base_dir: Optional[str] = None,
+        attributes: Optional[Dict] = None,
     ) -> Dict:
         """
         Process list of documents
@@ -359,6 +373,21 @@ class BatchProcessor:
             "output_prefix": output_prefix,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Resolve and validate every document's attributes BEFORE uploading any,
+        # so an invalid set refuses the whole submission with a clear error
+        # instead of half-submitting a batch and counting the rest as failed.
+        for doc in documents:
+            merged = doc_attributes.merge(attributes, doc.get("attributes"))
+            if merged:
+                if doc.get("type") == "s3-key":
+                    raise ValueError(
+                        f"{doc.get('filename', doc.get('path'))}: attributes cannot "
+                        "be attached to a document already in the input bucket"
+                    )
+                doc["attributes"] = merged
+            else:
+                doc.pop("attributes", None)
 
         for doc in documents:
             try:
@@ -595,7 +624,23 @@ class BatchProcessor:
         # Upload file with config version as S3 metadata instead of filename suffix
         input_bucket = self.resources["InputBucket"]
 
-        if config_version:
+        if doc.get("attributes"):
+            base_metadata = {}
+            if config_version:
+                base_metadata["config-version"] = config_version
+                if config_revision is not None:
+                    base_metadata["config-revision"] = str(config_revision)
+            metadata = doc_attributes.prepare_upload(
+                self.s3, input_bucket, s3_key, doc["attributes"], base_metadata
+            )
+            with open(local_path, "rb") as file_data:
+                self.s3.put_object(
+                    Bucket=input_bucket,
+                    Key=s3_key,
+                    Body=file_data,
+                    Metadata=metadata,
+                )
+        elif config_version:
             # Use put_object with metadata for config version
             logger.info(f"Adding config-version metadata: {config_version} to {s3_key}")
             metadata = {"config-version": config_version}
@@ -681,6 +726,18 @@ class BatchProcessor:
             )
         else:
             logger.info(f"No config version specified for copied file {dest_key}")
+
+        if doc.get("attributes"):
+            # REPLACE, like the config-version case: the copy carries the
+            # attributes the caller supplied, not the source object's metadata.
+            copy_args["Metadata"] = doc_attributes.prepare_upload(
+                self.s3,
+                input_bucket,
+                dest_key,
+                doc["attributes"],
+                copy_args.get("Metadata"),
+            )
+            copy_args["MetadataDirective"] = "REPLACE"
 
         self.s3.copy_object(**copy_args)
 

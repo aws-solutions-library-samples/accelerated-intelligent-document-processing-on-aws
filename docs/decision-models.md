@@ -43,7 +43,16 @@ each document starts, with the LLM, and the decision model names each section.
 
 ### 1. Deploy a decision model on Lambda
 
-Deploy the Strands Decider's Lambda recipe in the account and region of your stack.
+The quickest way is to install the
+[Decision Model: Strands Decider](./extensions/decision-model-decider.md)
+extension from the **Extensions** catalog. It builds the Strands Decider's Lambda
+image in your account from pinned source and model commits, deploys it as
+`GENAIIDP-decider` with images enabled, and adds an inactive configuration profile,
+`decision-model-decider`, that selects it for section classification. Its stack's
+`DeciderEndpoint` output is the ARN for step 2.
+
+To deploy it yourself instead, deploy the Strands Decider's Lambda recipe in the
+account and region of your stack.
 Follow its [Lambda guide](https://github.com/strands-labs/strands-decider/tree/main/deploy/lambda)
 and deploy it **with images** (`-c vision=true`), because section classification
 works best on page images.
@@ -190,6 +199,22 @@ errs high. The default, 3584, is the 4,096-token window less 512 for the model's
 prompt, and it is also the largest value used: a larger one would let dense text
 overflow the window, so it is capped at 3584 with a warning in the logs. Lower it if
 requests are still refused.
+
+⚠️ **Extraction confidence with `input: text` or `both` can be refused over dense
+tables.** The estimate undercounts text that is mostly punctuation, digits and
+capitals, such as a markdown table of dates and amounts or a list of serial
+numbers. Against the Strands Decider extension's model in November 2026, at the
+default `max_input_tokens` of 3584, a confidence request over one such page in
+`text` or `both` mode was refused as over the 4,096-token window; a refused request
+fails the section's confidence pass. The default, `input: images`, sends no text
+and was well inside the window, and section classification fit on the same pages.
+For table-heavy documents, keep extraction confidence at `input: images`.
+
+To check these figures against the decision model you deployed, for example after
+changing its model, run `make stacktest-decision-window` from a checkout: it sends
+the largest request each step builds at the default limit, in every `input` mode,
+over several kinds of dense page text, and reports the model's own token count
+beside the estimate. See [Testing](testing.md).
 `input: images` sends no text, so nothing is cut, but the question and images are
 still checked against the limit.
 

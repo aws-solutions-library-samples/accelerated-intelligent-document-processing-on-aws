@@ -1048,3 +1048,88 @@ def test_a_private_publish_leaves_the_sam_objects_private(
     assert not any(
         g.get("Grantee", {}).get("URI", "").endswith("AllUsers") for g in grants
     )
+
+
+_IMAGE_FUNCTION_TEMPLATE = """\
+Resources:
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code:
+        ImageUri: !Sub '${Repo.RepositoryUri}:${Build.ImageTag}'
+      Role: !GetAtt Role.Arn
+"""
+
+
+#: The real method, captured before the autouse fixture in conftest.py replaces it
+#: with a skip on a machine without the SAM CLI: these tests stub `_run_sam`, so
+#: they run no `sam` and must not skip in CI, where the CLI is absent.
+_REAL_BUILD_AND_PACKAGE = FeaturePublisher._sam_build_and_package
+
+
+def _package_cmd(project: Path, monkeypatch) -> list:
+    calls: list = []
+    monkeypatch.setattr(
+        FeaturePublisher, "_sam_build_and_package", _REAL_BUILD_AND_PACKAGE
+    )
+    monkeypatch.setattr(
+        "idp_feature_sdk.publisher.shutil.which", lambda _n: "/usr/bin/sam"
+    )
+
+    def _record(self, cmd, *, step):
+        calls.append(cmd)
+        if step == "sam package":
+            out = Path(cmd[cmd.index("--output-template-file") + 1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("Resources: {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(FeaturePublisher, "_run_sam", _record)
+    FeaturePublisher(project)._sam_build_and_package(
+        manifest=load_manifest(project),
+        artifact_bucket="b",
+        artifact_prefix="p",
+        region="eu-west-1",
+    )
+    return calls[-1]
+
+
+def test_a_container_image_function_gets_a_placeholder_image_repository(
+    demo_feature_project: Path, monkeypatch
+) -> None:
+    """`sam package` refuses a template with a container-image function unless it
+    is given an image repository, though the image is built later, in the
+    deploying account (#1656). The repository only has to be well formed."""
+    (demo_feature_project / "template.yaml").write_text(
+        _IMAGE_FUNCTION_TEMPLATE, encoding="utf-8"
+    )
+    cmd = _package_cmd(demo_feature_project, monkeypatch)
+    assert cmd[cmd.index("--image-repository") + 1] == (
+        "000000000000.dkr.ecr.eu-west-1.amazonaws.com/placeholder"
+    )
+
+
+def test_a_zip_only_template_gets_no_image_repository(
+    demo_feature_project: Path, monkeypatch
+) -> None:
+    assert "PackageType" not in (demo_feature_project / "template.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "--image-repository" not in _package_cmd(demo_feature_project, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "feature, expected",
+    [("decision-model-decider", True), ("sample-feature", False)],
+)
+def test_image_function_detection_on_the_bundled_features(feature, expected) -> None:
+    from idp_feature_sdk.publisher import declares_container_image_function
+
+    template = (
+        Path(__file__).resolve().parents[3]
+        / "feature-platform"
+        / feature
+        / "template.yaml"
+    )
+    assert template.is_file()
+    assert declares_container_image_function(template) is expected

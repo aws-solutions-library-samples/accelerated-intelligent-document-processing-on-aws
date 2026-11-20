@@ -50,6 +50,7 @@ from idp_common.config.tenants import (
     is_strict_isolation,
 )
 from idp_common.docs_service import create_document_service
+from idp_common.document_attributes import ISSUE_ATTRIBUTES_DROPPED, is_sidecar_key
 from idp_common.document_versions import delete_current_output_objects
 from idp_common.job_completion import finalize_job_file, parse_job_document_id
 from idp_common.job_service import create_job_service
@@ -861,6 +862,16 @@ def handle_object_created(event):
             "skipped": "malware_validation_object",
         }
 
+    # A document-attributes sidecar (`<key>.idp-attributes.json`) is read by the
+    # intake of the document that names it, and is not a document itself (#1851).
+    if is_sidecar_key(object_key):
+        logger.info(f"Skipping document-attributes sidecar: {object_key}")
+        return {
+            "statusCode": 200,
+            "detail": detail,
+            "skipped": "document_attributes_sidecar",
+        }
+
     # Get output bucket from environment for the document
     output_bucket = os.environ.get("OUTPUT_BUCKET", "")
     if output_bucket == "":
@@ -1013,6 +1024,15 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
         logger.info("Scan result for the GuardDuty validation object; ignoring")
         return {"statusCode": 200, "skipped": "malware_validation_object"}
 
+    if is_sidecar_key(object_key):
+        # The plan scans the whole input bucket, so a sidecar gets a verdict too.
+        # It has no tracking row (the upload path skipped it), and treating its
+        # verdict as one for a document would raise ScanVerdictBeforeIngestError
+        # on every retry and feed the verdicts-not-applied alarm. It is only ever
+        # parsed as JSON by the intake of the document that names it.
+        logger.info("Scan result for a document-attributes sidecar; ignoring")
+        return {"statusCode": 200, "skipped": "document_attributes_sidecar"}
+
     if not MALWARE_SCANNING_ENABLED:
         # Reachable if a stack was switched to DISABLED while a verdict was in
         # flight, or if an externally managed plan still points here. Admitting
@@ -1065,6 +1085,9 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
             "time": verdict_time,
         },
         output_bucket,
+        # The attributes were snapshotted at upload and are on the row; re-reading
+        # them here would let a sidecar edited during the scan change them.
+        read_attributes=False,
     )
     # Same resolver the upload path uses, so a prefix-mapped profile survives the
     # gate. The upload path already refused a rejected document as FAILED before
@@ -1110,6 +1133,15 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
         existing.submission_source or document.submission_source
     )
     document.test_set_id = existing.test_set_id or document.test_set_id
+    # The intake snapshot of the caller's attributes, and the warning recorded if
+    # intake dropped any, both come from the row: the verdict pass does not read
+    # them (`read_attributes=False` above).
+    document.attributes = dict(existing.attributes)
+    document.processing_issues.extend(
+        issue
+        for issue in existing.processing_issues
+        if issue.code == ISSUE_ATTRIBUTES_DROPPED
+    )
 
     # Strict isolation re-checks the tenant boundary here, because the
     # configuration was just re-resolved: a tenant or mapping change while the scan

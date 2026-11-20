@@ -6,6 +6,7 @@ import { getDocumentProcessingIssueCount, type ProcessingIssue } from './process
 import { resolveMissingRequiredFieldCount } from './missing-required-fields-utils';
 import { parseMetering, parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 import { isHitlReviewFinished } from './review-status';
+import { parseCallerAttributes } from './caller-attributes';
 
 interface DocumentApiItem {
   ObjectKey: string;
@@ -68,6 +69,11 @@ interface DocumentApiItem {
    * the document was processed with no mapping applied.
    */
   ProcessingIssues?: ProcessingIssue[] | null;
+  /**
+   * Caller-supplied document attributes, snapshotted at intake (#1851). Absent
+   * for a document uploaded without any. Untrusted input: rendered as text only.
+   */
+  DocumentAttributes?: Record<string, unknown> | string | null;
 }
 
 // Helper function to determine Review Status without nested ternaries
@@ -223,6 +229,7 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       configMappingPrefix,
       configAssignmentError,
       documentProcessingIssues: (item.ProcessingIssues ?? []).filter(Boolean),
+      callerAttributes: parseCallerAttributes(item.DocumentAttributes),
     };
 
     return mapping;

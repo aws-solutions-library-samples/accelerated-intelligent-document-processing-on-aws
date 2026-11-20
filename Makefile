@@ -827,6 +827,18 @@ terraform-check: ## Translate template.yaml to Terraform offline, then init + va
 		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
 		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
 	@$(MAKE) --no-print-directory terraform-scan-diff
+	@$(MAKE) --no-print-directory terraform-replay-releases
+
+# The current translator over the template tree of every release listed in
+# terraform/tools/replay_releases.json, each at the commit recorded there, offline:
+# a translator change that breaks the translation of a release a deployment may
+# still be on fails here rather than at that deployment's upgrade. It reads the
+# repository's own history (git archive of the recorded commits), so it needs a
+# clone holding them and no network; both CI jobs check out full history for it.
+# Add a release to the file when it is tagged.
+TERRAFORM_REPLAY_JOBS ?= 4
+terraform-replay-releases: ## Replay the current translator offline over the template tree of each release in terraform/tools/replay_releases.json; fail on any failure
+	@$(PYTHON) terraform/tools/replay_releases.py --check --jobs $(TERRAFORM_REPLAY_JOBS)
 
 # The static-scan diff: checkov over the CloudFormation templates and over the
 # Terraform generated from them, failing when the Terraform side has a finding the
@@ -846,6 +858,8 @@ terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templat
 # main and nested stacks, read through Cloud Control and diffed, with explained
 # differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
 # credentials and both deployments, so it is a release-validation tier, not a CI gate.
+# A Terraform schedule carrying IDP_TERRAFORM_PARITY=true runs the same comparison
+# against a CloudFormation twin it deploys itself (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
 	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
 	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
@@ -1066,6 +1080,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# CustomerManagedKmsKeyArn check (#2016): a change on update is refused in either
+	@# direction, a supplied key is checked on create. Real botocore clients behind
+	@# Stubbers with an explicit region.
+	cd src/lambda/customer_managed_kms_key_check && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
 	@# filters) and the custom resource that attaches it to the gateway. moto for
 	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
@@ -1156,6 +1174,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/image-build && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
@@ -1313,6 +1333,31 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-load STACK_NAME=<stack-name> [REGION=...] [DRY_RUN=1])
 endif
 	$(RUN_FIRST_PARTY) scripts/sdlc/load_probe.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(DRY_RUN),--dry-run,) $(LOAD_PROBE_ARGS)
+
+# Usage: make stacktest-decision-window STACK_NAME=<host> [INSTALL=1] [UNINSTALL=1]
+#        [BUCKET_BASENAME=<artifacts bucket basename>] [REGION=<region>]
+#        make stacktest-decision-window ENDPOINT=<decider function or alias ARN>
+#        make stacktest-decision-window DRY_RUN=1
+# Decision-model window check (#2051): sends the largest request each caller
+# builds (section classification and extraction confidence, in text, both and
+# images, at the largest max_pages and the max_input_tokens cap) to a DEPLOYED
+# Strands Decider, plus calibration probes either side of its window, and fails
+# when a request is refused for its size, when a measured token count beats the
+# estimate plus PROMPT_RESERVE_TOKENS, or when the window, prompt or image cost no
+# longer matches the constants in idp_common.decision_model. With STACK_NAME the
+# endpoint is the decision-model-decider extension's DeciderEndpoint output;
+# INSTALL=1 installs the extension on that host from this checkout first (and
+# refuses if it is already there); UNINSTALL=1, with INSTALL=1, deletes the
+# extension stack this run created afterwards. Only 1, true or yes turn either on.
+# The host stack is never touched.
+# DRY_RUN=1 builds and estimates the requests offline. Opt-in, in neither CI.
+# Exit 0 = PASS, 1 = FAIL, 2 = could not run. Report:
+# ./scratch/window-check/<timestamp>/report.json.
+stacktest-decision-window: ## Decision-model window check: the callers' largest requests against a deployed decider (STACK_NAME=... [INSTALL=1] [UNINSTALL=1], or ENDPOINT=...; DRY_RUN=1 touches nothing)
+ifeq ($(DRY_RUN)$(STACK_NAME)$(ENDPOINT),)
+	$(error Set STACK_NAME=<host stack>, ENDPOINT=<decider ARN> or DRY_RUN=1. Usage: make stacktest-decision-window STACK_NAME=<host> [INSTALL=1] [UNINSTALL=1])
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/decision_model_window_check.py $(if $(DRY_RUN),--dry-run,$(if $(ENDPOINT),--endpoint $(ENDPOINT),--stack-name $(STACK_NAME))) $(if $(REGION),--region $(REGION),) $(if $(filter 1 true yes,$(INSTALL)),--install,) $(if $(filter 1 true yes,$(UNINSTALL)),--uninstall,) $(if $(BUCKET_BASENAME),--bucket-basename $(BUCKET_BASENAME),)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
@@ -1487,7 +1532,11 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 # deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
 # passwords still sign in, then destroys both and sweeps what they retained. Measured
 # at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
-# continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# continues a stopped or failed run from WORK_DIR. UPSTREAM_TAG=<tag> picks one of the
+# upstream releases the driver pins (default: the release a RESUME=1 run recorded,
+# else the newest; `rotate` takes this week's, as the weekly schedule does). VARIANT=mcp
+# also deploys upstream's MCP integration and runs the guide's manual procedure for it
+# before plan (VARIANT=mcp-datasets adds both test datasets). See docs/testing.md and
 # .claude/skills/release-validation.md (tier J).
 #   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
 #       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
@@ -1498,6 +1547,8 @@ _TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
 	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
 	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
 	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(UPSTREAM_TAG),--upstream-tag $(UPSTREAM_TAG),) \
+	$(if $(VARIANT),--variant $(VARIANT),) \
 	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
 
 stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)

@@ -458,18 +458,18 @@ class TestRootConfig:
         assert 'provider "aws" {\n  region = "us-west-2"' in main
         assert 'provider "awscc" {\n  region = "us-west-2"' in main
         assert (
-            'source = "s3::https://s3-us-west-2.amazonaws.com/'
+            'source                   = "s3::https://s3-us-west-2.amazonaws.com/'
             f'{BUCKET}/p/1/terraform/m.zip"'
         ) in main
         assert 'variable "max_concurrent_workflows" {\n  type = number' in main
-        assert 'variable "api_key" {\n  type = string\n  sensitive = true' in main
-        assert "  stack_name = var.stack_name" in main
+        assert 'variable "api_key" {\n  type      = string\n  sensitive = true' in main
+        assert "  stack_name               = var.stack_name" in main
         assert 'backend "' not in main
         tfvars = (tmp_path / "terraform.tfvars").read_text()
-        assert 'stack_name = "tfidp"' in tfvars
+        assert 'stack_name               = "tfidp"' in tfvars
         assert "max_concurrent_workflows = 7" in tfvars
         # A template sequence is escaped, so Terraform reads it literally.
-        assert 'api_key = "$${x}"' in tfvars
+        assert 'api_key                  = "$${x}"' in tfvars
         assert tf.parse_tfvars(tfvars) == values
         assert values["api_key"] == "${x}"
         assert (tmp_path / "terraform.tfvars").stat().st_mode & 0o077 == 0
@@ -477,7 +477,8 @@ class TestRootConfig:
     def test_list_values_render_as_hcl_lists(self, tmp_path):
         _write(tmp_path, parameters={"SubnetIds": "s-1,s-2"})
         assert (
-            'subnet_ids = ["s-1", "s-2"]' in (tmp_path / "terraform.tfvars").read_text()
+            'subnet_ids  = ["s-1", "s-2"]'
+            in (tmp_path / "terraform.tfvars").read_text()
         )
         assert "type = list(string)" in (tmp_path / "main.tf").read_text()
 
@@ -600,6 +601,121 @@ class TestRootConfig:
             _write(tmp_path, stack_name="other")
 
 
+TAGGED_MANIFEST = {**MANIFEST, "tagsVariable": "tags"}
+
+#: ``main.tf`` for ``_write(tmp_path)`` as idp-cli wrote it before the module had
+#: a tags input; a deploy that passes no tags must still write exactly this.
+UNTAGGED_MAIN_TF = f"""{tf.ROOT_MARKER}
+# Rewritten on every deploy; put your own configuration (a backend block,
+# for example) in another .tf file in this directory.
+
+terraform {{
+  required_providers {{
+    aws   = {{ source = "hashicorp/aws" }}
+    awscc = {{ source = "hashicorp/awscc" }}
+  }}
+}}
+
+provider "aws" {{
+  region = "us-west-2"
+}}
+
+provider "awscc" {{
+  region = "us-west-2"
+}}
+
+variable "admin_email" {{
+  type = string
+}}
+
+variable "stack_name" {{
+  type = string
+}}
+
+module "idp" {{
+  source      = "s3::https://s3-us-west-2.amazonaws.com/{BUCKET}/p/1/terraform/m.zip"
+  admin_email = var.admin_email
+  stack_name  = var.stack_name
+}}
+"""
+
+
+class TestTags:
+    def test_no_tags_writes_the_file_it_always_wrote(self, tmp_path):
+        values = _write(tmp_path, manifest=TAGGED_MANIFEST)
+        assert (tmp_path / "main.tf").read_text() == UNTAGGED_MAIN_TF
+        assert "tags" not in (tmp_path / "terraform.tfvars").read_text()
+        assert values.tags == {} and not values.tags_kept
+
+    def test_tags_reach_the_module_and_the_aws_default_tags(self, tmp_path):
+        tags = {"CostCenter": "42", "Owner": "team a"}
+        values = _write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags)
+        main = (tmp_path / "main.tf").read_text()
+        assert (
+            'provider "aws" {\n  region = "us-west-2"\n  default_tags {\n'
+            "    tags = var.tags\n  }\n}"
+        ) in main
+        assert 'provider "awscc" {\n  region = "us-west-2"\n}' in main
+        assert 'variable "tags" {\n  type = map(string)\n}' in main
+        assert "  tags        = var.tags\n}" in main
+        tfvars = tf.parse_tfvars((tmp_path / "terraform.tfvars").read_text())
+        assert tfvars["tags"] == tags
+        # Tags are not a parameter: they are kept out of the parameter record.
+        assert "tags" not in values
+        assert "tags" not in json.loads((tmp_path / tf.PARAMETERS_FILE).read_text())
+
+    def test_a_later_deploy_without_tags_keeps_them(self, tmp_path, caplog):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a"})
+        with caplog.at_level("INFO"):
+            values = _write(tmp_path, admin_email=None, manifest=TAGGED_MANIFEST)
+        assert values.tags == {"Owner": "a"} and values.tags_kept
+        assert "Keeping the previous deploy's tags (Owner)" in caplog.text
+        assert "Variable tags" not in caplog.text
+        assert "default_tags" in (tmp_path / "main.tf").read_text()
+
+    def test_passed_tags_replace_and_empty_tags_remove(self, tmp_path):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a", "Team": "t"})
+        values = _write(
+            tmp_path, admin_email=None, manifest=TAGGED_MANIFEST, tags={"Owner": "b"}
+        )
+        assert values.tags == {"Owner": "b"} and not values.tags_kept
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={})
+        assert (tmp_path / "main.tf").read_text() == UNTAGGED_MAIN_TF
+        assert "tags" not in tf.parse_tfvars(
+            (tmp_path / "terraform.tfvars").read_text()
+        )
+
+    def test_a_module_without_a_tags_input_refuses_tags_and_writes_nothing(
+        self, tmp_path
+    ):
+        with pytest.raises(IDPConfigurationError, match="no tags input"):
+            _write(tmp_path, tags={"Owner": "a"})
+        assert not (tmp_path / "main.tf").exists()
+        assert not (tmp_path / "terraform.tfvars").exists()
+
+    def test_kept_tags_are_refused_by_a_module_without_a_tags_input(self, tmp_path):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a"})
+        before = (tmp_path / "main.tf").read_text()
+        with pytest.raises(IDPConfigurationError, match="previous deploy has tags"):
+            _write(tmp_path, admin_email=None)
+        assert (tmp_path / "main.tf").read_text() == before
+
+    def test_more_tags_than_an_s3_object_takes_are_refused(self, tmp_path):
+        tags = {f"k{i}": "v" for i in range(11)}
+        with pytest.raises(IDPConfigurationError, match="at most 10"):
+            _write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags)
+        assert not (tmp_path / "main.tf").exists()
+        tags.pop("k0")
+        assert len(_write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags).tags) == 10
+
+    def test_set_assume_role_keeps_the_default_tags(self, tmp_path):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a"})
+        tf.set_assume_role(tmp_path / "main.tf", ROLE, REGION)
+        main = (tmp_path / "main.tf").read_text()
+        assert main.count(f'role_arn = "{ROLE}"') == 2
+        assert "  default_tags {\n    tags = var.tags\n  }" in main
+
+
 # --------------------------------------------------------------------------------------
 # Retained addresses and state
 # --------------------------------------------------------------------------------------
@@ -636,6 +752,15 @@ STATE = {
                             "mode": "managed",
                             "type": "awscc_s3_bucket",
                             "values": {"bucket_name": "tfidp-output"},
+                        },
+                        {
+                            "address": "module.idp.aws_s3_bucket.cfn_bridge",
+                            "mode": "managed",
+                            "type": "aws_s3_bucket",
+                            "values": {
+                                "bucket": "tfidp-cfnbridge-1",
+                                "force_destroy": True,
+                            },
                         },
                     ],
                     "child_modules": [
@@ -684,6 +809,45 @@ class TestRetained:
             STATE, exclude=["module.idp.aws_s3_bucket.logging_bucket"]
         )
         assert [b["bucket_name"] for b in buckets] == ["tfidp-input", "tfidp-output"]
+
+    def test_buckets_to_empty_leave_out_the_custom_resource_bridge_buckets(self):
+        """The bridge buckets hold each custom resource's physical ID until its
+        Delete runs; emptying one first sends every Delete in that module
+        without its ID. The fixture has the shape and the four bridge buckets
+        (root and three child modules, all ``force_destroy``) of a real
+        deployment's state."""
+        bridges = [
+            ("module.idp", "tfidp-cfnbridge-1"),
+            ("module.idp.module.documentkb[0]", "tfidp-documentkb-cfnbridge-2"),
+            ("module.idp.module.patternstack", "tfidp-patternsta-cfnbridge-3"),
+            (
+                "module.idp.module.multidocdiscoverystack",
+                "tfidp-multidocdi-cfnbridge-4",
+            ),
+        ]
+        children = [
+            {
+                "address": module,
+                "resources": [
+                    {
+                        "address": f"{module}.aws_s3_bucket.cfn_bridge",
+                        "mode": "managed",
+                        "type": "aws_s3_bucket",
+                        "values": {"bucket": name, "force_destroy": True},
+                    },
+                    {
+                        "address": f"{module}.aws_s3_bucket.data",
+                        "mode": "managed",
+                        "type": "aws_s3_bucket",
+                        "values": {"bucket": f"{name}-data", "force_destroy": False},
+                    },
+                ],
+            }
+            for module, name in bridges
+        ]
+        state = {"values": {"root_module": {"child_modules": children}}}
+        names = [b["bucket_name"] for b in tf.state_buckets(state)]
+        assert names == [f"{name}-data" for _, name in bridges]
 
     def test_report_has_the_cloudformation_shape(self):
         remove, _ = tf.retained_state_addresses(

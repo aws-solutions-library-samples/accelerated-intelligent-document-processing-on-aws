@@ -217,7 +217,6 @@ known-first-party = ["idp_common", "idp_cli", "idp_sdk", "idp_feature_sdk", "idp
 # `make check-lint-debt`: a file that is already formatted must be delisted.
 exclude = [
 # >>> GENERATED format-debt — edit scripts/lint_debt.json, then --write
-    "lib/idp_common_pkg/idp_common/bedrock/client.py",
     "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
     "lib/idp_common_pkg/idp_common/config/constants.py",
     "lib/idp_common_pkg/idp_common/image/__init__.py",

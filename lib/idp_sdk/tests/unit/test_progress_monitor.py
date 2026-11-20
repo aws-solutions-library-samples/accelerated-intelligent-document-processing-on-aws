@@ -1259,3 +1259,36 @@ class TestAwaitingReview:
         assert stats["completion_percentage"] == 100.0
         # ...but success is measured over documents with an outcome only.
         assert stats["success_rate"] == 50.0
+
+
+@pytest.mark.unit
+class TestDocumentAttributes:
+    """Caller-supplied attributes the lookup returns ride along on both paths
+    (#1851), and a document without any gets no ``attributes`` key."""
+
+    def test_the_batch_path_carries_attributes(self, monitor, stubber):
+        _expect_batch(
+            stubber,
+            ["b/a.pdf", "b/c.pdf"],
+            [
+                {
+                    "object_key": "b/a.pdf",
+                    "status": "COMPLETED",
+                    "attributes": {"k": "v"},
+                },
+                {"object_key": "b/c.pdf", "status": "COMPLETED"},
+            ],
+        )
+        with_attrs, without = monitor._batch_query_documents(["b/a.pdf", "b/c.pdf"])
+        assert with_attrs["attributes"] == {"k": "v"}
+        assert "attributes" not in without
+
+    def test_the_single_path_carries_attributes(self, monitor, stubber):
+        _expect_single(
+            stubber, "b/a.pdf", {"status": "COMPLETED", "attributes": {"k": 1}}
+        )
+        assert monitor.get_document_status("b/a.pdf")["attributes"] == {"k": 1}
+
+    def test_the_single_path_omits_an_absent_set(self, monitor, stubber):
+        _expect_single(stubber, "b/a.pdf", {"status": "COMPLETED"})
+        assert "attributes" not in monitor.get_document_status("b/a.pdf")

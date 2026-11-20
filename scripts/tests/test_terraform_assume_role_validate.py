@@ -173,3 +173,26 @@ def test_a_block_on_awscc_is_refused_so_this_check_can_fail(
     result = _validate(directory, offline_terraform)
     assert result.returncode != 0
     assert "assume_role" in result.stdout + result.stderr
+
+
+def test_the_tagged_root_configuration_validates(tmp_path, offline_terraform):
+    """`deploy --terraform --tags` adds `default_tags` to the aws provider (a
+    block there) and passes `tags` to the module; both must validate, beside a
+    role, against a stand-in module that declares the variable as the
+    translator does."""
+    from idp_sdk._core import terraform_deploy as tf  # noqa: TID251
+
+    def _tagged(_text):
+        return tf.render_main_tf("us-east-1", MODULE_URL, {}, {}, ROLE, tags={"a": "b"})
+
+    directory = _root(tmp_path, offline_terraform, ROLE, rewrite=_tagged)
+    (directory / "mod" / "variables.tf").write_text(
+        'variable "tags" {\n  type = map(string)\n  default = {}\n}\n'
+    )
+    (directory / "terraform.tfvars").write_text('tags = {"a": "b"}\n')
+    assert (
+        "  default_tags {\n    tags = var.tags\n  }"
+        in (directory / "main.tf").read_text()
+    )
+    result = _validate(directory, offline_terraform)
+    assert result.returncode == 0, result.stdout + result.stderr

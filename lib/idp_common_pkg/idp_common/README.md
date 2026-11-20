@@ -210,26 +210,46 @@ The document processing status is represented by the `Status` enum:
 ```python
 class Status(Enum):
     """Document processing status."""
-    MALWARE_SCANNING = "MALWARE_SCANNING"                   # Held at the ingest gate awaiting a GuardDuty verdict
-    QUEUED = "QUEUED"                                       # Initial state
-    RUNNING = "RUNNING"                                     # Workflow started
-    PREPROCESSING = "PREPROCESSING"                         # Preprocessing hook running (e.g. PII redaction)
-    OCR = "OCR"                                             # OCR processing
-    CLASSIFYING = "CLASSIFYING"                             # Document classification
-    EXTRACTING = "EXTRACTING"                               # Information extraction
-    ASSESSING = "ASSESSING"                                 # Confidence assessment
-    POSTPROCESSING = "POSTPROCESSING"                       # Post-processing
-    HITL_IN_PROGRESS = "HITL_IN_PROGRESS"                   # Human review in progress
-    SUMMARIZING = "SUMMARIZING"                             # Document summarization
-    RULE_VALIDATION = "RULE_VALIDATION"                     # Rule validation
+    PENDING_UPLOAD = "PENDING_UPLOAD"  # Jobs API: a job before its files arrive (never a document status)
+    IN_PROGRESS = "IN_PROGRESS"  # Jobs API: a job file being processed (never a document status)
+    MALWARE_SCANNING = "MALWARE_SCANNING"  # Held at the ingest gate awaiting a GuardDuty verdict
+    QUEUED = "QUEUED"  # Initial state
+    RUNNING = "RUNNING"  # Workflow started
+    PREPROCESSING = "PREPROCESSING"  # Preprocessing hook running (e.g. PII redaction)
+    OCR = "OCR"  # OCR processing
+    CLASSIFYING = "CLASSIFYING"  # Document classification
+    EXTRACTING = "EXTRACTING"  # Information extraction
+    ASSESSING = "ASSESSING"  # Confidence assessment
+    POSTPROCESSING = "POSTPROCESSING"  # Post-processing
+    HITL_IN_PROGRESS = "HITL_IN_PROGRESS"  # Human review in progress
+    SUMMARIZING = "SUMMARIZING"  # Document summarization
+    RULE_VALIDATION_POLICY_CLASSIFICATION = "RULE_VALIDATION_POLICY_CLASSIFICATION"  # Policy classification for rule validation
+    RULE_VALIDATION = "RULE_VALIDATION"  # Rule validation
     RULE_VALIDATION_ORCHESTRATOR = "RULE_VALIDATION_ORCHESTRATOR"  # Rule consolidation
-    EVALUATING = "EVALUATING"                               # Evaluation
-    COMPLETED = "COMPLETED"                                 # All processing completed
-    FAILED = "FAILED"                                       # Processing failed
-    ABORTED = "ABORTED"                                     # User cancelled
-    REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"             # Original superseded by its redacted copy
-    QUARANTINED = "QUARANTINED"                             # Malware found at the ingest gate; never processed
-    MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"             # No malware verdict obtainable; refused (fail-closed)
+    EVALUATING = "EVALUATING"  # Evaluation
+    COMPLETED = "COMPLETED"  # All processing completed
+    FAILED = "FAILED"  # Processing failed
+    ABORTED = "ABORTED"  # User cancelled
+    REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"  # Original superseded by its redacted copy
+    REJECTED = "REJECTED"  # Human reviewer rejected the document (terminal, not success)
+    QUARANTINED = "QUARANTINED"  # Malware found at the ingest gate; never processed
+    MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"  # No malware verdict obtainable; refused (fail-closed)
+```
+
+`PENDING_UPLOAD` and `IN_PROGRESS` are members, but they are Jobs API
+statuses (a job's and a job file's) and no document tracking record stores them in
+`ObjectStatus`. `JOB_LEVEL_STATUSES` names those two, and `DOCUMENT_STATUS_VALUES`
+is every other member's value, in enum order: the statuses a document can be
+recorded with. `idp-cli delete-documents --status-filter`, `idp-cli status
+--object-status` and the SDK's `batch.delete_documents(status_filter=...)` all
+accept exactly that set. There is no `PROCESSING` status; a document being
+processed carries its current step (`OCR`, `EXTRACTING`, ...).
+
+```python
+from idp_common.models import DOCUMENT_STATUS_VALUES
+
+assert "EXTRACTING" in DOCUMENT_STATUS_VALUES
+assert "PROCESSING" not in DOCUMENT_STATUS_VALUES
 ```
 
 The malware statuses are reachable only when the `MalwareScanning` stack parameter
@@ -311,6 +331,11 @@ document = Document.from_json(document_json_string)
 # Create from baseline files in S3
 document = Document.from_s3(bucket="baseline-bucket", input_key="documents/sample.pdf")
 ```
+
+`Document.from_s3` returns pages and sections in ID order: numeric IDs numerically
+(page 10 after page 9), then any other ID by string. The evaluation's per-packet
+section details follow the baseline's section order, so the same baseline gives the
+same output in every process.
 
 ### Document Serialization
 
@@ -720,17 +745,36 @@ So:
   `batch_id=record.get("id")` where the id is absent — and the empty string is refused
   because neither reading of it ("everything", "nothing") is what a caller meant. Use
   `pattern="*"` to select every document.
+- A `status_filter` that is not in `DOCUMENT_STATUS_VALUES` raises `ValueError`
+  before any scan is issued. No document record carries any other value (there is no
+  `PROCESSING`, and `PENDING_UPLOAD` is a Jobs API status), so the scan would select
+  nothing and the delete would report success. The SDK makes the same check first and
+  raises its own `IDPConfigurationError`.
 - A scan failure propagates. Nothing is caught, and that is per exception class rather
   than an omission: every shape DynamoDB declares for `Scan` is an operational fault
   (three throttles, a missing table, a server error, all `ClientError`), the client-side
   family is `BotoCoreError`, and both shipped callers turn an empty selection into a
   reported success. Propagating cannot widen a delete, since a raise selects nothing.
-- A record the predicate cannot read propagates too, rather than being skipped. An
-  `ObjectKey` written as a DynamoDB `N` arrives as a `Decimal`, and a selector that
-  skipped it would return a **partial** list — which is the one shape of the old
-  behaviour that actually deleted something and called it complete. Note that
-  `get_documents_by_pattern` answers `TypeError` for this and for a caller who passed a
-  non-string pattern, so the message is what distinguishes them.
+- A record's document key is read from its partition key (`PK = "doc#<key>"`), not
+  from its `ObjectKey` attribute. `PK` is the table's hash key, declared as a string,
+  so every record DynamoDB returns has one, and it is the identity the deleter
+  addresses. `ObjectKey` has no type guarantee — one written as a DynamoDB `N` arrives
+  as a `Decimal`, and a `NULL` or missing one arrives as `None` or not at all — so a
+  selector that read it either raised on such a record, failing the whole delete
+  (#2165), or skipped it, returning a **partial** list. Reading `PK`, the record is
+  selected on the same terms as every other, and one `WARNING` counts and names the
+  selected records whose `ObjectKey` could not be read. `ObjectKey` is the
+  fallback only when `PK` is not a string; a string `PK` without the `doc#` prefix, or a
+  record with no usable key at all, raises `TypeError`, because its membership is
+  unknown. This scan cannot return either from a real table.
+- A document is selected once. Each output-version run adds a `run#<id>` record under
+  the document's `PK`, so the scan sees a document once per run plus once for the
+  document record, and the selectors de-duplicate the keys, keeping first-seen order.
+- `status_filter` is matched exactly against the document record's `ObjectStatus`, the
+  attribute `DocumentDynamoDBService` writes the status to (#2189). Run records carry
+  no status, so they never select a document for a status its document record does not
+  have. The filter is evaluated by DynamoDB during the scan, so a value no document
+  holds selects nothing rather than raising.
 
 Callers need not add their own handling to stay safe, but should expect to see these:
 `idp_sdk`'s `batch.delete_documents()` re-raises as `IDPProcessingError` and

@@ -308,12 +308,12 @@ def test_a_new_preset_fails_until_a_capability_names_it(tmp_path, profile):
 def test_a_new_file_format_fails_until_a_capability_names_it(tmp_path, profile):
     service = _copy(check.OCR_SERVICE, tmp_path)
     text = service.read_text(encoding="utf-8")
-    anchor = '        elif ext in ["pdf"]:\n'
+    anchor = '    elif ext in ["pdf"]:\n'
     assert anchor in text, "the mutation anchor moved; update this test"
     service.write_text(
         text.replace(
             anchor,
-            '        elif ext == "heic":\n            return "heic"\n' + anchor,
+            '    elif ext == "heic":\n        return "heic"\n' + anchor,
             1,
         )
     )

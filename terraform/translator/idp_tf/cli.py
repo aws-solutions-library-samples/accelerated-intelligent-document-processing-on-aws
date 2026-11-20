@@ -14,10 +14,12 @@ from . import completeness, moved, safety, suppressions
 from .assets import deterministic_zip
 from .awscc_schema import AwsccSchema
 from .expand import expand, load_template, offline_placeholders
+from .hclfmt import format_hcl
 from .static_files import VERSIONS_TF, bridge_tf, label_tf
 from .translate import (
     LIFECYCLE_OVERRIDES,
     STABLE_CUSTOM_OUTPUTS,
+    TAGS_VAR,
     TranslationError,
     Translator,
     report_json,
@@ -150,7 +152,9 @@ def write_module(
         )
     out.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
-        (out / name).write_text(text)
+        # Laid out as `terraform fmt` would leave it, so a module vendored into a
+        # repository with a formatting gate passes `terraform fmt -check`.
+        (out / name).write_text(format_hcl(text) if name.endswith(".tf") else text)
     if tr.custom_tokens:
         # Source alongside for reading; the function deploys the zip.
         (out / "bridge").mkdir(exist_ok=True)
@@ -429,6 +433,9 @@ def main(argv: list[str] | None = None) -> int:
                     "formatVersion": MANIFEST_FORMAT_VERSION,
                     "version": args.version,
                     "parameters": tr.parameter_map(),
+                    # The module's tags input; idp-cli passes --tags to it, and
+                    # refuses them for a module without one.
+                    "tagsVariable": TAGS_VAR,
                     "retainedAddresses": tr.retained_addresses(),
                     "statefulAddresses": safety.stateful_addresses(tr),
                     "customOutputEdges": [
