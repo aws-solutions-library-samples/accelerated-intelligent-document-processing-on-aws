@@ -34,6 +34,7 @@ from .batch import (
 from .chat import ChatResponse
 from .config import (
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -179,6 +180,7 @@ __all__ = [
     "ConfigListResult",
     "ConfigRevisionInfo",
     "ConfigRevisionListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     # Discovery models

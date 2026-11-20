@@ -67,6 +67,7 @@ from .models import (
     ChatResponse,
     # Config models
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -251,6 +252,7 @@ __all__ = [
     "ConfigActivateResult",
     "ConfigVersionInfo",
     "ConfigListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     "ConfigRevisionInfo",
