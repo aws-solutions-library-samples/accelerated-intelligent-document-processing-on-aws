@@ -109,16 +109,16 @@ def test_the_reporting_writer_prices_embed_v4_input_tokens(region, shipped_confi
     assert set(by_unit) == {"requests", "inputTokens", "totalTokens"}
     tokens = by_unit["inputTokens"]
     assert tokens["value"] == TEXT_TOKENS + IMAGE_TOKENS
-    assert tokens["unit_cost"] == pytest.approx(EMBED_V4_INPUT_RATE, rel=1e-12)
+    assert tokens["unit_cost"] == pytest.approx(EMBED_V4_INPUT_RATE, rel=1e-12, abs=0)
     assert tokens["estimated_cost"] == pytest.approx(
-        (TEXT_TOKENS + IMAGE_TOKENS) * EMBED_V4_INPUT_RATE, rel=1e-12
+        (TEXT_TOKENS + IMAGE_TOKENS) * EMBED_V4_INPUT_RATE, rel=1e-12, abs=0
     )
     # Declared non-chargeable for bedrock, so a measured $0.00, not a NULL.
     for unit in ("requests", "totalTokens"):
         assert by_unit[unit]["estimated_cost"] == 0.0, (key, unit)
     assert metric["unpriced_row_count"] == 0
     assert metric["estimated_cost"] == pytest.approx(
-        (TEXT_TOKENS + IMAGE_TOKENS) * EMBED_V4_INPUT_RATE, rel=1e-12
+        (TEXT_TOKENS + IMAGE_TOKENS) * EMBED_V4_INPUT_RATE, rel=1e-12, abs=0
     )
 
 
@@ -132,7 +132,7 @@ def test_estimate_metering_cost_prices_embed_v4_input_tokens(region, shipped_con
     assert result.unpriced_rows == set()
     assert result.unpriced_row_count == 0
     assert result.estimated_cost_usd == pytest.approx(
-        (TEXT_TOKENS + IMAGE_TOKENS) * EMBED_V4_INPUT_RATE, rel=1e-12
+        (TEXT_TOKENS + IMAGE_TOKENS) * EMBED_V4_INPUT_RATE, rel=1e-12, abs=0
     )
 
     records, metric = _writer_rows(shipped_config, metering)
@@ -153,5 +153,5 @@ def test_a_text_call_and_an_image_call_are_priced_at_the_same_rate(
     )
     assert result.unpriced_row_count == 0, label
     assert result.estimated_cost_usd == pytest.approx(
-        tokens * EMBED_V4_INPUT_RATE, rel=1e-12
+        tokens * EMBED_V4_INPUT_RATE, rel=1e-12, abs=0
     )

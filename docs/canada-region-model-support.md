@@ -150,8 +150,8 @@ alternative is offered in the region before selecting it. See [Document Knowledg
   in cost reporting. Pre-existing and not specific to Canada. All three ids have
   a row in `config_library/pricing.yaml` at $0.12 per million input tokens (the
   `us-east-1` rate, carried to the other two), so embedding calls that do meter,
-  such as section classification by embeddings, are priced in every Region
-  family. The Region-aware code fallbacks in `idp_common/regional_models.py` are
+  such as section classification by embeddings, are priced in the US, EU and
+  Canada Regions. The Region-aware code fallbacks in `idp_common/regional_models.py` are
   held to the swap table by `src/lambda/update_configuration/test_eu_region.py`.
 - **ca-west-1 is handled, but the model lists are derived from ca-central-1.**
   A `ca-west-1` stack resolves to the same `ca` region type and gets the same

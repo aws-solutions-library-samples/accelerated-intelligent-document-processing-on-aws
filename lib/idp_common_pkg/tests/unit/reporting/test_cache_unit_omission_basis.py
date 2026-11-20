@@ -634,7 +634,7 @@ def test_most_member_identities_are_pinned_to_exactly_one_model():
         for entry in EXPECTED_CACHE_UNIT_OMISSIONS
         if len(_identity_candidates(digest, entry.pricing_key)) == 1
     ]
-    assert len(unique) >= 15, (
+    assert len(unique) >= 21, (
         f"only {len(unique)} of {len(EXPECTED_CACHE_UNIT_OMISSIONS)} members have "
         "their price-list model pinned to exactly one candidate by the entry's "
         "own published rates. Below that the identity check is close to the "
