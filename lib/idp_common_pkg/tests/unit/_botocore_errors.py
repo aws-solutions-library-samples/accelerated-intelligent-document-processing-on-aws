@@ -62,6 +62,10 @@ from botocore.exceptions import ClientError
 #: The statuses a server failing answers with; the retry rules key on exactly these.
 SERVER_ERROR_STATUSES = (500, 502, 503, 504)
 
+#: The statuses retried when botocore makes one the code of a reply that names no
+#: error type: the server errors, and the throttle 429 (#2112).
+BARE_RETRIED_STATUSES = SERVER_ERROR_STATUSES + (429,)
+
 #: AWS's documented placeholder key pair (see testing-qa.md), so nothing real signs.
 _PLACEHOLDER_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
 _PLACEHOLDER_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"

@@ -207,8 +207,11 @@ A configuration that selects a decision model uses only the decision model:
   never opened, fails the step with a transient error, which the state machine
   retries.
 - **Any other call that does not complete fails its section.** That includes a
-  read timeout and a dropped connection, because the invocation may still be
-  running and billing.
+  read timeout, a dropped connection and a Lambda reply that names no error type
+  (a bare HTTP 5xx or 429), because the invocation may still be running and
+  billing. For decision-model confidence the same failures leave the section
+  without confidence scores rather than retrying the assessment step, and only a
+  request that never ran retries it.
 - **Nothing falls back to the LLM on an error.** `low_confidence: llm` applies only
   to answers below `min_confidence`.
 
