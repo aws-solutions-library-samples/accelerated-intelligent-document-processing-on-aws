@@ -18,6 +18,7 @@ from .static_files import VERSIONS_TF, bridge_tf, label_tf
 from .translate import (
     LIFECYCLE_OVERRIDES,
     STABLE_CUSTOM_OUTPUTS,
+    TAGS_VAR,
     TranslationError,
     Translator,
     report_json,
@@ -429,6 +430,9 @@ def main(argv: list[str] | None = None) -> int:
                     "formatVersion": MANIFEST_FORMAT_VERSION,
                     "version": args.version,
                     "parameters": tr.parameter_map(),
+                    # The module's tags input; idp-cli passes --tags to it, and
+                    # refuses them for a module without one.
+                    "tagsVariable": TAGS_VAR,
                     "retainedAddresses": tr.retained_addresses(),
                     "statefulAddresses": safety.stateful_addresses(tr),
                     "customOutputEdges": [

@@ -298,6 +298,30 @@ def _unselected_method_block(classification: Dict[str, Any], path: str) -> bool:
     return False
 
 
+#: Keys added after a release whose value here is what every release WITHOUT the
+#: key already does, keyed by the key's path under ``classification`` and that
+#: value. The shipped defaults spell such a key out, so every generated cell
+#: carries it; dropping it on an older release runs that release's only behaviour,
+#: which is the same one, so the cell measures the same thing on both sides. A
+#: cell that sets any OTHER value asks for behaviour the release does not have and
+#: still fails.
+#:
+#: * ``document_shape.pageOrder: scan`` (#623): a release that predates the key
+#:   classifies pages in scan order, which is what ``scan`` names.
+_INERT_AT_PRIOR_BEHAVIOUR: Tuple[Tuple[Tuple[str, ...], Any], ...] = (
+    (("document_shape", "pageOrder"), "scan"),
+)
+
+
+def _inert_at_prior_behaviour(classification: Dict[str, Any], path: str) -> bool:
+    """Whether ``path`` is a newer key set to what a release without it does."""
+    parts = tuple(path.split(".")[1:])
+    for key, prior in _INERT_AT_PRIOR_BEHAVIOUR:
+        if parts == key:
+            return _get(classification, key) == prior
+    return False
+
+
 def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     """Errors for ``cfg`` against the release whose ``idp_common`` is at ``lib_root``.
 
@@ -337,6 +361,10 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
             # A block only its own `method` value reads, in a cell that does not
             # select that method: inert on both releases, so dropping it changes
             # nothing the cell measures. A cell that DOES select it still fails.
+            continue
+        if _inert_at_prior_behaviour(classification, path):
+            # A newer key at the value an older release runs anyway: dropping it
+            # changes nothing the cell measures. Any other value still fails.
             continue
         errors.append(
             f"{path} is not read by this release: its IDPConfig drops the key and "

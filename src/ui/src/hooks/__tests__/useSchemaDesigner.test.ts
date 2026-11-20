@@ -17,6 +17,11 @@ import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { useSchemaDesigner } from '../useSchemaDesigner';
 
+// A Policy Discovery upload record (#608), as rules_discovery.py writes it.
+const UPLOADS = [
+  { uploadId: 'u1', document: 'ch1.pdf', savedAt: '2026-11-20T10:00:00+00:00', mode: 'append', rules: ['rule_a'], superseded: [] },
+];
+
 describe('useSchemaDesigner unknown-extension preservation', () => {
   it('updateClass preserves arbitrary x-aws-idp-* keys not touched by the update', () => {
     const { result } = renderHook(() => useSchemaDesigner());
@@ -182,6 +187,7 @@ describe('useSchemaDesigner unknown-extension preservation', () => {
       $id: 'NCCI_Policy_Manual',
       'x-aws-idp-policy-type': 'NCCI_Policy_Manual',
       'x-aws-idp-policy-group': 'NCCI Policy Manual',
+      'x-aws-idp-policy-uploads': UPLOADS,
       type: 'object',
       rule_properties: { rule_a: { type: 'string', description: 'Is A true?' } },
     };
@@ -197,6 +203,8 @@ describe('useSchemaDesigner unknown-extension preservation', () => {
     expect(cls).toBeDefined();
     expect(cls!['x-aws-idp-policy-group']).toBe('NCCI Policy Manual');
     expect(cls!['x-aws-idp-document-name-regex']).toBe('(?i).*ncci.*');
+    // The record of which upload supplied and superseded which rule survives too.
+    expect(cls!['x-aws-idp-policy-uploads']).toEqual(UPLOADS);
   });
 
   it('a policy class loaded as a single schema object keeps its x-aws-idp-policy-group', () => {
@@ -207,6 +215,7 @@ describe('useSchemaDesigner unknown-extension preservation', () => {
           $id: 'NCCI_Policy_Manual',
           'x-aws-idp-policy-type': 'NCCI_Policy_Manual',
           'x-aws-idp-policy-group': 'NCCI Policy Manual',
+          'x-aws-idp-policy-uploads': UPLOADS,
           type: 'object',
           rule_properties: { rule_a: { type: 'string', description: 'Is A true?' } },
         },
@@ -217,6 +226,7 @@ describe('useSchemaDesigner unknown-extension preservation', () => {
     const cls = exported!.find((c) => c.$id === 'NCCI_Policy_Manual');
     expect(cls).toBeDefined();
     expect(cls!['x-aws-idp-policy-group']).toBe('NCCI Policy Manual');
+    expect(cls!['x-aws-idp-policy-uploads']).toEqual(UPLOADS);
   });
 
   it('updateAttribute removes a key when the update value is undefined', () => {

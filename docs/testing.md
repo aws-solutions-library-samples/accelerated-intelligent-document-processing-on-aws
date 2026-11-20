@@ -38,6 +38,14 @@ record of its last run.
 `make test` and `make lint` are the two commands to run before opening a pull
 request. `make all` is both.
 
+`make premerge` is the command to run before *merging* when CI has not reported on
+the head yet: it runs every gate both CIs run (the `SHARED_GATES` list in
+`scripts/tests/test_ci_gate_parity.py`, read by `scripts/premerge.py`), carries on
+past a failure and exits non-zero if any gate failed. It needs network access and
+Node, and it checks the working tree rather than the merge result, so merge the base
+branch in first. `make premerge PREMERGE_ARGS=--list` prints the plan without running
+anything.
+
 ## 1. Offline test suites
 
 `make test` discovers and runs every non-integration suite in the repo — the

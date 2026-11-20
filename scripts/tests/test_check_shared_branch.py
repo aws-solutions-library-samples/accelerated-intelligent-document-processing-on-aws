@@ -55,6 +55,7 @@ sys.path.insert(0, str(HOOK.parent))
 
 import check_shared_branch  # noqa: E402
 from check_shared_branch import (  # noqa: E402
+    MergeRoute,
     chdir_target,
     decide,
     failing_checks,
@@ -62,6 +63,7 @@ from check_shared_branch import (  # noqa: E402
     inline_config,
     merge_target,
     push_destinations,
+    read_merge_route,
     segments,
     split_assignments,
     strip_heredocs,
@@ -77,6 +79,20 @@ ONE = "1" * 40
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+@pytest.fixture(autouse=True)
+def _offline_merge_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No in-process test reads a live pull request's route by accident.
+
+    ``decide`` asks ``gh pr view`` about every merge that passes the red-check
+    step. A test that is about something else gets "cannot tell", which allows;
+    the tests about the route substitute their own reader, or restore the real one
+    against a stub ``gh``.
+    """
+    monkeypatch.setattr(
+        check_shared_branch, "read_merge_route", lambda pr, repo, selector=None: None
+    )
+
+
 def _run_hook(
     payload: object, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -1666,6 +1682,16 @@ def test_environment_override_allows_the_command(repo: Path) -> None:
         ("git commit -m x", {"ALLOW_SHARED_BRANCH": "1"}, "the branch this commits"),
         ("ALLOW_RED_MERGE=1 gh pr merge 1050", {}, "this pull request's checks"),
         ("gh pr merge 1050", {"ALLOW_RED_MERGE": "1"}, "this pull request's checks"),
+        (
+            "ALLOW_UNCHECKED_MERGE=1 gh pr merge 1050",
+            {},
+            "whether this pull request's head has any concluded check",
+        ),
+        (
+            "gh pr merge 1050",
+            {"ALLOW_UNCHECKED_MERGE": "1"},
+            "whether this pull request's head has any concluded check",
+        ),
     ],
 )
 def test_an_honoured_override_says_which_check_it_turned_off(
@@ -1697,7 +1723,11 @@ def test_an_allowed_command_with_no_override_is_silent(
     _checkout(repo, "feature/thing", "origin/feature/thing")
     result = _run_hook(
         _bash(command, cwd=repo),
-        env={"ALLOW_SHARED_BRANCH": "", "ALLOW_RED_MERGE": ""},
+        env={
+            "ALLOW_SHARED_BRANCH": "",
+            "ALLOW_RED_MERGE": "",
+            "ALLOW_UNCHECKED_MERGE": "",
+        },
     )
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -1791,11 +1821,10 @@ def test_merging_red_is_allowed_with_the_override(
 def test_unreadable_checks_do_not_block_a_merge(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No token, no network, or a fork PR with no checks at all: allow and say so.
+    """No token or no network: the failing-check reader says "cannot tell".
 
-    This is the guard's main residual and it is deliberate — refusing a pull
-    request whose checks never ran would block every fork contribution, which
-    gets no GitHub CI here.
+    That allows as far as the red-check step goes. Whether the head was checked at
+    all is the route reader's question, covered in the next section.
     """
     monkeypatch.setattr(
         check_shared_branch, "failing_checks", lambda pr, repo, selector=None: None
@@ -1924,6 +1953,456 @@ def test_a_red_merge_is_blocked_through_the_real_reader(
     reason = decide(_bash("gh pr merge 1050 --squash", cwd=repo))
     assert reason is not None
     assert "developer_tests" in reason
+
+
+# --------------------------------------------------------------------------- #
+# merging a head no check has concluded on (#2115)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def route(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Substitute the route reader; ``[0]`` is what it answers, ``[1:]`` the asks."""
+    holder: list[object] = [None]
+
+    def _reader(
+        pr: str | None, _repo: Path, selector: str | None = None
+    ) -> MergeRoute | None:
+        holder.append((pr, selector))
+        return holder[0]  # pyright: ignore[reportReturnType]
+
+    monkeypatch.setattr(check_shared_branch, "read_merge_route", _reader)
+    return holder
+
+
+def _route(
+    base: str = "develop",
+    fork: bool = False,
+    concluded: int = 0,
+    running: tuple[str, ...] = (),
+) -> MergeRoute:
+    return MergeRoute(
+        base=base, fork=fork, head="ab" * 20, concluded=concluded, running=running
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("base", ["develop", "main"])
+def test_an_unchecked_head_into_a_shared_branch_is_refused(
+    repo: Path, checks: list[list[str]], route: list[object], base: str
+) -> None:
+    """The #2115 shape: a same-repository head nothing has run on yet."""
+    route[0] = _route(base=base)
+    reason = decide(_bash("gh pr merge 1050 --squash", cwd=repo))
+    assert reason is not None
+    assert f"merges into {base}" in reason
+    assert "ALLOW_UNCHECKED_MERGE=1" in reason
+    assert "make premerge" in reason
+    assert "abababababab" in reason
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("base", ["backlog/staging", "feature/x", "release/develop"])
+def test_an_unchecked_head_into_another_branch_is_not_judged(
+    repo: Path, checks: list[list[str]], route: list[object], base: str
+) -> None:
+    """A batch branch gets no CI by design, and its merges must not need an override.
+
+    The backlog loop merges fixer pull requests into ``backlog/staging`` before any
+    CI has run, and only the promotion pull request into ``develop`` waits for it.
+    """
+    route[0] = _route(base=base)
+    notices: list[str] = []
+    assert decide(_bash("gh pr merge 1050 --squash", cwd=repo), notices) is None
+    assert notices == []
+
+
+@pytest.mark.unit
+def test_a_head_whose_checks_have_all_finished_is_allowed(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    route[0] = _route(concluded=1)
+    assert decide(_bash("gh pr merge 1050", cwd=repo)) is None
+
+
+@pytest.mark.unit
+def test_a_head_with_checks_still_running_is_refused(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    """The quick checks finish first; the gates #2115 was about finish last.
+
+    Measured on a pull request into ``develop``: the dependency audit, CodeQL and
+    the docs build had finished while the unit, package and coverage suites and
+    the SRT scan were still running, and SRT then failed.
+    """
+    route[0] = _route(concluded=3, running=("SRT Security Review", "Unit Tests"))
+    reason = decide(_bash("gh pr merge 1050", cwd=repo))
+    assert reason is not None
+    assert "still has checks running" in reason
+    assert "  - SRT Security Review" in reason
+    assert "  - Unit Tests" in reason
+    assert "ALLOW_UNCHECKED_MERGE=1" in reason
+
+
+@pytest.mark.unit
+def test_running_checks_into_another_branch_are_not_judged(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    route[0] = _route(base="backlog/staging", running=("Unit Tests",))
+    assert decide(_bash("gh pr merge 1050", cwd=repo)) is None
+
+
+@pytest.mark.unit
+def test_an_unchecked_fork_head_is_allowed_with_a_note(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    """Some fork pull requests get no GitHub CI here; refusing them blocks their route."""
+    route[0] = _route(fork=True)
+    notices: list[str] = []
+    assert decide(_bash("gh pr merge 1050", cwd=repo), notices) is None
+    assert len(notices) == 1
+    assert "fork" in notices[0]
+    assert "develop" in notices[0]
+
+
+@pytest.mark.unit
+def test_a_fork_with_checks_still_running_is_held(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    """Fork pull requests can get CI here too, and then they wait for it."""
+    route[0] = _route(fork=True, concluded=2, running=("SRT Security Review",))
+    reason = decide(_bash("gh pr merge 1050", cwd=repo))
+    assert reason is not None
+    assert "  - SRT Security Review" in reason
+
+
+@pytest.mark.unit
+def test_an_unreadable_route_allows_the_merge(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    route[0] = None
+    notices: list[str] = []
+    assert decide(_bash("gh pr merge 1050", cwd=repo), notices) is None
+    assert notices == []
+    assert route[1:] == [("1050", None)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("command", "env"),
+    [
+        ("ALLOW_UNCHECKED_MERGE=1 gh pr merge 1050", {}),
+        ("gh pr merge 1050", {"ALLOW_UNCHECKED_MERGE": "yes"}),
+    ],
+)
+def test_the_unchecked_override_allows_without_reading_the_route(
+    repo: Path,
+    checks: list[list[str]],
+    route: list[object],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    env: dict[str, str],
+) -> None:
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    route[0] = _route()
+    notices: list[str] = []
+    assert decide(_bash(command, cwd=repo), notices) is None
+    assert any("ALLOW_UNCHECKED_MERGE is set" in line for line in notices)
+    assert route[1:] == []
+
+
+@pytest.mark.unit
+def test_an_unchecked_override_of_zero_leaves_the_refusal_on(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    route[0] = _route()
+    assert decide(_bash("ALLOW_UNCHECKED_MERGE=0 gh pr merge 1050", cwd=repo))
+
+
+@pytest.mark.unit
+def test_the_red_override_does_not_waive_the_unchecked_refusal(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    """Separate decisions: a known-unrelated red check is not an unverified head."""
+    route[0] = _route()
+    reason = decide(_bash("ALLOW_RED_MERGE=1 gh pr merge 1050", cwd=repo))
+    assert reason is not None
+    assert "ALLOW_UNCHECKED_MERGE=1" in reason
+
+
+@pytest.mark.unit
+def test_a_red_merge_is_refused_before_the_route_is_read(
+    repo: Path, checks: list[list[str]], route: list[object]
+) -> None:
+    checks[0] = ["developer_tests"]
+    route[0] = _route(concluded=5)
+    reason = decide(_bash("gh pr merge 1050", cwd=repo))
+    assert reason is not None
+    assert "failing checks" in reason
+    assert route[1:] == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("command", "asked"),
+    [
+        ("gh pr merge", (None, None)),
+        ("gh -R owner/name pr merge 1050", ("1050", "owner/name")),
+        ("gh pr merge --subject 'x y' 1050 --repo owner/name", ("1050", "owner/name")),
+        ("gh pr merge -sb text 1050", ("1050", None)),
+    ],
+)
+def test_the_route_is_read_for_the_pull_request_being_merged(
+    repo: Path,
+    checks: list[list[str]],
+    route: list[object],
+    command: str,
+    asked: tuple[str | None, str | None],
+) -> None:
+    route[0] = None
+    decide(_bash(command, cwd=repo))
+    assert route[1:] == [asked]
+
+
+#: The measured shape of a ``gh pr view`` answer for a pull request GitHub ran no
+#: check on (gh 2.105.0).
+UNCHECKED_VIEW = {
+    "baseRefName": "develop",
+    "headRefOid": "cd" * 20,
+    "isCrossRepository": False,
+    "statusCheckRollup": [],
+}
+
+
+@pytest.mark.unit
+def test_read_merge_route_reads_the_measured_unchecked_shape(
+    tmp_path: Path,
+    fake_gh,  # noqa: ANN001
+) -> None:
+    argv_log = fake_gh(json.dumps(UNCHECKED_VIEW))
+    assert read_merge_route("1050", tmp_path, "owner/name") == MergeRoute(
+        "develop", False, "cd" * 20, 0
+    )
+    assert argv_log.read_text(encoding="utf-8").strip() == (
+        "pr view 1050 --repo owner/name --json "
+        "baseRefName,isCrossRepository,headRefOid,statusCheckRollup"
+    )
+
+
+@pytest.mark.unit
+def test_read_merge_route_counts_only_checks_that_reached_a_verdict(
+    tmp_path: Path,
+    fake_gh,  # noqa: ANN001
+) -> None:
+    """Running, skipped, cancelled and pending entries verify nothing."""
+    rollup = [
+        {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""},
+        {"__typename": "CheckRun", "status": "QUEUED", "conclusion": ""},
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "STALE"},
+        {"__typename": "StatusContext", "state": "PENDING"},
+        {"__typename": "StatusContext", "state": "EXPECTED"},
+        "not an object",
+    ]
+    fake_gh(json.dumps({**UNCHECKED_VIEW, "statusCheckRollup": rollup}))
+    unverified = read_merge_route(None, tmp_path)
+    assert unverified is not None
+    assert unverified.concluded == 0
+    assert not unverified.verified
+
+    verdicts = [
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "NEUTRAL"},
+        {"__typename": "StatusContext", "state": "SUCCESS"},
+        {"__typename": "StatusContext", "state": "ERROR"},
+    ]
+    fake_gh(json.dumps({**UNCHECKED_VIEW, "statusCheckRollup": rollup + verdicts}))
+    verified = read_merge_route(None, tmp_path)
+    assert verified is not None
+    assert verified.concluded == len(verdicts)
+
+
+@pytest.mark.unit
+def test_read_merge_route_names_the_checks_still_running(
+    tmp_path: Path,
+    fake_gh,  # noqa: ANN001
+) -> None:
+    """The measured mid-run shape: some finished, some in progress, an empty
+    conclusion on the unfinished ones."""
+    rollup = [
+        {
+            "__typename": "CheckRun",
+            "name": "CodeQL",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+        },
+        {
+            "__typename": "CheckRun",
+            "name": "Unit Tests (idp_common)",
+            "status": "IN_PROGRESS",
+            "conclusion": "",
+        },
+        {
+            "__typename": "CheckRun",
+            "name": "SRT Security Review",
+            "status": "QUEUED",
+            "conclusion": "",
+        },
+        {
+            "__typename": "CheckRun",
+            "name": "Test Results",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+        },
+        {"__typename": "StatusContext", "context": "legacy/ci", "state": "PENDING"},
+        {"__typename": "StatusContext", "context": "legacy/req", "state": "EXPECTED"},
+        {"__typename": "StatusContext", "context": "legacy/ok", "state": "SUCCESS"},
+    ]
+    fake_gh(json.dumps({**UNCHECKED_VIEW, "statusCheckRollup": rollup}))
+    answer = read_merge_route("1", tmp_path)
+    assert answer is not None
+    assert answer.concluded == 2
+    assert answer.running == (
+        "Unit Tests (idp_common)",
+        "SRT Security Review",
+        "legacy/ci",
+        "legacy/req",
+    )
+    assert not answer.verified
+
+    settled = [
+        item
+        for item in rollup
+        if item.get("status") != "IN_PROGRESS"
+        and item.get("status") != "QUEUED"
+        and item.get("state") not in ("PENDING", "EXPECTED")
+    ]
+    fake_gh(json.dumps({**UNCHECKED_VIEW, "statusCheckRollup": settled}))
+    answer = read_merge_route("1", tmp_path)
+    assert answer is not None
+    assert answer.running == ()
+    assert answer.verified
+
+
+@pytest.mark.unit
+def test_read_merge_route_reads_a_fork(tmp_path: Path, fake_gh) -> None:  # noqa: ANN001
+    fake_gh(json.dumps({**UNCHECKED_VIEW, "isCrossRepository": True}))
+    answer = read_merge_route("7", tmp_path)
+    assert answer is not None
+    assert answer.fork is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("stdout", "exit_code"),
+    [
+        (json.dumps(UNCHECKED_VIEW), 1),
+        ("no pull requests found for branch", 1),
+        ("<html>proxy error</html>", 0),
+        ("[]", 0),
+        (json.dumps({**UNCHECKED_VIEW, "baseRefName": ""}), 0),
+        (json.dumps({**UNCHECKED_VIEW, "baseRefName": None}), 0),
+        (json.dumps({**UNCHECKED_VIEW, "isCrossRepository": "false"}), 0),
+        (json.dumps({**UNCHECKED_VIEW, "statusCheckRollup": None}), 0),
+    ],
+)
+def test_read_merge_route_returns_none_when_it_cannot_read(
+    tmp_path: Path,
+    fake_gh,  # noqa: ANN001
+    stdout: str,
+    exit_code: int,
+) -> None:
+    fake_gh(stdout, exit_code=exit_code)
+    assert read_merge_route("1", tmp_path) is None
+
+
+@pytest.mark.unit
+def test_an_unchecked_merge_is_refused_through_the_real_readers(
+    repo: Path,
+    fake_gh,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """decide() and both readers together, against one stub ``gh``.
+
+    The stub answers ``gh pr checks`` with the pull-request object too, which that
+    reader cannot parse ("cannot tell") -- the same place the measured "no checks
+    reported" answer leaves it.
+    """
+    monkeypatch.setattr(check_shared_branch, "read_merge_route", read_merge_route)
+    fake_gh(json.dumps(UNCHECKED_VIEW))
+    reason = decide(_bash("gh pr merge 1050 --squash", cwd=repo))
+    assert reason is not None
+    assert "ALLOW_UNCHECKED_MERGE=1" in reason
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("view", "env", "code", "stderr"),
+    [
+        (UNCHECKED_VIEW, {}, 2, "ALLOW_UNCHECKED_MERGE=1"),
+        (UNCHECKED_VIEW, {"ALLOW_UNCHECKED_MERGE": "1"}, 0, "is set"),
+        ({**UNCHECKED_VIEW, "isCrossRepository": True}, {}, 0, "from a fork"),
+        ({**UNCHECKED_VIEW, "baseRefName": "backlog/staging"}, {}, 0, ""),
+        (
+            {
+                **UNCHECKED_VIEW,
+                "statusCheckRollup": [
+                    {
+                        "__typename": "CheckRun",
+                        "name": "CodeQL",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                    {
+                        "__typename": "CheckRun",
+                        "name": "SRT Security Review",
+                        "status": "IN_PROGRESS",
+                        "conclusion": "",
+                    },
+                ],
+            },
+            {},
+            2,
+            "  - SRT Security Review",
+        ),
+        (
+            {
+                **UNCHECKED_VIEW,
+                "statusCheckRollup": [
+                    {
+                        "__typename": "CheckRun",
+                        "name": "CodeQL",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                ],
+            },
+            {},
+            0,
+            "",
+        ),
+    ],
+)
+def test_the_hook_process_decides_an_unchecked_merge(
+    repo: Path,
+    fake_gh,  # noqa: ANN001
+    view: dict[str, object],
+    env: dict[str, str],
+    code: int,
+    stderr: str,
+) -> None:
+    """The installed hook, as a process: exit code and the line it prints."""
+    fake_gh(json.dumps(view))
+    result = _run_hook(
+        _bash("gh pr merge 1050", cwd=repo),
+        env={"ALLOW_RED_MERGE": "", "ALLOW_UNCHECKED_MERGE": "", **env},
+    )
+    assert result.returncode == code, result.stderr
+    if stderr:
+        assert stderr in result.stderr
+    else:
+        assert result.stderr == ""
 
 
 # --------------------------------------------------------------------------- #

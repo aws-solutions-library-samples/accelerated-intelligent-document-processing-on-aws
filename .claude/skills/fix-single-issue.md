@@ -317,8 +317,10 @@ Merge only when the six checks are green and every review finding is answered:
 gh pr merge <pr> --repo <repo> --merge --delete-branch
 ```
 
-The `check_shared_branch.py` hook refuses this on a **concluded** failing check, which
-is the behaviour you want — `ALLOW_RED_MERGE=1` exists and this is not the place for it.
+The `check_shared_branch.py` hook refuses this on a **concluded** failing check, and on
+a head whose checks have not all finished, which is the behaviour you want —
+`ALLOW_RED_MERGE=1` and `ALLOW_UNCHECKED_MERGE=1` exist and this is not the place for
+either.
 
 Then **write the closing comment**, and close the issue if `Fixes #N` did not. Write what the defect
 was, what was measured, what the fix does, **what was withdrawn or narrowed and why**,
