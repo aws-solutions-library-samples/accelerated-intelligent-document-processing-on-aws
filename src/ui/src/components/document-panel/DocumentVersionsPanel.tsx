@@ -16,7 +16,7 @@ import {
   StatusIndicator,
   Table,
 } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { listDocumentVersions, getDocumentVersion, compareDocumentVersions, deleteDocumentVersion } from '../../graphql/generated';
@@ -61,6 +61,15 @@ interface CompareResult {
   identical: boolean;
   sections: SectionDiff[];
 }
+
+/**
+ * The error shown above the version table. It is held as a message and formatted at render, so
+ * it follows a language switch. An API failure keeps the action phrase and what the call threw,
+ * for `describeApiError` to word.
+ */
+type PanelError =
+  | { message: TypedMessageDescriptor<NoMessageValues> }
+  | { action: TypedMessageDescriptor<NoMessageValues>; cause: unknown };
 
 interface DocumentVersionsPanelProps {
   objectKey: string;
@@ -458,7 +467,7 @@ const DocumentVersionsPanel = ({
   const { isAdmin } = useUserRole();
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<PanelError | null>(null);
   const [loadingVersionId, setLoadingVersionId] = useState<string | null>(null);
 
   // Compare state
@@ -479,11 +488,11 @@ const DocumentVersionsPanel = ({
       setVersions((result.data.listDocumentVersions ?? []) as DocumentVersion[]);
     } catch (err) {
       logger.error('Error loading document versions', err);
-      setError(intl.formatMessage(messages.loadFailed));
+      setError({ message: messages.loadFailed });
     } finally {
       setLoading(false);
     }
-  }, [objectKey, intl]);
+  }, [objectKey]);
 
   useEffect(() => {
     loadVersions();
@@ -506,7 +515,7 @@ const DocumentVersionsPanel = ({
       setCompareResult(typeof raw === 'string' ? JSON.parse(raw) : raw);
     } catch (err) {
       logger.error('Error comparing versions', err);
-      setError(describeApiError(err, intl.formatMessage(messages.compareAction)));
+      setError({ action: messages.compareAction, cause: err });
       setCompareModalVisible(false);
     } finally {
       setIsComparing(false);
@@ -529,7 +538,7 @@ const DocumentVersionsPanel = ({
       await loadVersions();
     } catch (err) {
       logger.error('Error deleting version', err);
-      setError(intl.formatMessage(messages.deleteFailed));
+      setError({ message: messages.deleteFailed });
     } finally {
       setIsDeleting(false);
     }
@@ -558,7 +567,7 @@ const DocumentVersionsPanel = ({
       onViewVersion(version.RunId, detail);
     } catch (err) {
       logger.error('Error loading version for viewing', err);
-      setError(describeApiError(err, intl.formatMessage(messages.viewAction)));
+      setError({ action: messages.viewAction, cause: err });
     } finally {
       setLoadingVersionId(null);
     }
@@ -589,7 +598,7 @@ const DocumentVersionsPanel = ({
       <SpaceBetween size="m">
         {error && (
           <Alert type="error" dismissible onDismiss={() => setError(null)}>
-            {error}
+            {'action' in error ? describeApiError(error.cause, intl.formatMessage(error.action)) : <FormattedMessage {...error.message} />}
           </Alert>
         )}
         {viewingRunId && (

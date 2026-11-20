@@ -109,6 +109,14 @@ describe('the Version History panel under fr-CA', () => {
     expect(screen.getByText('longueur modifiée')).toBeInTheDocument();
     expect(screen.queryByText('length_changed')).toBeNull();
   });
+
+  // The catalog arrives after the first render, as a new `intl`; that must not load the list again.
+  it('loads the version list once, not again when the catalog arrives', async () => {
+    renderWithIntl(<DocumentVersionsPanel objectKey="doc.pdf" />, FR_CA);
+    expect(await screen.findByText('Historique des versions')).toBeInTheDocument();
+    expect(await screen.findByText('v2')).toBeInTheDocument();
+    expect(state.graphql.mock.calls.filter(([arg]) => String(arg.query).includes('listDocumentVersions'))).toHaveLength(1);
+  });
 });
 
 describe('the Version History panel under en', () => {
