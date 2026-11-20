@@ -85,7 +85,21 @@ def test_keys_matching_the_rule_are_accepted(key):
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "key",
-    ["", "A", "Account", "_lead", "-lead", "a" * 64, "a b", "a.b", "a/b", "é", 5],
+    [
+        "",
+        "A",
+        "Account",
+        "_lead",
+        "-lead",
+        "a" * 64,
+        "a b",
+        "a.b",
+        "a/b",
+        "é",
+        5,
+        "abc\n",
+        "abc\r\n",
+    ],
 )
 def test_keys_outside_the_rule_are_refused(key):
     assert da.key_problem(key) is not None
@@ -103,6 +117,10 @@ def test_keys_outside_the_rule_are_refused(key):
         2.5,
         True,
         False,
+        0.0,
+        da.MAX_FLOAT_MAGNITUDE,
+        -da.MAX_FLOAT_MAGNITUDE,
+        da.MIN_FLOAT_MAGNITUDE,
         da.MAX_SAFE_INTEGER,
         ["a", 1, True],
         ["x"] * da.MAX_LIST_ITEMS,
@@ -127,6 +145,13 @@ def test_values_within_the_rules_are_accepted(value):
         ["x" * (da.MAX_STRING_BYTES + 1)],
         math.inf,
         math.nan,
+        1e200,
+        -1e200,
+        1e16,
+        1e-200,
+        5e-324,
+        "\ud800",
+        ["ok", "\udfff"],
         da.MAX_SAFE_INTEGER + 1,
         -(da.MAX_SAFE_INTEGER + 1),
     ],
@@ -431,7 +456,11 @@ def test_attributes_are_written_on_create_and_read_back():
         )
     )
     assert "DocumentAttributes" in _raw_item("a/x.pdf")
-    assert service.get_document("a/x.pdf").attributes == attrs
+    restored = service.get_document("a/x.pdf").attributes
+    assert restored == attrs
+    # Native types, not Decimal (which compares equal and serialises nowhere).
+    assert type(restored["amount"]) is float and type(restored["count"]) is int
+    assert type(restored["flags"][0]) is bool
 
 
 @pytest.mark.unit
@@ -542,3 +571,144 @@ def test_an_unexpected_failure_reading_attributes_is_reported_not_raised():
     intake = da.read_object_attributes(Exploding(), BUCKET, s3_client=None)
     assert intake.attributes == {}
     assert intake.dropped and "RuntimeError" in intake.dropped[0][1]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_the_float_bounds_are_inside_what_the_tracking_table_stores():
+    """The extreme accepted magnitudes really are writable AND readable back, so
+    the bound is not looser than the tracking table and its readers allow."""
+    service = _service()
+    attrs = {"big": da.MAX_FLOAT_MAGNITUDE, "small": da.MIN_FLOAT_MAGNITUDE}
+    assert da.validate_attributes(attrs) == attrs
+    service.create_document(
+        Document(
+            id="a/f.pdf",
+            input_key="a/f.pdf",
+            status=Status.QUEUED,
+            queued_time="2026-11-20T00:00:00+00:00",
+            attributes=attrs,
+        )
+    )
+    assert service.get_document("a/f.pdf").attributes == attrs
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_lone_surrogate_in_a_sidecar_drops_that_value_only():
+    s3 = _s3()
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="in/doc.pdf" + da.SIDECAR_SUFFIX,
+        Body=b'{"bad": "\\ud800", "good": "y"}',
+    )
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="in/doc.pdf",
+        Body=b"%PDF",
+        Metadata={
+            "config-version": "v1",
+            da.SIDECAR_URI_METADATA_KEY: f"s3://{BUCKET}/in/doc.pdf"
+            + da.SIDECAR_SUFFIX,
+        },
+    )
+    doc = Document.from_s3_event(_event("in/doc.pdf"), "out")
+    assert doc.config_version == "v1"
+    assert doc.attributes == {"good": "y"}
+    (issue,) = doc.processing_issues
+    assert issue.details["dropped"][0]["key"] == "bad"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_two_inline_names_for_one_key_are_both_dropped():
+    s3 = _s3()
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="in/doc.pdf",
+        Body=b"%PDF",
+        Metadata={
+            "idp-attr-case-ref": "A",
+            "idp-attr-case_ref": "B",
+            "idp-attr-x": "1",
+        },
+    )
+    doc = Document.from_s3_event(_event("in/doc.pdf"), "out")
+    assert doc.attributes == {"x": "1"}
+    (issue,) = doc.processing_issues
+    assert issue.details["dropped"][0]["key"] == "case_ref"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_the_drop_warning_log_names_keys_never_values(caplog):
+    s3 = _s3()
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="in/doc.pdf",
+        Body=b"%PDF",
+        Metadata={"idp-attr-big": "SECRET-VALUE-" + "x" * da.MAX_STRING_BYTES},
+    )
+    with caplog.at_level(logging.WARNING, logger="idp_common"):
+        Document.from_s3_event(_event("in/doc.pdf"), "out")
+    ours = [r.getMessage() for r in caplog.records if r.name.startswith("idp_common")]
+    assert any("big" in m for m in ours)
+    assert not any("SECRET-VALUE" in m for m in ours)
+
+
+class _RecordingS3:
+    """Records the sidecar read, to pin that it is bounded at the request AND at
+    the read, so neither a missing Range nor an unbounded read() goes unseen."""
+
+    def __init__(self, body):
+        self.body, self.calls, self.read_sizes = body, [], []
+
+    def get_object(self, **kwargs):
+        self.calls.append(kwargs)
+        outer = self
+
+        class _Body:
+            def read(self, size=-1):
+                outer.read_sizes.append(size)
+                return outer.body if size < 0 else outer.body[:size]
+
+        return {"Body": _Body()}
+
+
+@pytest.mark.unit
+def test_the_sidecar_read_is_bounded_at_the_request_and_the_read():
+    client = _RecordingS3(b'{"a": "b"}')
+    intake = da.read_object_attributes(
+        {da.SIDECAR_URI_METADATA_KEY: f"s3://{BUCKET}/k" + da.SIDECAR_SUFFIX},
+        BUCKET,
+        client,
+    )
+    assert intake.attributes == {"a": "b"}
+    (call,) = client.calls
+    assert call["Range"] == f"bytes=0-{da.MAX_TOTAL_BYTES}"
+    assert client.read_sizes == [da.MAX_TOTAL_BYTES + 1]
+
+
+@pytest.mark.unit
+def test_the_total_bound_is_measured_in_utf8_bytes_not_escaped_json():
+    """25 values of 1024 UTF-8 bytes each fit the 32 KB total; escaped as
+    \\uXXXX they would measure about three times as much and be dropped."""
+    attrs = {f"k{i:02d}": "é" * 512 for i in range(25)}
+    assert da.sanitize_attributes(attrs).attributes == attrs
+
+
+@pytest.mark.unit
+@mock_aws
+@pytest.mark.parametrize("value", ["line\nbreak", "tab\there", "bell\x07"])
+def test_a_non_printable_string_travels_by_sidecar_and_arrives_intact(value):
+    s3 = _s3()
+    metadata, body = da.encode_for_upload({"note": value})
+    assert body is not None
+    s3.put_object(Bucket=BUCKET, Key="in/d.pdf" + da.SIDECAR_SUFFIX, Body=body)
+    metadata[da.SIDECAR_URI_METADATA_KEY] = (
+        f"s3://{BUCKET}/in/d.pdf" + da.SIDECAR_SUFFIX
+    )
+    s3.put_object(Bucket=BUCKET, Key="in/d.pdf", Body=b"%PDF", Metadata=metadata)
+    assert Document.from_s3_event(_event("in/d.pdf"), "out").attributes == {
+        "note": value
+    }

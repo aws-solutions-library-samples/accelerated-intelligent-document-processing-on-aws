@@ -3697,10 +3697,36 @@ class TestDocumentAttributes:
         mock_sqs.send_message.assert_not_called()
         mock_purge.assert_not_called()
 
-    def test_a_document_whose_name_only_resembles_a_sidecar_is_processed(self):
+    def test_a_verdict_for_a_sidecar_is_ignored_not_raised(self):
+        """The plan scans the whole bucket, so sidecars get verdicts too; with no
+        row for them, handling one as a document would raise on every retry."""
         import index
 
-        doc = _mock_document("batch/doc.idp-attributes.pdf")
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index.Document, "from_s3_event") as build,
+        ):
+            response = index.handler(
+                make_scan_result_event(
+                    key="batch/doc.pdf" + real_document_attributes.SIDECAR_SUFFIX
+                ),
+                None,
+            )
+        assert response["skipped"] == "document_attributes_sidecar"
+        build.assert_not_called()
+        mock_doc_service.get_document.assert_not_called()
+        mock_cw.put_metric_data.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "key", ["batch/doc.idp-attributes.pdf", "batch/data.json", "batch/x.json.pdf"]
+    )
+    def test_a_document_whose_name_only_resembles_a_sidecar_is_processed(self, key):
+        import index
+
+        doc = _mock_document(key)
         with (
             patch.object(index, "sqs") as mock_sqs,
             patch.object(index, "document_service"),
@@ -3708,7 +3734,7 @@ class TestDocumentAttributes:
             patch.object(index.Document, "from_s3_event", return_value=doc),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
-            response = index.handler(make_event("batch/doc.idp-attributes.pdf"), None)
+            response = index.handler(make_event(key), None)
 
         assert "skipped" not in response
         mock_sqs.send_message.assert_called_once()

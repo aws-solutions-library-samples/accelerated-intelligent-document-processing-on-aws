@@ -1024,6 +1024,15 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
         logger.info("Scan result for the GuardDuty validation object; ignoring")
         return {"statusCode": 200, "skipped": "malware_validation_object"}
 
+    if is_sidecar_key(object_key):
+        # The plan scans the whole input bucket, so a sidecar gets a verdict too.
+        # It has no tracking row (the upload path skipped it), and treating its
+        # verdict as one for a document would raise ScanVerdictBeforeIngestError
+        # on every retry and feed the verdicts-not-applied alarm. It is only ever
+        # parsed as JSON by the intake of the document that names it.
+        logger.info("Scan result for a document-attributes sidecar; ignoring")
+        return {"statusCode": 200, "skipped": "document_attributes_sidecar"}
+
     if not MALWARE_SCANNING_ENABLED:
         # Reachable if a stack was switched to DISABLED while a verdict was in
         # flight, or if an externally managed plan still points here. Admitting

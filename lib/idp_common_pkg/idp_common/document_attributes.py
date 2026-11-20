@@ -17,7 +17,9 @@ and nowhere else:
 
 * keys match :data:`KEY_PATTERN` (lower-case letters, digits, ``_`` and ``-``,
   starting with a letter or digit, at most 63 characters);
-* a value is a string, a finite number, a boolean, or a flat list of those;
+* a value is a string (valid Unicode), a finite number (integers within
+  +/-(2^53 - 1), other numbers zero or of magnitude 1e-125 to 1e15), a boolean,
+  or a flat list of those;
 * at most :data:`MAX_ATTRIBUTES` attributes, :data:`MAX_STRING_BYTES` per string,
   :data:`MAX_LIST_ITEMS` per list, and :data:`MAX_TOTAL_BYTES` for the whole set
   serialised as compact JSON.
@@ -77,6 +79,15 @@ MAX_TOTAL_BYTES = 32 * 1024
 #: Largest integer accepted, so a value survives a JSON reader that parses
 #: numbers as IEEE doubles (JavaScript, the UI) without silently changing.
 MAX_SAFE_INTEGER = 2**53 - 1
+#: Magnitude range of a non-zero float. The floor is inside DynamoDB's number
+#: range (boto3's serializer refuses anything below 1E-130, and the tracking-row
+#: write would then fail, leaving the document with no row). The ceiling is lower
+#: than DynamoDB's for two reasons that are both about reading the value back: the
+#: readers convert a stored Decimal with ``value % 1``, which raises
+#: DivisionImpossible above 28 digits, and a whole-valued float reads back as an
+#: int, which must stay within MAX_SAFE_INTEGER like any other integer.
+MIN_FLOAT_MAGNITUDE = 1e-125
+MAX_FLOAT_MAGNITUDE = 1e15
 
 #: S3 user-metadata name prefix of an inline attribute (after ``x-amz-meta-``).
 METADATA_PREFIX = "idp-attr-"
@@ -122,11 +133,23 @@ def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
+def _is_encodable(text: str) -> bool:
+    """False for a string holding a lone surrogate (``"\\ud800"`` from JSON),
+    which no UTF-8 writer downstream (DynamoDB, the Lambda response) accepts."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _scalar_problem(value: Any) -> Optional[str]:
     """Why ``value`` is not an acceptable scalar, or None when it is."""
     if isinstance(value, bool):
         return None
     if isinstance(value, str):
+        if not _is_encodable(value):
+            return "string is not valid Unicode (lone surrogate)"
         if _utf8_len(value) > MAX_STRING_BYTES:
             return f"string longer than {MAX_STRING_BYTES} bytes"
         return None
@@ -137,6 +160,13 @@ def _scalar_problem(value: Any) -> Optional[str]:
     if isinstance(value, float):
         if not math.isfinite(value):
             return "number is not finite"
+        if value != 0 and not (
+            MIN_FLOAT_MAGNITUDE <= abs(value) <= MAX_FLOAT_MAGNITUDE
+        ):
+            return (
+                f"number magnitude outside {MIN_FLOAT_MAGNITUDE:g} to "
+                f"{MAX_FLOAT_MAGNITUDE:g}"
+            )
         return None
     return f"unsupported value type {type(value).__name__}"
 
@@ -157,7 +187,8 @@ def value_problem(value: Any) -> Optional[str]:
 
 def key_problem(key: Any) -> Optional[str]:
     """Why ``key`` is not an acceptable attribute key, or None when it is."""
-    if not isinstance(key, str) or not KEY_PATTERN.match(key):
+    # fullmatch, not match: `$` also matches before a trailing newline.
+    if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
         return f"key does not match {KEY_PATTERN.pattern}"
     return None
 
@@ -298,9 +329,23 @@ def _read_object_attributes(
         else:
             early_drops.append(("(sidecar)", problem or "sidecar rejected"))
 
-    for name, value in metadata.items():
-        if name.startswith(METADATA_PREFIX):
-            candidate[metadata_name_to_key(name)] = value
+    # Sorted, so the outcome does not depend on the order S3 returns names in.
+    # Two names that map to one key (`idp-attr-a-b` and `idp-attr-a_b`) are an
+    # ambiguity this route cannot resolve, so both are dropped (a sidecar value
+    # for the key, which is unambiguous, is then kept).
+    inline: Dict[str, str] = {}
+    collided: set = set()
+    for name in sorted(metadata):
+        if not name.startswith(METADATA_PREFIX):
+            continue
+        key = metadata_name_to_key(name)
+        if key in inline:
+            collided.add(key)
+        inline[key] = metadata[name]
+    for key in sorted(collided):
+        inline.pop(key, None)
+        early_drops.append((_quote_key(key), "two metadata names map to this key"))
+    candidate.update(inline)
 
     intake = sanitize_attributes(candidate)
     intake.dropped = early_drops + intake.dropped

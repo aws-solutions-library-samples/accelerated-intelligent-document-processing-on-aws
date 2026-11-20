@@ -114,6 +114,24 @@ class TestBatch:
         assert doc.attributes == attrs
         assert doc.config_version == "lending"
 
+    @pytest.mark.parametrize("attrs", [INLINE, TYPED])
+    def test_a_copy_without_a_configuration_pin_still_carries_attributes(
+        self, client, s3, attrs
+    ):
+        """Without config_version the copy used to keep the source's metadata;
+        attributes must replace it, or they would be silently lost."""
+        s3.put_object(
+            Bucket=SOURCE_BUCKET,
+            Key="in/b.pdf",
+            Body=b"%PDF",
+            Metadata={"unrelated": "source-metadata"},
+        )
+        result = client.batch.process(
+            s3_uri=f"s3://{SOURCE_BUCKET}/in/", attributes=dict(attrs)
+        )
+        (key,) = result.document_ids
+        assert _intake(key).attributes == attrs
+
     def test_a_manifest_row_overrides_the_batch_set_per_key(self, client, s3, tmp_path):
         a, b = _pdf(tmp_path, "a.pdf"), _pdf(tmp_path, "b.pdf")
         manifest = tmp_path / "m.csv"

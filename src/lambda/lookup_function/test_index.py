@@ -174,6 +174,9 @@ def test_caller_attributes_are_returned_json_serialisable(tracking_item, status_
         "flags": [True, 1],
     }
     json.dumps(result)  # would raise on a Decimal
+    # And the right native type: an int stays an int, a fraction a float.
+    assert type(result["attributes"]["count"]) is int
+    assert type(result["attributes"]["amount"]) is float
 
 
 @pytest.mark.unit

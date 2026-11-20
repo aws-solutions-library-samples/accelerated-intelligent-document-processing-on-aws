@@ -55,8 +55,13 @@ The sidecar must be in the same bucket as the document and its key must end in
 `.idp-attributes.json`; intake never reads any other location. It is read once,
 when the document arrives, and the result is stored with the document, so editing
 or deleting the sidecar afterwards changes nothing. An object whose key ends in
-`.idp-attributes.json` is not processed as a document. If the same key appears
-both inline and in the sidecar, the inline value is kept.
+`.idp-attributes.json` is not processed as a document, and a malware-scan verdict
+for one is ignored. If the same key appears both inline and in the sidecar, the
+inline value is kept. If two inline names map to the same key (`idp-attr-case-ref`
+and `idp-attr-case_ref`), both inline values are dropped with a warning.
+
+Deleting a document does not delete its sidecar. The values in it stay in the
+input bucket until the sidecar itself is deleted.
 
 ### SDK
 
@@ -107,7 +112,8 @@ The upload API (web UI) and the MCP `process` tool do not accept attributes yet.
 | Key | Matches `^[a-z0-9][a-z0-9_-]{0,62}$`: lower-case letters, digits, `_` and `-`, starting with a letter or digit, at most 63 characters |
 | Value | A string, a finite number, `true`/`false`, or a flat list of those. Nested objects and lists of lists are not accepted |
 | Integer | Between -(2^53 - 1) and 2^53 - 1, so a browser reads it back unchanged |
-| String | At most 1024 bytes (UTF-8), per value and per list item |
+| Other number | Zero, or a magnitude from 1e-125 to 1e15, so it is stored and read back unchanged |
+| String | At most 1024 bytes (UTF-8), per value and per list item, and valid Unicode (a JSON `\ud800` escape on its own is refused) |
 | List | At most 50 items |
 | Count | At most 100 attributes per document |
 | Total | At most 32 KB for the whole set as compact JSON, which is also the largest sidecar intake reads |
