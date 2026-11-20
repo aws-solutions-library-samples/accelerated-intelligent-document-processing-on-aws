@@ -229,6 +229,7 @@ def test_cleanup_deletes_each_uploaded_key_and_reads_back(tmp_path, monkeypatch)
         "InputBucket": 0,
         "OutputBucket": 0,
         "OutputBucket batch record": 0,
+        "InputBucket versions": 0,
     }
     s3.get_paginator.assert_called_with("list_object_versions")
     assert summary["profile_remaining"] is False and "error" not in summary
@@ -254,3 +255,25 @@ def test_what_discovery_prints_goes_to_stderr_not_stdout(capsys):
     captured = capsys.readouterr()
     assert "agent chatter" not in captured.out
     assert "agent chatter" in captured.err
+
+
+@pytest.mark.unit
+def test_input_versions_are_purged_for_the_exact_key_only():
+    from idp_sdk.operations.fit_check import _delete_all_versions
+
+    s3 = MagicMock()
+    s3.get_paginator.return_value.paginate.return_value = [
+        {
+            "Versions": [
+                {"Key": "b/a.pdf", "VersionId": "1"},
+                {"Key": "b/a.pdf.bak", "VersionId": "2"},
+            ],
+            "DeleteMarkers": [{"Key": "b/a.pdf", "VersionId": "3"}],
+        }
+    ]
+    assert _delete_all_versions(s3, "in", "b/a.pdf", exact=True) == 2
+    deleted = s3.delete_objects.call_args.kwargs["Delete"]["Objects"]
+    assert deleted == [
+        {"Key": "b/a.pdf", "VersionId": "1"},
+        {"Key": "b/a.pdf", "VersionId": "3"},
+    ]

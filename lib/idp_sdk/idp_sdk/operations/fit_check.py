@@ -488,6 +488,21 @@ class FitCheckOperation:
             else:
                 errors.append(f"profile {profile}: {removed.error}")
         s3 = boto3.client("s3", region_name=self._client._region)
+        input_bucket = resources.get("InputBucket")
+        if input_bucket and document_keys:
+            # `document.delete` removes the input object without a version id, so
+            # in a versioned input bucket the sample's content stays behind as a
+            # noncurrent version. These keys are the ones this run uploaded.
+            purged = 0
+            for key in document_keys:
+                try:
+                    purged += _delete_all_versions(s3, input_bucket, key, exact=True)
+                except Exception as e:
+                    errors.append(f"input versions of {key}: {e}")
+            lines.append(
+                f"Deleted {purged} remaining input object version(s) and delete "
+                "marker(s) of the uploaded samples."
+            )
         output_bucket = resources.get("OutputBucket")
         metadata_prefix = f"cli-batches/{batch_id}/" if batch_id else None
         if metadata_prefix and output_bucket:
@@ -511,6 +526,10 @@ class FitCheckOperation:
                 if bucket:
                     listed = s3.list_objects_v2(Bucket=bucket, Prefix=f"{batch_id}/")
                     remaining[bucket_key] = listed.get("KeyCount", 0)
+            if input_bucket:
+                remaining["InputBucket versions"] = _count_versions(
+                    s3, input_bucket, f"{batch_id}/"
+                )
             if metadata_prefix and output_bucket:
                 listed = s3.list_objects_v2(
                     Bucket=output_bucket, Prefix=metadata_prefix
@@ -575,14 +594,28 @@ class FitCheckOperation:
         )
 
 
-def _delete_all_versions(s3, bucket: str, prefix: str) -> int:
-    """Delete every object version and delete marker under ``prefix``."""
+def _versions(page: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list(page.get("Versions") or []) + list(page.get("DeleteMarkers") or [])
+
+
+def _count_versions(s3, bucket: str, prefix: str) -> int:
+    paginator = s3.get_paginator("list_object_versions")
+    return sum(
+        len(_versions(page))
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+    )
+
+
+def _delete_all_versions(s3, bucket: str, prefix: str, *, exact: bool = False) -> int:
+    """Delete every object version and delete marker under ``prefix`` (only of the
+    key ``prefix`` itself when ``exact``)."""
     count = 0
     paginator = s3.get_paginator("list_object_versions")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         targets = [
             {"Key": v["Key"], "VersionId": v["VersionId"]}
-            for v in (page.get("Versions") or []) + (page.get("DeleteMarkers") or [])
+            for v in _versions(page)
+            if not exact or v["Key"] == prefix
         ]
         if targets:
             s3.delete_objects(Bucket=bucket, Delete={"Objects": targets, "Quiet": True})

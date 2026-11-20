@@ -162,7 +162,7 @@ overall and per class, with any document that has no evaluation result listed.
 
 | What | Where | Kept | Removed by `--cleanup` |
 |---|---|---|---|
-| The accepted samples | Input bucket, under `fit-check-<timestamp>/` | Under the stack's `DataRetentionInDays` (default 365 days) | Yes |
+| The accepted samples | Input bucket, under `fit-check-<timestamp>/` | Under the stack's `DataRetentionInDays` (default 365 days) | Yes, every version |
 | Processing results, every object version | Output bucket, under the same prefix | As above | Yes |
 | The batch record `list-batches` reads, which names the local paths the samples came from | Output bucket, `cli-batches/fit-check-<timestamp>/` | As above | Yes, every version |
 | Tracking, list and run records, review-queue items | The stack's DynamoDB tables | As above | Yes |
