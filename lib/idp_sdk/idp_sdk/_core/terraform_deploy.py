@@ -1482,14 +1482,27 @@ _BUCKET_TYPES = {"aws_s3_bucket": "bucket", "awscc_s3_bucket": "bucket_name"}
 
 
 def state_buckets(state: Dict[str, Any], exclude: Iterable[str] = ()) -> List[Dict]:
-    """Buckets in ``terraform show -json`` output, as the ``bucket_info`` dicts
+    """Buckets to empty before ``terraform destroy``, from ``terraform show
+    -json`` output, as the ``bucket_info`` dicts
     :meth:`StackDeployer._empty_buckets` takes. Entries in ``exclude`` (state
-    addresses) are left out."""
+    addresses) are left out.
+
+    A bucket with ``force_destroy`` set in state is left out too: destroy
+    empties it itself, when it deletes it, which is after everything that
+    depends on it. That matters for the custom-resource bridge buckets
+    (``cfn_bridge``, one per module), the only buckets the translator creates
+    with ``force_destroy``: each holds the physical ID of every custom
+    resource in its module, and every custom resource's Delete depends on it,
+    so emptying one beforehand sends each of those Deletes without the ID of
+    the resource it is meant to delete.
+    """
     skip = set(exclude)
     out = []
     for res in _state_resources(state):
         attr = _BUCKET_TYPES.get(res.get("type", ""))
         if res.get("mode") != "managed" or not attr or res.get("address") in skip:
+            continue
+        if (res.get("values") or {}).get("force_destroy") is True:
             continue
         name = (res.get("values") or {}).get(attr)
         if name:
