@@ -270,9 +270,10 @@ const attributeMessages = defineMessages<{ label: NoMessageValues }>({
  * attributes shows the same grid as before. Values are untrusted caller input and
  * are rendered as React text children, never as HTML.
  */
-export const CallerAttributesField = ({ entries }: { entries?: CallerAttributeEntry[] }): React.JSX.Element | null => {
+const CallerAttributesList = ({ entries }: { entries: CallerAttributeEntry[] }): React.JSX.Element => {
+  // useIntl lives here rather than in CallerAttributesField so that a document with
+  // no attributes renders without touching react-intl at all, as it did before.
   const intl = useIntl();
-  if (!entries || entries.length === 0) return null;
   return (
     <Field label={intl.formatMessage(attributeMessages.label)}>
       {entries.map(({ key, value }) => (
@@ -285,6 +286,11 @@ export const CallerAttributesField = ({ entries }: { entries?: CallerAttributeEn
       ))}
     </Field>
   );
+};
+
+export const CallerAttributesField = ({ entries }: { entries?: CallerAttributeEntry[] }): React.JSX.Element | null => {
+  if (!entries || entries.length === 0) return null;
+  return <CallerAttributesList entries={entries} />;
 };
 
 /**
