@@ -285,10 +285,12 @@ def test_every_class_with_an_openai_escalation_override_is_named():
 
 @pytest.mark.parametrize(("mode", "flag"), CELLS)
 def test_a_flag_the_mode_overrides_is_reported(mode, flag):
-    """`agentic.enabled` written beside a mode that contradicts it is reported once.
+    """`agentic.enabled: true` overridden by the mode is reported once.
 
-    A configuration downloaded in full carries `mode: simple`, so a flag added to it
-    is overridden and simple extraction runs: the warning names the mode to set.
+    A configuration downloaded in full carries `mode: simple`, so a true flag added
+    to it is overridden and simple extraction runs: the warning names the mode to
+    set. A false flag beside `mode: advanced` is what that download looks like once
+    the mode is set as documented, so it is not reported.
     """
     logging.disable(logging.CRITICAL)
     try:
@@ -296,16 +298,16 @@ def test_a_flag_the_mode_overrides_is_reported(mode, flag):
     finally:
         logging.disable(logging.NOTSET)
     warnings = [w for w in result["warnings"] if "extraction.agentic.enabled is" in w]
-    overridden = flag != UNSET and flag is not _expected_agentic(mode, flag)
+    overridden = flag is True and not _expected_agentic(mode, flag)
     assert len(warnings) == int(overridden), warnings
     if overridden:
-        wanted = "advanced" if flag else "simple"
-        assert f"Set extraction.mode: {wanted}" in warnings[0]
+        assert "Set extraction.mode: advanced" in warnings[0]
 
 
-def test_a_flag_written_as_text_is_read_as_the_runtime_reads_it():
+@pytest.mark.parametrize("written", ["true", "yes", "y", "t", "1", 1])
+def test_a_flag_written_as_text_is_read_as_the_runtime_reads_it(written):
     config = _config("simple", UNSET, CONVERSE)
-    config["extraction"]["agentic"] = {"enabled": "true"}
+    config["extraction"]["agentic"] = {"enabled": written}
     logging.disable(logging.CRITICAL)
     try:
         result = validate_config(config)

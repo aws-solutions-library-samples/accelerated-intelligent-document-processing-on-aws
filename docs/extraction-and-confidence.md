@@ -168,7 +168,7 @@ extraction:
 > **full** configuration is different: it already carries `mode: simple`, so
 > editing only `agentic.enabled` to `true` in it leaves the document on the Simple
 > path. It is not an error, but `idp-cli config-validate`, `idp-cli config-upload`
-> and the SDK's `validate` warn about it, naming the mode to set. Set
+> and the SDK's `validate` warn about a true flag that the mode overrides. Set
 > `mode: advanced` to choose Advanced extraction.
 
 #### Supported models for agentic extraction

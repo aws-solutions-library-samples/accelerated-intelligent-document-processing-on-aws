@@ -2132,32 +2132,33 @@ def _validate_page_order(validated: Any, result: Dict[str, Any]) -> None:
 def _validate_agentic_flag_against_mode(
     config: Dict[str, Any], validated: Any, result: Dict[str, Any]
 ) -> None:
-    """Warn when ``extraction.mode`` overrides the ``agentic.enabled`` the author set.
+    """Warn when ``agentic.enabled: true`` is overridden by ``extraction.mode``.
 
     ``extraction.mode`` decides the extraction path whenever it is set, and
     ``agentic.enabled`` is derived from it (``reconcile_mode_and_agentic``). A
     configuration downloaded in full carries ``mode: simple``, so adding
     ``agentic.enabled: true`` to it runs simple extraction, and nothing in a result
-    says so except ``extraction_method: traditional``. Compared against the config as
-    submitted, so only a flag the author wrote is reported, and against the validated
-    model, which is what the runtime reads.
+    says so except ``extraction_method: traditional``.
+
+    Only that direction is reported. The same full download also carries
+    ``agentic.enabled: false``, so following the documented fix, setting
+    ``mode: advanced``, submits a false flag beside an advanced mode, and a warning
+    there would tell the author to undo a correct edit. The flag is read with the
+    migration's ``_coerce_bool``, which agrees with how Pydantic parses it.
     """
+    from idp_common.config.migrations.v05_to_v06 import _coerce_bool
+
     extraction = config.get("extraction")
     agentic = extraction.get("agentic") if isinstance(extraction, dict) else None
     if not isinstance(agentic, dict) or agentic.get("enabled") is None:
         return
-    written = agentic["enabled"]
-    if isinstance(written, str):
-        written = written.strip().lower() in ("true", "1", "yes", "on")
-    requested = bool(written)
-    if requested == validated.extraction.agentic.enabled:
+    if not _coerce_bool(agentic["enabled"]) or validated.extraction.agentic.enabled:
         return
-    wanted = "advanced" if requested else "simple"
     result["warnings"].append(
-        f"extraction.agentic.enabled is {str(requested).lower()}, but "
-        f"extraction.mode is '{validated.extraction.mode}', and the mode decides the "
-        f"extraction path, so extraction will run in {validated.extraction.mode} "
-        f"mode. Set extraction.mode: {wanted} to get what agentic.enabled asks for."
+        "extraction.agentic.enabled is true, but extraction.mode is "
+        f"'{validated.extraction.mode}', and the mode decides the extraction path, so "
+        "extraction will run in simple mode. Set extraction.mode: advanced for "
+        "agentic extraction."
     )
 
 
