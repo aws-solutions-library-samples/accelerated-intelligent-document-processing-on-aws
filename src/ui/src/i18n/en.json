@@ -7,6 +7,10 @@
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
   },
+  "agentChat.quickStart.attachedDocuments": {
+    "defaultMessage": "Attached {count, plural, one {# document} other {# documents}}",
+    "description": "What the user sees as their own message in the Quick Start chat when they send attached example documents without typing anything. {count} is how many files they attached."
+  },
   "appLayout.ariaLabels.navigation": {
     "defaultMessage": "Side navigation",
     "description": "Screen-reader name of the side navigation landmark of every page."

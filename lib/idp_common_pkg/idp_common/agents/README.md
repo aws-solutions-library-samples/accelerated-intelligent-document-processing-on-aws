@@ -552,6 +552,17 @@ or the stack has no profile of its own yet: `default` active and every other pro
 stack-managed, as a stack is deployed. Otherwise it leaves the agent to ask. The agent
 is told the profile is active only after the activation has succeeded.
 
+The panel adds instructions for the agent to the messages it sends, such as that
+attached documents are being analysed, or what Discovery found and how to present it.
+These travel inside `<panel-context>...</panel-context>` blocks. The agent reads them,
+and the prompt tells it never to quote them. The user does not see them:
+`panelContext.ts` strips them before a user message is rendered, live or loaded from
+history, and a message with nothing left is not shown. The session title and the
+session list's last-message preview strip them too, through
+`agents.common.chat_text.visible_chat_text` in both chat processors and a local copy
+of the same pattern in the `agent_chat_resolver`, which carries no `idp_common`.
+`tests/unit/agents/common/test_chat_text.py` holds the copies to one pattern.
+
 Its system prompt names screens and navigation paths (Upload Documents,
 Configuration › View/Edit Configuration, Test Studio › Test Sets, Agent Chat), so a
 change that renames one of them updates the prompt in the same change.

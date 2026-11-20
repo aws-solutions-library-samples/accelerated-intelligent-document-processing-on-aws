@@ -103,6 +103,10 @@ def _stub_modules() -> dict[str, types.ModuleType]:
     mod("idp_common.agents.common")
     mod("idp_common.agents.common.config", configure_logging=lambda *a, **k: None)
     mod(
+        "idp_common.agents.common.chat_text",
+        visible_chat_text=lambda prompt: (prompt or "").strip(),
+    )
+    mod(
         "idp_common.agents.common.bedrock_error_messages",
         BedrockErrorMessageHandler=_ErrorHandler,
     )

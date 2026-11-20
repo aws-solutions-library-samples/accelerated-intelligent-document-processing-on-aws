@@ -10,6 +10,7 @@ for conversational, multi-turn interactions.
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -33,6 +34,19 @@ class ResourceAccessDenied(PermissionError):
     dispatcher recognises it by class name. Still a ``PermissionError``, so the
     caller sees 403 ``Unauthorized``.
     """
+
+
+_PANEL_CONTEXT_PATTERN = re.compile(r"<panel-context>.*?</panel-context>", re.DOTALL)
+
+
+def _visible_chat_text(prompt):
+    """``prompt`` without the Quick Start panel's agent-only ``<panel-context>`` blocks.
+
+    The same rule as ``idp_common.agents.common.chat_text.visible_chat_text``, kept
+    here because this Lambda's package does not carry ``idp_common``; a test holds the
+    two patterns equal.
+    """
+    return _PANEL_CONTEXT_PATTERN.sub("", prompt or "").strip()
 
 
 # Configure logging
@@ -543,12 +557,13 @@ def create_session_metadata(
     """Create a new session metadata record."""
     try:
         # Generate session title from the first message
-        title = prompt.strip()
+        visible = _visible_chat_text(prompt)
+        title = visible
         if len(title) > 50:
             title = title[:47] + "..."
 
         # Create last message preview
-        last_message = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        last_message = visible[:100] + "..." if len(visible) > 100 else visible
 
         session_record = {
             "userId": user_id,
@@ -572,17 +587,20 @@ def update_session_metadata(sessions_table, user_id, session_id, prompt, timesta
     """Update existing session metadata record."""
     try:
         # Create last message preview
-        last_message = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        visible = _visible_chat_text(prompt)
+        expression = "SET updatedAt = :timestamp, messageCount = messageCount + :inc"
+        values = {":timestamp": timestamp, ":inc": 1}
+        if visible:
+            expression += ", lastMessage = :last_message"
+            values[":last_message"] = (
+                visible[:100] + "..." if len(visible) > 100 else visible
+            )
 
         # Update the session record
         sessions_table.update_item(
             Key={"userId": user_id, "sessionId": session_id},
-            UpdateExpression="SET updatedAt = :timestamp, messageCount = messageCount + :inc, lastMessage = :last_message",
-            ExpressionAttributeValues={
-                ":timestamp": timestamp,
-                ":inc": 1,
-                ":last_message": last_message,
-            },
+            UpdateExpression=expression,
+            ExpressionAttributeValues=values,
         )
 
         logger.info(f"Updated session metadata for {session_id}")

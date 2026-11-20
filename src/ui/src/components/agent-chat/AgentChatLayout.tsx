@@ -22,6 +22,7 @@ import {
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { DISCOVERY_JOB_PATH } from '../../routes/constants';
 import { activatesWithoutAsking, newQuickStartProfileName } from './quickStartDiscoveryTarget';
+import { visibleChatText, withPanelContext } from './panelContext';
 import { SupportPromptGroup, LoadingBar } from '@cloudscape-design/chat-components';
 import SafeMarkdown from '../common/SafeMarkdown';
 import { generateClient } from '../../api/client-shim';
@@ -45,7 +46,11 @@ import type { ChatMessage } from '../../types/agent-chat';
 
 const logger = new ConsoleLogger('AgentChatLayout');
 
-const uiMessages = defineMessages<{ thirdPartyNotice: NoMessageValues; enableExternalMcpAgents: NoMessageValues }>({
+const uiMessages = defineMessages<{
+  thirdPartyNotice: NoMessageValues;
+  enableExternalMcpAgents: NoMessageValues;
+  attachedDocuments: { readonly count: number };
+}>({
   thirdPartyNotice: {
     id: 'agentChat.layout.thirdPartyNotice',
     defaultMessage:
@@ -57,6 +62,12 @@ const uiMessages = defineMessages<{ thirdPartyNotice: NoMessageValues; enableExt
     id: 'agentChat.layout.enableExternalMcpAgents',
     defaultMessage: 'Enable External MCP agents',
     description: 'Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers.',
+  },
+  attachedDocuments: {
+    id: 'agentChat.quickStart.attachedDocuments',
+    defaultMessage: 'Attached {count, plural, one {# document} other {# documents}}',
+    description:
+      'What the user sees as their own message in the Quick Start chat when they send attached example documents without typing anything. {count} is how many files they attached.',
   },
 });
 
@@ -175,7 +186,10 @@ const AgentChatLayout = ({
         `are not shown here — call get_class_schema for version "${result.configVersion}" before ` +
         `answering questions about the fields or refining them.]`;
       const send = (activated: boolean) =>
-        sendMessage(summaryFor(activated ? 'already' : 'not'), { enableCodeIntelligence, enableExternalMcpAgents });
+        sendMessage(withPanelContext('', summaryFor(activated ? 'already' : 'not')), {
+          enableCodeIntelligence,
+          enableExternalMcpAgents,
+        });
       setAttachedFiles([]);
       setUploadError(null);
       setCompletedJobId(result.jobId);
@@ -283,7 +297,10 @@ const AgentChatLayout = ({
         `[${filesAttachedCount} document(s) attached — ${discoveryKind} Discovery is now running on them ` +
         `in the background. Acknowledge it's processing and that you'll summarize the results when they ` +
         `arrive; do not ask me to upload again.]`;
-      messageToSend = prompt.trim() ? `${prompt.trim()}\n\n${note}` : note;
+      messageToSend = withPanelContext(
+        prompt.trim() || intl.formatMessage(uiMessages.attachedDocuments, { count: filesAttachedCount }),
+        note,
+      );
     } else {
       messageToSend = prompt;
     }
@@ -433,6 +450,10 @@ const AgentChatLayout = ({
       }
 
       const isUser = message.role === 'user';
+      if (isUser) {
+        contentText = visibleChatText(contentText);
+        if (!contentText) return null;
+      }
 
       // Handle tool_use messages with collapsible section using sessionMessages
       if (message.messageType === 'tool_use' && message.toolUseData) {

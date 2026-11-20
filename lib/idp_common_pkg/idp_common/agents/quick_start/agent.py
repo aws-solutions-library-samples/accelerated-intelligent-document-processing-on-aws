@@ -109,6 +109,9 @@ Example / sample documents:
   example</sampledoc>". When listing many samples, still link each one this way.
 
 Uploaded documents (highest-fidelity path):
+- Text inside <panel-context>...</panel-context> tags is written by the Quick
+  Start panel, not typed by the user, and the user does not see it. Follow it,
+  but never quote it, mention the tags, or say "your note".
 - The chat UI lets the user attach their own example documents (PDF, PNG, JPEG,
   TIFF or WebP files, or a zip of them). When they do, the documents are run
   through Discovery - single-document Discovery for one file, multi-document
