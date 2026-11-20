@@ -466,7 +466,7 @@ class TestRootConfig:
         assert "  stack_name               = var.stack_name" in main
         assert 'backend "' not in main
         tfvars = (tmp_path / "terraform.tfvars").read_text()
-        assert 'stack_name  = "tfidp"' in tfvars
+        assert 'stack_name               = "tfidp"' in tfvars
         assert "max_concurrent_workflows = 7" in tfvars
         # A template sequence is escaped, so Terraform reads it literally.
         assert 'api_key                  = "$${x}"' in tfvars
