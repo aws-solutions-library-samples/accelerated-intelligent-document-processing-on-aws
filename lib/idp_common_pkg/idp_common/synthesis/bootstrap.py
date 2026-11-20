@@ -162,19 +162,19 @@ def _models_advanced_extraction_cannot_use(config: Dict[str, Any]) -> List[str]:
     engine behind ``extraction.mode: advanced`` does not use, so ``validate_config``
     refuses that pairing and the extraction step raises on it. The global model and
     every per-class override are checked; the escalation model only when escalation
-    can run.
+    can run. Escalation is read off the validated ``IDPConfig``, as
+    ``merge_utils._validate_agentic_openai`` reads it, because the raw dict cannot
+    answer it for a pre-0.7 ``extraction.agentic.validation`` block.
     """
     from idp_common.bedrock.openai_responses import is_openai_responses_model
+    from idp_common.config.models import IDPConfig
 
-    extraction = config.get("extraction") or {}
-    validation = extraction.get("validation") or {}
-    escalates = (
-        validation.get("enabled", True) is not False
-        and validation.get("fail_action") == "escalate"
-    )
-    models = [extraction.get("model")]
+    extraction = IDPConfig.model_validate(config).extraction
+    vcfg = extraction.validation
+    escalates = vcfg.enabled and vcfg.fail_action == "escalate"
+    models = [extraction.model]
     if escalates:
-        models.append(validation.get("escalation_model"))
+        models.append(vcfg.escalation_model)
     for cls in config.get("classes") or []:
         models.append(cls.get(sc.X_AWS_IDP_EXTRACTION_MODEL))
         if escalates:
@@ -222,7 +222,7 @@ def set_processing_options(
         )
     if not documents_per_file and summaries is None and long_tables is None:
         raise ValueError(
-            "Nothing to set: pass documents_per_file, summaries, long_tables or several."
+            "Nothing to set: pass documents_per_file, summaries, long_tables or a mix."
         )
     refuse_protected_profile(version, config_manager=config_manager)
     existing = config_manager.get_raw_configuration(CONFIG_TYPE_CONFIG, version)

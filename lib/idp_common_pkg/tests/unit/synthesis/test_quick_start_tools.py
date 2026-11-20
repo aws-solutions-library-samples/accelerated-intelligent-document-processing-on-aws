@@ -508,3 +508,13 @@ class TestSetProcessingOptionsTool:
         assert out["refused"] is False
         assert "try again" in out["error"]
         assert "throttled" not in out["error"]
+
+    def test_a_missing_profile_name_has_the_documented_shape(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        out = json.loads(bt.set_processing_options_impl("", "one"))
+        assert out == {
+            "config_version": "",
+            "refused": False,
+            "error": "version_name is required",
+        }

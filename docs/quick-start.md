@@ -27,7 +27,7 @@ A conversational agent:
    review; you refine it in chat until it's right.
 4. **Creates a configuration profile and makes it active**, so you can upload a
    document and start processing immediately — no trip to the Configuration page
-   It also chooses how files are split into documents, whether long tables need
+   required. It also chooses how files are split into documents, whether long tables need
    the advanced extraction engine, and whether each document is summarized, from
    what you've told it.
 

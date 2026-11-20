@@ -357,7 +357,13 @@ def set_processing_options_impl(
     from idp_common.synthesis import bootstrap as bootstrap_mod
 
     if not version_name:
-        return json.dumps({"error": "version_name is required"})
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "refused": False,
+                "error": "version_name is required",
+            }
+        )
     try:
         applied = bootstrap_mod.set_processing_options(
             version_name,
