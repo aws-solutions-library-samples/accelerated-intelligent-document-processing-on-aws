@@ -854,16 +854,25 @@ BOLD_FIGURE = (
 #: page, not one packet.
 SECTION_METRICS = frozenset({"section_accuracy", "label_accuracy", "boundary_accuracy"})
 PAGE_METRICS = frozenset({"page_accuracy"})
+#: List metrics that are a share of a list's true rows, so one error of them is a row.
+ROW_METRICS = frozenset({"completeness"})
 #: The results-file key that counts each of those per document.
-PER_DOC_COUNTS = {"section": "sections_per_doc", "page": "pages_per_doc"}
+PER_DOC_COUNTS = {
+    "section": "sections_per_doc",
+    "page": "pages_per_doc",
+    "row": "rows_per_doc",
+}
 #: Metrics whose errors the economics line can count (1 - metric is a share of them).
 ECON_METRICS = ERROR_RATE_METRICS | SECTION_METRICS
 
 
 def error_unit(kind: str, metric: str) -> str:
     """What one error of `metric` is on a dataset of `kind`: a section or a page of a
-    DocSplit packet, for the accuracies that are shares of those; otherwise one
-    document's (or packet's) worth of wrong field weight (marginal-cost-of-error.md)."""
+    DocSplit packet, or a row of a list, for the accuracies that are shares of those;
+    otherwise one document's (or packet's) worth of wrong field weight
+    (marginal-cost-of-error.md)."""
+    if kind == "list" and metric in ROW_METRICS:
+        return "row"
     if kind.startswith("packet"):
         if metric in SECTION_METRICS:
             return "section"
@@ -921,6 +930,7 @@ FIX_WORDS = {
     "label_accuracy": "a misfiled document",
     "boundary_accuracy": "a mis-split document",
     "page_accuracy": "a misfiled page",
+    "completeness": "a missing row",
 }
 #: Names that keep their capital in mid-sentence: vendors, products, acronyms.
 PROPER = re.compile(r"(?:Amazon|Claude|OpenAI|xAI|Textract|Strands|[A-Z]{2})")
@@ -1207,6 +1217,30 @@ def failures_line(
     return f"Failed {unit} per run: " + "; ".join(parts) + "."
 
 
+def not_sent_line(
+    not_sent: dict[str, dict[str, Any]],
+    ds_keys: list[str],
+    values: list[str],
+    datasets: dict[str, Any],
+) -> str:
+    """ "Not sent: ..." for the values Bedrock refused, on every document, as too large
+    for one request (the collector's `not_sent`); empty when there are none."""
+    parts = []
+    for ds_key in ds_keys:
+        for value in values:
+            found = not_sent.get(f"{ds_key}|{value}")
+            if not found:
+                continue
+            short = datasets[ds_key].get("short", datasets[ds_key]["name"])
+            parts.append(
+                f"{short} — {VALUE_NAMES.get(value, value)}: Amazon Bedrock refused "
+                f"every document's request in all {found['runs']} runs "
+                f"({found['documents']} in all) as too large for one request "
+                f"(`{found['error']}`), so nothing was extracted"
+            )
+    return f"Not sent: {'; '.join(parts)}." if parts else ""
+
+
 def unit_name(name: str, unit: str) -> str:
     """A metric's name counted in the dataset's unit: per 1,000 packets for DocSplit."""
     if unit == "documents":
@@ -1245,6 +1279,14 @@ LIST_SCORE_CAPTION = (
     "A line-item score is Stickler's score for the list: matched rows over the larger of "
     "the true and returned row counts."
 )
+#: What a by-size chart's metric is, under its chart.
+BY_SIZE_CAPTIONS = {
+    "list_score": LIST_SCORE_CAPTION,
+    "completeness": (
+        "Completeness is the share of the ground truth's rows that came back, each "
+        "returned row joined to its true row by the SEQ tag in its description."
+    ),
+}
 
 
 def dataset_pools(ds_keys: list[str]) -> list[list[str]]:
@@ -1373,6 +1415,17 @@ def series_slots(
     return [(MODES.index(modes[n][1]), order.index(modes[n][0])) for n in names]
 
 
+def size_bands(
+    bands: Any, series: list[tuple[str, list[tuple[str, float, float]]]]
+) -> list[int] | None:
+    """A by-size chart's bands: `each` gives every size drawn a band of its own (a
+    test set per list length), a list is lower bounds, and None leaves the default."""
+    if bands != "each":
+        return bands
+    sizes = sorted({int(x) for _, pts in series for _, x, _ in pts})
+    return [b for x in sizes for b in (x, x + 1)]
+
+
 def render_by_size(
     ab: dict[str, Any], reg: dict[str, Any], results: dict[str, Any]
 ) -> tuple[list[list[str]], list[str], dict[str, str]]:
@@ -1427,10 +1480,38 @@ def render_by_size(
         )
         modes = value_modes(models, used, ab["values"])
         slots = series_slots([v for v, _ in series], modes)
+        # `points: runs` draws each document's score in each run (the results'
+        # `<metric>_runs`), and a value never sent at a size says so there.
+        by_runs = spec.get("points") == "runs"
+        run_scores = (
+            [
+                {
+                    doc: list(
+                        ((per_doc.get(f"{owner[doc]}|{v}") or {}).get(doc) or {}).get(
+                            f"{metric}_runs"
+                        )
+                        or [y]
+                    )
+                    for doc, _, y in pts
+                }
+                for v, pts in series
+            ]
+            if by_runs
+            else None
+        )
+        refused = [
+            (s, float(size))
+            for key in results.get("not_sent") or {}
+            for s, (v, _) in enumerate(series)
+            if key.split("|", 1) == [key.split("|", 1)[0], v]
+            and key.split("|", 1)[0] in sources
+            and (size := (results.get("rows_per_doc") or {}).get(key.split("|")[0]))
+        ]
         series = [(short_label(v, ab), pts) for v, pts in series]
         fixed = fixed_model(ab, models, used[0])
         subtitle = (
-            f"{chart_name(pool[0], datasets)}, {len(drawn)} × {runs} runs · "
+            f"{spec.get('name') or chart_name(pool[0], datasets)}, "
+            f"{len(drawn)} × {runs} runs · "
             f"Varies: {varies_text(ab)}" + (f" · Fixed: {fixed}" if fixed else "")
         )
         title = str(ab.get("takeaway") or ab["question"])
@@ -1443,21 +1524,28 @@ def render_by_size(
             subtitle=subtitle,
             slots=slots,
             y_name=y_name,
+            bands=size_bands(spec.get("bands"), series),
+            runs=run_scores,
+            not_sent=refused,
         )
         alt = (
             f"{title}: {lower_name(y_name)} per {thing} against "
             f"{lower_first(x_title.removesuffix(' (log scale)'))}"
         )
         caption = (
-            f"*One point per {thing} per {varies_text(ab)}; each line is its running "
-            "median.*"
+            f"*One small point per {thing} per run, for each {varies_text(ab)}; the "
+            "large mark is the mean of those runs at each size, matching the table, and "
+            "each line joins the means.*"
+            if by_runs
+            else f"*One point per {thing} per {varies_text(ab)}; each line is its "
+            "running median.*"
         )
         charts.append([f"![{alt}]({PLOTS_FROM_PAGES}/{name})", "", caption, ""])
         tables += [
             f"*{n_text}. Datasets: "
             + ", ".join(dataset_label(k, datasets, short=True) for k in used)
             + "."
-            + (f" {LIST_SCORE_CAPTION}" if metric == "list_score" else "")
+            + (f" {BY_SIZE_CAPTIONS[metric]}" if metric in BY_SIZE_CAPTIONS else "")
             + "*",
             "",
         ]
@@ -2081,7 +2169,13 @@ def render_ablation(
             )
         if priced:
             cols = with_cost_column(cols, cost_col)
-        ceiling, rows_only = ceiling_sets(ab, cells, kind_sets, plot_metrics)
+        # The ceiling is weighted accuracy's, so it says nothing where that is not
+        # shown: a list's completeness of 1.0 is the finding, not a dataset too easy.
+        ceiling, rows_only = (
+            ceiling_sets(ab, cells, kind_sets, plot_metrics)
+            if "weighted_accuracy" in cols
+            else ([], set())
+        )
         too_easy += [
             f"*{datasets[k].get('short', datasets[k]['name'])}: every value scored "
             f"{CEILING:.2f} or higher, too easy to separate.*"
@@ -2283,6 +2377,15 @@ def render_ablation(
                     prices=prices,
                     families=bool(ab.get("families")),
                     cost_axis=cost_axis,
+                    series=bool(ab.get("series")),
+                    not_sent={
+                        gi: [
+                            v
+                            for v in ab["values"]
+                            if f"{k}|{v}" in ((results or {}).get("not_sent") or {})
+                        ]
+                        for gi, (k, _, _) in enumerate(scatter)
+                    },
                 )
                 out.plots[name] = svg
                 x_words = (
@@ -2383,6 +2486,11 @@ def render_ablation(
         failed = failures_line(sample, table_sets, ab["values"], ab, datasets)
         if failed:
             d += [failed, ""]
+        refused = not_sent_line(
+            (results or {}).get("not_sent") or {}, table_sets, ab["values"], datasets
+        )
+        if refused:
+            d += [refused, ""]
         notes = [BOLD_FIGURE] if any_bold else []
         if any(value_cell(v, ab) != VALUE_NAMES.get(v, v) for v in ab["values"]):
             notes.append(reference_note(ab))

@@ -1,0 +1,146 @@
+{
+  "ablation": "EX-08",
+  "verdict": "Agentic extraction is a good place to start for long lists. On synthetic statements with Claude Haiku 5.5, single-pass returned every row at 100 rows, but from 400 rows some statements came back with only the first page's rows (64% of rows at 400 rows, 2% at 1,600), and Amazon Bedrock rejected the 3,200-row requests as too long. Agentic extraction returned every row at every size with table parsing on, and 98% to 100% with it off. On these clean tables, table parsing also made agentic extraction cheaper: from 800 rows it cost less than single-pass even if every call billed at the long-context rate. Real invoices agree on agentic extraction, which found 67% of the line items against 17% for single-pass ([When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it)), but not on table parsing, which didn't help on long real invoices ([Does deterministic table parsing help agentic extraction?](#does-deterministic-table-parsing-help-agentic-extraction)). Test it on your own documents.",
+  "runs": {
+    "synth_100": {
+      "Single-pass \u00b7 Claude Haiku 5.5": [
+        "synth-statements-100-20261120-185105",
+        "synth-statements-100-20261120-185055",
+        "synth-statements-100-20261120-185115"
+      ],
+      "Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+        "synth-statements-100-20261120-185403",
+        "synth-statements-100-20261120-185441",
+        "synth-statements-100-20261120-185452"
+      ],
+      "Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+        "synth-statements-100-20261120-185630",
+        "synth-statements-100-20261120-185719",
+        "synth-statements-100-20261120-185730"
+      ]
+    },
+    "synth_400": {
+      "Single-pass \u00b7 Claude Haiku 5.5": [
+        "synth-statements-400-20261120-185948",
+        "synth-statements-400-20261120-190027",
+        "synth-statements-400-20261120-190045"
+      ],
+      "Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+        "synth-statements-400-20261120-190734",
+        "synth-statements-400-20261120-190755",
+        "synth-statements-400-20261120-190815"
+      ],
+      "Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+        "synth-statements-400-20261120-191312",
+        "synth-statements-400-20261120-191243",
+        "synth-statements-400-20261120-191346"
+      ]
+    },
+    "synth_800": {
+      "Single-pass \u00b7 Claude Haiku 5.5": [
+        "synth-statements-800-20261120-191913",
+        "synth-statements-800-20261120-191924",
+        "synth-statements-800-20261120-191958"
+      ],
+      "Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+        "synth-statements-800-20261120-193726",
+        "synth-statements-800-20261120-193815",
+        "synth-statements-800-20261120-193933"
+      ],
+      "Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+        "synth-statements-800-20261120-194904",
+        "synth-statements-800-20261120-194940",
+        "synth-statements-800-20261120-195046"
+      ]
+    },
+    "synth_1600": {
+      "Single-pass \u00b7 Claude Haiku 5.5": [
+        "synth-statements-1600-20261120-200154",
+        "synth-statements-1600-20261120-200239",
+        "synth-statements-1600-20261120-200322"
+      ],
+      "Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+        "synth-statements-1600-20261120-200705",
+        "synth-statements-1600-20261120-200715",
+        "synth-statements-1600-20261120-200844"
+      ],
+      "Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+        "synth-statements-1600-20261120-204358",
+        "synth-statements-1600-20261120-204335",
+        "synth-statements-1600-20261120-204421"
+      ]
+    },
+    "synth_3200": {
+      "Single-pass \u00b7 Claude Haiku 5.5": [
+        "synth-statements-3200-20261120-212302",
+        "synth-statements-3200-20261120-212313",
+        "synth-statements-3200-20261120-212343"
+      ],
+      "Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+        "synth-statements-3200-20261120-212636",
+        "synth-statements-3200-20261120-212625",
+        "synth-statements-3200-20261120-212614"
+      ],
+      "Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+        "synth-statements-3200-20261120-220854",
+        "synth-statements-3200-20261120-220829",
+        "synth-statements-3200-20261120-220950"
+      ]
+    }
+  },
+  "max_failed": {
+    "synth_1600": 5,
+    "synth_3200": 5
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "synth-statements-100-20261120-185055",
+    "synth-statements-100-20261120-185105",
+    "synth-statements-100-20261120-185115",
+    "synth-statements-100-20261120-185403",
+    "synth-statements-100-20261120-185441",
+    "synth-statements-100-20261120-185452",
+    "synth-statements-100-20261120-185630",
+    "synth-statements-100-20261120-185719",
+    "synth-statements-100-20261120-185730",
+    "synth-statements-1600-20261120-200154",
+    "synth-statements-1600-20261120-200239",
+    "synth-statements-1600-20261120-200322",
+    "synth-statements-1600-20261120-200705",
+    "synth-statements-1600-20261120-200715",
+    "synth-statements-1600-20261120-200844",
+    "synth-statements-1600-20261120-204335",
+    "synth-statements-1600-20261120-204358",
+    "synth-statements-1600-20261120-204421",
+    "synth-statements-3200-20261120-212302",
+    "synth-statements-3200-20261120-212313",
+    "synth-statements-3200-20261120-212343",
+    "synth-statements-3200-20261120-212614",
+    "synth-statements-3200-20261120-212625",
+    "synth-statements-3200-20261120-212636",
+    "synth-statements-3200-20261120-220829",
+    "synth-statements-3200-20261120-220854",
+    "synth-statements-3200-20261120-220950",
+    "synth-statements-400-20261120-185948",
+    "synth-statements-400-20261120-190027",
+    "synth-statements-400-20261120-190045",
+    "synth-statements-400-20261120-190734",
+    "synth-statements-400-20261120-190755",
+    "synth-statements-400-20261120-190815",
+    "synth-statements-400-20261120-191243",
+    "synth-statements-400-20261120-191312",
+    "synth-statements-400-20261120-191346",
+    "synth-statements-800-20261120-191913",
+    "synth-statements-800-20261120-191924",
+    "synth-statements-800-20261120-191958",
+    "synth-statements-800-20261120-193726",
+    "synth-statements-800-20261120-193815",
+    "synth-statements-800-20261120-193933",
+    "synth-statements-800-20261120-194904",
+    "synth-statements-800-20261120-194940",
+    "synth-statements-800-20261120-195046"
+  ]
+}

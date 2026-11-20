@@ -34,7 +34,7 @@ and fix the annotation when the extraction was right. See
 
 | Setting | What it changes | Questions |
 |---|---|---|
-| *Extraction mode* (`extraction.mode`) | Single-pass: one request per section (`simple`). Agentic: an agent that works through the section in shards (`advanced`) | [EX-01](#when-is-agentic-extraction-worth-it), [EX-07](#does-deterministic-table-parsing-help-agentic-extraction) |
+| *Extraction mode* (`extraction.mode`) | Single-pass: one request per section (`simple`). Agentic: an agent that works through the section in shards (`advanced`) | [EX-01](#when-is-agentic-extraction-worth-it), [EX-07](#does-deterministic-table-parsing-help-agentic-extraction), [EX-08](#does-single-pass-extraction-return-every-row-of-a-long-list) |
 | *Extraction model* (`extraction.model`) | The model that reads the section | [EX-02](#which-extraction-model-should-i-use) |
 | Reasoning effort (`extraction.reasoning_effort`) | How long the model reasons before it answers | [EX-03](#does-more-reasoning-effort-improve-extraction) |
 | Few-shot examples | Sample documents with their correct values, added to the prompt | [EX-05](#planned) |
@@ -52,6 +52,9 @@ and fix the annotation when the extraction was right. See
   misaligned row lowers it.
 - *Weighted accuracy:* Stickler's field-weighted score against ground truth.
 - *Documents with every field right:* the share of documents with no wrong field.
+- *Completeness:* the share of a list's true rows that came back.
+- *Accuracy over rows returned:* the share of the values right in the rows that came
+  back.
 
 Weighted accuracy counts a whole list as one field, so a lost row barely moves it. Read list recall for lists.
 
@@ -318,6 +321,72 @@ Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 *A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+
+</details>
+
+### Does single-pass extraction return every row of a long list?
+
+![Single-pass drops rows from 400; agentic with table parsing returns all: completeness per document against rows in the list (ground truth)](../../images/benchmark-guidance/EX-08-by-size-synth-100.svg)
+
+*One small point per document per run, for each extraction mode and table parsing; the large mark is the mean of those runs at each size, matching the table, and each line joins the means.*
+
+**Answer:** Agentic extraction is a good place to start for long lists. On synthetic statements with Claude Haiku 5.5, single-pass returned every row at 100 rows, but from 400 rows some statements came back with only the first page's rows (64% of rows at 400 rows, 2% at 1,600), and Amazon Bedrock rejected the 3,200-row requests as too long. Agentic extraction returned every row at every size with table parsing on, and 98% to 100% with it off. On these clean tables, table parsing also made agentic extraction cheaper: from 800 rows it cost less than single-pass even if every call billed at the long-context rate. Real invoices agree on agentic extraction, which found 67% of the line items against 17% for single-pass ([When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it)), but not on table parsing, which didn't help on long real invoices ([Does deterministic table parsing help agentic extraction?](#does-deterministic-table-parsing-help-agentic-extraction)). Test it on your own documents.
+
+**The economics:** On 800-row statements, agentic extraction with table parsing instead of single-pass saves $128 of extraction per 1,000 documents and gets 302,800 more rows right.
+
+| Instead of Single-pass | Extra extraction cost per 1,000 documents | Extra rows right per 1,000 documents | [Cost per row it saves](marginal-cost-of-error.md) |
+|---|---|---|---|
+| Agentic, table parsing on | −$128 | +302,800 | more right, for less |
+| Agentic, table parsing off | −$68.4 | +302,800 | more right, for less |
+
+*800-row statements, N = 5 documents × 3 runs. A difference within twice the combined standard error is no measurable difference. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18.*
+
+<details>
+<summary>Details</summary>
+
+*Measured on release 0.6.15-develop-d1be93f+fixes-2034-2035-2036, November 2026, us-east-1. Source: 46 Test Studio runs, listed in `benchmarks/results/guidance/EX-08.json`.*
+
+The synthetic statements are clean three-column tables in one layout, with exact ground truth: each row carries a unique tag, so every returned row is checked against its own true row. They test list length, whether every row comes back, not reading messy real tables (merged cells, wrapped text, headers repeated at page breaks, scans). [When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it) is the check on real invoices, and on long real invoices [table parsing](#does-deterministic-table-parsing-help-agentic-extraction) cost more, not less. Every value reads Amazon Textract's Tables and Layout, because the table-parsing tool and the accelerator's row-count check need Textract's tables as Markdown.
+
+From 400 to 1,600 rows, single-pass returned part of the list on 27 of 45 statement runs, 24 of them the first page's 43 rows, and the accelerator flagged all 27 with `extraction_rows_below_ocr_estimate`. Every row that came back had the right date and amount. Agentic costs are a floor: our metering can't size its calls, and calls over 100,000 prompt tokens bill at up to five times the rate, which would still cost less than single-pass from 800 rows. Times stop where Test Studio's evaluation starts; it outruns its time limit on a complete list of 1,600 rows or more, so rows are scored by their tags.
+
+| | |
+|---|---|
+| **Changes** | Extraction mode (`extraction.mode`), and for agentic extraction, deterministic table parsing (`extraction.agentic.table_parsing.enabled`) |
+| **Everything else** | Amazon Textract with Tables and Layout for every value; extraction on Claude Haiku 5.5; the rest as in the [baseline setup](index.md#baseline-setup) |
+| **Datasets** | [Synthetic statement, 100 rows (3 pages)](datasets.md#synthetic-statement-100-rows-3-pages); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages); [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages); [Synthetic statement, 1,600 rows (33 pages)](datasets.md#synthetic-statement-1600-rows-33-pages); [Synthetic statement, 3,200 rows (66 pages)](datasets.md#synthetic-statement-3200-rows-66-pages) |
+| **Models** | OCR: Amazon Textract (Tables, Layout) · Scoring: Claude Haiku 5.5. Extraction by dataset: Statement, 100 rows — varies (the setting under test); Statement, 400 rows — varies (the setting under test); Statement, 800 rows — varies (the setting under test); Statement, 1,600 rows — varies (the setting under test); Statement, 3,200 rows — Claude Haiku 5.5, agentic. |
+| **Runs** | 3 per document, per value; N = 5 documents × 3 runs |
+
+*N = 25 documents × 3 runs. Datasets: [Statement, 100 rows](datasets.md#synthetic-statement-100-rows-3-pages), [Statement, 400 rows](datasets.md#synthetic-statement-400-rows-9-pages), [Statement, 800 rows](datasets.md#synthetic-statement-800-rows-17-pages), [Statement, 1,600 rows](datasets.md#synthetic-statement-1600-rows-33-pages), [Statement, 3,200 rows](datasets.md#synthetic-statement-3200-rows-66-pages). Completeness is the share of the ground truth's rows that came back, each returned row joined to its true row by the SEQ tag in its description.*
+
+![From 800 rows, single-pass costs more than agentic with table parsing: completeness against extraction cost per 1,000 documents, one point per extraction mode and table parsing](../../images/benchmark-guidance/EX-08-list.svg)
+
+*Bands show ±2 standard errors. Cost axes differ by dataset.*
+
+| Dataset | Extraction mode (`extraction.mode`), and for agentic extraction, deterministic table parsing (`extraction.agentic.table_parsing.enabled`) | Completeness | Accuracy over rows returned | Median seconds per document | Extraction cost per 1,000 documents (USD) | [Extraction cost per wrong row prevented](marginal-cost-of-error.md) vs Agentic, table parsing on |
+|---|---|---|---|---|---|---|
+| Statement, 100 rows | **Single-pass · Claude Haiku 5.5 (baseline)** | 1 ± 0 | 1 ± 0 | 108 ± 13 | $6.73 ± $0.01 | no measurable gain |
+| Statement, 100 rows | Agentic, table parsing on · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | **70 ± 5.22** | **$1.80 ± $0.81** | — |
+| Statement, 100 rows | Agentic, table parsing off · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | 102 ± 8.56 | $11.5 ± $1.64 | no measurable gain |
+| Statement, 400 rows | **Single-pass · Claude Haiku 5.5 (baseline)** | 0.64 ± 0.21 | 1 ± 0 | 192 ± 55 | $16.0 ± $3.30 | no measurable gain |
+| Statement, 400 rows | Agentic, table parsing on · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | **113 ± 11** | **$4.38 ± $1.81** | — |
+| Statement, 400 rows | Agentic, table parsing off · Claude Haiku 5.5 | 0.98 ± 0.03 | 1 ± 0 | 188 ± 17 | $36.1 ± $7.24 | no measurable gain |
+| Statement, 800 rows | **Single-pass · Claude Haiku 5.5 (baseline)** | 0.62 ± 0.22 | 1 ± 0 | 373 ± 185 | $137 ± $29.2 | no measurable gain |
+| Statement, 800 rows | Agentic, table parsing on · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | **114 ± 5.13** | **$8.52 ± $3.64** | — |
+| Statement, 800 rows | Agentic, table parsing off · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | 190 ± 9.66 | $68.4 ± $11.3 | no measurable gain |
+| Statement, 1,600 rows | **Single-pass · Claude Haiku 5.5 (baseline)** | 0.02 ± 0 | 1 ± 0 | **169 ± 17** | $117 ± $1.50 | no measurable gain |
+| Statement, 1,600 rows | Agentic, table parsing on · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | 286 ± 21 | **$15.6 ± $3.70** | — |
+| Statement, 1,600 rows | Agentic, table parsing off · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | 439 ± 37 | $131 ± $12.8 | no measurable gain |
+| Statement, 3,200 rows | **Single-pass · Claude Haiku 5.5 (baseline)** | Not sent | Not sent | Not sent | Not sent | — |
+| Statement, 3,200 rows | Agentic, table parsing on · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | **630 ± 25** | **$25.0 ± $7.01** | — |
+| Statement, 3,200 rows | Agentic, table parsing off · Claude Haiku 5.5 | 1 ± 0 | 1 ± 0 | 910 ± 68 | $284 ± $22.1 | no measurable gain |
+
+Not sent: Statement, 3,200 rows — Single-pass · Claude Haiku 5.5: Amazon Bedrock refused every document's request in all 3 runs (15 in all) as too large for one request (`ExtractionInputTooLarge`), so nothing was extracted.
+
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
+
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Extraction cost counts only the extraction step's Amazon Bedrock calls. OCR, classification, confidence scoring and other AWS charges are left out.*
 
 </details>
 

@@ -25,6 +25,8 @@
 #             of metrics, which a cost or tokens chart draws as a row of panels each
 #   families  true when the values are models: each point takes its model family's
 #             color and shape, with a legend naming the families on the chart
+#   series    true to color and shape each value's points as its by-size chart's
+#             series are (its place in `values`), with a key naming the values
 #   takeaway  optional: the headline chart's title, the answer in one short sentence
 #             (12 words at most). Without it the chart is titled with the question
 #   details_takeaway
@@ -49,13 +51,19 @@
 #             tables' cost column, the cost per error prevented and the cheapest
 #             value. Used where the setting under test changes one step's cost and
 #             the other steps' cost would hide it
-#   by_size   optional {metric, x}: a chart of one per-document metric of the results
-#             file's `per_doc` against a per-document size, one point per document per
-#             value, on a log x axis, with a running median per value. Datasets whose
-#             keys share a prefix (realkie, realkie_short, realkie_long) are one pool
-#             and share one chart, deduplicated by document name. A pool's `<prefix>_all`
-#             dataset (realkie_all), once it has per-document results, stands for the
-#             whole pool, and the subsets are not drawn.
+#   by_size   optional {metric, x, name}: a chart of one per-document metric of the
+#             results file's `per_doc` against a per-document size, one point per
+#             document per value, on a log x axis, with a running median per value.
+#             Datasets whose keys share a prefix (realkie, realkie_short, realkie_long)
+#             are one pool and share one chart, deduplicated by document name, which
+#             `name` names (default: the first dataset's `chart`). A pool's
+#             `<prefix>_all` dataset (realkie_all), once it has per-document results,
+#             stands for the whole pool, and the subsets are not drawn. `bands` sets
+#             the size bands its points are averaged in: lower bounds, or `each` for
+#             a band per size (default: `strata.bands`, else decades). `points: runs`
+#             draws each document's score in each run (the results' `<metric>_runs`)
+#             with each value's mean per band, its dots not sized by cost, and
+#             writes "not sent" where the results' `not_sent` says a value never ran
 #   strata    optional {by, bands, noun, score, documents}: under each by-size chart, a
 #             table of the pool's documents banded by the per-document metric `by`
 #             (bands are lower bounds: [0, 1, 21] reads "no <noun>", "1–20", "21 or
@@ -76,8 +84,9 @@
 #             prices every other measured value. Each counts the cost the page shows
 #             (`cost_metric`, else the whole pipeline's) against the plotted
 #             accuracy (`plot`, its first metric), in errors per 1,000 documents:
-#             one per document's fields, or the results file's `sections_per_doc`
-#             for a packet's section, label or boundary accuracy. A gap within
+#             one per document's fields, the results file's `sections_per_doc`
+#             for a packet's section, label or boundary accuracy, or its
+#             `rows_per_doc` for a list's completeness. A gap within
 #             twice the combined standard error is no measurable difference.
 #             `dataset` picks the dataset (default: the first that measured
 #             `against`); `names` {value: words} names a value in the sentence
@@ -97,17 +106,20 @@
 # extraction, after classification has finished, and fails the document. Claude Haiku
 # 5.5 classification occasionally returns a reply that is not JSON, and a Bedrock HTTP
 # 500 is not retried; either fails a document. Scores count only documents every run
-# of every value scored.
+# of every value scored. Test Studio's evaluation outruns its 900-second limit on a
+# complete statement of 1,600 rows or more and counts the statement as failed, so those
+# runs allow every statement to fail: the collector scores a statement's rows by their
+# SEQ tags whenever the statement finished (collect_guidance_results.SeqLists).
 #
 # A dataset's `preset` names the config_library/unified preset its runs start from, and
 # its `chart` names it on a chart ("RealKIE invoices"; default: `short`).
 
 datasets:
-  synth_100: {name: "Synthetic statement, 100 rows (3 pages)", short: "Statement, 100 rows", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bank-statement-sample}
-  synth_400: {name: "Synthetic statement, 400 rows (9 pages)", short: "Statement, 400 rows", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-400, docs: 5}
-  synth_800: {name: "Synthetic statement, 800 rows (17 pages)", short: "Statement, 800 rows", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-800, docs: 5}
-  synth_1600: {name: "Synthetic statement, 1,600 rows (33 pages)", short: "Statement, 1,600 rows", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-1600, docs: 5}
-  synth_3200: {name: "Synthetic statement, 3,200 rows (66 pages)", short: "Statement, 3,200 rows", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bank-statement-sample}
+  synth_100: {name: "Synthetic statement, 100 rows (3 pages)", short: "Statement, 100 rows", chart: "100-row statements", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-100, docs: 5}
+  synth_400: {name: "Synthetic statement, 400 rows (9 pages)", short: "Statement, 400 rows", chart: "400-row statements", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-400, docs: 5}
+  synth_800: {name: "Synthetic statement, 800 rows (17 pages)", short: "Statement, 800 rows", chart: "800-row statements", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-800, docs: 5}
+  synth_1600: {name: "Synthetic statement, 1,600 rows (33 pages)", short: "Statement, 1,600 rows", chart: "1,600-row statements", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-1600, docs: 5, max_failed: 5}
+  synth_3200: {name: "Synthetic statement, 3,200 rows (66 pages)", short: "Statement, 3,200 rows", chart: "3,200-row statements", kind: list, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bench-synth-statements, testset: synth-statements-3200, docs: 5, max_failed: 5}
   synth_two_docs: {name: "Synthetic file holding two statements", short: "Two statements in one file", kind: packet, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bank-statement-sample}
   realkie: {name: "RealKIE-FCC-Verified (20 invoices)", short: "RealKIE", chart: "RealKIE invoices", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified", preset: realkie-fcc-verified, testset: realkie-fcc-verified, docs: 20}
   realkie_all: {name: "RealKIE-FCC-Verified, all 75 invoices", short: "RealKIE, all", chart: "RealKIE invoices", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified", preset: realkie-fcc-verified, testset: realkie-fcc-verified, docs: 75}
@@ -132,13 +144,13 @@ datasets:
 # `kinds` lists the dataset kinds a metric applies to. The renderer draws one results table
 # per dataset kind, with only the metrics that apply to it. `cost_per_1000_docs` is not
 # listed in any ablation: the renderer prices the results file's usage with
-# config_library/pricing.yaml and adds the column whenever usage is there. Nor is
-# `classification_cost_per_1000_docs`, which the collector writes and an ablation's
-# `cost_metric` puts in the cost column's place; its `note` says what it counts, under
-# every table that shows it.
+# config_library/pricing.yaml and adds the column whenever usage is there. Nor are
+# `classification_cost_per_1000_docs` and `extraction_cost_per_1000_docs`, which the
+# collector writes and an ablation's `cost_metric` puts in the cost column's place;
+# each one's `note` says what it counts, under every table that shows it.
 metrics:
-  completeness: {name: "Completeness", kinds: [list]}
-  cell_accuracy: {name: "Cell accuracy", kinds: [list]}
+  completeness: {name: "Completeness", axis: "Rows that came back (%)", kinds: [list]}
+  cell_accuracy: {name: "Accuracy over rows returned", short: "Accuracy", axis: "Cells right in the rows returned (%)", kinds: [list]}
   weighted_accuracy: {name: "Weighted accuracy", kinds: [fields, packet_fields]}
   all_fields_right: {name: "Documents with every field right", kinds: [fields]}
   page_accuracy: {name: "Page accuracy", axis: "Pages with the right class (%)", kinds: [packet, packet_fields]}
@@ -165,12 +177,16 @@ metrics:
   total_tokens: {name: "Total tokens per page", kinds: [list, fields, packet, packet_fields]}
   cost_per_1000_docs: {name: "Cost per 1,000 documents (USD)", kinds: [list, fields, packet, packet_fields]}
   classification_cost_per_1000_docs: {name: "Classification cost per 1,000 documents (USD)", kinds: [packet, packet_fields], note: "Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out."}
+  extraction_cost_per_1000_docs: {name: "Extraction cost per 1,000 documents (USD)", kinds: [list, fields, packet_fields], note: "Extraction cost counts only the extraction step's Amazon Bedrock calls. OCR, classification, confidence scoring and other AWS charges are left out."}
   cached_share: {name: "Share of input served from cache", kinds: [list, fields, packet, packet_fields]}
   median_seconds: {name: "Median seconds per document", kinds: [list, fields, packet, packet_fields]}
 
 # The configuration we recommend (docs/benchmark-guidance/index.md, "What we recommend").
 # An ablation that names it changes one setting from it rather than from the preset.
 # Escalation is off so that scoring runs on the model named, and nothing else.
+# `develop` sets `extraction.confidence.enabled` as well as the mode: a preset that
+# still carries the legacy `enabled: false` (bench-synth-statements) turns a `separate`
+# mode off when it is set alone.
 baselines:
   recommended:
     name: "Baseline setup"
@@ -180,7 +196,7 @@ baselines:
   develop:
     name: "Baseline setup"
     summary: "Amazon Textract with Layout only; holistic classification reading text and page images, single-pass extraction, and confidence scoring, all on Claude Haiku 5.5, with no escalation to a second scoring model"
-    set: {"ocr.backend": "textract", "ocr.features": [{"name": "LAYOUT"}], "classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.mode": "simple", "extraction.confidence.mode": "separate", "extraction.confidence.model": "us.anthropic.claude-haiku-5-5", "extraction.confidence.escalation_enabled": false}
+    set: {"ocr.backend": "textract", "ocr.features": [{"name": "LAYOUT"}], "classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.mode": "simple", "extraction.confidence.mode": "separate", "extraction.confidence.enabled": true, "extraction.confidence.model": "us.anthropic.claude-haiku-5-5", "extraction.confidence.escalation_enabled": false}
 
 ablations:
   # ------------------------------------------------------------- every problem set
@@ -484,6 +500,31 @@ ablations:
     metrics: ["list_score", "weighted_accuracy", "total_tokens", "median_seconds"]
     plot: ["list_score", "weighted_accuracy"]
     by_size: {metric: list_score, x: list_rows}
+  - id: EX-08
+    page: extraction
+    question: "Does single-pass extraction return every row of a long list?"
+    takeaway: "Single-pass drops rows from 400; agentic with table parsing returns all"
+    details_takeaway: "From 800 rows, single-pass costs more than agentic with table parsing"
+    series: true
+    short_values: {"Single-pass · Claude Haiku 5.5": "Single-pass", "Agentic, table parsing on · Claude Haiku 5.5": "Agentic, table parsing on", "Agentic, table parsing off · Claude Haiku 5.5": "Agentic, table parsing off"}
+    notes: |-
+      The synthetic statements are clean three-column tables in one layout, with exact ground truth: each row carries a unique tag, so every returned row is checked against its own true row. They test list length, whether every row comes back, not reading messy real tables (merged cells, wrapped text, headers repeated at page breaks, scans). [When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it) is the check on real invoices, and on long real invoices [table parsing](#does-deterministic-table-parsing-help-agentic-extraction) cost more, not less. Every value reads Amazon Textract's Tables and Layout, because the table-parsing tool and the accelerator's row-count check need Textract's tables as Markdown.
+
+      From 400 to 1,600 rows, single-pass returned part of the list on 27 of 45 statement runs, 24 of them the first page's 43 rows, and the accelerator flagged all 27 with `extraction_rows_below_ocr_estimate`. Every row that came back had the right date and amount. Agentic costs are a floor: our metering can't size its calls, and calls over 100,000 prompt tokens bill at up to five times the rate, which would still cost less than single-pass from 800 rows. Times stop where Test Studio's evaluation starts; it outruns its time limit on a complete list of 1,600 rows or more, so rows are scored by their tags.
+    changes: "Extraction mode (`extraction.mode`), and for agentic extraction, deterministic table parsing (`extraction.agentic.table_parsing.enabled`)"
+    varies: "extraction mode and table parsing"
+    values: ["Single-pass · Claude Haiku 5.5", "Agentic, table parsing on · Claude Haiku 5.5", "Agentic, table parsing off · Claude Haiku 5.5"]
+    set: [{"extraction.mode": "simple", "extraction.agentic.enabled": false, "ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}]}, {"extraction.mode": "advanced", "extraction.agentic.enabled": true, "ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}], "extraction.agentic.table_parsing.enabled": true}, {"extraction.mode": "advanced", "extraction.agentic.enabled": true, "ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}], "extraction.agentic.table_parsing.enabled": false}]
+    holds: "Amazon Textract with Tables and Layout for every value; extraction on Claude Haiku 5.5"
+    baseline: develop
+    reference: "Single-pass · Claude Haiku 5.5"
+    datasets: [synth_100, synth_400, synth_800, synth_1600, synth_3200]
+    runs: 3
+    metrics: [completeness, cell_accuracy, median_seconds]
+    plot: completeness
+    cost_metric: extraction_cost_per_1000_docs
+    by_size: {metric: completeness, x: list_rows, name: "Synthetic statements", bands: each, points: runs}
+    econ: {against: "Single-pass · Claude Haiku 5.5", line: "Agentic, table parsing on · Claude Haiku 5.5", dataset: synth_800, names: {"Agentic, table parsing on · Claude Haiku 5.5": "agentic extraction with table parsing"}}
   - id: EX-10
     page: extraction
     question: "Do schema validation and value coercion improve the output?"

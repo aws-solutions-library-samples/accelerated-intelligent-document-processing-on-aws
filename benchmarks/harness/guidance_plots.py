@@ -261,6 +261,17 @@ def _series_value(label: str, values: list[str]) -> str | None:
     )
 
 
+def dot_cost_key(ab: dict[str, Any] | None, per_doc: dict[str, Any]) -> str:
+    """The per-document cost a by-size dot is sized by: the ablation's step
+    `cost_metric` (extraction_cost_per_1000_docs) when its entries carry it, as the
+    page's tables do, else the whole document's `cost`."""
+    key = str((ab or {}).get("cost_metric") or "")
+    found = key and any(
+        key in e for entries in per_doc.values() for e in entries.values()
+    )
+    return key if found else "cost"
+
+
 def _doc_costs(
     ab: dict[str, Any] | None, series: list[tuple[str, list[tuple[str, float, float]]]]
 ) -> list[dict[str, float]]:
@@ -277,7 +288,16 @@ def _doc_costs(
         return [{} for _ in series]
     out = []
     for label, pts in series:
-        value = _series_value(label, list(ab.get("values") or []))
+        values = list(ab.get("values") or [])
+        # A label may be the value's `short_values` form ("Single-pass").
+        value = _series_value(label, values) or next(
+            (
+                v
+                for v, s in (ab.get("short_values") or {}).items()
+                if s == label and v in values
+            ),
+            None,
+        )
         if value is None:
             raise ValueError(f"{ab['id']}: by-size series {label!r} names no value")
         # The dataset that holds most of the series' documents for this value.
@@ -286,10 +306,12 @@ def _doc_costs(
             key=lambda e: -sum(doc in e for doc, _, _ in pts),
         )
         costs: dict[str, float] = {}
+        key = dot_cost_key(ab, per_doc)
         for doc, _, _ in pts:
             e = next((e[doc] for e in entries if doc in e), None)
-            if e and e.get("cost") is not None:
-                costs[doc] = float(e["cost"])
+            if e and e.get(key) is not None:
+                # A step cost is per 1,000 documents, as its cell is.
+                costs[doc] = float(e[key]) / (1 if key == "cost" else 1000)
         if pts and len(costs) < 0.9 * len(pts):
             raise ValueError(
                 f"{ab['id']}: {value}: cost for {len(costs)} of {len(pts)} documents"
@@ -396,6 +418,94 @@ STYLE = """
   .viz .baseline { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 5 4; }
   .viz .baselinelabel { font-size: 11px; fill: var(--ink-2); }
 """
+
+
+#: An SVG start tag: its name, its attributes, and "/" when it closes itself.
+_TAG = re.compile(r"<(\w+)((?:\s[^<>]*?)?)(/?)>")
+
+
+def _drop_at_rules(style: str) -> str:
+    """The stylesheet without its @-rules (the dark theme's @media block)."""
+    out, i = [], 0
+    while (j := style.find("@", i)) >= 0:
+        out.append(style[i:j])
+        k, depth = style.index("{", j) + 1, 1
+        while depth:
+            depth += {"{": 1, "}": -1}.get(style[k], 0)
+            k += 1
+        i = k
+    out.append(style[i:])
+    return "".join(out)
+
+
+@cache
+def _paint_rules(
+    style: str,
+) -> tuple[tuple[frozenset[str], tuple[int, int], tuple[tuple[str, str], ...]], ...]:
+    """Each top-level rule of `style` that paints through a custom property: the
+    classes its last compound selector needs, its (specificity, order), and the light
+    theme's value of each fill or stroke it sets that way."""
+    first = re.search(r"\.viz\s*\{([^}]*)\}", style)
+    light = dict(re.findall(r"--([\w-]+):\s*([^;}]+?)\s*;", first.group(1) + ";"))
+    out = []
+    flat = _drop_at_rules(style)
+    for order, (selectors, body) in enumerate(
+        re.findall(r"([^{}]+)\{([^{}]*)\}", flat)
+    ):
+        decls = tuple(
+            (prop, light[name])
+            for prop, name in re.findall(r"(fill|stroke)\s*:\s*var\(--([\w-]+)\)", body)
+            if name in light
+        )
+        for sel in selectors.split(",") if decls else []:
+            sel = sel.strip()
+            last = sel.split()[-1] if sel else ""
+            # A theme's own selectors (`:root[data-theme]`) set variables, not paint.
+            if ":" in sel or "[" in sel or not re.fullmatch(r"(?:\.[\w-]+)+", last):
+                continue
+            classes = frozenset(re.findall(r"\.([\w-]+)", last))
+            out.append((classes, (sel.count("."), order), decls))
+    return tuple(out)
+
+
+def paint_fallbacks(svg: str) -> str:
+    """The SVG with the light theme's fill and stroke written on each element as
+    presentation attributes, for renderers without CSS custom properties.
+
+    STYLE paints through `var(--ink)` and the like, so the docs site's dark theme can
+    swap the palette. A renderer that has no custom properties (librsvg, which the
+    `rsvg-convert` PNG previews use) drops every such declaration and draws the
+    element black, with no stroke: every series looks the same, and lines, error
+    bars and rings vanish. A presentation attribute is what such a renderer falls
+    back to, and a browser lets any matching CSS rule override it, so the themed
+    page is unchanged. Rules are matched on their last compound selector's classes
+    and ranked by specificity, then order, the way STYLE relies on.
+    """
+    found = re.search(r"<style>(.*?)</style>", svg, re.S)
+    if not found:
+        return svg
+    rules = _paint_rules(found.group(1))
+
+    def add(tag: re.Match[str]) -> str:
+        name, attrs, close = tag.groups()
+        cls = re.search(r'\bclass="([^"]*)"', attrs)
+        if not cls:
+            return tag.group(0)
+        have = set(cls.group(1).split())
+        best: dict[str, tuple[tuple[int, int], str]] = {}
+        for need, rank, decls in rules:
+            if need <= have:
+                for prop, value in decls:
+                    if prop not in best or rank > best[prop][0]:
+                        best[prop] = (rank, value)
+        extra = "".join(
+            f' {prop}="{value}"'
+            for prop, (_, value) in sorted(best.items())
+            if not re.search(rf'\s{prop}="', attrs)
+        )
+        return f"<{name}{attrs}{extra}{close}>"
+
+    return svg[: found.end()] + _TAG.sub(add, svg[found.end() :])
 
 
 def nice_ticks(lo: float, hi: float, count: int = 5) -> list[float]:
@@ -641,7 +751,7 @@ def draw_plot(
         )
         for ds, _, rows in panels
     )
-    return (
+    return paint_fallbacks(
         f'<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="{WIDTH}" '
         f'height="{height}" viewBox="0 0 {WIDTH} {height}" role="img">'
         f"<title>{escape(metric_name)}, mean of {runs} runs with two standard "
@@ -1276,6 +1386,8 @@ def _scatter_panel(
     x_exact: Any,
     tips: dict[str, str] | None = None,
     ratio: bool = False,
+    slots: dict[str, tuple[int, int]] | None = None,
+    inside: list[tuple[list[str], int]] | None = None,
 ) -> str:
     """One scatter panel in its own coordinates.
 
@@ -1284,6 +1396,10 @@ def _scatter_panel(
     panels; such a name takes the least crowded spot near its point, and the chart
     can split into one panel per model instead. Nothing is ever numbered.
     ratio: y is a multiple (RATIO_METRICS), written "2.5×".
+    slots: optional (color, shape) per value, the series' own (draw_scatter's
+        `series`), in place of one color for all or a color per model family.
+    inside: notes written in the plot, mid-height at the left, each [lines] in its
+        slot's color: a value this panel has no point for, and why.
     """
     left, right = SC_LEFT, width - SC_RIGHT_PAD
     y0 = head_h + Y_TITLE_H + 6
@@ -1353,6 +1469,21 @@ def _scatter_panel(
         )
     fixed: list[Rect] = [(left - 4, head_h, left + len(y_title) * 6.2, head_h + 18)]
     tail: list[str] = []
+    for lines, c in inside or []:
+        ty = (y0 + y1) / 2 - 7 * (len(lines) - 1)
+        for k, text in enumerate(lines):
+            body.append(
+                f'<text class="label s{c + 1}" x="{left + 8:.1f}" '
+                f'y="{ty + 15 * k:.1f}">{escape(text)}</text>'
+            )
+        fixed.append(
+            (
+                left + 4,
+                ty - 14,
+                left + 12 + max(len(x) for x in lines) * LABEL_CHAR_W,
+                ty + 15 * (len(lines) - 1) + 5,
+            )
+        )
     if baseline is not None:
         value, name = baseline
         by = py(value)
@@ -1380,7 +1511,13 @@ def _scatter_panel(
         boxes[value] = [(cx - 7, cy - 7, cx + 7, cy + 7)]
         if band_bottom > band_top:
             boxes[value].append((cx - BAND - 1, band_top, cx + BAND + 1, band_bottom))
-            cls = f"band fam-{family(value)}" if colored else "band"
+            cls = (
+                f"band s{slots[value][0] + 1}"
+                if slots and value in slots
+                else f"band fam-{family(value)}"
+                if colored
+                else "band"
+            )
             body.append(
                 f'<rect class="{cls}" x="{cx - BAND:.1f}" y="{band_top:.1f}" '
                 f'width="{2 * BAND}" height="{band_bottom - band_top:.1f}" '
@@ -1477,13 +1614,16 @@ def _scatter_panel(
         cx, cy = centre[value]
         fam = family(value)
         cls = f"dot fam-{fam}" if colored else "dot"
+        shape = SHAPES[fam] if colored else "circle"
+        if slots and value in slots:
+            cls, shape = f"dot s{slots[value][0] + 1}", SERIES_SHAPES[slots[value][1]]
         if value == default:
             cls += " ref"
         body.append(
             f"<g><title>{escape((tips or labels).get(value, value))}: {escape(y_name)} "
             f"{escape(y_text(y['mean']))} ± {escape(y_text(2 * y.get('se', 0)))}, "
             f"{escape(x_exact(x['mean']))}</title>"
-            + marker(SHAPES[fam] if colored else "circle", cx, cy, 5, cls)
+            + marker(shape, cx, cy, 5, cls)
             + "</g>"
         )
     for value, (text, lx, ly, anchor, _) in placed.items():
@@ -1599,6 +1739,27 @@ def _exceptions(
     return f", except {words}" + (f" on {model}" if model else "")
 
 
+#: Textract's features as a sentence names them.
+OCR_FEATURES = {"TABLES": "Tables", "LAYOUT": "Layout", "FORMS": "Forms"}
+
+
+def _held_ocr(ab: dict[str, Any] | None, base: dict[str, Any]) -> str:
+    """ "Amazon Textract with Tables and Layout": the Textract features every value of
+    the ablation sets (its `set` in the registry) where they differ from the
+    baseline's, or ""."""
+    sets = [s for s in (ab or {}).get("set") or [] if isinstance(s, dict)]
+    held = {json.dumps(s.get("ocr.features"), sort_keys=True) for s in sets}
+    if not sets or len(held) != 1:
+        return ""
+    features = json.loads(held.pop())
+    if not features or features == (base.get("set") or {}).get("ocr.features"):
+        return ""
+    names = [OCR_FEATURES.get(f["name"], str(f["name"]).title()) for f in features]
+    return "Amazon Textract with " + " and ".join(
+        [", ".join(names[:-1]), names[-1]] if len(names) > 1 else names
+    )
+
+
 def _setup_text(ablation_id: str, value: str) -> str:
     """ "Sonnet 5, Textract tables, Nova Lite scoring": a value's extraction model,
     OCR features and scoring model, from its results, or ""."""
@@ -1655,14 +1816,32 @@ def _chart_texts(
         note = re.sub(r"^\((.*)\)$", r"\1", note).strip()
     if base:
         name = str(base.get("name") or "the baseline")
+        lower = f"{name[:1].lower()}{name[1:]}"
         subtitle = FIXED_PART.sub("", subtitle).strip(" ·")
         if note:
             subtitle = f"{subtitle} · {note}"
-        subtitle = f"{subtitle} · Everything else: {name[:1].lower()}{name[1:]}"
+        # OCR every value holds in place of the baseline's (Textract reading tables
+        # for a table tool): the baseline's own summary would name the wrong one.
+        ocr = _held_ocr(ab, base)
+        if ocr:
+            subtitle = f"{subtitle} · Fixed: {ocr}; everything else: {lower}"
+        else:
+            subtitle = f"{subtitle} · Everything else: {lower}"
         notes = ["" if n.startswith("Fixed:") else n for n in notes]
-        if base.get("summary"):
+        summary = str(base.get("summary") or "").rstrip(".")
+        first, _, rest = summary.partition("; ")
+        if summary and ocr and first.startswith("Amazon Textract") and rest:
+            key = str((ab or {}).get("baseline") or "")
+            source = f" (the ablation registry's {key} baseline)" if key else ""
+            foot = (
+                f"Fixed: {ocr}, in place of the {lower}'s {first}. Everything else "
+                f"is the {lower}{source}"
+                f"{_exceptions(ab, base, held, held_name).replace(', except', ', with')}"
+                f": {rest}."
+            )
+        elif summary:
             lead = name + _exceptions(ab, base, held, held_name)
-            foot = f"{lead}: {str(base['summary']).rstrip('.')}."
+            foot = f"{lead}: {summary}."
     elif ab:
         if note and (not held_name or held_name not in subtitle):
             subtitle = f"{subtitle} · {note}"
@@ -1760,6 +1939,8 @@ def draw_scatter(
     families: bool = False,
     reference: str | None = None,
     cost_axis: str = "",
+    series: bool = False,
+    not_sent: dict[int, list[str]] | None = None,
 ) -> str:
     """Return an SVG document plotting each y metric against x (cost or tokens).
 
@@ -1779,6 +1960,11 @@ def draw_scatter(
         tables, and a line across the plot for it read as data.
     prices: a price-list note for a chart that shows cost, or "" for one that does not.
     families: color and shape each point by model family, with a legend.
+    series: color and shape each value as the series of its by-size chart do (its
+        place in the ablation's values), with a key naming them; the reference's
+        "(baseline setup)" moves from its label to its key entry.
+    not_sent: per group index, the values with no point there because they were
+        never run (refused before they started), noted in that panel in their color.
     A y metric in RATIO_METRICS is written as a multiple ("2.5×").
 
     Every panel has its own x range, padded, from $0 unless the points would leave
@@ -1797,6 +1983,21 @@ def draw_scatter(
         all_values, labels or {}, default, ab, reference, bool(model)
     )
     subtitle, notes, foot = _chart_texts(subtitle, groups, ab, unit, title)
+    order = [
+        v
+        for v in (ab or {}).get("values") or all_values
+        if v in all_values or any(v in vs for vs in (not_sent or {}).values())
+    ]
+    slots = (
+        {v: (i % 3, i % 3) for i, v in enumerate((ab or {}).get("values") or order)}
+        if series
+        else None
+    )
+    # With a key, the reference's "(baseline setup)" is said once there, in bold.
+    plain_labels = {
+        v: re.sub(r"\s*\((?:recommended|reference|baseline setup|baseline)\)", "", t)
+        for v, t in labels.items()
+    }
     groups = [
         (_with_unit(g[0], unit), note, g[2], g[3])
         for g, note in zip(groups, notes, strict=True)
@@ -1872,6 +2073,17 @@ def draw_scatter(
             x_exact=x_exact,
             tips=labels,
             ratio=key in RATIO_METRICS,
+            slots=slots,
+            inside=[
+                (
+                    [
+                        f"{plain_labels.get(v, v)}: not sent,",
+                        "too large for one request",
+                    ],
+                    slots[v][0] if slots and v in slots else 0,
+                )
+                for v in (not_sent or {}).get(gi, [])
+            ],
         )
 
     def ref_key(texts: dict[str, str], top: float) -> tuple[dict[str, str], str]:
@@ -1929,7 +2141,20 @@ def draw_scatter(
             body.append(family_legend(present, all_values, top + 16))
             top += LEGEND_H
         texts = labels
-        if keyed:
+        if slots:
+            key_svg, key_h = _legend(
+                [labels.get(v, v) for v in order],
+                top + 16,
+                0,
+                WIDTH,
+                [slots[v] for v in order],
+                lines=False,
+                ref=order.index(default) if default in order else None,
+            )
+            body.append(key_svg)
+            top += key_h
+            texts = plain_labels
+        elif keyed:
             texts, key_svg = ref_key(labels, top)
             body.append(key_svg)
             top += LEGEND_H if key_svg else 0
@@ -2127,11 +2352,13 @@ def draw_scatter(
         + desc_parts
         + ([foot] if foot else [])
     )
-    return (
+    return paint_fallbacks(
         f'<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="{WIDTH}" '
         f'height="{height:.0f}" viewBox="0 0 {WIDTH} {height:.0f}" role="img">'
         f"<title>{escape(title or subtitle)}</title><desc>{escape(desc)}</desc>"
-        f"<style>{STYLE}</style>" + "".join(body) + "</svg>\n"
+        f"<style>{STYLE}{SERIES_STYLE if slots else ''}</style>"
+        + "".join(body)
+        + "</svg>\n"
     )
 
 
@@ -2177,27 +2404,43 @@ def _slots(count: int, slots: Slots | None) -> Slots:
 
 
 def _legend(
-    series: list[str], y: float, left: float, width: float, slots: Slots | None = None
+    series: list[str],
+    y: float,
+    left: float,
+    width: float,
+    slots: Slots | None = None,
+    *,
+    lines: bool = True,
+    ref: int | None = None,
 ) -> tuple[str, float]:
     """A swatch and a label per series, wrapped onto as many lines as it takes.
 
     The swatch is the series' marker on a short stretch of its line, so a line style
-    that tells two series apart is in the key too.
+    that tells two series apart is in the key too; a chart with no lines (`lines`
+    False) keys the marker alone. `ref` is the series drawn as the reference: its
+    swatch outlined and its label bold, as its points are.
     """
     out: list[str] = []
     x, line = left, 0
-    for value, (c, sh) in zip(series, _slots(len(series), slots), strict=True):
-        w = 38 + len(value) * CHAR_W + 18
+    lead = 38 if lines else 16
+    for s, (value, (c, sh)) in enumerate(
+        zip(series, _slots(len(series), slots), strict=True)
+    ):
+        w = lead + len(value) * (LABEL_CHAR_W_BOLD if s == ref else CHAR_W) + 18
         if x > left and x + w > left + width:
             x, line = left, line + 1
         cy = y + line * BY_LEGEND_H
+        if lines:
+            out.append(
+                f'<line class="trend swatch t{c + 1} d{sh + 1}" x1="{x + 5:.1f}" '
+                f'x2="{x + 32:.1f}" y1="{cy - 4:.1f}" y2="{cy - 4:.1f}"/>'
+            )
+        cls = f"dot s{c + 1}" + (" ref" if s == ref else "")
+        out.append(marker(SERIES_SHAPES[sh], x + (18 if lines else 6), cy - 4, 5, cls))
+        text_cls = "plabel dflt" if s == ref else "label"
         out.append(
-            f'<line class="trend swatch t{c + 1} d{sh + 1}" x1="{x + 5:.1f}" '
-            f'x2="{x + 32:.1f}" y1="{cy - 4:.1f}" y2="{cy - 4:.1f}"/>'
-        )
-        out.append(marker(SERIES_SHAPES[sh], x + 18, cy - 4, 5, f"dot s{c + 1}"))
-        out.append(
-            f'<text class="label" x="{x + 38:.1f}" y="{cy:.1f}">{escape(value)}</text>'
+            f'<text class="{text_cls}" x="{x + lead:.1f}" y="{cy:.1f}">'
+            f"{escape(value)}</text>"
         )
         x += w
     return "".join(out), (line + 1) * BY_LEGEND_H
@@ -2259,23 +2502,29 @@ def _size_steps(costs: list[float]) -> list[float]:
 
 
 def _size_key(
-    costs: list[float], radius: Any, y: float, thing: str = "document"
+    costs: list[float],
+    radius: Any,
+    y: float,
+    thing: str = "document",
+    what: str = "cost",
 ) -> tuple[str, float]:
     """ "Dot area: cost per invoice" and three reference circles, on one line."""
     steps = _size_steps(costs)
     h = 2 * SIZE_R_MAX + 6
     cy = y + h / 2
-    text = f"Dot area: cost per {thing}"
+    text = f"Dot area: {what} per {thing}"
     out = [f'<text class="label" x="0" y="{cy + 4:.1f}">{escape(text)}</text>']
     x = len(text) * CHAR_W + 18
     for c in steps:
         r = radius(c)
+        # A cost under a cent rounds to "$0.00", which reads as free.
+        label = money(c) if c >= 0.005 else "under $0.01"
         out.append(
             f'<circle class="sizekey" cx="{x + r:.1f}" cy="{cy:.1f}" r="{r:.1f}"/>'
             f'<text class="label" x="{x + 2 * r + 6:.1f}" y="{cy + 4:.1f}">'
-            f"{escape(money(c))}</text>"
+            f"{escape(label)}</text>"
         )
-        x += 2 * r + 6 + len(money(c)) * CHAR_W + 20
+        x += 2 * r + 6 + len(label) * CHAR_W + 20
     return "".join(out), h
 
 
@@ -2290,6 +2539,8 @@ def draw_by_size(
     y_name: str = "",
     bands: list[int] | None = None,
     noun: str = "",
+    runs: list[dict[str, list[float]]] | None = None,
+    not_sent: list[tuple[int, float]] | None = None,
 ) -> str:
     """Return an SVG of one per-document score by size band, one line per value.
 
@@ -2304,6 +2555,15 @@ def draw_by_size(
     title: the takeaway; subtitle: one muted line under it.
     slots: optional (color, shape) per series, for more series than there are
         colors; by default each series takes the next color and shape.
+    runs: optional, per series, each document's score in each run. Given, the chart
+        draws one small point per document per run, spread sideways within its
+        value's slot, and the value's mean over those runs in each band as its large
+        mark, the line joining the means: a score that is either whole or far short
+        (a list returned in full or stopped at its first page) shows as two clusters
+        around a mean that matches the results table. A median would sit on the
+        larger cluster and hide the shortfall. Its dots are not sized.
+    not_sent: optional (series index, size) for a value that was never run at that
+        size (refused before it started), written in the band in its color.
     """
     styles = _slots(len(series), slots)
     xs_all = [x for _, pts in series for _, x, _ in pts]
@@ -2324,26 +2584,37 @@ def draw_by_size(
     # Each value's mean and standard error per band, and the documents per band.
     stats: list[list[tuple[float, float, int] | None]] = []
     docs: list[set[str]] = [set() for _ in bands]
-    doc_costs = _doc_costs(ab, series)
+    # Per-run points are not sized: their cost is the cost chart's to show.
+    doc_costs = [{} for _ in series] if runs else _doc_costs(ab, series)
     # Each value's mean cost per document in each band, which sizes its dot.
     band_cost: list[list[float | None]] = []
-    for (_, pts), costs in zip(series, doc_costs, strict=True):
+    # With `runs`, each value's points in each band: (document, run, score).
+    spread: list[list[list[tuple[str, int, float]]]] = []
+    for s, ((_, pts), costs) in enumerate(zip(series, doc_costs, strict=True)):
         per: list[list[float]] = [[] for _ in bands]
         spent: list[list[float]] = [[] for _ in bands]
+        mine: list[list[tuple[str, int, float]]] = [[] for _ in bands]
         for doc, x, y in pts:
             i = _band_index(x, bands)
             if i >= 0:
-                per[i].append(y)
+                scores = (runs[s].get(doc) or [y]) if runs else [y]
+                per[i].extend(scores)
+                mine[i].extend((doc, r, v) for r, v in enumerate(scores))
                 docs[i].add(doc)
                 if doc in costs:
                     spent[i].append(costs[doc])
         band_cost.append([statistics.fmean(c) if c else None for c in spent])
+        spread.append(mine)
         stats.append(
             [
                 (
-                    statistics.fmean(v),
-                    statistics.stdev(v) / math.sqrt(len(v)) if len(v) > 1 else 0.0,
-                    len(v),
+                    (statistics.fmean(v), 0.0, len(v))
+                    if runs
+                    else (
+                        statistics.fmean(v),
+                        statistics.stdev(v) / math.sqrt(len(v)) if len(v) > 1 else 0.0,
+                        len(v),
+                    )
                 )
                 if v
                 else None
@@ -2360,7 +2631,7 @@ def draw_by_size(
         if cell
         for m, se, _ in [cell]
         for s in (-1, 1)
-    ]
+    ] + [v for rows in spread for pts in rows for _, _, v in pts]
     percent = (
         min(y for _, pts in series for _, _, y in pts) >= 0
         and max(y for _, pts in series for _, _, y in pts) <= 1
@@ -2381,7 +2652,11 @@ def draw_by_size(
     known = [c for row in band_cost for c in row if c is not None]
     radius = _cost_radius(known)
     if known:
-        size_svg, size_h = _size_key(known, radius, top + 6, thing)
+        key = (
+            dot_cost_key(ab, _results(str(ab["id"])).get("per_doc") or {}) if ab else ""
+        )
+        what = "cost" if key in ("", "cost") else f"{key.split('_cost')[0]} cost"
+        size_svg, size_h = _size_key(known, radius, top + 6, thing, what)
         body.append(size_svg)
         top += size_h
     top += 14
@@ -2430,6 +2705,27 @@ def draw_by_size(
         f'y="{y1 + 36 + BY_N_H}" text-anchor="middle">{escape(x_axis_title)}</text>'
     )
     desc_parts: list[str] = []
+    # Each run's point over the lines and under the means, so a run that scored
+    # where the line runs still shows: spread sideways across part of the value's
+    # slot (a fixed, golden-ratio sequence, so the chart redraws the same), since
+    # many share a score exactly.
+    spread_w = 0.45 * dodge
+    run_marks: list[str] = []
+    means: list[str] = []
+    for s, (mine, (c, sh)) in enumerate(zip(spread, styles, strict=True)):
+        if not runs:
+            break
+        for i in used:
+            for k, (doc, r, v) in enumerate(sorted(mine[i])):
+                ox = ((k * 0.6180339887) % 1 - 0.5) * 2 * spread_w
+                run_marks.append(
+                    f"<g><title>{escape(series[s][0])}, {escape(doc)}, run {r + 1}: "
+                    f"{escape(lower_name(y_name))} {y_text(v)}</title>"
+                    + marker(
+                        SERIES_SHAPES[sh], px(i, s) + ox, py(v), 2.6, f"pt s{c + 1}"
+                    )
+                    + "</g>"
+                )
     for s, ((value, _), row, (c, sh), costs) in enumerate(
         zip(series, stats, styles, band_cost, strict=True)
     ):
@@ -2454,6 +2750,15 @@ def draw_by_size(
                 )
             cost = costs[i]
             cost_note = f", {money(cost)} per {thing}" if cost is not None else ""
+            if runs:
+                means.append(
+                    f"<g><title>{escape(value)}, {escape(names[i])}: mean "
+                    f"{escape(lower_name(y_name))} {y_text(m)} over {n} runs of "
+                    f"{len(docs[i])} {thing}s</title>"
+                    + marker(SERIES_SHAPES[sh], cx, py(m), 6.5, f"dot s{c + 1}")
+                    + "</g>"
+                )
+                continue
             body.append(
                 f"<g><title>{escape(value)}, {escape(names[i])}: "
                 f"{escape(lower_name(y_name))} {y_text(m)} ± {y_text(2 * se)}, "
@@ -2466,17 +2771,37 @@ def draw_by_size(
         desc_parts.append(
             f"{value}: "
             + ", ".join(
-                f"{names[i]} {y_text(cell[0])} ± {y_text(2 * cell[1])}"
+                f"{names[i]} mean {y_text(cell[0])}"
+                if runs
+                else f"{names[i]} {y_text(cell[0])} ± {y_text(2 * cell[1])}"
                 for i, cell in at
                 if cell
             )
         )
+    body += run_marks + means
+    for s, x in not_sent or []:
+        i = _band_index(x, bands)
+        if i not in used:
+            continue
+        c, _ = styles[s]
+        value = series[s][0]
+        # Written where its points would be, mid-height, so it reads as "no result"
+        # rather than as a score of 0.
+        lx, ly = px(i, s), py((yt[0] + yt[-1]) / 2)
+        body.append(
+            f"<g><title>{escape(value)}, {escape(names[i])}: not sent</title>"
+            f'<text class="label s{c + 1}" x="{lx:.1f}" y="{ly - 3:.1f}" '
+            f'text-anchor="middle">{escape(value)}</text>'
+            f'<text class="label s{c + 1}" x="{lx:.1f}" y="{ly + 12:.1f}" '
+            f'text-anchor="middle">not sent</text></g>'
+        )
+        desc_parts.append(f"{value}: {names[i]} not sent")
     height = y1 + SC_BOTTOM + BY_N_H
     prices = _prices_note(ab) if known else ""
     if prices:
         height += PRICES_H
         body.append(prices_svg(prices, height - 5))
-    return (
+    return paint_fallbacks(
         f'<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="{WIDTH}" '
         f'height="{height:.0f}" viewBox="0 0 {WIDTH} {height:.0f}" role="img">'
         f"<title>{escape(title or y_title)}</title>"

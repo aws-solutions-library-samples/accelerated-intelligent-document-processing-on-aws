@@ -31,7 +31,9 @@ Metrics (cell keys `dataset|value|metric`, each a mean and standard error):
                         only documents every run of every value scored
     <step>_tokens       tokens per page for one step, per run; SE across runs
     total_tokens        tokens per page for every Bedrock step, per run; SE across runs
-    median_seconds      median workflow time per document, per run; SE across runs
+    median_seconds      median workflow time per document, per run; SE across runs.
+                        For a SEQ-scored list, up to the start of Test Studio's
+                        evaluation step (WorkflowTimes)
     all_fields_right    share of documents scoring 1.0, per run; SE across runs
     auroc               field-confidence AUROC, per run; SE across runs
     calibration_error   field-confidence ECE, per run; SE across runs
@@ -52,6 +54,15 @@ Metrics (cell keys `dataset|value|metric`, each a mean and standard error):
                         it scored of each one's own metering for those steps, priced
                         like `cost` below; on the cost basis below, so the coldest
                         run alone (SE 0) unless the value's runs are cache-isolated
+    extraction_cost_per_1000_docs
+                        the same for the extraction step alone (STEP_COSTS)
+    completeness        for a list whose rows carry SEQ tags (SEQ_KINDS): the share
+                        of its true rows that came back, joined by tag, per run,
+                        pooled over every document that finished, whether or not
+                        Test Studio could evaluate it; SE across runs (SeqLists)
+    cell_accuracy       the share of the cells right in the rows that came back
+                        (the cells other than the tag, by type and value), per run,
+                        pooled the same way
 
 A metric is written only when the runs report it (confidence metrics need confidence
 on; page accuracy needs page-level class ground truth).
@@ -93,11 +104,19 @@ accuracy uses). Only the keys a document has are written:
                                      matched rows over the larger of the true and
                                      returned row counts
         "list_rows": 247,            rows the ground truth has in that list
+        "completeness": 0.17,        that list's true rows that came back, and
+        "cell_accuracy": 1.0,        the cells right in the rows that did
+        "completeness_runs": [0.05, 0.05, 0.41]
+                                     completeness in each run that scored it
         "boundary_accuracy": 1.0,    from the document's own doc_split_metrics
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.81,   Test Studio's weighted score for the document
         "cost": 0.0412               USD for this document: its own Bedrock and
                                      Textract metering, priced like the run costs
+        "extraction_cost_per_1000_docs": 8.5
+                                     the ablation's step `cost_metric`, when it has
+                                     one: this document's cost for that step alone,
+                                     in USD per 1,000 documents
     }}}
 
 `boundary_accuracy` and `label_accuracy` are also written as per-run cells, each the
@@ -113,6 +132,11 @@ each, so the renderer needs these to count errors per packet:
 
     "sections_per_doc": {"docsplit_100": 4.12}, "pages_per_doc": {"docsplit_100": 11.3}
 
+`rows_per_doc` is the same for the true rows of a document's largest list field,
+which a completeness gap needs to be counted in rows:
+
+    "rows_per_doc": {"synth_800": 800.0}
+
 A document's `cost` comes from the `Metering` attribute of its tracking-table item,
 priced with config_library/pricing.yaml by the renderer's own unit prices. It follows
 `cost_basis`: the mean over every run when the value's runs are cache-isolated,
@@ -127,6 +151,15 @@ missed it (COMPLETED means it finished after Test Studio stopped waiting):
     "unfinished": {"realkie_long|Agentic (Advanced)": {"<document>": {
         "runs": 3, "of": 3, "list_rows": 1490, "status": ["COMPLETED"]
     }}}
+
+`not_sent` names, per `dataset|value`, a SEQ-scored value whose every document ended
+with NOT_SENT_ERROR: Bedrock refused the single-pass request as too large, so nothing
+was extracted. Its cells for the ablation's metrics read "Not sent", and it has no
+`sample`, since no document was scored or failed:
+
+    "not_sent": {"synth_3200|Single-pass · Claude Haiku 5.5": {
+        "documents": 15, "runs": 3, "error": "ExtractionInputTooLarge"
+    }}
 
 `models` says which model ran at each step, per `dataset|value`, so the pages can state
 it on every chart:
@@ -231,8 +264,10 @@ import boto3
 
 # lib needs idp_common; put this checkout's on the path, ahead of any other.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib" / "idp_common_pkg"))
+import analyze  # noqa: E402
 from render_guidance import load_registry, unit_price  # noqa: E402
 
+import lib  # noqa: E402
 from lib import METERING_ATTRIBUTE, metering_of_item  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -248,6 +283,8 @@ STEP_METRICS = {
 #: Split metrics a document's own evaluation reports, which the run aggregate does
 #: not break down per document.
 DOC_SPLIT_METRICS = ("boundary_accuracy", "label_accuracy")
+#: List metrics a document's own evaluation reports for its largest list field.
+LIST_DOC_METRICS = ("list_score", "completeness", "cell_accuracy")
 #: Where per-document evaluations are cached: one file per run and document, plus one
 #: row-count file per test set under `_rows/`.
 # Caches live beside the runner's workdir, outside /tmp, which a reboot empties.
@@ -309,7 +346,21 @@ STEP_BILLING = {
 #: `SectionClassification/decision_model/<function>` (the decision model's Lambda
 #: duration) when a decision model names the sections.
 CLASSIFICATION_STEPS = STEP_BILLING["Classification"]
+#: Dataset kinds whose list rows carry SEQ tags (the synthetic statements), scored by
+#: tag (SeqLists) rather than by Test Studio's evaluation.
+SEQ_KINDS = ("list",)
+#: The error a single-pass section ends with when Bedrock refuses its one request as
+#: too large; a value whose every document ended so was never extracted, and its
+#: cells read NOT_SENT rather than counting it as failed.
+NOT_SENT_ERROR = "ExtractionInputTooLarge"
+NOT_SENT = "Not sent"
 CLASSIFICATION_COST = "classification_cost_per_1000_docs"
+#: One step's cost per 1,000 documents, by the cell it is written to, and the
+#: metering steps it counts.
+STEP_COSTS = {
+    CLASSIFICATION_COST: CLASSIFICATION_STEPS,
+    "extraction_cost_per_1000_docs": STEP_BILLING["Extraction"],
+}
 
 
 @dataclass(frozen=True)
@@ -979,6 +1030,176 @@ def doc_list_score(doc: dict[str, Any], field: str) -> float | None:
     return None if value is None else float(value)
 
 
+def seq_truth(baseline: dict[str, Any]) -> dict[str, Any] | None:
+    """The truth analyze.score_cells joins on, from a test set's baseline: the list
+    whose every row carries a `SEQnnnnn` tag, each row's tag, and its other cells.
+
+    None when the baseline has no such list: its rows cannot be joined by tag.
+    """
+    for key, rows in (baseline.get("inference_result") or {}).items():
+        if not isinstance(rows, list) or not rows:
+            continue
+        ids: list[int] = []
+        typed: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                break
+            tags = {
+                k: m
+                for k, v in row.items()
+                if isinstance(v, str) and (m := lib.SEQ.search(v))
+            }
+            if not tags:
+                break
+            seq = int(next(iter(tags.values())).group(1))
+            ids.append(seq)
+            typed[f"SEQ{seq:05d}"] = {k: v for k, v in row.items() if k not in tags}
+        else:
+            return {"list_key": key, "seq_ids": ids, "rows_typed": typed}
+    return None
+
+
+@dataclass(frozen=True)
+class SeqScore:
+    """One document's list against its truth, rows joined by SEQ tag."""
+
+    true_rows: int
+    rows_back: int
+    cells_right: int
+    cells: int
+
+
+def seq_score(sections: list[dict[str, Any]], truth: dict[str, Any]) -> SeqScore:
+    """Rows of the truth that came back in the list, and their cells that are right
+    (analyze.score_cells: a returned row counts once, by the true row its tag names;
+    a cell compares by type and value)."""
+    hits, total, back = analyze.score_cells(
+        sections, truth["rows_typed"], truth["list_key"], truth["seq_ids"]
+    )
+    return SeqScore(len(truth["seq_ids"]), back or 0, hits or 0, total or 0)
+
+
+class SeqLists:
+    """Exact list scores for the synthetic statements, whose rows carry SEQ tags.
+
+    Test Studio's evaluation pairs returned rows with true rows by similarity, which
+    took about 255 seconds for 800 rows and outruns its 900-second limit on longer
+    lists, so it scores a truncated list and fails a complete one. Every generated
+    row has a unique `SEQnnnnn` tag, so this joins each returned row to its true row
+    by tag, for every document that finished, whatever the evaluation did. The
+    sections are each document's `<run ID>/<document>/sections/<n>/result.json` in
+    the output bucket, the truth its test set baseline; both are cached on disk
+    beside DocEvals' files.
+    """
+
+    def __init__(self, resources: dict[str, str], region: str, cache: Path) -> None:
+        self.s3 = boto3.client("s3", region_name=region)
+        self.output_bucket = resources.get("OutputBucket") or ""
+        self.testset_bucket = resources.get("TestSetBucket") or ""
+        self.cache = cache
+
+    def _json(self, bucket: str, key: str, path: Path) -> Any:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        body = json.loads(self.s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(body), encoding="utf-8")
+        return body
+
+    def _listing(self, path: Path, read: Callable[[], list[str]]) -> list[str]:
+        if path.exists():
+            return list(json.loads(path.read_text(encoding="utf-8")))
+        found = read()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(found), encoding="utf-8")
+        return found
+
+    def documents(self, run_id: str) -> list[str]:
+        """Every document the run processed, finished or not (the run has ended)."""
+
+        def read() -> list[str]:
+            pages = self.s3.get_paginator("list_objects_v2").paginate(
+                Bucket=self.output_bucket, Prefix=f"{run_id}/", Delimiter="/"
+            )
+            return sorted(
+                p["Prefix"][len(run_id) + 1 : -1]
+                for page in pages
+                for p in page.get("CommonPrefixes") or []
+            )
+
+        return self._listing(self.cache / run_id / "_documents.json", read)
+
+    def truth(self, testset: str, doc: str) -> dict[str, Any] | None:
+        path = self.cache / "_truth" / testset / f"{doc}.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        baseline = self._json(
+            self.testset_bucket,
+            f"{testset}/baseline/{doc}/sections/1/result.json",
+            self.cache / "_truth" / testset / f"{doc}.baseline.json",
+        )
+        found = seq_truth(baseline)
+        if found is not None:
+            path.write_text(json.dumps(found), encoding="utf-8")
+            (self.cache / "_truth" / testset / f"{doc}.baseline.json").unlink()
+        return found
+
+    def score(self, run_id: str, testset: str, doc: str) -> SeqScore | None:
+        """A finished document's list score; None when its truth has no tagged list."""
+        truth = self.truth(testset, doc)
+        if truth is None:
+            return None
+        prefix = f"{run_id}/{doc}/sections/"
+        keys = self._listing(
+            self.cache / prefix / "_keys.json",
+            lambda: sorted(
+                o["Key"]
+                for page in self.s3.get_paginator("list_objects_v2").paginate(
+                    Bucket=self.output_bucket, Prefix=prefix
+                )
+                for o in page.get("Contents") or []
+                if o["Key"].endswith("/result.json")
+            ),
+        )
+        sections = [self._json(self.output_bucket, k, self.cache / k) for k in keys]
+        return seq_score(sections, truth)
+
+
+def score_seq_lists(
+    seqs: SeqLists | None,
+    run_id: str,
+    testset: str,
+    docs: list[str],
+    doc_metrics: dict[str, dict[str, list[float]]],
+    per_run: dict[str, list[float]],
+    true_rows: dict[str, int],
+) -> None:
+    """Score one run's finished documents by SEQ tag, into the collector's tallies.
+
+    Each document's completeness and cell accuracy go to `doc_metrics`, its true row
+    count to `true_rows`, and the run's own figures, pooled over its documents'
+    rows, to `per_run`.
+    """
+    if seqs is None:
+        return
+    found = [(d, s) for d in docs if (s := seqs.score(run_id, testset, d)) is not None]
+    for doc, s in found:
+        mine = doc_metrics.setdefault(doc, {})
+        mine.setdefault("completeness", []).append(s.rows_back / s.true_rows)
+        if s.cells:
+            mine.setdefault("cell_accuracy", []).append(s.cells_right / s.cells)
+        true_rows[doc] = s.true_rows
+    if found:
+        per_run.setdefault("completeness", []).append(
+            sum(s.rows_back for _, s in found) / sum(s.true_rows for _, s in found)
+        )
+    cells = sum(s.cells for _, s in found)
+    if cells:
+        per_run.setdefault("cell_accuracy", []).append(
+            sum(s.cells_right for _, s in found) / cells
+        )
+
+
 def doc_split_scores(doc: dict[str, Any]) -> dict[str, float]:
     """The split metrics a document's own evaluation reports, when it has them."""
     split = doc.get("doc_split_metrics") or {}
@@ -1190,6 +1411,98 @@ def workflow_seconds(items: dict[str, dict[str, Any]]) -> list[float]:
     return out
 
 
+#: The workflow state that runs Test Studio's evaluation of a document.
+EVALUATION_STATE = "EvaluationStep"
+
+
+def seconds_before_evaluation(
+    started: datetime, events: list[dict[str, Any]]
+) -> float | None:
+    """Seconds from a workflow's start to the start of its evaluation step, from its
+    execution history's events (any order); to its end when no evaluation ran. None
+    while it is still running."""
+    end = None
+    for event in events:
+        name = (event.get("stateEnteredEventDetails") or {}).get("name")
+        if name == EVALUATION_STATE:
+            return (event["timestamp"] - started).total_seconds()
+        if event.get("type") == "ExecutionSucceeded":
+            end = event["timestamp"]
+    return None if end is None else (end - started).total_seconds()
+
+
+class WorkflowTimes:
+    """Each document's seconds of processing, Test Studio's evaluation left out.
+
+    The evaluation is a step of the document's workflow, so CompletionTime falls after
+    it: it took about 6 of 13 minutes on an 800-row statement, and on a complete list
+    of 1,600 rows or more it runs into its 900-second limit, while a truncated list is
+    evaluated in seconds. A document processed outside Test Studio has no such step.
+    Read from the Step Functions execution history (the end of it, newest first) and
+    cached one file per run, for finished documents only.
+    """
+
+    def __init__(self, table_name: str, region: str, cache: Path) -> None:
+        self.ddb = boto3.client("dynamodb", region_name=region)
+        self.sfn = boto3.client("stepfunctions", region_name=region)
+        self.table_name = table_name
+        self.cache = cache
+
+    def _arn(self, run_id: str, doc: str) -> str | None:
+        item = (
+            self.ddb.get_item(
+                TableName=self.table_name,
+                Key={"PK": {"S": f"doc#{run_id}/{doc}"}, "SK": {"S": "none"}},
+                ProjectionExpression="WorkflowExecutionArn",
+            ).get("Item")
+            or {}
+        )
+        return (item.get("WorkflowExecutionArn") or {}).get("S")
+
+    def _one(self, run_id: str, doc: str) -> float | None:
+        arn = self._arn(run_id, doc)
+        if not arn:
+            return None
+        started = self.sfn.describe_execution(executionArn=arn)["startDate"]
+        events = self.sfn.get_execution_history(
+            executionArn=arn, reverseOrder=True, maxResults=100
+        )["events"]
+        return seconds_before_evaluation(started, events)
+
+    def _error(self, run_id: str, doc: str) -> str | None:
+        arn = self._arn(run_id, doc)
+        if not arn:
+            return None
+        return self.sfn.describe_execution(executionArn=arn).get("error")
+
+    def _cached(
+        self, path: Path, docs: list[str], read: Callable[[str], Any]
+    ) -> dict[str, Any]:
+        known: dict[str, Any] = (
+            json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        )
+        wanted = [d for d in docs if d not in known]
+        with ThreadPoolExecutor(max_workers=DOC_EVAL_WORKERS) as pool:
+            for doc, found in pool.map(lambda d: (d, read(d)), wanted):
+                if found is not None:
+                    known[doc] = found
+        if wanted:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(known, sort_keys=True), encoding="utf-8")
+        return {d: known[d] for d in docs if d in known}
+
+    def seconds(self, run_id: str, docs: list[str]) -> dict[str, float]:
+        return self._cached(
+            self.cache / f"{run_id}.seconds.json", docs, lambda d: self._one(run_id, d)
+        )
+
+    def errors(self, run_id: str, docs: list[str]) -> dict[str, str]:
+        """The error each failed document's workflow ended with (its class name)."""
+        return self._cached(
+            self.cache / f"{run_id}.errors.json", docs, lambda d: self._error(run_id, d)
+        )
+
+
 def stack_resources(stack: str, region: str) -> dict[str, str]:
     """Every resource of the benchmark stack, by logical ID."""
     cfn = boto3.client("cloudformation", region_name=region)
@@ -1251,6 +1564,39 @@ def main() -> int:
         if args.no_per_doc
         else DocEvals(resources, man["region"], args.doceval_cache)
     )
+    # Lists whose rows carry SEQ tags are scored by tag (SeqLists), over every
+    # document that finished, rather than over the ones Test Studio could evaluate.
+    seqs = (
+        None
+        if args.no_per_doc
+        else SeqLists(resources, man["region"], args.doceval_cache)
+    )
+    registry = load_registry()
+    kinds = {k: d.get("kind") for k, d in registry["datasets"].items()}
+    # A step cost the ablation's pages show in place of the whole pipeline's, which
+    # its per-document entries carry too (a by-size chart sizes its dots by it).
+    ablation = next(
+        (a for a in registry["ablations"] if a["id"] == man["ablation"]), {}
+    )
+    step_cost_metric = (
+        str(ablation["cost_metric"])
+        if ablation.get("cost_metric") in STEP_COSTS
+        else ""
+    )
+    not_sent: dict[str, dict[str, Any]] = {}
+    times = WorkflowTimes(
+        tracking_table(resources, man["stack"]), man["region"], args.tracking_cache
+    )
+
+    def finished(run_id: str) -> tuple[list[str], list[str]]:
+        """A SEQ-scored run's documents, and the ones of them that finished."""
+        assert seqs is not None
+        docs = seqs.documents(run_id)
+        items = tracking.items(run_id, docs)
+        return docs, [
+            d for d in docs if (items.get(d) or {}).get("ObjectStatus") == "COMPLETED"
+        ]
+
     isolated = set(man.get("cache_isolated") or [])
     by_doc: dict[str, dict[str, dict[str, float]]] = {}
     cells: dict[str, dict[str, float]] = {}
@@ -1285,6 +1631,12 @@ def main() -> int:
                     or {}
                 )
                 keys = {k.split("/", 1)[1] for k in scores}
+                if seqs is not None and kinds.get(ds_key) in SEQ_KINDS:
+                    keys = set(finished(run_id)[1])
+                    if not keys:
+                        # A run that finished nothing scores nothing; it does not
+                        # narrow the documents the other values are compared on.
+                        continue
                 docs = keys if docs is None else docs & keys
                 universe[ds_key] |= keys
         common[ds_key] = docs or set()
@@ -1307,9 +1659,12 @@ def main() -> int:
             testsets: list[str] = []
             # Each document's cost per run, by run index, and the runs that missed it.
             doc_costs: dict[str, dict[int, float]] = {}
+            # The same for the ablation's step `cost_metric`, when it has one.
+            doc_step_costs: dict[str, dict[int, float]] = {}
             missed: dict[str, list[str]] = {}
-            # Each run's classification cost per 1,000 documents, by run index.
-            run_classification: dict[int, float] = {}
+            # Each run's cost per 1,000 documents for one step (STEP_COSTS), by run
+            # index.
+            run_step_costs: dict[str, dict[int, float]] = {m: {} for m in STEP_COSTS}
             # Each run's long-context surcharge, and what its unsized requests could
             # add, in USD per document, in the order of runs_usage.
             run_surcharge: list[float] = []
@@ -1317,10 +1672,29 @@ def main() -> int:
             long_context = LongContextTally()
             # How many per-run packet values each metric held before this run.
             index_runs: dict[str, int] = {}
+            use_common = bool(args.common_docs or man.get("common_docs")) and bool(
+                common[ds_key]
+            )
+            # A SEQ-scored value's documents that did not finish, and the ones of them
+            # Bedrock refused as too large for one request.
+            unfinished_docs = refused_docs = 0
             for index, run_id in enumerate(ids):
                 path = args.results_dir / f"{run_id}-result.json"
                 result = json.loads(path.read_text(encoding="utf-8"))
                 failed = int(result.get("failedFiles") or 0)
+                seq_run = seqs is not None and kinds.get(ds_key) in SEQ_KINDS
+                run_docs: list[str] = []
+                done: list[str] = []
+                if seq_run:
+                    # Test Studio counts an evaluation that timed out as a failed
+                    # file; a SEQ-scored list needs only the document to finish.
+                    run_docs, done = finished(run_id)
+                    failed = len(run_docs) - len(done)
+                    left = [d for d in run_docs if d not in done]
+                    unfinished_docs += len(left)
+                    refused_docs += sum(
+                        e == NOT_SENT_ERROR for e in times.errors(run_id, left).values()
+                    )
                 allowed = int(man.get("max_failed", {}).get(ds_key, 0))
                 if failed > allowed or result.get("status") not in (
                     "COMPLETE",
@@ -1331,7 +1705,7 @@ def main() -> int:
                     )
                 failed_total += failed
                 run_ids.append(run_id)
-                scored.append(scored_docs(result))
+                scored.append(len(done) if seq_run else scored_docs(result))
                 failures.append(failed)
                 scores = result.get("weightedOverallScores") or {}
                 for key, score in scores.items():
@@ -1434,16 +1808,25 @@ def main() -> int:
                     for metric in ("section_accuracy", "page_accuracy"):
                         index_runs[metric] = len(per_run.get(metric, []))
                 names = [k.split("/", 1)[1] for k in scores]
+                if seq_run:
+                    names = done
+                    score_seq_lists(
+                        seqs,
+                        run_id,
+                        str(result.get("testSetId") or ""),
+                        [d for d in done if not use_common or d in common[ds_key]],
+                        doc_metrics,
+                        per_run,
+                        truth_counts.setdefault("rows", {}).setdefault(ds_key, {}),
+                    )
                 items = tracking.items(run_id, names)
-                classified: list[float] = []
+                step_docs: dict[str, list[float]] = {m: [] for m in STEP_COSTS}
                 surcharges: list[float] = []
                 ceilings: list[float] = []
                 for doc, item in items.items():
                     if isinstance(item.get(METERING_ATTRIBUTE), dict):
                         metering = item[METERING_ATTRIBUTE]
-                        cost, classifying = metering_cost(
-                            metering, unpriced, CLASSIFICATION_STEPS
-                        )
+                        cost, _ = metering_cost(metering, unpriced)
                         evaluation = run_evals.get(doc)
                         sections = section_pages(evaluation)
                         doc_pages = document_pages(evaluation, sections, metering)
@@ -1458,29 +1841,35 @@ def main() -> int:
                         surcharges.append(extra)
                         ceilings.append(sum(s.ceiling for s in steps))
                         doc_costs.setdefault(doc, {})[index] = cost + extra
-                        classified.append(
-                            classifying
-                            + sum(
-                                s.surcharge
-                                for s in steps
-                                if s.step in CLASSIFICATION_STEPS
+                        for metric, step_names in STEP_COSTS.items():
+                            _, in_steps = metering_cost(metering, unpriced, step_names)
+                            in_steps += sum(
+                                s.surcharge for s in steps if s.step in step_names
                             )
-                        )
+                            step_docs[metric].append(in_steps)
+                            if metric == step_cost_metric:
+                                doc_step_costs.setdefault(doc, {})[index] = in_steps
                 run_surcharge.append(
                     statistics.fmean(surcharges) if surcharges else 0.0
                 )
                 run_ceiling.append(statistics.fmean(ceilings) if ceilings else 0.0)
                 # Over the documents the run scored, as its run cost is.
-                if classified:
-                    run_classification[index] = 1000 * statistics.fmean(classified)
-                    if len(classified) < len(names):
+                for metric, priced in step_docs.items():
+                    if not priced:
+                        continue
+                    run_step_costs[metric][index] = 1000 * statistics.fmean(priced)
+                    if len(priced) < len(names):
                         print(
-                            f"  {run_id}: classification cost from {len(classified)} "
-                            f"of {len(names)} documents' metering"
+                            f"  {run_id}: {metric.split('_cost')[0]} cost from "
+                            f"{len(priced)} of {len(names)} documents' metering"
                         )
                 for doc in sorted(universe[ds_key] - set(names)):
                     missed.setdefault(doc, []).append(run_id)
-                secs = workflow_seconds(items)
+                secs = (
+                    list(times.seconds(run_id, done).values())
+                    if seq_run
+                    else workflow_seconds(items)
+                )
                 if secs:
                     medians.append(statistics.median(secs))
             cell = f"{ds_key}|{value}|"
@@ -1493,7 +1882,8 @@ def main() -> int:
             for metric in STEP_METRICS:
                 if any(tokens[metric]):
                     cells[cell + metric] = mean_se(tokens[metric])
-            cells[cell + "total_tokens"] = mean_se(tokens["total"])
+            if tokens["total"]:
+                cells[cell + "total_tokens"] = mean_se(tokens["total"])
             if medians:
                 cells[cell + "median_seconds"] = mean_se(medians)
             # Test Studio sometimes leaves a run's packet metrics empty; two runs are
@@ -1506,17 +1896,16 @@ def main() -> int:
             # A document's cost follows the run cost's basis: every run when the runs
             # are cache-isolated, otherwise the coldest run alone.
             cold_index = min(coldest)[3] if coldest else 0
-            # Classification cost follows the same basis: the mean over every run
-            # when the runs are cache-isolated, otherwise the coldest run alone.
-            if all_isolated and run_classification:
-                cells[cell + CLASSIFICATION_COST] = mean_se(
-                    [run_classification[i] for i in sorted(run_classification)]
-                )
-            elif cold_index in run_classification:
-                cells[cell + CLASSIFICATION_COST] = {
-                    "mean": round(run_classification[cold_index], 6),
-                    "se": 0.0,
-                }
+            # A step's cost follows the same basis: the mean over every run when the
+            # runs are cache-isolated, otherwise the coldest run alone.
+            for metric, by_run in run_step_costs.items():
+                if all_isolated and by_run:
+                    cells[cell + metric] = mean_se([by_run[i] for i in sorted(by_run)])
+                elif cold_index in by_run:
+                    cells[cell + metric] = {
+                        "mean": round(by_run[cold_index], 6),
+                        "se": 0.0,
+                    }
             if evals is not None and doc_metrics:
                 shown = [
                     d
@@ -1529,16 +1918,23 @@ def main() -> int:
                     if field and testsets
                     else {}
                 )
+                # A SEQ-scored list counted its true rows itself.
+                rows = {**rows, **truth_counts.get("rows", {}).get(ds_key, {})}
                 entries: dict[str, dict[str, float]] = {}
                 for doc in shown:
                     found = doc_metrics[doc]
                     entry: dict[str, float] = {}
-                    if "list_score" in found:
-                        entry["list_score"] = round(
-                            statistics.fmean(found["list_score"]), 6
-                        )
-                        if doc in rows:
-                            entry["list_rows"] = rows[doc]
+                    for metric in LIST_DOC_METRICS:
+                        if metric in found:
+                            entry[metric] = round(statistics.fmean(found[metric]), 6)
+                    if len(found.get("completeness") or []) > 1:
+                        # Each run's own figure: a list comes back whole or stops
+                        # short, and a mean over runs hides which.
+                        entry["completeness_runs"] = [
+                            round(v, 6) for v in found["completeness"]
+                        ]
+                    if doc in rows and any(m in found for m in LIST_DOC_METRICS):
+                        entry["list_rows"] = rows[doc]
                     for metric in DOC_SPLIT_METRICS:
                         if metric in found:
                             entry[metric] = round(statistics.fmean(found[metric]), 6)
@@ -1551,6 +1947,12 @@ def main() -> int:
                     )
                     if cost is not None:
                         entry["cost"] = round(cost, 6)
+                    step_cost = doc_cost_over_runs(
+                        doc_step_costs.get(doc) or {}, all_isolated, cold_index
+                    )
+                    if step_cost is not None:
+                        # USD per 1,000 documents, as the cell of the same name.
+                        entry[step_cost_metric] = round(1000 * step_cost, 6)
                     if entry:
                         entries[doc] = entry
                 if entries:
@@ -1576,9 +1978,22 @@ def main() -> int:
                         "status": sorted(statuses),
                     }
                 unfinished[key] = found_missed
-            if scored:
+            if refused_docs and refused_docs == unfinished_docs and not any(scored):
+                # Never extracted: a result to show, not failed documents to hide.
+                not_sent[key] = {
+                    "documents": refused_docs,
+                    "runs": len(ids),
+                    "error": NOT_SENT_ERROR,
+                }
+                for metric in [*ablation.get("metrics", []), step_cost_metric]:
+                    if metric:
+                        cells[cell + metric] = NOT_SENT
+                failed_total -= refused_docs
+                unfinished.pop(key, None)
+            elif scored:
                 sample[key] = {"docs": scored, "failed": failures, "runs": len(ids)}
-            if step_lines:
+            # A value never extracted ran no step to name.
+            if step_lines and key not in not_sent:
                 lines = {
                     s: " ; ".join(step_lines[s])
                     for s in STEP_BILLING
@@ -1630,6 +2045,12 @@ def main() -> int:
             f" ({failed_total} failed documents left out of the scores)"
             if failed_total
             else ""
+        )
+        + (
+            f"; {sum(n['documents'] for n in not_sent.values())} documents not sent, "
+            "too large for one request"
+            if not_sent
+            else ""
         ),
         "verdict": man["verdict"],
         "cells": cells,
@@ -1644,6 +2065,8 @@ def main() -> int:
         out["per_doc"] = by_doc
     if unfinished:
         out["unfinished"] = unfinished
+    if not_sent:
+        out["not_sent"] = not_sent
     for name, by_ds in sorted(truth_counts.items()):
         out[f"{name}_per_doc"] = {
             ds_key: round(statistics.fmean(counts.values()), 4)
@@ -1655,7 +2078,11 @@ def main() -> int:
     path.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {path.relative_to(REPO) if path.is_relative_to(REPO) else path}")
     for k, v in cells.items():
-        print(f"  {k}: {v['mean']:.4g} ± {2 * v['se']:.2g}")
+        print(
+            f"  {k}: {v['mean']:.4g} ± {2 * v['se']:.2g}"
+            if isinstance(v, dict)
+            else f"  {k}: {v}"
+        )
     for k, lc in long_contexts.items():
         print(
             f"  {k}: long-context rate on {lc['long_requests']} of {lc['requests']} "

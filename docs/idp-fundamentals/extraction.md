@@ -115,8 +115,9 @@ flowchart LR
 
 This has two limits:
 
-- **The section must fit in the model's input window.** The accelerator checks the size
-  before it sends the request, and stops with `ExtractionInputTooLarge` if it doesn't fit.
+- **The section must fit in one request.** When it doesn't, Amazon Bedrock rejects the
+  request, and the accelerator stops with `ExtractionInputTooLarge`, naming the request size
+  and the remedy.
 - **The model writes every row.** A long list needs a long response, and a list too long for
   one response comes back short.
 

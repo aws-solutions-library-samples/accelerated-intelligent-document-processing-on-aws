@@ -19,32 +19,37 @@ describes where each dataset comes from and how its ground truth was made.
 ### Synthetic statement, 100 rows (3 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
-- **Preset:** `bank-statement-sample`
-- **Test Studio test set:** not on the benchmark stack yet
+- **Preset:** `bench-synth-statements`
+- **Test Studio test set:** `synth-statements-100`, 5 documents per run
+- **Used by:** [EX-08](extraction.md#does-single-pass-extraction-return-every-row-of-a-long-list)
 
 ### Synthetic statement, 400 rows (9 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-400`, 5 documents per run
+- **Used by:** [EX-08](extraction.md#does-single-pass-extraction-return-every-row-of-a-long-list)
 
 ### Synthetic statement, 800 rows (17 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-800`, 5 documents per run
+- **Used by:** [EX-08](extraction.md#does-single-pass-extraction-return-every-row-of-a-long-list)
 
 ### Synthetic statement, 1,600 rows (33 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-1600`, 5 documents per run
+- **Used by:** [EX-08](extraction.md#does-single-pass-extraction-return-every-row-of-a-long-list)
 
 ### Synthetic statement, 3,200 rows (66 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
-- **Preset:** `bank-statement-sample`
-- **Test Studio test set:** not on the benchmark stack yet
+- **Preset:** `bench-synth-statements`
+- **Test Studio test set:** `synth-statements-3200`, 5 documents per run
+- **Used by:** [EX-08](extraction.md#does-single-pass-extraction-return-every-row-of-a-long-list)
 
 ### Synthetic file holding two statements
 

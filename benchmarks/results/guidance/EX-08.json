@@ -1,0 +1,3271 @@
+{
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs synth-statements-100-20261120-185105, synth-statements-100-20261120-185055, synth-statements-100-20261120-185115, synth-statements-100-20261120-185403, synth-statements-100-20261120-185441, synth-statements-100-20261120-185452, synth-statements-100-20261120-185630, synth-statements-100-20261120-185719, synth-statements-100-20261120-185730, synth-statements-400-20261120-185948, synth-statements-400-20261120-190027, synth-statements-400-20261120-190045, synth-statements-400-20261120-190734, synth-statements-400-20261120-190755, synth-statements-400-20261120-190815, synth-statements-400-20261120-191312, synth-statements-400-20261120-191243, synth-statements-400-20261120-191346, synth-statements-800-20261120-191913, synth-statements-800-20261120-191924, synth-statements-800-20261120-191958, synth-statements-800-20261120-193726, synth-statements-800-20261120-193815, synth-statements-800-20261120-193933, synth-statements-800-20261120-194904, synth-statements-800-20261120-194940, synth-statements-800-20261120-195046, synth-statements-1600-20261120-200154, synth-statements-1600-20261120-200239, synth-statements-1600-20261120-200322, synth-statements-1600-20261120-200705, synth-statements-1600-20261120-200715, synth-statements-1600-20261120-200844, synth-statements-1600-20261120-204358, synth-statements-1600-20261120-204335, synth-statements-1600-20261120-204421, synth-statements-3200-20261120-212302, synth-statements-3200-20261120-212313, synth-statements-3200-20261120-212343, synth-statements-3200-20261120-212636, synth-statements-3200-20261120-212625, synth-statements-3200-20261120-212614, synth-statements-3200-20261120-220854, synth-statements-3200-20261120-220829, synth-statements-3200-20261120-220950; 15 documents not sent, too large for one request",
+  "verdict": "Agentic extraction is a good place to start for long lists. On synthetic statements with Claude Haiku 5.5, single-pass returned every row at 100 rows, but from 400 rows some statements came back with only the first page's rows (64% of rows at 400 rows, 2% at 1,600), and Amazon Bedrock rejected the 3,200-row requests as too long. Agentic extraction returned every row at every size with table parsing on, and 98% to 100% with it off. On these clean tables, table parsing also made agentic extraction cheaper: from 800 rows it cost less than single-pass even if every call billed at the long-context rate. Real invoices agree on agentic extraction, which found 67% of the line items against 17% for single-pass ([When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it)), but not on table parsing, which didn't help on long real invoices ([Does deterministic table parsing help agentic extraction?](#does-deterministic-table-parsing-help-agentic-extraction)). Test it on your own documents.",
+  "cells": {
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 9406.288889,
+      "se": 25.046337
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 48768.133333,
+      "se": 2582.793269
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 60683.888889,
+      "se": 2589.178212
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 107.605333,
+      "se": 6.644417
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.023438,
+      "se": 0.000598
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 6.729191,
+      "se": 0.005186
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 22264.555556,
+      "se": 0.984572
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 34063.466667,
+      "se": 1498.948017
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 58852.466667,
+      "se": 1501.68394
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 69.998,
+      "se": 2.60966
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.030642,
+      "se": 0.000596
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 1.803201,
+      "se": 0.405706
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 48961.088889,
+      "se": 5054.152325
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 32660.888889,
+      "se": 1251.674123
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 84151.088889,
+      "se": 4535.653789
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 101.996667,
+      "se": 4.277941
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.029389,
+      "se": 0.000313
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 11.479744,
+      "se": 0.818296
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.879167,
+      "se": 0.05925
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 8560.340741,
+      "se": 330.246467
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 103793.133333,
+      "se": 14142.649394
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 114582.607407,
+      "se": 14447.46565
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 191.941667,
+      "se": 27.602884
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 0.6375,
+      "se": 0.103204
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.6,
+      "se": 0.11547
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.026803,
+      "se": 0.000194
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 0.6375,
+      "se": 0.103204
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 15.959445,
+      "se": 1.651009
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 18525.459259,
+      "se": 21.990654
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 63335.644444,
+      "se": 1273.799921
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 84023.081481,
+      "se": 1262.136603
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 113.004667,
+      "se": 5.564998
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.031241,
+      "se": 0.000352
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 4.376723,
+      "se": 0.902712
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.994556,
+      "se": 0.005444
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 52945.333333,
+      "se": 3783.733665
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 62759.481481,
+      "se": 1991.491595
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 117866.807407,
+      "se": 2592.401944
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 187.655667,
+      "se": 8.286489
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 0.983667,
+      "se": 0.016333
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.933333,
+      "se": 0.066667
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.031371,
+      "se": 0.000488
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 0.983667,
+      "se": 0.016333
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 36.084997,
+      "se": 3.619454
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.873833,
+      "se": 0.051507
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 8266.992157,
+      "se": 313.15764
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 190389.423529,
+      "se": 34008.62587
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 200751.27451,
+      "se": 34297.181164
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 373.066,
+      "se": 92.392048
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 0.6215,
+      "se": 0.109264
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.6,
+      "se": 0.11547
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.024242,
+      "se": 0.000719
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 0.6215,
+      "se": 0.109264
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 136.809647,
+      "se": 14.578285
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 19482.678431,
+      "se": 184.663471
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 63666.654902,
+      "se": 1482.700505
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 85191.054902,
+      "se": 1302.131882
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 114.311,
+      "se": 2.563275
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.033055,
+      "se": 0.000662
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 8.521223,
+      "se": 1.821221
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 45559.654902,
+      "se": 2156.453439
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 63136.419608,
+      "se": 659.851945
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 110740.74902,
+      "se": 1591.961461
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 190.013,
+      "se": 4.829291
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.031809,
+      "se": 9.9e-05
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 68.367016,
+      "se": 5.664275
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.674806,
+      "se": 0.000819
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 6053.505051,
+      "se": 8.706635
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 16508.212121,
+      "se": 1744.180071
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 24595.327273,
+      "se": 1753.636861
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 169.228333,
+      "se": 8.466315
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 0.024417,
+      "se": 0.001234
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.028277,
+      "se": 0.002974
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 0.024417,
+      "se": 0.001234
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 117.305522,
+      "se": 0.749228
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 18556.507071,
+      "se": 44.504787
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 66556.981818,
+      "se": 169.662247
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 87097.858586,
+      "se": 178.815976
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 285.989667,
+      "se": 10.49501
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 15.645389,
+      "se": 1.852097
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 42871.947475,
+      "se": 1918.749145
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 66463.80404,
+      "se": 539.053622
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 111316.533333,
+      "se": 1458.1464
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 438.668,
+      "se": 18.481677
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 130.847207,
+      "se": 6.384989
+    },
+    "synth_3200|Single-pass \u00b7 Claude Haiku 5.5|completeness": "Not sent",
+    "synth_3200|Single-pass \u00b7 Claude Haiku 5.5|cell_accuracy": "Not sent",
+    "synth_3200|Single-pass \u00b7 Claude Haiku 5.5|median_seconds": "Not sent",
+    "synth_3200|Single-pass \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": "Not sent",
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 15460.726263,
+      "se": 48.603585
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 84731.272727,
+      "se": 402.342586
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 102111.308081,
+      "se": 396.742284
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 629.609667,
+      "se": 12.629444
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 24.997924,
+      "se": 3.503896
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 57974.676768,
+      "se": 1439.523315
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 79897.833333,
+      "se": 4047.894212
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 139791.691919,
+      "se": 2667.39306
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 910.163333,
+      "se": 33.873858
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|completeness": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|cell_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5|extraction_cost_per_1000_docs": {
+      "mean": 284.094796,
+      "se": 11.056362
+    }
+  },
+  "sample": {
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        5,
+        5,
+        5
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, agentic",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 89160.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 21553.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25584.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 25860.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5401.0,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2070.4,
+        "textract/analyze_document-Tables|pages": 3.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 111062.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 21553.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27199.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 29008.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5401.0,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2117.0,
+        "textract/analyze_document-Tables|pages": 3.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 96983.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 22459.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 26227.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 26916.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5400.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2195.2,
+        "textract/analyze_document-Tables|pages": 3.0
+      }
+    ],
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 111869.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 23917.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 11011.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 13363.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5402.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2130.6,
+        "textract/analyze_document-Tables|pages": 3.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 133707.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 14322.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 11794.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 15058.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5402.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2105.4,
+        "textract/analyze_document-Tables|pages": 3.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 130646.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 14322.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 11740.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 15199.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5402.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2276.2,
+        "textract/analyze_document-Tables|pages": 3.0
+      }
+    ],
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 155070.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 24344.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 31108.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 25607.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5402.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2159.8,
+        "textract/analyze_document-Tables|pages": 3.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 170211.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 32374.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 24395.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5402.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2135.8,
+        "textract/analyze_document-Tables|pages": 3.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 200754.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 45388.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 25342.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 5402.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2258.6,
+        "textract/analyze_document-Tables|pages": 3.0
+      }
+    ],
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 613880.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 68828.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 73359.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 50375.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 17965.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2495.0,
+        "textract/analyze_document-Tables|pages": 9.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 766321.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 69379.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 77415.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 61005.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 17293.4,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2697.0,
+        "textract/analyze_document-Tables|pages": 9.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1016682.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 69379.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 83295.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 83622.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 17246.0,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2489.6,
+        "textract/analyze_document-Tables|pages": 9.0
+      }
+    ],
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 562377.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 64630.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 38853.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 60444.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 16886.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2583.6,
+        "textract/analyze_document-Tables|pages": 9.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 583128.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 42927.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 39307.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 59133.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 16886.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2563.8,
+        "textract/analyze_document-Tables|pages": 9.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 612919.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 42927.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 40755.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 62845.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 16886.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2567.4,
+        "textract/analyze_document-Tables|pages": 9.0
+      }
+    ],
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 767274.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 26708.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 116475.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 88952.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 16886.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2671.8,
+        "textract/analyze_document-Tables|pages": 9.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 724647.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 95890.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 123301.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 100490.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 16886.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2595.6,
+        "textract/analyze_document-Tables|pages": 9.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 800843.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 39110.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 152029.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 88305.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 16886.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2447.8,
+        "textract/analyze_document-Tables|pages": 9.0
+      }
+    ],
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1998348.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 132664.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 137559.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 81998.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33305.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2966.0,
+        "textract/analyze_document-Tables|pages": 17.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 3914980.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 132389.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 161214.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 162110.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32587.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2507.4,
+        "textract/analyze_document-Tables|pages": 17.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 3009242.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 132940.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 150554.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 117475.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32951.0,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2520.6,
+        "textract/analyze_document-Tables|pages": 17.0
+      }
+    ],
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1074947.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 123775.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 74067.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 108433.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32227.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2592.4,
+        "textract/analyze_document-Tables|pages": 17.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1134437.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 81289.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 75671.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 111997.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32227.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2416.8,
+        "textract/analyze_document-Tables|pages": 17.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1180424.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 81485.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 77494.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 116592.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32227.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2435.2,
+        "textract/analyze_document-Tables|pages": 17.0
+      }
+    ],
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1207505.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 204089.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 249008.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 177530.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32227.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2452.0,
+        "textract/analyze_document-Tables|pages": 17.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1313781.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 81485.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 234355.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 176929.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32227.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2598.8,
+        "textract/analyze_document-Tables|pages": 17.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1373054.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 81289.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 268784.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 175687.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 32227.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2544.2,
+        "textract/analyze_document-Tables|pages": 17.0
+      }
+    ],
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 332232.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 236133.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 197581.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 9404.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 64385.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2751.2,
+        "textract/analyze_document-Tables|pages": 33.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 190019.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 236605.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 197424.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 8581.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 64414.4,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2570.0,
+        "textract/analyze_document-Tables|pages": 33.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 379205.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 236409.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 198260.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11752.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 64684.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2522.4,
+        "textract/analyze_document-Tables|pages": 33.0
+      }
+    ]
+  },
+  "cost_basis": {
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    }
+  },
+  "long_context": {
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 97,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 82,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 15,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 53,
+      "long_requests": 0,
+      "unsized_documents": 4,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 53,
+          "long_requests": 0,
+          "unsized_documents": 4
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.02161775,
+        0.02092098
+      ]
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 57,
+      "long_requests": 0,
+      "unsized_documents": 11,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 57,
+          "long_requests": 0,
+          "unsized_documents": 3
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 10
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.05126936,
+        0.02803801,
+        0.05153115
+      ]
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 202,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 187,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 15,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.21036522,
+        0.19665519,
+        0.20677111
+      ]
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.29539335,
+        0.35995699,
+        0.31791273
+      ]
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 15,
+      "requests": 365,
+      "long_requests": 365,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 15,
+          "requests": 350,
+          "long_requests": 350,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 15,
+          "requests": 15,
+          "long_requests": 15,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.40181467,
+        0.67264987,
+        0.53021447
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.38651763,
+        0.37431385,
+        0.3873571
+      ]
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.6655089,
+        0.5949856,
+        0.60989991
+      ]
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 15,
+      "requests": 49,
+      "long_requests": 49,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 15,
+          "requests": 34,
+          "long_requests": 34,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 15,
+          "requests": 15,
+          "long_requests": 15,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.2521165,
+        0.24424018,
+        0.25980023
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.7747986,
+        0.77390453,
+        0.74542351
+      ]
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        1.24467509,
+        1.26703656,
+        1.1736404
+      ]
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        1.47070937,
+        1.529033,
+        1.57192931
+      ]
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 15,
+      "long_documents": 0,
+      "requests": 0,
+      "long_requests": 0,
+      "unsized_documents": 15,
+      "by_step": {
+        "Assessment": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        },
+        "Extraction": {
+          "documents": 15,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 15
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        2.54250843,
+        2.42270653,
+        2.48636678
+      ]
+    }
+  },
+  "per_doc": {
+    "synth_100|Single-pass \u00b7 Claude Haiku 5.5": {
+      "synth-statements-100-01.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.101648,
+        "extraction_cost_per_1000_docs": 6.527833
+      },
+      "synth-statements-100-02.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.101646,
+        "extraction_cost_per_1000_docs": 6.879624
+      },
+      "synth-statements-100-03.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.10379,
+        "extraction_cost_per_1000_docs": 6.975507
+      },
+      "synth-statements-100-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.100494,
+        "extraction_cost_per_1000_docs": 6.632956
+      },
+      "synth-statements-100-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.103775,
+        "extraction_cost_per_1000_docs": 6.630034
+      }
+    },
+    "synth_100|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "synth-statements-100-01.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.094216,
+        "extraction_cost_per_1000_docs": 1.641552
+      },
+      "synth-statements-100-02.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.092262,
+        "extraction_cost_per_1000_docs": 1.619792
+      },
+      "synth-statements-100-03.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.093773,
+        "extraction_cost_per_1000_docs": 1.662875
+      },
+      "synth-statements-100-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.096331,
+        "extraction_cost_per_1000_docs": 2.052415
+      },
+      "synth-statements-100-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.092498,
+        "extraction_cost_per_1000_docs": 2.039371
+      }
+    },
+    "synth_100|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "synth-statements-100-01.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.09839,
+        "extraction_cost_per_1000_docs": 10.447369
+      },
+      "synth-statements-100-02.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.10127,
+        "extraction_cost_per_1000_docs": 11.325109
+      },
+      "synth-statements-100-03.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.105668,
+        "extraction_cost_per_1000_docs": 14.021487
+      },
+      "synth-statements-100-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.102256,
+        "extraction_cost_per_1000_docs": 11.677354
+      },
+      "synth-statements-100-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 100,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.101253,
+        "extraction_cost_per_1000_docs": 9.927403
+      }
+    },
+    "synth_400|Single-pass \u00b7 Claude Haiku 5.5": {
+      "synth-statements-400-01.pdf": {
+        "list_score": 0.08,
+        "completeness": 0.08,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.1075,
+          0.025,
+          0.1075
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.693333,
+        "cost": 0.225624,
+        "extraction_cost_per_1000_docs": 8.30427
+      },
+      "synth-statements-400-02.pdf": {
+        "list_score": 0.405,
+        "completeness": 0.405,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.1075,
+          0.1075,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.801667,
+        "cost": 0.249235,
+        "extraction_cost_per_1000_docs": 13.810148
+      },
+      "synth-statements-400-03.pdf": {
+        "list_score": 0.7025,
+        "completeness": 0.7025,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.1075,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.900833,
+        "cost": 0.271108,
+        "extraction_cost_per_1000_docs": 16.371916
+      },
+      "synth-statements-400-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.283301,
+        "extraction_cost_per_1000_docs": 22.481609
+      },
+      "synth-statements-400-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.29226,
+        "extraction_cost_per_1000_docs": 18.829279
+      }
+    },
+    "synth_400|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "synth-statements-400-01.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.252956,
+        "extraction_cost_per_1000_docs": 4.172581
+      },
+      "synth-statements-400-02.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.251655,
+        "extraction_cost_per_1000_docs": 4.888811
+      },
+      "synth-statements-400-03.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.249681,
+        "extraction_cost_per_1000_docs": 4.129393
+      },
+      "synth-statements-400-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.253458,
+        "extraction_cost_per_1000_docs": 4.310181
+      },
+      "synth-statements-400-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.250182,
+        "extraction_cost_per_1000_docs": 4.382651
+      }
+    },
+    "synth_400|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "synth-statements-400-01.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.279076,
+        "extraction_cost_per_1000_docs": 35.177281
+      },
+      "synth-statements-400-02.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.289625,
+        "extraction_cost_per_1000_docs": 39.62757
+      },
+      "synth-statements-400-03.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.287659,
+        "extraction_cost_per_1000_docs": 40.245324
+      },
+      "synth-statements-400-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.272443,
+        "extraction_cost_per_1000_docs": 28.831154
+      },
+      "synth-statements-400-05.pdf": {
+        "list_score": 0.918333,
+        "completeness": 0.918333,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          0.755
+        ],
+        "list_rows": 400,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.972778,
+        "cost": 0.278916,
+        "extraction_cost_per_1000_docs": 36.543657
+      }
+    },
+    "synth_800|Single-pass \u00b7 Claude Haiku 5.5": {
+      "synth-statements-800-01.pdf": {
+        "list_score": 0.684583,
+        "completeness": 0.684583,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          0.05375
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894861,
+        "cost": 1.059586,
+        "extraction_cost_per_1000_docs": 148.625968
+      },
+      "synth-statements-800-02.pdf": {
+        "list_score": 0.684583,
+        "completeness": 0.684583,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.05375,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894861,
+        "cost": 1.06494,
+        "extraction_cost_per_1000_docs": 139.377975
+      },
+      "synth-statements-800-03.pdf": {
+        "list_score": 0.05375,
+        "completeness": 0.05375,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.05375,
+          0.05375,
+          0.05375
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.684583,
+        "cost": 0.564952,
+        "extraction_cost_per_1000_docs": 73.676002
+      },
+      "synth-statements-800-04.pdf": {
+        "list_score": 0.684583,
+        "completeness": 0.684583,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.05375,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894861,
+        "cost": 1.104423,
+        "extraction_cost_per_1000_docs": 149.375252
+      },
+      "synth-statements-800-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.333164,
+        "extraction_cost_per_1000_docs": 172.99304
+      }
+    },
+    "synth_800|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "synth-statements-800-01.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.44467,
+        "extraction_cost_per_1000_docs": 9.227306
+      },
+      "synth-statements-800-02.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.452308,
+        "extraction_cost_per_1000_docs": 8.257355
+      },
+      "synth-statements-800-03.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.448151,
+        "extraction_cost_per_1000_docs": 8.4443
+      },
+      "synth-statements-800-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.445155,
+        "extraction_cost_per_1000_docs": 8.250898
+      },
+      "synth-statements-800-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.454115,
+        "extraction_cost_per_1000_docs": 8.426253
+      }
+    },
+    "synth_800|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "synth-statements-800-01.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.504626,
+        "extraction_cost_per_1000_docs": 64.873453
+      },
+      "synth-statements-800-02.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.502593,
+        "extraction_cost_per_1000_docs": 63.442869
+      },
+      "synth-statements-800-03.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.511913,
+        "extraction_cost_per_1000_docs": 68.387088
+      },
+      "synth-statements-800-04.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.518458,
+        "extraction_cost_per_1000_docs": 74.053322
+      },
+      "synth-statements-800-05.pdf": {
+        "list_score": 1.0,
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 800,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.510488,
+        "extraction_cost_per_1000_docs": 71.078346
+      }
+    },
+    "synth_1600|Single-pass \u00b7 Claude Haiku 5.5": {
+      "synth-statements-1600-01.pdf": {
+        "list_score": 0.014583,
+        "completeness": 0.014583,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.0075,
+          0.009375,
+          0.026875
+        ],
+        "list_rows": 1600,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.671528,
+        "cost": 0.957354,
+        "extraction_cost_per_1000_docs": 114.190468
+      },
+      "synth-statements-1600-02.pdf": {
+        "list_score": 0.026875,
+        "completeness": 0.026875,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.026875,
+          0.026875,
+          0.026875
+        ],
+        "list_rows": 1600,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 0.98861,
+        "extraction_cost_per_1000_docs": 118.771657
+      },
+      "synth-statements-1600-03.pdf": {
+        "list_score": 0.026875,
+        "completeness": 0.026875,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.026875,
+          0.026875,
+          0.026875
+        ],
+        "list_rows": 1600,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 0.993471,
+        "extraction_cost_per_1000_docs": 115.200507
+      },
+      "synth-statements-1600-04.pdf": {
+        "list_score": 0.026875,
+        "completeness": 0.026875,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.026875,
+          0.026875,
+          0.026875
+        ],
+        "list_rows": 1600,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 0.978658,
+        "extraction_cost_per_1000_docs": 118.284302
+      },
+      "synth-statements-1600-05.pdf": {
+        "list_score": 0.026875,
+        "completeness": 0.026875,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          0.026875,
+          0.026875,
+          0.026875
+        ],
+        "list_rows": 1600,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 0.985474,
+        "extraction_cost_per_1000_docs": 120.080675
+      }
+    },
+    "synth_1600|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "synth-statements-1600-01.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.85721,
+        "extraction_cost_per_1000_docs": 14.831245
+      },
+      "synth-statements-1600-02.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.847174,
+        "extraction_cost_per_1000_docs": 15.956382
+      },
+      "synth-statements-1600-03.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.854324,
+        "extraction_cost_per_1000_docs": 17.170654
+      },
+      "synth-statements-1600-04.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.851686,
+        "extraction_cost_per_1000_docs": 15.21538
+      },
+      "synth-statements-1600-05.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.855184,
+        "extraction_cost_per_1000_docs": 15.053287
+      }
+    },
+    "synth_1600|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "synth-statements-1600-01.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.974764,
+        "extraction_cost_per_1000_docs": 140.003055
+      },
+      "synth-statements-1600-02.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.958217,
+        "extraction_cost_per_1000_docs": 116.789558
+      },
+      "synth-statements-1600-03.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.973762,
+        "extraction_cost_per_1000_docs": 144.539404
+      },
+      "synth-statements-1600-04.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.964827,
+        "extraction_cost_per_1000_docs": 124.212922
+      },
+      "synth-statements-1600-05.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 1600,
+        "cost": 0.967172,
+        "extraction_cost_per_1000_docs": 128.691095
+      }
+    },
+    "synth_3200|Agentic, table parsing on \u00b7 Claude Haiku 5.5": {
+      "synth-statements-3200-01.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.676046,
+        "extraction_cost_per_1000_docs": 24.011541
+      },
+      "synth-statements-3200-02.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.653891,
+        "extraction_cost_per_1000_docs": 25.630528
+      },
+      "synth-statements-3200-03.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.669492,
+        "extraction_cost_per_1000_docs": 26.64327
+      },
+      "synth-statements-3200-04.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.671466,
+        "extraction_cost_per_1000_docs": 24.316602
+      },
+      "synth-statements-3200-05.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.6853,
+        "extraction_cost_per_1000_docs": 24.387678
+      }
+    },
+    "synth_3200|Agentic, table parsing off \u00b7 Claude Haiku 5.5": {
+      "synth-statements-3200-01.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.883821,
+        "extraction_cost_per_1000_docs": 269.857289
+      },
+      "synth-statements-3200-02.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.909842,
+        "extraction_cost_per_1000_docs": 273.976237
+      },
+      "synth-statements-3200-03.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.931038,
+        "extraction_cost_per_1000_docs": 307.451272
+      },
+      "synth-statements-3200-04.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.911479,
+        "extraction_cost_per_1000_docs": 281.974533
+      },
+      "synth-statements-3200-05.pdf": {
+        "completeness": 1.0,
+        "cell_accuracy": 1.0,
+        "completeness_runs": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "list_rows": 3200,
+        "cost": 1.919516,
+        "extraction_cost_per_1000_docs": 287.214646
+      }
+    }
+  },
+  "not_sent": {
+    "synth_3200|Single-pass \u00b7 Claude Haiku 5.5": {
+      "documents": 15,
+      "runs": 3,
+      "error": "ExtractionInputTooLarge"
+    }
+  },
+  "pages_per_doc": {
+    "synth_100": 3.0,
+    "synth_400": 9.0,
+    "synth_800": 17.0,
+    "synth_1600": 33.0
+  },
+  "rows_per_doc": {
+    "synth_100": 100.0,
+    "synth_400": 400.0,
+    "synth_800": 800.0,
+    "synth_1600": 1600.0,
+    "synth_3200": 3200.0
+  },
+  "sections_per_doc": {
+    "synth_100": 1.0,
+    "synth_400": 1.0,
+    "synth_800": 1.0,
+    "synth_1600": 1.0
+  }
+}
