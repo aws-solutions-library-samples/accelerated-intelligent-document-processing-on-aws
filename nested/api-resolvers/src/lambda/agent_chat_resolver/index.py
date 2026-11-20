@@ -558,7 +558,7 @@ def create_session_metadata(
     try:
         # Generate session title from the first message
         visible = _visible_chat_text(prompt)
-        title = visible
+        title = visible or "Quick Start"
         if len(title) > 50:
             title = title[:47] + "..."
 

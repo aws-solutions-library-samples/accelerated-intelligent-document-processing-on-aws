@@ -359,7 +359,7 @@ def _persist_chat_turn(
                     },
                 )
         else:
-            title = visible
+            title = visible or "Quick Start"
             if len(title) > 50:
                 title = title[:47] + "..."
             sessions_table.put_item(

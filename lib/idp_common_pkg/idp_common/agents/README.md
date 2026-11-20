@@ -522,10 +522,12 @@ retry it. Generating a test set from a class that already exists
 (`generate_from_existing_config`, or the generator's own generate-from-configuration)
 sends `fromExistingConfig`, and the processor writes nothing back to that profile.
 
-`set_processing_options` writes three settings into a profile Quick Start saved,
-through `synthesis.bootstrap.set_processing_options` and the same guard: section
-splitting (`classification.document_shape.sectionSplitting`, from `documents_per_file`
-"one", "several" or "one_per_page", see `DOCUMENTS_PER_FILE`), `extraction.mode`
+`set_processing_options` writes three settings into a profile; the prompt has the
+agent pass only a profile it saved in the conversation, and the code refuses `default`
+and stack-managed ones. It writes them through
+`synthesis.bootstrap.set_processing_options` and the same guard: section splitting
+(`classification.document_shape.sectionSplitting`, from `documents_per_file` "one",
+"several" or "one_per_page", see `DOCUMENTS_PER_FILE`), `extraction.mode`
 (`long_tables` picks "advanced" or "simple") and `summarization.enabled`. `mode` is
 the setting to write rather than `extraction.agentic.enabled`, because the config
 model derives `agentic.enabled` from `mode` and `default` sets `mode: simple`. Only

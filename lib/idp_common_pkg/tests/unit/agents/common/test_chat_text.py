@@ -118,6 +118,13 @@ def test_a_new_session_is_titled_by_what_the_user_sees(relative, monkeypatch):
 
 
 @pytest.mark.parametrize("relative", PROCESSOR_COPIES)
+def test_a_session_a_hidden_message_opens_is_still_titled(relative, monkeypatch):
+    module = _load_processor(relative)
+    sessions = _persist(module, monkeypatch, HIDDEN, None)
+    assert sessions.put_item.call_args.kwargs["Item"]["title"] == "Quick Start"
+
+
+@pytest.mark.parametrize("relative", PROCESSOR_COPIES)
 def test_a_message_the_user_sees_none_of_keeps_the_previous_preview(
     relative, monkeypatch
 ):
@@ -152,6 +159,12 @@ def test_the_resolver_titles_a_new_session_by_what_the_user_sees(resolver):
     item = sessions.put_item.call_args.kwargs["Item"]
     assert item["title"] == "Attached 3 documents"
     assert item["lastMessage"] == "Attached 3 documents"
+
+
+def test_the_resolver_titles_a_session_a_hidden_message_opens(resolver):
+    sessions = MagicMock()
+    resolver.create_session_metadata(sessions, "u1", "s1", HIDDEN, "t", 0)
+    assert sessions.put_item.call_args.kwargs["Item"]["title"] == "Quick Start"
 
 
 def test_the_resolver_keeps_the_preview_for_a_message_the_user_sees_none_of(resolver):
