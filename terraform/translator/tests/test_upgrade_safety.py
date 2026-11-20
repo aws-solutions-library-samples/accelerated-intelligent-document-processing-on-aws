@@ -241,6 +241,19 @@ def test_an_event_invoke_config_is_replaced_rather_than_updated(schema):
     assert "function_name" not in head and "qualifier" not in head
 
 
+def test_a_conditional_event_invoke_config_keys_on_its_own_instance(schema):
+    t = eic_fragment()
+    t["Conditions"] = {"On": {"Fn::Equals": ["a", "a"]}}
+    t["Resources"]["Eic"]["Condition"] = "On"
+    main_tf = translated(t, schema).emitted["Eic"]
+    head, resource = main_tf.split('resource "awscc_lambda_event_invoke_config"')
+    assert "count = " in head and "count = " in resource
+    assert (
+        "replace_triggered_by = [terraform_data.eic_settings_key[count.index]]"
+        in _lifecycle(resource)
+    )
+
+
 # ------------------------------------------------------- whole standard template
 @pytest.fixture(scope="module")
 def standard(tmp_path_factory) -> Path:
