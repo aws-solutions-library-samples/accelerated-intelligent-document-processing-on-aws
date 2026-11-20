@@ -150,6 +150,25 @@ either bound returns a tool error the agent can read, rather than an image.
 `version=`. With none it raises `ValueError` before the model runs; there is no
 fallback to the active profile.
 
+### Rules discovery can accumulate uploads into a policy group (#608)
+
+`discovery_rules_from_document(..., policy_group=...)` names an optional group,
+validated by `normalize_policy_group` (the same function the upload resolver
+calls). `_save_rules_to_config` then puts every rule from every returned rule class
+into the one policy class whose `x-aws-idp-policy-group` matches by
+`policy_group_key` (case and spacing ignored), creating it on the first upload under
+`policy_group_class_name(group)` (`_2`-suffixed on a name collision). A later upload
+**appends**: only `rule_properties` gains entries, a rule name already present is
+added as `<name>_2` and reported in the save warnings, and nothing is superseded.
+Two classes carrying one group raise `ValueError` before anything is written. With
+no group the save is unchanged. Every rules-discovery save holds a per-profile lease
+(`PolicyDiscoverySaveLease#<profile>` in the configuration table, a conditional put
+with a `POLICY_SAVE_LEASE_SECONDS` expiry) around its read-modify-write, so
+concurrent saves into one profile do not lose each other's rules; other writers of
+the profile (Policy Schema edits, classes discovery, the resolver's Replace clear) do
+not take it. The upload resolver refuses a group with `saveMode: replace`, which
+would clear the group's class before the job runs, and with `pageRanges`.
+
 ### Multi-record samples produce a suggestion, not a setting (#765)
 
 Both single-document flows append `_INSTANCE_COUNT_INSTRUCTION` to the prompt: the

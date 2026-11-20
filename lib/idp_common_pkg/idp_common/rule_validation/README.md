@@ -833,6 +833,24 @@ Three properties of that helper matter if you write another service like these:
   the notebook case it does handle is two `asyncio.run` calls in sequence. A third
   service that shares one instance across threads needs its own answer.
 
+The synchronous entry points, `RuleValidationService.validate_document` and
+`RuleValidationOrchestratorService.consolidate_and_save`, which the two rule
+validation Lambda handlers call, both drive their async job through
+`concurrency.run_sync`. It looks for a running event loop **before** the job
+starts: with none (a Lambda handler, a script) the job runs on a new loop in the
+calling thread; with one (a notebook) it runs under `asyncio.run` in a worker
+thread. The job runs exactly once, and anything it raises, a `RuntimeError`
+included, propagates unchanged. Do not decide the path by catching `RuntimeError`
+around the run: that also catches an error from the job itself and runs the whole
+job, every model call included, a second time.
+
+The no-loop path deliberately does not use `asyncio.run`. That function ends by
+joining the loop's default executor, for up to five minutes, and every Bedrock call
+here runs in that executor. When one rule fails, its siblings' calls are still
+running there, so `asyncio.run` would hold the error back until the slowest of them
+returned. `run_sync` cancels the job's leftover tasks and closes the loop without
+waiting; the abandoned calls finish in the background.
+
 What bounds the calls if this semaphore does not is the event loop's **default
 executor**: the Bedrock client call is blocking and goes through
 `loop.run_in_executor(None, ...)`, whose pool is `min(32, os.cpu_count() + 4)`

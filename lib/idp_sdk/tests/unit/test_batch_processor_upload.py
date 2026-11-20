@@ -37,6 +37,7 @@ import csv
 import json
 import os
 import re
+from datetime import datetime, timezone
 
 import boto3
 import pytest
@@ -160,6 +161,29 @@ def _write_manifest(tmp_path, rows, name="manifest.csv"):
     return str(path)
 
 
+class _FrozenDatetime(datetime):
+    """`datetime` whose `now` is always 2026-01-02 03:04:05.678901 UTC."""
+
+    @classmethod
+    def now(cls, tz=None):
+        frozen = datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
+        return frozen if tz is None else frozen.astimezone(tz)
+
+
+def _freeze_clock(monkeypatch):
+    """Freeze every clock a batch id could be read from.
+
+    Both the shared id helper and the batch processor module are patched, so the
+    collision test still freezes the clock if the processor goes back to reading
+    the time itself; otherwise a regression would pass whenever two calls happen
+    to straddle a second boundary.
+    """
+    from idp_sdk._core import batch_processor, ids
+
+    monkeypatch.setattr(ids, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(batch_processor, "datetime", _FrozenDatetime)
+
+
 def _keys(s3_client, bucket, prefix=""):
     """Every key in ``bucket`` under ``prefix``, sorted."""
     response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
@@ -193,9 +217,54 @@ class TestConstruction:
 class TestBatchIdGeneration:
     """The batch id is the S3 key prefix, so its shape is a contract."""
 
-    def test_the_generated_id_is_the_prefix_and_a_utc_timestamp(self, processor):
+    def test_the_generated_id_is_the_prefix_a_utc_timestamp_and_a_suffix(
+        self, processor
+    ):
         batch_id = processor._generate_batch_id("experiment-v1")
-        assert re.fullmatch(r"experiment-v1-\d{8}-\d{6}", batch_id), batch_id
+        assert re.fullmatch(r"experiment-v1-\d{8}-\d{6}-[0-9a-f]{8}", batch_id), (
+            batch_id
+        )
+
+    def test_two_ids_generated_in_the_same_second_differ(self, processor, monkeypatch):
+        """#2113: a timestamp-only id gave two batches one S3 prefix."""
+        _freeze_clock(monkeypatch)
+        first = processor._generate_batch_id("cli-batch")
+        second = processor._generate_batch_id("cli-batch")
+        assert first != second
+        assert first.startswith("cli-batch-20260102-030405-")
+        assert second.startswith("cli-batch-20260102-030405-")
+
+    def test_two_batches_in_the_same_second_keep_their_own_documents(
+        self, processor, s3, tmp_path, monkeypatch
+    ):
+        """The symptom itself: same prefix, same second, same file name. Each
+        batch's document must survive under its own id rather than one overwriting
+        the other under a shared one."""
+        _freeze_clock(monkeypatch)
+        first_dir, second_dir = tmp_path / "one", tmp_path / "two"
+        _write_pdf(first_dir, "a.pdf", body=b"%PDF-1.4 first")
+        _write_pdf(second_dir, "a.pdf", body=b"%PDF-1.4 second")
+
+        first = processor.process_batch_from_directory(str(first_dir))["batch_id"]
+        second = processor.process_batch_from_directory(str(second_dir))["batch_id"]
+
+        assert first != second
+        assert _keys(s3, INPUT_BUCKET) == sorted([f"{first}/a.pdf", f"{second}/a.pdf"])
+        bodies = {
+            batch_id: s3.get_object(Bucket=INPUT_BUCKET, Key=f"{batch_id}/a.pdf")[
+                "Body"
+            ].read()
+            for batch_id in (first, second)
+        }
+        assert bodies == {first: b"%PDF-1.4 first", second: b"%PDF-1.4 second"}
+
+    def test_an_explicit_batch_id_is_used_verbatim(self, processor, s3, tmp_path):
+        _write_pdf(tmp_path, "a.pdf")
+        result = processor.process_batch_from_directory(
+            str(tmp_path), batch_id="my-batch-20250101-000000"
+        )
+        assert result["batch_id"] == "my-batch-20250101-000000"
+        assert _keys(s3, INPUT_BUCKET) == ["my-batch-20250101-000000/a.pdf"]
 
     def test_uploaded_keys_sit_under_the_generated_id(self, processor, s3, tmp_path):
         _write_pdf(tmp_path, "a.pdf")

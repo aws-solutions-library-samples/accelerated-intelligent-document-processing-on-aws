@@ -48,6 +48,9 @@ import PdfPageSelector from './PdfPageSelector';
 import type { PageRange } from './PdfPageSelector';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 import { useFormatters } from '../../i18n/format';
+import { useIntl } from 'react-intl';
+import { isGroupWithReplace, normalizePolicyGroup, policyGroupMessages, policyGroupProblem } from './policyGroup';
+import PolicyGroupField from './PolicyGroupField';
 
 const client = generateClient();
 
@@ -131,6 +134,11 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
   const [saveMode, setSaveMode] = useState<'augment' | 'replace'>('augment');
   const replaceOnActive = isReplaceOnActive(saveMode, selectedVersion?.value, versions);
+  // Policy Discovery only: uploads naming the same group append to one policy class.
+  const [policyGroup, setPolicyGroup] = useState('');
+  const policyGroupError = discoveryType === 'rules' ? policyGroupProblem(policyGroup) : null;
+  const groupWithReplace = discoveryType === 'rules' && isGroupWithReplace(policyGroup, saveMode);
+  const intl = useIntl();
   const [showCreateVersionModal, setShowCreateVersionModal] = useState(false);
   const [, setTick] = useState(0); // Force re-render for elapsed time
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -403,6 +411,9 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       setError(REPLACE_ON_ACTIVE_MESSAGE);
       return;
     }
+    if (policyGroupError || groupWithReplace) {
+      return;
+    }
 
     setIsUploading(true);
     setUploadStatus([]);
@@ -444,6 +455,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
           pageLabels: pageLabelStrings,
           discoveryType,
           saveMode,
+          ...(discoveryType === 'rules' && normalizePolicyGroup(policyGroup) ? { policyGroup: normalizePolicyGroup(policyGroup) } : {}),
         },
       });
 
@@ -856,6 +868,9 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
             </Alert>
           )}
 
+          {discoveryType === 'rules' && <PolicyGroupField value={policyGroup} onChange={setPolicyGroup} disabled={isUploading} />}
+          {groupWithReplace && <Alert type="error">{intl.formatMessage(policyGroupMessages.replaceWithGroup)}</Alert>}
+
           <ColumnLayout columns={2}>
             <FormField label="Document File" description="Select the document to analyze">
               <input
@@ -1017,6 +1032,8 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
                 !selectedVersion ||
                 selectedVersion.value === 'default' ||
                 replaceOnActive ||
+                !!policyGroupError ||
+                groupWithReplace ||
                 isUploading ||
                 isValidatingJson
               }
