@@ -353,7 +353,9 @@ the apply's output takes.
 No re-plan change is accepted as a known defect: every change fails the run. The
 API Gateway stage's access-log destination used to re-plan after every apply, because
 the translator wrote the log group's ARN in CloudFormation's `:*` form and the stage
-stores it without the suffix (#2006); the translator now writes the bare ARN there.
+stores it without the suffix (#2006); the translator now writes the bare ARN there. The scheduled run deploys at the default
+`LogLevel` of `WARN`, which leaves the stage's access logs off, so its re-plan does not
+exercise that attribute; the translator's offline tests are what cover it.
 
 **Scheduling it after the CloudFormation nightly.** Both runs hold
 `resource_group: integration_deploy`, so whichever reaches `integration_tests`

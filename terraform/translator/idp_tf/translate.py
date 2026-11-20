@@ -120,8 +120,9 @@ AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
 
 #: Not a CloudFormation attribute: the translator rewrites a log group's
 #: ``GetAtt Arn`` to it where the consuming service stores the ARN without
-#: CloudFormation's ``:*`` suffix. The space keeps it from ever matching an
-#: attribute a template could name.
+#: CloudFormation's ``:*`` suffix. A template naming it on a log group gets that
+#: rewrite too (CloudFormation itself would refuse such a template); on any other
+#: type it is refused as an unmapped attribute.
 BARE_ARN_ATTR = "Arn without suffix"
 
 # Functions that walk the stack tree at run time. Under Terraform they get the
@@ -609,7 +610,11 @@ class Translator:
                     f"{self._current}: nested stack {name} has no output {out}"
                 )
             return self._wrap(plan, out)
-        if plan.kind == "awscc" and attr == BARE_ARN_ATTR:
+        if (
+            plan.kind == "awscc"
+            and attr == BARE_ARN_ATTR
+            and plan.cfn_type == "AWS::Logs::LogGroup"
+        ):
             # Under --mode awscc a log group is awscc_logs_log_group, whose arn
             # is Cloud Control's, CloudFormation's form; the bare ARN is that
             # value without its ":*".

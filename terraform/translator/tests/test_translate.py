@@ -1187,3 +1187,13 @@ def test_a_stage_destination_naming_another_type_keeps_its_arn(vendored):
     main_tf = Translator(template, vendored).render()["main.tf"]
     stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
     assert "destination_arn = awscc_sqs_queue.queue.arn" in stage, stage
+
+
+@pytest.mark.parametrize("mode", ["hybrid", "awscc"])
+def test_the_internal_bare_arn_attribute_is_refused_on_other_types(vendored, mode):
+    from idp_tf.translate import BARE_ARN_ATTR
+
+    template = _stage_logging_template({"Fn::GetAtt": ["Queue", BARE_ARN_ATTR]})
+    template["Resources"]["Queue"] = {"Type": "AWS::SQS::Queue", "Properties": {}}
+    with pytest.raises(TranslationError):
+        Translator(template, vendored, mode=mode).render()
