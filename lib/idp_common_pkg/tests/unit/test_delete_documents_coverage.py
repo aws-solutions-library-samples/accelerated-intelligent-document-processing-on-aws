@@ -185,10 +185,26 @@ def recorded_sleeps(monkeypatch) -> list:
     return slept
 
 
-def _s3(pages: list | None = None) -> MagicMock:
+def _s3(pages: list | None = None, input_pages=None) -> MagicMock:
+    """An S3 double whose version listing answers per bucket.
+
+    ``pages`` is the Output bucket's listing and ``input_pages`` the Input bucket's;
+    both purges list versions now (#2166), so one shared answer would hand the output
+    fixture to the input purge as well — and an ``iter(...)`` fixture would be consumed
+    by whichever ran first. ``input_pages`` may be a callable taking the ``Prefix``, for
+    a bulk delete whose documents need different answers.
+    """
     s3 = MagicMock()
     paginator = MagicMock()
-    paginator.paginate.return_value = pages if pages is not None else [{}]
+
+    def paginate(*, Bucket, Prefix):
+        if Bucket == "in":
+            if callable(input_pages):
+                return input_pages(Prefix)
+            return input_pages if input_pages is not None else [{}]
+        return pages if pages is not None else [{}]
+
+    paginator.paginate.side_effect = paginate
     s3.get_paginator.return_value = paginator
     return s3
 
@@ -840,12 +856,140 @@ class TestDeleteSingleDocument:
         delete_single_document(KEY, table, _s3(), "in", "out", dry_run=True)
         table.get_item.assert_called_once()
 
-    def test_the_input_object_is_deleted_by_key(self):
-        table = _table()
-        s3 = _s3()
-        result = delete_single_document(KEY, table, s3, "in", "out")
-        s3.delete_object.assert_called_once_with(Bucket="in", Key=KEY)
+    def test_every_version_of_the_input_key_is_purged(self):
+        # The input bucket is versioned, so a versionless delete_object only adds a
+        # delete marker and leaves the upload as a noncurrent version for
+        # DataRetentionInDays (#2166). Every version and marker goes, by VersionId.
+        s3 = _s3(
+            input_pages=[
+                {
+                    "Versions": [
+                        {"Key": KEY, "VersionId": "i1"},
+                        {"Key": KEY, "VersionId": "i2"},
+                    ],
+                    "DeleteMarkers": [{"Key": KEY, "VersionId": "idm"}],
+                }
+            ]
+        )
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        s3.delete_object.assert_not_called()
+        calls = [
+            c.kwargs
+            for c in s3.delete_objects.call_args_list
+            if c.kwargs["Bucket"] == "in"
+        ]
+        assert [c["Delete"]["Objects"] for c in calls] == [
+            [
+                {"Key": KEY, "VersionId": "i1"},
+                {"Key": KEY, "VersionId": "i2"},
+                {"Key": KEY, "VersionId": "idm"},
+            ]
+        ]
         assert result["deleted"]["input_file"] is True
+        assert result["deleted"]["input_versions"] == 3
+        assert result["success"] is True
+
+    def test_the_input_purge_takes_the_exact_key_only(self):
+        # The listing is by byte prefix, so it returns neighbours: `a.pdf` must not
+        # reach `a.pdf.bak`, `a.pdf2` or anything "beneath" it. Unlike the output
+        # bucket, nothing of the document lives under `{key}/` in the input bucket — a
+        # key there is another upload.
+        neighbours = [f"{KEY}.bak", f"{KEY}2", f"{KEY}/x.pdf"]
+        s3 = _s3(
+            input_pages=[
+                {
+                    "Versions": [
+                        {"Key": k, "VersionId": f"n{i}"}
+                        for i, k in enumerate(neighbours)
+                    ]
+                    + [{"Key": KEY, "VersionId": "mine"}],
+                    "DeleteMarkers": [{"Key": neighbours[0], "VersionId": "ndm"}],
+                }
+            ]
+        )
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        sent = [
+            o
+            for c in s3.delete_objects.call_args_list
+            if c.kwargs["Bucket"] == "in"
+            for o in c.kwargs["Delete"]["Objects"]
+        ]
+        assert sent == [{"Key": KEY, "VersionId": "mine"}]
+        assert result["deleted"]["input_versions"] == 1
+        paginate = s3.get_paginator.return_value.paginate
+        assert paginate.call_args_list[0].kwargs == {"Bucket": "in", "Prefix": KEY}
+
+    def test_the_input_purge_is_paginated(self):
+        s3 = _s3(
+            input_pages=[
+                {"Versions": [{"Key": KEY, "VersionId": "i1"}]},
+                {"DeleteMarkers": [{"Key": KEY, "VersionId": "i2"}]},
+            ]
+        )
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        assert result["deleted"]["input_versions"] == 2
+
+    def test_a_refused_input_purge_is_reported_not_counted(self):
+        # The #1366 shape on the input side: a role holding s3:ListBucketVersions but
+        # not s3:DeleteObjectVersion gets a 200 whose Errors refuse every key.
+        s3 = _s3(input_pages=[{"Versions": [{"Key": KEY, "VersionId": "i1"}]}])
+        s3.delete_objects.return_value = {
+            "Errors": [{"Key": KEY, "VersionId": "i1", "Code": "AccessDenied"}]
+        }
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        assert result["success"] is False
+        assert result["deleted"]["input_file"] is False
+        assert result["deleted"]["input_versions"] == 0
+        assert any(
+            "from input bucket" in e and "AccessDenied" in e for e in result["errors"]
+        ), result["errors"]
+
+    def test_input_refusals_survive_a_later_input_batch_failure(self):
+        # The input purge shares the output purge's accumulation, so it shares the way
+        # of losing a refusal: a later batch raising past the retry ladder.
+        versions = [{"Key": KEY, "VersionId": f"i{i}"} for i in range(1001)]
+        s3 = _s3(input_pages=[{"Versions": versions}])
+        s3.delete_objects.side_effect = [
+            {"Errors": [{"Key": KEY, "VersionId": "i0", "Code": "AccessDenied"}]},
+            RuntimeError("batch 2 of DeleteObjects failed"),
+        ]
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        message = next(e for e in result["errors"] if "from input bucket" in e)
+        assert "batch 2" in message and "AccessDenied" in message, message
+        assert result["deleted"]["input_versions"] == 999
+        assert result["deleted"]["input_file"] is False
+
+    def test_a_failed_input_purge_falls_back_to_the_versionless_delete(self):
+        # A caller refused the versioned purge must still leave the upload no longer
+        # current, which is what the versionless delete gave every caller before.
+        s3 = _s3(input_pages=[_ListingFailure("AccessDenied on ListObjectVersions")])
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        s3.delete_object.assert_called_once_with(Bucket="in", Key=KEY)
+        assert result["success"] is False
+        assert result["errors"][0].startswith("Error deleting from input bucket")
+
+    def test_a_failed_fallback_is_reported_too(self):
+        s3 = _s3(input_pages=[_ListingFailure("denied")])
+        s3.delete_object.side_effect = RuntimeError("also denied")
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        assert any(
+            "versionless fallback" in e and "also denied" in e for e in result["errors"]
+        )
+
+    def test_a_completed_purge_issues_no_versionless_delete(self):
+        # The fallback would add a fresh delete marker over a key just purged clean.
+        s3 = _s3(input_pages=[{"Versions": [{"Key": KEY, "VersionId": "i1"}]}])
+        delete_single_document(KEY, _table(), s3, "in", "out")
+        s3.delete_object.assert_not_called()
+
+    def test_an_input_key_with_no_versions_is_already_gone(self):
+        # A re-run of a delete, or a key that never reached the bucket: nothing is held,
+        # so this is the idempotent success a versionless delete_object also reported.
+        s3 = _s3(input_pages=[{}])
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+        assert result["deleted"]["input_file"] is True
+        assert result["deleted"]["input_versions"] == 0
+        assert result["success"] is True
 
     def test_every_output_version_and_delete_marker_is_purged(self):
         # The output bucket is versioned and prior runs' bytes are pinned as noncurrent
@@ -1043,45 +1187,69 @@ class TestDeleteSingleDocument:
         assert result["success"] is False
         assert any("AccessDenied" in message for message in result["errors"])
 
-    def test_refusals_already_seen_survive_a_later_listing_failure(self):
+    def test_refusals_already_seen_survive_a_later_batch_failure(self):
         """⚠️ Accumulating is what makes losing them possible.
 
         The immediate-raise form could not drop a refusal because it never got past
         one. Holding them until the last batch means anything that fails afterwards —
-        the next listing page most obviously — would otherwise replace the refusal with
-        its own message, and the caller would be told the listing broke and never learn
-        that versions were denied.
+        a later ``DeleteObjects`` batch that raises past the retry ladder — would
+        otherwise replace the refusal with its own message, and the caller would be told
+        the batch broke and never learn that versions were denied.
         """
-        s3 = MagicMock()
-        paginator = MagicMock()
-        # An explicit, finite page sequence whose second element raises. A bare
-        # `return_value` here would iterate for ever.
-        paginator.paginate.return_value = iter(
-            [
-                {"Versions": [{"Key": OUT1, "VersionId": "v1"}]},
-                _ListingFailure("page 2 of ListObjectVersions failed"),
-            ]
-        )
-        s3.get_paginator.return_value = paginator
-        s3.delete_objects.return_value = {
-            "Errors": [
-                {
-                    "Key": OUT1,
-                    "VersionId": "v1",
-                    "Code": "AccessDenied",
-                    "Message": "Access Denied",
-                }
-            ]
-        }
+        versions = [
+            {"Key": key, "VersionId": f"v{i}"}
+            for i, key in enumerate(_own_outputs(1001))
+        ]
+        s3 = _s3([{"Versions": versions}])
+        s3.delete_objects.side_effect = [
+            {
+                "Errors": [
+                    {
+                        "Key": versions[0]["Key"],
+                        "VersionId": "v0",
+                        "Code": "AccessDenied",
+                    }
+                ]
+            },
+            RuntimeError("batch 2 of DeleteObjects failed"),
+        ]
 
         result = delete_single_document(KEY, _table(), s3, "in", "out")
 
         assert result["success"] is False
         joined = " ".join(result["errors"])
-        assert "page 2" in joined, "the listing failure is not reported"
+        assert "batch 2" in joined, "the batch failure is not reported"
         assert "AccessDenied" in joined, (
-            f"the refusal seen on page 1 was discarded: {result['errors']}"
+            f"the refusal seen in batch 1 was discarded: {result['errors']}"
         )
+        assert result["deleted"]["output_files"] == 999
+
+    def test_a_listing_failure_deletes_nothing_and_is_reported(self):
+        """The whole listing is read before the first delete.
+
+        Deleting page by page made the next page's ``VersionIdMarker`` name a version
+        that had just been deleted, and moto ended the listing there with the remainder
+        never attempted (``test_delete_input_versions_moto.py`` measures it). Listing
+        first means a fault on page 2 leaves the document intact and reported, so a
+        retry finds the same versions.
+        """
+        s3 = _s3(
+            iter(
+                [
+                    {"Versions": [{"Key": OUT1, "VersionId": "v1"}]},
+                    _ListingFailure("page 2 of ListObjectVersions failed"),
+                ]
+            )
+        )
+
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+
+        assert result["success"] is False
+        assert any("page 2" in e for e in result["errors"]), result["errors"]
+        out_calls = [
+            c for c in s3.delete_objects.call_args_list if c.kwargs["Bucket"] == "out"
+        ]
+        assert out_calls == [], "a partial listing was acted on"
 
     def test_a_malformed_errors_array_cannot_produce_a_negative_count(self):
         """The count is by key identity, not by subtraction.
@@ -1221,13 +1389,16 @@ class TestDeleteSingleDocument:
         "failing, fragment",
         [
             ("get_item", "Error getting document metadata"),
-            ("delete_object", "Error deleting from input bucket"),
+            ("input_listing", "Error deleting from input bucket"),
         ],
     )
     def test_each_step_reports_its_own_failure(self, failing, fragment):
-        table, s3 = _table(), _s3()
-        target = table if failing == "get_item" else s3
-        getattr(target, failing).side_effect = RuntimeError("boom")
+        table = _table()
+        if failing == "get_item":
+            s3 = _s3()
+            table.get_item.side_effect = RuntimeError("boom")
+        else:
+            s3 = _s3(input_pages=[_ListingFailure("boom")])
         result = delete_single_document(KEY, table, s3, "in", "out")
         assert result["success"] is False
         assert any(fragment in e for e in result["errors"])
@@ -1340,8 +1511,10 @@ class TestDeleteDocuments:
         # The default, and the right one for a bulk delete: one inaccessible object
         # should not strand the rest of the batch half-deleted.
         table = _table()
-        s3 = _s3()
-        s3.delete_object.side_effect = [RuntimeError("no"), None, None]
+        # The first document's input listing faults; the others' succeed.
+        s3 = _s3(
+            input_pages=lambda key: [_ListingFailure("no")] if key == "a" else [{}]
+        )
         result = delete_documents(["a", "b", "c"], table, s3, "in", "out")
         assert result["failed_count"] == 1
         assert result["deleted_count"] == 2
@@ -1349,8 +1522,10 @@ class TestDeleteDocuments:
 
     def test_continue_on_error_false_stops_at_the_first_failure(self):
         table = _table()
-        s3 = _s3()
-        s3.delete_object.side_effect = [RuntimeError("no"), None]
+        # The first document's input listing faults; the others' succeed.
+        s3 = _s3(
+            input_pages=lambda key: [_ListingFailure("no")] if key == "a" else [{}]
+        )
         result = delete_documents(
             ["a", "b", "c"], table, s3, "in", "out", continue_on_error=False
         )

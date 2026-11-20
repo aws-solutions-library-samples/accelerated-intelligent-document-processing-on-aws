@@ -1736,10 +1736,20 @@ idp-cli delete-documents [OPTIONS]
 - `--region`: AWS region (optional)
 
 **What Gets Deleted:**
-- Source files from input bucket
-- Processed outputs from output bucket
+- Source files from input bucket, **every version** of the exact key. The input bucket is
+  versioned, so the uploaded file is not kept as a recoverable noncurrent version; a
+  deleted upload cannot be restored from the bucket afterwards.
+- Processed outputs from output bucket, including every version (document version history)
 - DynamoDB tracking records
 - List entries in tracking table
+
+The input purge needs `s3:ListBucketVersions` on the input bucket and
+`s3:DeleteObjectVersion` on its objects, in addition to the unversioned permissions. With
+credentials that lack them, the upload is still removed the versionless way, so it is no
+longer the current object, but versions the purge could not delete (all of them, if the
+listing itself is refused) stay in the bucket, and the document is reported as failed with
+the input bucket named. Use `--dry-run` first: nothing a delete
+removes can be recovered.
 
 **Exit codes:** `No documents found for batch …` with exit 0 means the selector matched
 nothing, and that is all it means. A failure while finding the documents — a throttled or
