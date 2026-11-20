@@ -49,3 +49,26 @@ def test_file_types_imports_without_the_ocr_service_dependencies():
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "pdf"
+
+
+@pytest.mark.unit
+def test_the_ocr_package_resolves_its_service_on_first_use():
+    import idp_common.ocr as ocr_package
+
+    assert ocr_package.OcrService is OcrService
+    with pytest.raises(AttributeError, match="no attribute 'NotThere'"):
+        getattr(ocr_package, "NotThere")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("name", "expected"), [("a.txt", "txt"), ("a.csv", "csv")])
+def test_text_types_are_routed_by_name(name, expected):
+    assert routed_file_type(name) == expected
+
+
+@pytest.mark.unit
+def test_the_ole2_sniff_reads_only_the_container_signature():
+    from idp_common.ocr.file_types import is_legacy_ole2_office_file
+
+    assert is_legacy_ole2_office_file(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1rest")
+    assert not is_legacy_ole2_office_file(b"PK\x03\x04")

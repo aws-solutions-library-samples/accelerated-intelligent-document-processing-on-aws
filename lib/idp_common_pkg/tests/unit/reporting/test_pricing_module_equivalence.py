@@ -136,3 +136,51 @@ def test_the_pricing_module_imports_without_pyarrow():
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "None"
+
+
+@pytest.mark.unit
+def test_the_reporting_package_resolves_its_writer_on_first_use():
+    import idp_common.reporting as reporting_package
+
+    assert reporting_package.SaveReportingData is SaveReportingData
+    with pytest.raises(AttributeError, match="no attribute 'NotThere'"):
+        getattr(reporting_package, "NotThere")
+
+
+class _Unit:
+    def __init__(self, name, price):
+        self.name, self.price = name, price
+
+
+class _Entry:
+    def __init__(self, name, units):
+        self.name, self.units = name, units
+
+
+@pytest.mark.unit
+def test_an_invalid_price_is_skipped_but_its_entry_is_kept():
+    pricing_map = pricing.build_pricing_map(
+        [
+            _Entry(
+                "bedrock/m", [_Unit("inputTokens", "nan"), _Unit("outputTokens", "0.5")]
+            )
+        ]
+    )
+    assert pricing_map == {"bedrock/m": {"outputTokens": 0.5}}
+    only_invalid = pricing.build_pricing_map([_Entry("bedrock/x", [_Unit("u", "-1")])])
+    assert only_invalid == {"bedrock/x": {}}
+    # The entry stays, so the unit is reported unpriced rather than priced elsewhere.
+    assert pricing.unit_cost(only_invalid, "bedrock/x", "u", 3) is None
+
+
+@pytest.mark.unit
+def test_no_pricing_section_and_a_malformed_one_give_an_empty_map(caplog):
+    assert pricing.build_pricing_map(None) == {}
+    assert pricing.build_pricing_map([object()]) == {}
+    assert "Error processing pricing" in caplog.text
+
+
+@pytest.mark.unit
+def test_a_key_without_context_is_its_own_service_api():
+    rows = list(pricing.iter_metering_rows({"textract": {"pages": "2"}}))
+    assert rows == [("", "textract", "pages", 2.0)]
