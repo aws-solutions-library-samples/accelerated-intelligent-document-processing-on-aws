@@ -240,7 +240,7 @@ def test_a_feature_ablation_keeps_its_question_and_links_to_its_section(monkeypa
     assert out.faq == [
         f"### {entry['question']}",
         "",
-        "See [Which approach should I use?](#which-approach-should-i-use).",
+        "See [Approach comparison](#approach-comparison).",
         "",
     ]
     assert out.plots == {}
@@ -400,7 +400,7 @@ def test_the_metric_comparison_names_every_metric_and_keeps_its_title_short():
     assert "holistic better →" in svg and "No difference" in svg
     defs = "\n".join(rsa.metric_definitions())
     assert "V-measure" in defs and "Rand index" in defs and "Ordering" in defs
-    assert "(#questions)" in defs and rsa.STICKLER in defs
+    assert "(#results)" in defs and rsa.STICKLER in defs
 
 
 def test_a_clear_change_is_said_as_one():

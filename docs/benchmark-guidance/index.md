@@ -126,6 +126,6 @@ A benchmark shows:
 
 We haven't run these yet.
 
-- How much do results vary between identical runs? (TR-01)
+- Run-to-run variation (TR-01)
 
 <!-- END GENERATED FAQ -->

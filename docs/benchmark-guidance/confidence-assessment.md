@@ -13,7 +13,7 @@ Confidence assessment gives every extracted value a score, so a person reviews t
 most likely to be wrong instead of every value.
 [Confidence Assessment](../idp-fundamentals/confidence-assessment.md) explains how it works.
 
-## How to improve confidence on your documents
+## Improving confidence
 
 **Your definitions.** The scoring model reads each field's description when it judges a
 value. Say what a right value looks like. Mark the fields you can't do without as required:
@@ -26,14 +26,14 @@ which adds scan noise to real invoices.
 
 **Settings.**
 
-| Setting | What it changes | Questions |
+| Setting | What it changes | Benchmarks |
 |---|---|---|
-| Scoring mode | A separate scoring pass, scores inside the extraction call, or none | [CF-03](#separate-scoring-pass-or-integrated-into-extraction) |
-| Scoring model | The model that scores each value | [CF-02](#which-scoring-model-should-i-use) |
+| Scoring mode | A separate scoring pass, scores inside the extraction call, or none | [CF-03](#separate-or-integrated-scoring) |
+| Scoring model | The model that scores each value | [CF-02](#scoring-model) |
 | Confidence threshold | The score below which a value goes to review | [CF-01](#planned), [CF-04](#planned) |
 | Page images | Whether the scoring model sees the pages | [CF-06](#planned) |
 
-## Questions
+## Results
 
 <details>
 <summary>What the metrics mean</summary>
@@ -55,13 +55,13 @@ Full definitions: Stickler's [Confidence Metrics](https://awslabs.github.io/stic
 
 <!-- BEGIN GENERATED FAQ -->
 
-### Which scoring model should I use?
+### Scoring model
 
 ![Haiku 5.5 catches errors like Sonnet 5.5, at a fifth the cost: AUROC and ECARB at a 30% review budget against cost per 1,000 documents, one point per scoring model](../../images/benchmark-guidance/CF-02-fields.svg)
 
 *Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (1×, what reviewing a random 30% of values catches).*
 
-**Answer:** Claude Haiku 5.5 is a good place to start. On RealKIE invoices, reviewing the 30% of values it was least sure of found 2.4 times as many wrong values as reviewing a random 30% (this ratio is ECARB). That's as many as Claude Sonnet 5.5, for a fifth of the cost. Amazon Nova Lite, the preset's default, did worse than a random review (0.6 times). Test it on your own documents.
+**Finding:** Claude Haiku 5.5 is a good place to start. On RealKIE invoices, reviewing the 30% of values it was least sure of found 2.4 times as many wrong values as reviewing a random 30% (this ratio is ECARB). That's as many as Claude Sonnet 5.5, for a fifth of the cost. Amazon Nova Lite, the preset's default, did worse than a random review (0.6 times). Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -91,13 +91,13 @@ Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a
 
 </details>
 
-### Separate scoring pass or integrated into extraction?
+### Separate or integrated scoring
 
 ![Integrated scoring costs W-2 accuracy; off is cheapest: weighted accuracy against cost per 1,000 documents, one point per confidence mode](../../images/benchmark-guidance/CF-03-fields.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** If people review values by confidence, a separate scoring pass is a good place to start. If nobody does, turn confidence off: accuracy stayed the same and cost fell 13% to 28%. Test it on your own documents.
+**Finding:** If people review values by confidence, a separate scoring pass is a good place to start. If nobody does, turn confidence off: accuracy stayed the same and cost fell 13% to 28%. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -129,13 +129,13 @@ Integrated scoring lowered W-2 accuracy from 1.00 to 0.96 to save $0.81 per 1,00
 
 </details>
 
-### Can a decision model score confidence?
+### Decision model for confidence scoring
 
 ![An LLM scores confidence better than the Strands Decider 2B, for less: AUROC and ECARB at a 30% review budget against cost per 1,000 documents, one point per who scores the values](../../images/benchmark-guidance/CF-08-fields.svg)
 
 *Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (1×, what reviewing a random 30% of values catches).*
 
-**Answer:** Not yet; score confidence with an LLM, such as Claude Haiku 5.5. The Strands Decider 2B, reading page images, told right values from wrong ones less well (AUROC 0.68 against 0.80) and cost more than three times as much ($104 against $29 per 1,000 invoices). Reviewing its least-sure 30% of values found 2.0 times as many errors as a random review, against 2.5 times for Claude Haiku 5.5, too close to call. Claude Sonnet 5.5 found the most, 3.0 times, for $130. Test it on your own documents.
+**Finding:** Not yet; score confidence with an LLM, such as Claude Haiku 5.5. The Strands Decider 2B, reading page images, told right values from wrong ones less well (AUROC 0.68 against 0.80) and cost more than three times as much ($104 against $29 per 1,000 invoices). Reviewing its least-sure 30% of values found 2.0 times as many errors as a random review, against 2.5 times for Claude Haiku 5.5, too close to call. Claude Sonnet 5.5 found the most, 3.0 times, for $130. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -168,9 +168,9 @@ The decision model is the Strands Decider 2B (StrandsAgents/strands-decider-2B-q
 
 We haven't run these yet.
 
-- Can I route human review by confidence? (CF-01)
-- What confidence threshold should I set? (CF-04)
-- Does classification confidence flag the wrong document class? (CF-05)
-- Does the scoring model need page images? (CF-06)
+- Routing review by confidence (CF-01)
+- Confidence thresholds (CF-04)
+- Classification confidence (CF-05)
+- Page images for the scoring model (CF-06)
 
 <!-- END GENERATED FAQ -->

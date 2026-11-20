@@ -1,6 +1,6 @@
 {
   "ablation": "SC-11",
-  "verdict": "On 20 packets; [Which approach should I use?](#which-approach-should-i-use) compares the same approaches on 100. Holistic classification is a good place to start. With Claude Sonnet 5.5 it got 0.91 of sections exactly right, against 0.76 page by page, for $201 of classification per 1,000 packets; with Claude Haiku 5.5 reading text only it got 0.88 for $2.55 (SC-02). Test it on your own packets.",
+  "verdict": "On 20 packets; [Approach comparison](#approach-comparison) compares the same approaches on 100. Holistic classification is a good place to start. With Claude Sonnet 5.5 it got 0.91 of sections exactly right, against 0.76 page by page, for $201 of classification per 1,000 packets; with Claude Haiku 5.5 reading text only it got 0.88 for $2.55 (SC-02). Test it on your own packets.",
   "runs": {
     "docsplit": {
       "Page by page \u00b7 Amazon Nova 2 Lite": [

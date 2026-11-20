@@ -243,7 +243,7 @@ Four things decide how many tokens extraction uses:
 - **The extraction model.** Models count tokens differently, especially for images, and models
   differ in how many tokens they spend reasoning.
 
-See [When is agentic extraction worth it?](../benchmark-guidance/extraction.md#when-is-agentic-extraction-worth-it)
+See [Agentic or single-pass extraction](../benchmark-guidance/extraction.md#agentic-or-single-pass-extraction)
 for what each mode costs.
 
 ## Measuring accuracy
@@ -335,7 +335,7 @@ reports the rest. `format: date` means ISO 8601 (YYYY-MM-DD); for dates written 
 set `extraction.coercion.date_order` to your documents' convention. See
 [Value coercion](../extraction-and-confidence.md#value-coercion-extractioncoercion),
 [Schema validation](../extraction-and-confidence.md#schema-validation-extractionvalidation) and
-[Do schema validation and value coercion improve the output?](../benchmark-guidance/extraction.md#do-schema-validation-and-value-coercion-improve-the-output)
+[Schema validation and value coercion](../benchmark-guidance/extraction.md#schema-validation-and-value-coercion)
 
 **Add a few-shot example for a hard document class.** A few-shot example is a sample document
 with its correct values, which the accelerator adds to the extraction prompt for that

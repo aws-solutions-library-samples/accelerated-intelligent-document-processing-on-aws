@@ -13,7 +13,7 @@ Extraction fills your database. For each section, it returns the values of the f
 defined for the section's document class.
 [Key Information Extraction](../idp-fundamentals/extraction.md) explains how it works.
 
-## What decides extraction accuracy on your documents
+## Drivers of extraction accuracy
 
 Two things matter more than any setting.
 
@@ -28,20 +28,20 @@ annotation errors are more than half of what Test Studio reports. Check each rep
 and fix the annotation when the extraction was right. See
 [Measure with ground truth](../idp-fundamentals/index.md#4-measure-with-ground-truth).
 
-**The dataset behind most of these results.** Most extraction questions here are answered on [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified): real invoices with ground truth that people checked for every header field and every line item. We lean on it because its ground truth is accurate and its documents are real, varied layouts, not synthetic ones. It is one kind of document, broadcast advertising invoices, many of them with long lists of line items. If your documents have few or no line items, weigh the line-item results less and confirm on your own documents.
+**The dataset behind most of these results.** Most extraction results here come from [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified): real invoices with ground truth that people checked for every header field and every line item. We lean on it because its ground truth is accurate and its documents are real, varied layouts, not synthetic ones. It is one kind of document, broadcast advertising invoices, many of them with long lists of line items. If your documents have few or no line items, weigh the line-item results less and confirm on your own documents.
 
 **Settings** are what we measure:
 
-| Setting | What it changes | Questions |
+| Setting | What it changes | Benchmarks |
 |---|---|---|
-| *Extraction mode* (`extraction.mode`) | Single-pass: one request per section (`simple`). Agentic: an agent that works through the section in shards (`advanced`) | [EX-01](#when-is-agentic-extraction-worth-it), [EX-07](#does-deterministic-table-parsing-help-agentic-extraction), [EX-08](#does-single-pass-extraction-return-every-row-of-a-long-list) |
-| *Extraction model* (`extraction.model`) | The model that reads the section | [EX-02](#which-extraction-model-should-i-use) |
-| Reasoning effort (`extraction.reasoning_effort`) | How long the model reasons before it answers | [EX-03](#does-more-reasoning-effort-improve-extraction) |
+| *Extraction mode* (`extraction.mode`) | Single-pass: one request per section (`simple`). Agentic: an agent that works through the section in shards (`advanced`) | [EX-01](#agentic-or-single-pass-extraction), [EX-07](#deterministic-table-parsing), [EX-08](#long-lists) |
+| *Extraction model* (`extraction.model`) | The model that reads the section | [EX-02](#extraction-model) |
+| Reasoning effort (`extraction.reasoning_effort`) | How long the model reasons before it answers | [EX-03](#reasoning-effort) |
 | Few-shot examples | Sample documents with their correct values, added to the prompt | [EX-05](#planned) |
-| Page images | Whether the model sees the pages as well as the OCR text | [EX-06](#what-is-the-impact-of-document-modality) |
-| Value coercion and schema validation | Type repair and schema checks on every record | [EX-10](#do-schema-validation-and-value-coercion-improve-the-output), [EX-11](#should-i-retry-failed-fields-with-a-stronger-model) |
+| Page images | Whether the model sees the pages as well as the OCR text | [EX-06](#document-modality) |
+| Value coercion and schema validation | Type repair and schema checks on every record | [EX-10](#schema-validation-and-value-coercion), [EX-11](#retrying-failed-fields-with-a-stronger-model) |
 
-## Questions
+## Results
 
 <details>
 <summary>What the metrics mean</summary>
@@ -66,13 +66,13 @@ Full definitions: Stickler's [Thresholds and Metrics](https://awslabs.github.io/
 
 <!-- BEGIN GENERATED FAQ -->
 
-### When is agentic extraction worth it?
+### Agentic or single-pass extraction
 
 ![Agentic extraction helps only on very long extractions, such as 100+ line items: line-item score per invoice against line items per invoice](../../images/benchmark-guidance/EX-01-by-size-realkie-all.svg)
 
 *One point per invoice per extraction mode and model; each line is its running median.*
 
-**Answer:** Single-pass is a good place to start for most documents. Agentic extraction may do better on exceptionally long or complex extractions, such as invoices or receipts with many line items. On [RealKIE](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified) invoices with more than about 100 line items, single-pass got almost no line items right, and agentic with Claude Haiku 5.5 got 44% to 79%. Below that, single-pass scored as well or better, for about the same cost or less. Agentic costs here are a floor: we can't price its calls over 100,000 tokens, which Claude Haiku 5.5 charges more for. Test it on your own documents.
+**Finding:** Single-pass is a good place to start for most documents. Agentic extraction may do better on exceptionally long or complex extractions, such as invoices or receipts with many line items. On [RealKIE](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified) invoices with more than about 100 line items, single-pass got almost no line items right, and agentic with Claude Haiku 5.5 got 44% to 79%. Below that, single-pass scored as well or better, for about the same cost or less. Agentic costs here are a floor: we can't price its calls over 100,000 tokens, which Claude Haiku 5.5 charges more for. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -153,13 +153,13 @@ Failed documents per run: Agentic · Claude Haiku 5.5: 1, 1, 1; Agentic · Claud
 
 </details>
 
-### Which extraction model should I use?
+### Extraction model
 
 ![Claude Haiku 5.5 scores as well as any model, for the least: weighted accuracy against cost per 1,000 documents, one point per extraction model](../../images/benchmark-guidance/EX-02-fields.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Claude Haiku 5.5 is a good place to start. On RealKIE invoices no model got a measurably higher weighted accuracy, and Claude Haiku 5.5 cost the least: $23 per 1,000 invoices, against $59 to $601 for the other Claude, OpenAI and xAI models. OpenAI GPT-6 Astra got every field right on the most invoices, 13% against none for Claude Haiku 5.5, for $601. Test it on your own documents.
+**Finding:** Claude Haiku 5.5 is a good place to start. On RealKIE invoices no model got a measurably higher weighted accuracy, and Claude Haiku 5.5 cost the least: $23 per 1,000 invoices, against $59 to $601 for the other Claude, OpenAI and xAI models. OpenAI GPT-6 Astra got every field right on the most invoices, 13% against none for Claude Haiku 5.5, for $601. Test it on your own documents.
 
 **The economics:** On RealKIE invoices, OpenAI GPT-6 Astra scored no measurably better than Claude Haiku 5.5, so the extra $578 per 1,000 documents buys nothing measurable.
 
@@ -209,7 +209,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 
 </details>
 
-### Does more reasoning effort improve extraction?
+### Reasoning effort
 
 ![More reasoning effort adds cost, not accuracy: weighted accuracy against cost per 1,000 documents, one point per reasoning effort](../../images/benchmark-guidance/EX-03-fields.svg)
 
@@ -217,7 +217,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 
 *Fake-W2: every value scored 0.99 or higher, too easy to separate.*
 
-**Answer:** Low effort is a good place to start. With Claude Sonnet 5.5, medium and high effort scored no better than low on RealKIE invoices or W-2 forms, and high cost more on both. Test it on your own documents.
+**Finding:** Low effort is a good place to start. With Claude Sonnet 5.5, medium and high effort scored no better than low on RealKIE invoices or W-2 forms, and high cost more on both. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -247,13 +247,13 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 
 </details>
 
-### What is the impact of document modality?
+### Document modality
 
 ![Image and OCR text together keep forms and checks right: weighted accuracy and documents with every field right against cost per 1,000 documents, one point per what the extraction model reads](../../images/benchmark-guidance/EX-06-fields.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Page image plus OCR text is a good place to start. On W-2 forms and bank checks, OCR text alone scored lowest (W-2s 0.91 against 0.997; checks 0.89 against 0.994), and the page image alone got every field right on fewer forms (50% of W-2s against 82%). On RealKIE invoices all three scored about the same (0.77 to 0.79). Our image-only runs still paid for OCR; skipping it would save about $10 per 1,000 pages. Test it on your own documents.
+**Finding:** Page image plus OCR text is a good place to start. On W-2 forms and bank checks, OCR text alone scored lowest (W-2s 0.91 against 0.997; checks 0.89 against 0.994), and the page image alone got every field right on fewer forms (50% of W-2s against 82%). On RealKIE invoices all three scored about the same (0.77 to 0.79). Our image-only runs still paid for OCR; skipping it would save about $10 per 1,000 pages. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -288,13 +288,13 @@ Failed documents per run: OmniAI, bank checks — OCR text only: 0, 0, 1.
 
 </details>
 
-### Does deterministic table parsing help agentic extraction?
+### Deterministic table parsing
 
 ![Table parsing adds cost without adding accuracy: line-item score per document against rows in the list (ground truth)](../../images/benchmark-guidance/EX-07-by-size-realkie-long.svg)
 
 *One point per document per table parsing, a tool that turns Textract's tables into rows by code instead of the model retyping them; each line is its running median.*
 
-**Answer:** Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing on scored no better than with it off (line-item score 52% against 56%), cost more (at least $257 against $210 per 1,000 invoices) and took longer. Test it on your own long tables.
+**Finding:** Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing on scored no better than with it off (line-item score 52% against 56%), cost more (at least $257 against $210 per 1,000 invoices) and took longer. Test it on your own long tables.
 
 <details>
 <summary>Details</summary>
@@ -324,13 +324,13 @@ Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 
 </details>
 
-### Does single-pass extraction return every row of a long list?
+### Long lists
 
 ![Single-pass drops rows from 400; agentic with table parsing returns all: completeness per document against rows in the list (ground truth)](../../images/benchmark-guidance/EX-08-by-size-synth-100.svg)
 
 *One small point per document per run, for each extraction mode and table parsing; the large mark is the mean of those runs at each size, matching the table, and each line joins the means.*
 
-**Answer:** Agentic extraction is a good place to start for long lists. On synthetic statements with Claude Haiku 5.5, single-pass returned every row at 100 rows, but from 400 rows some statements came back with only the first page's rows (64% of rows at 400 rows, 2% at 1,600), and Amazon Bedrock rejected the 3,200-row requests as too long. Agentic extraction returned every row at every size with table parsing on, and 98% to 100% with it off. On these clean tables, table parsing also made agentic extraction cheaper: from 800 rows it cost less than single-pass even if every call billed at the long-context rate. Real invoices agree on agentic extraction, which found 67% of the line items against 17% for single-pass ([When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it)), but not on table parsing, which didn't help on long real invoices ([Does deterministic table parsing help agentic extraction?](#does-deterministic-table-parsing-help-agentic-extraction)). Test it on your own documents.
+**Finding:** Agentic extraction is a good place to start for long lists. On synthetic statements with Claude Haiku 5.5, single-pass returned every row at 100 rows, but from 400 rows some statements came back with only the first page's rows (64% of rows at 400 rows, 2% at 1,600), and Amazon Bedrock rejected the 3,200-row requests as too long. Agentic extraction returned every row at every size with table parsing on, and 98% to 100% with it off. On these clean tables, table parsing also made agentic extraction cheaper: from 800 rows it cost less than single-pass even if every call billed at the long-context rate. Real invoices agree on agentic extraction, which found 67% of the line items against 17% for single-pass ([Agentic or single-pass extraction](#agentic-or-single-pass-extraction)), but not on table parsing, which didn't help on long real invoices ([Deterministic table parsing](#deterministic-table-parsing)). Test it on your own documents.
 
 **The economics:** On 800-row statements, agentic extraction with table parsing instead of single-pass saves $128 of extraction per 1,000 documents and gets 302,800 more rows right.
 
@@ -346,7 +346,7 @@ Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 
 *Measured on release 0.6.15-develop-d1be93f+fixes-2034-2035-2036, November 2026, us-east-1. Source: 46 Test Studio runs, listed in `benchmarks/results/guidance/EX-08.json`.*
 
-The synthetic statements are clean three-column tables in one layout, with exact ground truth: each row carries a unique tag, so every returned row is checked against its own true row. They test list length, whether every row comes back, not reading messy real tables (merged cells, wrapped text, headers repeated at page breaks, scans). [When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it) is the check on real invoices, and on long real invoices [table parsing](#does-deterministic-table-parsing-help-agentic-extraction) cost more, not less. Every value reads Amazon Textract's Tables and Layout, because the table-parsing tool and the accelerator's row-count check need Textract's tables as Markdown.
+The synthetic statements are clean three-column tables in one layout, with exact ground truth: each row carries a unique tag, so every returned row is checked against its own true row. They test list length, whether every row comes back, not reading messy real tables (merged cells, wrapped text, headers repeated at page breaks, scans). [Agentic or single-pass extraction](#agentic-or-single-pass-extraction) is the check on real invoices, and on long real invoices [table parsing](#deterministic-table-parsing) cost more, not less. Every value reads Amazon Textract's Tables and Layout, because the table-parsing tool and the accelerator's row-count check need Textract's tables as Markdown.
 
 From 400 to 1,600 rows, single-pass returned part of the list on 27 of 45 statement runs, 24 of them the first page's 43 rows, and the accelerator flagged all 27 with `extraction_rows_below_ocr_estimate`. Every row that came back had the right date and amount. Agentic costs are a floor: our metering can't size its calls, and calls over 100,000 prompt tokens bill at up to five times the rate, which would still cost less than single-pass from 800 rows. Times stop where Test Studio's evaluation starts; it outruns its time limit on a complete list of 1,600 rows or more, so rows are scored by their tags.
 
@@ -390,13 +390,13 @@ Not sent: Statement, 3,200 rows — Single-pass · Claude Haiku 5.5: Amazon Bedr
 
 </details>
 
-### Do schema validation and value coercion improve the output?
+### Schema validation and value coercion
 
 ![Validation and coercion change nothing measurable; keep them on: weighted accuracy against cost per 1,000 documents, one point per schema validation and value coercion, by extraction model](../../images/benchmark-guidance/EX-10-fields.svg)
 
 *Bands show ±2 standard errors.*
 
-**Answer:** Keep both on; they're a cheap safety net. Validation checks each value against the schema and records what fails. Coercion converts values to the schema's types, for example "$6.00" to 6.0. On RealKIE invoices, accuracy was the same with them on or off for every model, and they added up to 8% to the cost. Coercion changed no value, and validation flagged only Amazon Nova 2 Lite: 5 of 60 sections were missing a required field, which it records but doesn't fix.
+**Finding:** Keep both on; they're a cheap safety net. Validation checks each value against the schema and records what fails. Coercion converts values to the schema's types, for example "$6.00" to 6.0. On RealKIE invoices, accuracy was the same with them on or off for every model, and they added up to 8% to the cost. Coercion changed no value, and validation flagged only Amazon Nova 2 Lite: 5 of 60 sections were missing a required field, which it records but doesn't fix.
 
 <details>
 <summary>Details</summary>
@@ -445,7 +445,7 @@ Not sent: Statement, 3,200 rows — Single-pass · Claude Haiku 5.5: Amazon Bedr
 
 </details>
 
-### Should I retry failed fields with a stronger model?
+### Retrying failed fields with a stronger model
 
 ![Escalation never ran: validation never failed: weighted accuracy against cost per 1,000 documents, one point per what a validation failure does](../../images/benchmark-guidance/EX-11-fields.svg)
 
@@ -453,7 +453,7 @@ Not sent: Statement, 3,200 rows — Single-pass · Claude Haiku 5.5: Amazon Bedr
 
 *Fake-W2: every value scored 0.99 or higher, too easy to separate.*
 
-**Answer:** Warn, which only records validation failures, is a good place to start. We couldn't measure the retry: validation never failed on these documents, so escalating to Claude Sonnet 5.5 never ran. Test it on your own documents.
+**Finding:** Warn, which only records validation failures, is a good place to start. We couldn't measure the retry: validation never failed on these documents, so escalating to Claude Sonnet 5.5 never ran. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -483,13 +483,13 @@ Differences in the table are run-to-run noise.
 
 </details>
 
-### Does schema enforcement improve accuracy or cost?
+### Schema enforcement
 
 ![The forced tool costs W-2 accuracy; structured output matches the prompt: weighted accuracy against cost per 1,000 documents, one point per schema enforcement, by model](../../images/benchmark-guidance/EX-12-fields.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Structured output, or the schema in the prompt, is a good place to start; structured output isn't in a release yet ([#1785](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1785)). Avoid the forced tool: with Claude Haiku 5.5 it lowered W-2 accuracy from 0.995 to 0.92. Test it on your own documents.
+**Finding:** Structured output, or the schema in the prompt, is a good place to start; structured output isn't in a release yet ([#1785](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1785)). Avoid the forced tool: with Claude Haiku 5.5 it lowered W-2 accuracy from 0.995 to 0.92. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -564,9 +564,9 @@ Structured output scored the same as the schema in the prompt on RealKIE invoice
 
 We haven't run these yet.
 
-- How much do field descriptions matter? (EX-04)
-- Do few-shot examples help extraction? (EX-05)
-- How should I extract sections that hold several records? (EX-13)
-- How much do splitting errors cost extraction in a packet? (EX-15)
+- Field descriptions (EX-04)
+- Few-shot examples for extraction (EX-05)
+- Sections with several records (EX-13)
+- Splitting errors and extraction (EX-15)
 
 <!-- END GENERATED FAQ -->

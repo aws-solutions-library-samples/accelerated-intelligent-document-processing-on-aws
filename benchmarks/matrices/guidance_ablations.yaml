@@ -203,6 +203,7 @@ ablations:
   - id: TR-01
     page: index
     question: "How much do results vary between identical runs?"
+    heading: "Run-to-run variation"
     changes: "Nothing: the preset, run 10 times"
     values: ["Preset"]
     datasets: [realkie, docsplit]
@@ -214,6 +215,7 @@ ablations:
     page: digitization
     notes: "On OmniAI bank checks, Textract with Layout only got every field right on 47% of checks, against 16% with Amazon Nova 2 Lite, which cost less ($4.84 against $7.76 per 1,000)."
     question: "Does the OCR reader make a difference to extraction accuracy?"
+    heading: "OCR reader and extraction accuracy"
     takeaway: "Textract Layout only matches the other readers"
     changes: "OCR reader"
     varies: "OCR reader"
@@ -227,6 +229,7 @@ ablations:
   - id: DG-02
     page: digitization
     question: "If I read pages with a vision model, which model?"
+    heading: "Vision models as readers"
     changes: "Model used for Bedrock vision OCR"
     values: ["Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5"]
     holds: "OCR reader set to the Bedrock vision model"
@@ -236,6 +239,7 @@ ablations:
   - id: DG-03
     page: digitization
     question: "Does a specialized OCR model beat Textract?"
+    heading: "Specialized OCR models or Textract"
     changes: "OCR reader"
     values: ["Textract, tables and layout (default)", "Chandra (Lambda hook)", "Mistral OCR (Lambda hook)", "Cohere Parse (Lambda hook)"]
     datasets: [realkie, confbench, omniai]
@@ -244,6 +248,7 @@ ablations:
   - id: DG-04
     page: digitization
     question: "What resolution should pages be rendered at?"
+    heading: "Page resolution"
     takeaway: "Lower resolution saved nothing; keep 300 DPI"
     varies: "page resolution"
     changes: "`ocr.image.dpi`"
@@ -257,6 +262,7 @@ ablations:
   - id: DG-05
     page: digitization
     question: "Does image preprocessing help on poor scans?"
+    heading: "Image preprocessing on poor scans"
     changes: "`ocr.image.preprocessing`"
     values: ["Off (default)", "On"]
     datasets: [confbench, realkie]
@@ -265,6 +271,7 @@ ablations:
   - id: DG-06
     page: digitization
     question: "Which Textract features do I need?"
+    heading: "Textract features"
     takeaway: "Layout only scores best and costs least"
     varies: "Textract features"
     changes: "`ocr.features`"
@@ -279,6 +286,7 @@ ablations:
   - id: DG-07
     page: digitization
     question: "How much accuracy does scan quality cost?"
+    heading: "Scan quality"
     changes: "Scan quality"
     values: ["Clean original", "Light noise", "Moderate noise", "Heavy noise"]
     datasets: [confbench]
@@ -287,6 +295,7 @@ ablations:
   - id: DG-08
     page: digitization
     question: "Which reader handles handwriting best?"
+    heading: "Handwriting"
     changes: "OCR reader"
     values: ["Textract, tables and layout (default)", "Bedrock vision model (Claude Sonnet 5)", "Chandra (Lambda hook)"]
     datasets: [handwritten]
@@ -297,6 +306,7 @@ ablations:
   - id: SC-11
     page: splitting-and-classification
     question: "Does holistic classification beat page-by-page classification?"
+    heading: "Holistic or page-by-page classification"
     takeaway: "Holistic classification with Claude Sonnet 5.5 beats page by page"
     varies: "granularity, strategy and model"
     short_values: {"Two steps: split page by page, then classify": "Two steps, page by page", "Two steps: split holistically, then classify": "Two steps, holistic"}
@@ -316,6 +326,7 @@ ablations:
   - id: SC-02
     page: splitting-and-classification
     question: "Do I need page images in the classification prompt?"
+    heading: "Page images in the classification prompt"
     takeaway: "Text alone gets the most sections right, for the least"
     varies: "classification input"
     changes: "What the classification model reads"
@@ -333,6 +344,7 @@ ablations:
   - id: SC-04
     page: splitting-and-classification
     question: "How long a packet can holistic classification handle?"
+    heading: "Holistic window size on long packets"
     takeaway: "A 10-page window costs 60% less on long packets, and gets at least as many sections right"
     changes: "Pages per holistic call (`window_pages`), on 30-to-60-page packets"
     varies: "pages per holistic call"
@@ -356,6 +368,7 @@ ablations:
   - id: SC-06
     page: splitting-and-classification
     question: "Do few-shot examples help classification?"
+    heading: "Few-shot examples for classification"
     changes: "Few-shot examples"
     values: ["None (default)", "One example per class", "Two examples per class"]
     datasets: [docsplit]
@@ -364,6 +377,7 @@ ablations:
   - id: SC-07
     page: splitting-and-classification
     question: "How much do class descriptions matter?"
+    heading: "Class descriptions"
     changes: "Class descriptions"
     values: ["Class names only", "Generic descriptions", "Descriptions that name distinguishing features"]
     datasets: [docsplit]
@@ -372,6 +386,7 @@ ablations:
   - id: SC-08
     page: splitting-and-classification
     question: "Does accuracy drop as I add document classes?"
+    heading: "Number of document classes"
     changes: "Number of document classes in the configuration"
     values: ["5", "13", "30 (13 plus 17 distractor classes)"]
     datasets: [docsplit]
@@ -380,6 +395,7 @@ ablations:
   - id: SC-09
     page: splitting-and-classification
     question: "How small can classification images be?"
+    heading: "Classification image size"
     changes: "Classification image size (long edge)"
     values: ["As rendered (default)", "1,024 pixels", "512 pixels"]
     datasets: [docsplit]
@@ -388,6 +404,7 @@ ablations:
   - id: SC-10
     page: splitting-and-classification
     question: "If every file is one document, should I turn splitting off?"
+    heading: "Splitting off for one-document files"
     changes: "Section splitting"
     values: ["Model decides (default)", "One section"]
     datasets: [realkie]
@@ -399,6 +416,7 @@ ablations:
     page: extraction
     notes: "Single-pass scored as well as agentic or better up to 100 line items, and cost about the same there with the 5.5 models. Above 100 line items, agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for at least $316 against $1,073 per 1,000 invoices; Claude Haiku 5.5's agentic calls over 100,000 tokens bill at its long-context rate and can't be priced from our metering, so its cost could be up to about two thirds of Claude Sonnet 5.5's. Only 5 RealKIE invoices have more than 100 line items, and Test Studio could not score the longest (1,490 items) because its evaluation step timed out."
     question: "When is agentic extraction worth it?"
+    heading: "Agentic or single-pass extraction"
     takeaway: "Agentic extraction helps only on very long extractions, such as 100+ line items"
     details_takeaway: "Averaged over whole datasets, the two modes score within the noise"
     varies: "extraction mode and model"
@@ -416,6 +434,7 @@ ablations:
     page: extraction
     notes: "On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amazon Nova 2 Lite 0.86. xAI Grok 4.6 took about 9 minutes per W-2 form, against 30 seconds for the others."
     question: "Which extraction model should I use?"
+    heading: "Extraction model"
     takeaway: "Claude Haiku 5.5 scores as well as any model, for the least"
     changes: "Extraction model"
     values: ["Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5", "Claude Opus 5.5", "OpenAI GPT-6 Astra", "xAI Grok 4.6"]
@@ -430,6 +449,7 @@ ablations:
   - id: EX-03
     page: extraction
     question: "Does more reasoning effort improve extraction?"
+    heading: "Reasoning effort"
     fixed_note: "Extraction on Claude Sonnet 5.5 (Claude Haiku 5.5 takes no effort setting)"
     takeaway: "More reasoning effort adds cost, not accuracy"
     varies: "reasoning effort"
@@ -448,6 +468,7 @@ ablations:
     # Planned, results kept but not shown, until a redesign compares raw values.
     deprecated: true
     question: "How much do field descriptions matter?"
+    heading: "Field descriptions"
     takeaway: "Field descriptions get every W-2 field right far more often"
     changes: "Field descriptions"
     varies: "field descriptions"
@@ -463,6 +484,7 @@ ablations:
   - id: EX-05
     page: extraction
     question: "Do few-shot examples help extraction?"
+    heading: "Few-shot examples for extraction"
     changes: "Few-shot examples"
     values: ["None (default)", "One example per class", "Three examples per class"]
     datasets: [realkie, fake_w2]
@@ -471,6 +493,7 @@ ablations:
   - id: EX-06
     page: extraction
     question: "What is the impact of document modality?"
+    heading: "Document modality"
     takeaway: "Image and OCR text together keep forms and checks right"
     changes: "What the extraction model reads: the page image, the OCR text, or both"
     varies: "what the extraction model reads"
@@ -487,6 +510,7 @@ ablations:
   - id: EX-07
     page: extraction
     question: "Does deterministic table parsing help agentic extraction?"
+    heading: "Deterministic table parsing"
     takeaway: "Table parsing adds cost without adding accuracy"
     changes: "Deterministic table parsing (`extraction.agentic.table_parsing.enabled`): a tool that turns Textract's tables into rows by code, instead of the model retyping them"
     varies: "table parsing, a tool that turns Textract's tables into rows by code instead of the model retyping them"
@@ -503,12 +527,13 @@ ablations:
   - id: EX-08
     page: extraction
     question: "Does single-pass extraction return every row of a long list?"
+    heading: "Long lists"
     takeaway: "Single-pass drops rows from 400; agentic with table parsing returns all"
     details_takeaway: "From 800 rows, single-pass costs more than agentic with table parsing"
     series: true
     short_values: {"Single-pass · Claude Haiku 5.5": "Single-pass", "Agentic, table parsing on · Claude Haiku 5.5": "Agentic, table parsing on", "Agentic, table parsing off · Claude Haiku 5.5": "Agentic, table parsing off"}
     notes: |-
-      The synthetic statements are clean three-column tables in one layout, with exact ground truth: each row carries a unique tag, so every returned row is checked against its own true row. They test list length, whether every row comes back, not reading messy real tables (merged cells, wrapped text, headers repeated at page breaks, scans). [When is agentic extraction worth it?](#when-is-agentic-extraction-worth-it) is the check on real invoices, and on long real invoices [table parsing](#does-deterministic-table-parsing-help-agentic-extraction) cost more, not less. Every value reads Amazon Textract's Tables and Layout, because the table-parsing tool and the accelerator's row-count check need Textract's tables as Markdown.
+      The synthetic statements are clean three-column tables in one layout, with exact ground truth: each row carries a unique tag, so every returned row is checked against its own true row. They test list length, whether every row comes back, not reading messy real tables (merged cells, wrapped text, headers repeated at page breaks, scans). [Agentic or single-pass extraction](#agentic-or-single-pass-extraction) is the check on real invoices, and on long real invoices [table parsing](#deterministic-table-parsing) cost more, not less. Every value reads Amazon Textract's Tables and Layout, because the table-parsing tool and the accelerator's row-count check need Textract's tables as Markdown.
 
       From 400 to 1,600 rows, single-pass returned part of the list on 27 of 45 statement runs, 24 of them the first page's 43 rows, and the accelerator flagged all 27 with `extraction_rows_below_ocr_estimate`. Every row that came back had the right date and amount. Agentic costs are a floor: our metering can't size its calls, and calls over 100,000 prompt tokens bill at up to five times the rate, which would still cost less than single-pass from 800 rows. Times stop where Test Studio's evaluation starts; it outruns its time limit on a complete list of 1,600 rows or more, so rows are scored by their tags.
     changes: "Extraction mode (`extraction.mode`), and for agentic extraction, deterministic table parsing (`extraction.agentic.table_parsing.enabled`)"
@@ -528,6 +553,7 @@ ablations:
   - id: EX-10
     page: extraction
     question: "Do schema validation and value coercion improve the output?"
+    heading: "Schema validation and value coercion"
     takeaway: "Validation and coercion change nothing measurable; keep them on"
     changes: "`extraction.validation.enabled` and `extraction.coercion.enabled` together: validation checks the extracted values against the schema, and coercion repairs values of the wrong type or format (\"$1,234.00\" in a number field) by code; off leaves the model's output exactly as returned"
     varies: "schema validation and value coercion, by extraction model"
@@ -546,6 +572,7 @@ ablations:
     page: extraction
     notes: "Differences in the table are run-to-run noise."
     question: "Should I retry failed fields with a stronger model?"
+    heading: "Retrying failed fields with a stronger model"
     takeaway: "Escalation never ran: validation never failed"
     changes: "`extraction.validation.fail_action`, escalating to Claude Sonnet 5.5 (`reject` only flags the section, so it cannot change a value)"
     varies: "what a validation failure does"
@@ -560,6 +587,7 @@ ablations:
     page: extraction
     notes: "Structured output scored the same as the schema in the prompt on RealKIE invoices with Claude Haiku 5.5 and Claude Sonnet 5.5. On W-2 forms it never applied: the schema has 28 optional fields and structured output allows 12, so the accelerator fell back to the prompt."
     question: "Does schema enforcement improve accuracy or cost?"
+    heading: "Schema enforcement"
     takeaway: "The forced tool costs W-2 accuracy; structured output matches the prompt"
     varies: "schema enforcement, by model"
     changes: "Schema enforcement (`extraction.schema_enforcement.mode`)"
@@ -574,6 +602,7 @@ ablations:
   - id: EX-13
     page: extraction
     question: "How should I extract sections that hold several records?"
+    heading: "Sections with several records"
     changes: "Multi-instance sections"
     values: ["Off (default)", "On"]
     datasets: [packets_with_fields]
@@ -582,6 +611,7 @@ ablations:
   - id: EX-15
     page: extraction
     question: "How much do splitting errors cost extraction in a packet?"
+    heading: "Splitting errors and extraction"
     changes: "Granularity and strategy"
     values: ["Page by page, one call (default)", "Holistic, one call", "Detect sections first, then classify"]
     datasets: [packets_with_fields]
@@ -592,6 +622,7 @@ ablations:
   - id: CF-01
     page: confidence-assessment
     question: "Can I route human review by confidence?"
+    heading: "Routing review by confidence"
     changes: "Scoring model"
     values: ["Amazon Nova Lite (default)", "Claude Sonnet 5"]
     datasets: [confbench, realkie]
@@ -601,6 +632,7 @@ ablations:
     page: confidence-assessment
     notes: "Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a random 30%. Amazon Nova 2 Lite caught 48%, fewer than Claude Haiku 5.5's 71% at the same cost, and varied more between runs. W-2 forms aren't shown: after Claude Haiku 5.5 extraction a run has about one wrong value, too few to compare scoring models."
     question: "Which scoring model should I use?"
+    heading: "Scoring model"
     takeaway: "Haiku 5.5 catches errors like Sonnet 5.5, at a fifth the cost"
     changes: "Scoring model"
     values: ["Amazon Nova Lite (preset default)", "Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5"]
@@ -616,6 +648,7 @@ ablations:
     page: confidence-assessment
     notes: "Integrated scoring lowered W-2 accuracy from 1.00 to 0.96 to save $0.81 per 1,000 forms. On RealKIE invoices it ran as a separate pass anyway: the accelerator scores a document with line items in a separate pass even when integrated scoring is on."
     question: "Separate scoring pass or integrated into extraction?"
+    heading: "Separate or integrated scoring"
     takeaway: "Integrated scoring costs W-2 accuracy; off is cheapest"
     varies: "confidence mode"
     changes: "Confidence mode"
@@ -630,6 +663,7 @@ ablations:
   - id: CF-04
     page: confidence-assessment
     question: "What confidence threshold should I set?"
+    heading: "Confidence thresholds"
     changes: "Confidence threshold"
     values: ["0.5", "0.7", "0.8 (default)", "0.9", "0.95"]
     holds: "Computed from the CF-02 runs, per scoring model"
@@ -640,6 +674,7 @@ ablations:
   - id: CF-05
     page: confidence-assessment
     question: "Does classification confidence flag the wrong document class?"
+    heading: "Classification confidence"
     changes: "Classification model"
     values: ["Amazon Nova 2 Lite (default)", "Claude Haiku 5.5", "Claude Sonnet 5"]
     datasets: [docsplit]
@@ -648,6 +683,7 @@ ablations:
   - id: CF-06
     page: confidence-assessment
     question: "Does the scoring model need page images?"
+    heading: "Page images for the scoring model"
     changes: "Page images in the scoring prompt"
     values: ["Text and images (default)", "Text only"]
     datasets: [confbench, fake_w2]
@@ -658,6 +694,7 @@ ablations:
   - id: TU-02
     page: token-use
     question: "How much does prompt caching save in extraction?"
+    heading: "Prompt caching in extraction"
     changes: "`extraction.prompt_cache`"
     values: ["auto (default)", "off"]
     datasets: [realkie, docsplit]
@@ -666,6 +703,7 @@ ablations:
   - id: TU-03
     page: token-use
     question: "What do page images cost in tokens, step by step?"
+    heading: "Token cost of page images"
     changes: "Page images"
     values: ["In every step (default)", "Off in classification", "Off in extraction", "Off in scoring"]
     datasets: [realkie, docsplit]
@@ -675,6 +713,7 @@ ablations:
     page: token-use
     notes: "On W-2 forms it cost $5 per 1,000 against $32 for the default, and scored higher (0.998 against 0.966). Scoring with Claude Haiku 5.5 added $7 per 1,000 invoices and gave confidence that separates right from wrong values (AUROC 0.84, against 0.51 for the default)."
     question: "What is the cheapest configuration that keeps accuracy?"
+    heading: "Lowest-cost configuration"
     takeaway: "Claude Haiku 5.5 and Layout only: same accuracy, a sixth the cost"
     short_values: {"Claude Haiku 5.5, Layout only, confidence off": "Haiku 5.5, no scoring", "Claude Haiku 5.5, Layout only, Claude Haiku 5.5 scoring": "Haiku 5.5, Haiku scoring"}
     changes: "Configuration"
@@ -687,6 +726,7 @@ ablations:
   - id: TU-05
     page: token-use
     question: "How many tokens does each extraction model use for the same document?"
+    heading: "Tokens per extraction model"
     changes: "Extraction model"
     values: ["The models in EX-02"]
     holds: "Computed from the EX-02 runs"
@@ -697,6 +737,7 @@ ablations:
   - id: SC-12
     page: "splitting-and-classification"
     question: "Can a decision model classify the sections?"
+    heading: "Decision model for section classification"
     takeaway: "With one-line descriptions, Decider 2B comes close to Haiku 5.5 at classifying sections"
     changes: "Which model classifies each section after Claude Haiku 5.5 detects the sections, and the class descriptions it reads"
     varies: "which model classifies each section, and the class descriptions"
@@ -726,6 +767,7 @@ ablations:
   - id: CF-08
     page: "confidence-assessment"
     question: "Can a decision model score confidence?"
+    heading: "Decision model for confidence scoring"
     takeaway: "An LLM scores confidence better than the Strands Decider 2B, for less"
     changes: "Who scores each extracted value: an LLM or a decision model (one yes/no question per value)"
     varies: "who scores the values"
@@ -743,9 +785,10 @@ ablations:
   - id: SC-13
     page: splitting-and-classification
     question: "Which way of splitting and classifying should I use?"
+    heading: "Splitting approaches by model"
     # Answered by the page's "Which approach should I use?" section, which
     # render_splitting_approaches.py writes; the FAQ entry links to it.
-    feature: "Which approach should I use?"
+    feature: "Approach comparison"
     takeaway: "To be measured"
     changes: "How the packet is split and who classifies each section, by model"
     varies: "approach and model"
@@ -798,6 +841,7 @@ ablations:
   - id: SC-14
     page: splitting-and-classification
     question: "Do long packets change which approach to use?"
+    heading: "Long or short packets"
     takeaway: "With Claude Haiku 5.5, long packets cost every approach whole sections"
     changes: "How the packet is split and classified, on packets of 5 to 20 pages and of 30 to 60 pages"
     varies: "approach and packet length"

@@ -1995,6 +1995,11 @@ def value_cell(value: str, ab: dict[str, Any]) -> str:
     return f"**{text}**" if text.endswith(")") else f"**{text} ({mark})**"
 
 
+def heading_of(ab: dict[str, Any]) -> str:
+    """The section heading of an ablation: its `heading`, else its question."""
+    return str(ab.get("heading") or ab["question"])
+
+
 def reference_setup(ab: dict[str, Any]) -> str:
     """The setup the `reference` value stands for, as a link: the baseline setup the
     ablation changes one setting from, or else the recommended setup."""
@@ -2532,10 +2537,10 @@ def render_ablation(
         # Under the settings table, before the per-kind tables.
         at = next(i for i, line in enumerate(d) if line.startswith("| **Runs**")) + 2
         d[at:at] = tables
-    out.faq += [f"### {ab['question']}", "", *headline]
+    out.faq += [f"### {heading_of(ab)}", "", *headline]
     if too_easy:
         out.faq += [" ".join(too_easy), ""]
-    out.faq += [f"**Answer:** {answer}", ""]
+    out.faq += [f"**Finding:** {answer}", ""]
     if results:
         out.faq += render_econ(ab, reg, results, cells)
         while d and d[-1] == "":
@@ -2560,7 +2565,7 @@ def render_feature(ab: dict[str, Any]) -> Rendered:
         raise SystemExit(f"{ab['id']}: feature must be the heading of its section")
     out = Rendered()
     out.faq += [
-        f"### {ab['question']}",
+        f"### {heading_of(ab)}",
         "",
         f"See [{heading}](#{slugify(heading)}).",
         "",
@@ -2679,7 +2684,7 @@ def render_grid(
 def question_anchor(ab: dict[str, Any]) -> str:
     """Where a link to an ablation goes: its question once measured, else Planned."""
     measured = shown_results(ab) is not None
-    return slugify(ab["question"] if measured else PLANNED)
+    return slugify(heading_of(ab) if measured else PLANNED)
 
 
 #: A link whose text is an ablation ID: "[EX-02](#planned)", "[EX-02](extraction.md#x)".
@@ -2717,7 +2722,7 @@ def render_datasets(reg: dict[str, Any]) -> str:
     lines: list[str] = []
     for heading, keys in (
         ("Datasets we run", built),
-        ("Datasets we haven't built yet", planned),
+        ("Planned datasets", planned),
     ):
         lines += [f"## {heading}", ""]
         for k in keys:
@@ -2763,7 +2768,7 @@ def render_page(
             continue
         results = shown_results(ab)
         if results is None:
-            planned.append(f"- {ab['question']} ({ab['id']})")
+            planned.append(f"- {heading_of(ab)} ({ab['id']})")
             continue
         r = render_entry(ab, reg, results)
         faq += r.faq

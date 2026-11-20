@@ -32,7 +32,7 @@ MCoE = $150 / 90 = $1.67 per error prevented.
 If handling one error costs your business more than $1.67, Model A pays for itself. If it
 costs less, keep Model B.
 
-## What counts as an error
+## Errors
 
 We score accuracy with Stickler, the open-source library the accelerator uses to compare
 results with ground truth. Stickler scores each field and averages the scores by field
@@ -46,7 +46,7 @@ sections with exactly the right pages and class, so one error is one wrong secti
 DocSplit packet holds about four sections, so 1,000 packets with a section accuracy of
 0.80 carry about 800 errors, and the cost per error prevented is per section.
 
-## How to read the lines on our charts
+## Reading the chart lines
 
 Each chart on our benchmark pages plots accuracy against cost per 1,000 documents, one point
 per value of a setting. [Key Information Extraction](extraction.md) has examples. We compute
@@ -76,7 +76,7 @@ accuracies directly.
   AWS services the stack runs on, such as AWS Lambda, AWS Step Functions and Amazon S3, and
   any discount you have.
 
-## Is the upgrade worth it? Compare MCoE with what an error costs you
+## Comparing MCoE with the cost of an error
 
 MCoE needs no business data, so we can report it in our benchmarks. To decide, you add one
 number: b, what one error costs your business, such as the time to find and fix it, or the
@@ -94,7 +94,7 @@ than it costs. Above 1, it costs more than it saves.
 In the example above, if an error costs you $8, PER = $1.67 / $8 = 0.21. You spend $0.21 to
 prevent $1.00 of loss.
 
-## When some fields cost more to get wrong: weighted PER
+## Weighted PER
 
 A wrong value doesn't cost the same in every field. In freight factoring, a wrong shipment ID
 might cost $500 and a wrong driver note $5. Weighted PER (wPER) uses a cost for each field:
@@ -123,7 +123,7 @@ reports each field's accuracy under [Field-Level Metrics](../test-studio.md#fiel
 a field's error rate is 1 minus its accuracy. bᵢ does the weighting, so use these per-field
 rates rather than the weighted document score.
 
-## Calculate it on your own documents
+## Calculating it on your documents
 
 Our benchmarks give you MCoE. PER and wPER are yours to calculate once you know what an error
 costs you.

@@ -16,7 +16,7 @@ We don't benchmark OCR on its own today. We measure its effect on the steps afte
 benchmark here scores the extraction accuracy an OCR reader produces, because that is what
 lands in your database. To compare readers on OCR alone, use public OCR benchmarks.
 
-## How to improve digitization on your documents
+## Improving digitization
 
 **Your definitions.** The reader doesn't use them: it reads every page the same way. When a
 value is wrong, open [View Page Text](../web-ui.md#view-page-text) first. If the value is
@@ -27,14 +27,14 @@ right in the page text, the fix is in your classification or extraction definiti
 
 **Settings.**
 
-| Setting | What it changes | Questions |
+| Setting | What it changes | Benchmarks |
 |---|---|---|
-| OCR reader (`ocr.backend`) | Amazon Textract, a vision model, or a specialized OCR model | [DG-01](#does-the-ocr-reader-make-a-difference-to-extraction-accuracy) to [DG-03](#planned) |
-| Resolution (`ocr.image.dpi`) | The DPI the accelerator renders pages at | [DG-04](#what-resolution-should-pages-be-rendered-at) |
+| OCR reader (`ocr.backend`) | Amazon Textract, a vision model, or a specialized OCR model | [DG-01](#ocr-reader-and-extraction-accuracy) to [DG-03](#planned) |
+| Resolution (`ocr.image.dpi`) | The DPI the accelerator renders pages at | [DG-04](#page-resolution) |
 | Preprocessing (`ocr.image.preprocessing`) | Cleans up shadows, uneven lighting and low contrast | [DG-05](#planned) |
-| Textract features (`ocr.features`) | Tables, layout and signatures | [DG-06](#which-textract-features-do-i-need) |
+| Textract features (`ocr.features`) | Tables, layout and signatures | [DG-06](#textract-features) |
 
-## Questions
+## Results
 
 <details>
 <summary>What the metrics mean</summary>
@@ -50,13 +50,13 @@ Full definitions: Stickler's [Thresholds and Metrics](https://awslabs.github.io/
 
 <!-- BEGIN GENERATED FAQ -->
 
-### Does the OCR reader make a difference to extraction accuracy?
+### OCR reader and extraction accuracy
 
 ![Textract Layout only matches the other readers: weighted accuracy against cost per 1,000 documents, one point per OCR reader](../../images/benchmark-guidance/DG-01-fields.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Amazon Textract with Layout only is a good place to start: on RealKIE invoices it scored as well as the other readers, for a third of the cost of Textract with tables. Test it on your own documents.
+**Finding:** Amazon Textract with Layout only is a good place to start: on RealKIE invoices it scored as well as the other readers, for a third of the cost of Textract with tables. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -90,13 +90,13 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 
 </details>
 
-### What resolution should pages be rendered at?
+### Page resolution
 
 ![Lower resolution saved nothing; keep 300 DPI: weighted accuracy against cost per 1,000 documents, one point per page resolution](../../images/benchmark-guidance/DG-04-fields.svg)
 
 *Bands show ±2 standard errors.*
 
-**Answer:** 300 DPI is a good place to start: on RealKIE invoices, 200 and 150 DPI scored no better and cost more. Test it on your own documents.
+**Finding:** 300 DPI is a good place to start: on RealKIE invoices, 200 and 150 DPI scored no better and cost more. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -123,13 +123,13 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 
 </details>
 
-### Which Textract features do I need?
+### Textract features
 
 ![Layout only scores best and costs least: weighted accuracy and documents with every field right against cost per 1,000 documents, one point per Textract features](../../images/benchmark-guidance/DG-06-fields.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Layout only is a good place to start: it got every field right on 82% of W-2 forms, against 55% with the preset's tables, layout and signatures, for the lowest cost. Test it on your own documents.
+**Finding:** Layout only is a good place to start: it got every field right on 82% of W-2 forms, against 55% with the preset's tables, layout and signatures, for the lowest cost. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -165,10 +165,10 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 
 We haven't run these yet.
 
-- If I read pages with a vision model, which model? (DG-02)
-- Does a specialized OCR model beat Textract? (DG-03)
-- Does image preprocessing help on poor scans? (DG-05)
-- How much accuracy does scan quality cost? (DG-07)
-- Which reader handles handwriting best? (DG-08)
+- Vision models as readers (DG-02)
+- Specialized OCR models or Textract (DG-03)
+- Image preprocessing on poor scans (DG-05)
+- Scan quality (DG-07)
+- Handwriting (DG-08)
 
 <!-- END GENERATED FAQ -->

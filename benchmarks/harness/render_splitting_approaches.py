@@ -94,7 +94,7 @@ from render_guidance import (
 
 PAGE = "splitting-and-classification"
 REGION = "APPROACHES"
-HEADING = "Which approach should I use?"
+HEADING = "Approach comparison"
 CHARTS = PLOTS / "approaches"
 CHARTS_FROM_PAGES = f"{PLOTS_FROM_PAGES}/approaches"
 EXPLAINER = f"{PLOTS_FROM_PAGES}/figures/splitting-approaches.svg"
@@ -490,7 +490,7 @@ def answer(data: Data) -> str:
             )
     out.append(
         "Reading text only, without page images, does better still "
-        "([SC-02](#do-i-need-page-images-in-the-classification-prompt))."
+        "([SC-02](#page-images-in-the-classification-prompt))."
     )
     out.append("Test it on your own packets.")
     return " ".join(out)
@@ -1235,7 +1235,7 @@ def long_text(data: Data, f: LongFacts) -> list[str]:
             "classification per 1,000 long packets), because a 20-page window with page "
             "images goes over the 100,000 tokens above which Claude Haiku 5.5 bills its "
             "long-context rate; a 10- or 15-page window keeps most calls under it "
-            "([SC-04](#how-long-a-packet-can-holistic-classification-handle)), as does "
+            "([SC-04](#holistic-window-size-on-long-packets)), as does "
             "reading text only."
         )
 
@@ -1429,7 +1429,7 @@ def metric_definitions() -> list[str]:
     out += [f"- *{name}:* {text}." for _, name, text in SPLIT_METRICS]
     out += [
         "",
-        "The page's [metric definitions](#questions) and Stickler's [Document Packet "
+        "The page's [metric definitions](#results) and Stickler's [Document Packet "
         f"Splitting Evaluation]({STICKLER}) have more.",
         "",
         "</details>",
@@ -2316,10 +2316,10 @@ def section(data: Data) -> tuple[list[str], dict[str, str]]:
     out = [f"## {HEADING}", "", f"![{EXPLAINER_ALT}]({EXPLAINER})", ""]
     charts: dict[str, str] = {}
     if not data.results:
-        return out + ["**Answer:** Not yet measured.", ""], charts
+        return out + ["**Finding:** Not yet measured.", ""], charts
     ds = data.datasets[0]
     pk = picks(data.points(ds))
-    out += [f"**Answer:** {answer(data)}", ""]
+    out += [f"**Finding:** {answer(data)}", ""]
     econ = render_econ(data.ab, data.reg, data.results, data.cells)
     econ_rest: list[str] = []
     if econ and econ[0].startswith("**The economics:**"):

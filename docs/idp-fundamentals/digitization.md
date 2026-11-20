@@ -248,7 +248,7 @@ page text the reader wrote:
   confidence to the scoring model's prompt. A reader with no confidence makes that prompt
   shorter, and the scoring model judges each value without the reader's confidence.
 
-See [What is the cheapest configuration that keeps accuracy?](../benchmark-guidance/token-use.md#what-is-the-cheapest-configuration-that-keeps-accuracy)
+See [Lowest-cost configuration](../benchmark-guidance/token-use.md#lowest-cost-configuration)
 
 ## Measuring accuracy
 
@@ -336,7 +336,7 @@ uneven lighting and low contrast before the reader sees the page. See
 page image with the page text, so the extraction model can check a misread character
 against the image and see checkboxes the text does not show. If you write your own
 extraction prompt, keep the `{DOCUMENT_IMAGE}` placeholder in it. See
-[What is the impact of document modality?](../benchmark-guidance/extraction.md#what-is-the-impact-of-document-modality)
+[Document modality](../benchmark-guidance/extraction.md#document-modality)
 
 **Tell a vision-language model exactly what to write.** The **Task prompt** decides what the
 page text looks like. Ask for tables as Markdown pipe tables, so table parsing can read them,

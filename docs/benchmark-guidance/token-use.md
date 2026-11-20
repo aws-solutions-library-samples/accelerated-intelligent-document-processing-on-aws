@@ -13,7 +13,7 @@ Every step after digitization sends tokens to a model, and tokens are what you p
 report tokens, not prices, because tokens stay the same when prices change. To estimate cost,
 multiply each step's tokens by the current price of its model.
 
-## How to use fewer tokens on your documents
+## Using fewer tokens
 
 **Your definitions.** The accelerator sends your field descriptions and few-shot examples
 with every request, so they add tokens to every section. Prompt caching reads a repeated
@@ -24,16 +24,16 @@ more in every step.
 
 **Settings.**
 
-| Setting | What it changes | Questions |
+| Setting | What it changes | Benchmarks |
 |---|---|---|
 | Models | Each step's model sets its price and how many tokens it writes | [TU-05](#planned) |
 | Prompt caching | Reads a repeated prompt prefix at a reduced rate | [TU-02](#planned) |
 | Page images | Adds image tokens to each step that reads them | [TU-03](#planned) |
-| All of the above | The cheapest configuration that keeps accuracy | [TU-04](#what-is-the-cheapest-configuration-that-keeps-accuracy) |
+| All of the above | The cheapest configuration that keeps accuracy | [TU-04](#lowest-cost-configuration) |
 
 Some benchmarks here reuse runs from other pages.
 
-## Questions
+## Results
 
 <details>
 <summary>What the metrics mean</summary>
@@ -48,13 +48,13 @@ Some benchmarks here reuse runs from other pages.
 
 <!-- BEGIN GENERATED FAQ -->
 
-### What is the cheapest configuration that keeps accuracy?
+### Lowest-cost configuration
 
 ![Claude Haiku 5.5 and Layout only: same accuracy, a sixth the cost: weighted accuracy against cost per 1,000 documents, one point per configuration](../../images/benchmark-guidance/TU-04-fields.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Claude Haiku 5.5 extraction with Textract Layout only is a good place to start. With confidence off it cost $21 per 1,000 invoices, against $135 for the default, at the same weighted accuracy. Scoring confidence with Claude Haiku 5.5 raises that to $28, and it got every field right on more invoices (10% against 3%). Test it on your own documents.
+**Finding:** Claude Haiku 5.5 extraction with Textract Layout only is a good place to start. With confidence off it cost $21 per 1,000 invoices, against $135 for the default, at the same weighted accuracy. Scoring confidence with Claude Haiku 5.5 raises that to $28, and it got every field right on more invoices (10% against 3%). Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -92,8 +92,8 @@ On W-2 forms it cost $5 per 1,000 against $32 for the default, and scored higher
 
 We haven't run these yet.
 
-- How much does prompt caching save in extraction? (TU-02)
-- What do page images cost in tokens, step by step? (TU-03)
-- How many tokens does each extraction model use for the same document? (TU-05)
+- Prompt caching in extraction (TU-02)
+- Token cost of page images (TU-03)
+- Tokens per extraction model (TU-05)
 
 <!-- END GENERATED FAQ -->

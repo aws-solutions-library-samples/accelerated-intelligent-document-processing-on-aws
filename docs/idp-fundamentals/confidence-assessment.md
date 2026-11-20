@@ -116,7 +116,7 @@ this setting is unused.
 
 To route review, what matters is how well a scoring model **separates** right values from
 wrong ones, more than how accurate its scores are on average. See
-[Which scoring model should I use?](../benchmark-guidance/confidence-assessment.md#which-scoring-model-should-i-use)
+[Scoring model](../benchmark-guidance/confidence-assessment.md#scoring-model)
 
 **Escalation** (`extraction.confidence.escalation_enabled`, on by default) re-scores any rows
 the scoring model could not score, with a stronger model (`escalation_model`). See
@@ -253,7 +253,7 @@ On long lists with Simple extraction, the scoring pass can read more tokens than
 itself. See
 [Extraction & Confidence](../extraction-and-confidence.md#0-choosing-a-configuration-start-here)
 for the trade-off between the modes, and
-[Separate scoring pass or integrated into extraction?](../benchmark-guidance/confidence-assessment.md#separate-scoring-pass-or-integrated-into-extraction)
+[Separate or integrated scoring](../benchmark-guidance/confidence-assessment.md#separate-or-integrated-scoring)
 for what confidence costs.
 
 **Class confidence** adds tokens to every classification call: *Top-K* adds the ranked
@@ -324,7 +324,7 @@ When your measurements show alerts in the wrong places, try these changes, and s
 
 **Compare scoring models on your test set.** Changing the scoring model changes only the
 scores. The extracted values stay the same, so the comparison isolates the scoring model. See
-[Which scoring model should I use?](../benchmark-guidance/confidence-assessment.md#which-scoring-model-should-i-use)
+[Scoring model](../benchmark-guidance/confidence-assessment.md#scoring-model)
 
 **Set thresholds field by field from your own numbers.** Look at each field's AUROC and
 alert rate in Test Studio. Raise the threshold where wrong values still get through, and

@@ -16,11 +16,11 @@ works.
 
 <!-- BEGIN GENERATED APPROACHES -->
 
-## Which approach should I use?
+## Approach comparison
 
 ![Four ways to find the documents in a packet and classify each one: page by page, holistic, split then an LLM classifies each section, and split then a decision model classifies each section](../../images/benchmark-guidance/figures/splitting-approaches.svg)
 
-**Answer:** Holistic classification with Claude Haiku 5.5 is a good place to start. On DocSplit packets it got 74% of sections exactly right for $25.6 of classification per 1,000 packets; no approach under $200 got measurably more right. With Claude Sonnet 5.5 it got the most right, 91%, for $200, 7.8 times as much. Reading text only, without page images, does better still ([SC-02](#do-i-need-page-images-in-the-classification-prompt)). Test it on your own packets.
+**Finding:** Holistic classification with Claude Haiku 5.5 is a good place to start. On DocSplit packets it got 74% of sections exactly right for $25.6 of classification per 1,000 packets; no approach under $200 got measurably more right. With Claude Sonnet 5.5 it got the most right, 91%, for $200, 7.8 times as much. Reading text only, without page images, does better still ([SC-02](#page-images-in-the-classification-prompt)). Test it on your own packets.
 
 **The economics:** On DocSplit packets, Claude Sonnet 5.5 instead of Claude Haiku 5.5 adds $175 of classification per 1,000 packets and gets 671 more sections right, so it costs $0.26 per section it saves. Choose it when finding and fixing a misfiled or mis-split document costs you more than $0.26.
 
@@ -74,11 +74,11 @@ One call finds where each document starts, then the Strands Decider 2B picks eac
 - It keeps the section detector's mistakes: with Amazon Nova 2 Lite, 36% of sections were merged into a neighbour.
 - Classification costs $9.30 with Amazon Nova 2 Lite, $31.9 with Claude Haiku 5.5 and $204 with Claude Sonnet 5.5 per 1,000 packets.
 
-Use it when you want a small model on AWS Lambda to classify each section; give it one-line class descriptions ([SC-12](#can-a-decision-model-classify-the-sections)).
+Use it when you want a small model on AWS Lambda to classify each section; give it one-line class descriptions ([SC-12](#decision-model-for-section-classification)).
 
 ### Long packets
 
-Holistic stays a good place to start on long packets: there its advantage is in grouping pages, not in getting every boundary exactly right. On Claude Haiku 5.5 it costs 2.3 times as much as page by page ($103 against $44.6 of classification per 1,000 long packets), because a 20-page window with page images goes over the 100,000 tokens above which Claude Haiku 5.5 bills its long-context rate; a 10- or 15-page window keeps most calls under it ([SC-04](#how-long-a-packet-can-holistic-classification-handle)), as does reading text only.
+Holistic stays a good place to start on long packets: there its advantage is in grouping pages, not in getting every boundary exactly right. On Claude Haiku 5.5 it costs 2.3 times as much as page by page ($103 against $44.6 of classification per 1,000 long packets), because a 20-page window with page images goes over the 100,000 tokens above which Claude Haiku 5.5 bills its long-context rate; a 10- or 15-page window keeps most calls under it ([SC-04](#holistic-window-size-on-long-packets)), as does reading text only.
 
 Long packets are harder, clearly so for holistic: on 30–60 pages both got 62% of sections exactly right, against 76% for holistic and 68% for page by page on 5–20 pages. On that strict measure, holistic's lead on short packets (+0.08 ± 0.05) isn't measurable on long ones (0.00 ± 0.06). But on the grouping score, which gives credit for nearly right sections, holistic still leads clearly on long packets (+0.06 ± 0.02), as it does on V-measure, Rand index and ordering. Page accuracy is the same, and page by page labels the sections it gets right slightly better (label accuracy −0.05 ± 0.02).
 
@@ -104,7 +104,7 @@ Splitting first, then having an LLM classify each section, got no measurably mor
 - *Page accuracy:* the share of pages with the right class.
 - *Label accuracy:* of the sections with the right page range, the share with the right class.
 
-The page's [metric definitions](#questions) and Stickler's [Document Packet Splitting Evaluation](https://awslabs.github.io/stickler/Guides/Document_Packet_Splitting/) have more.
+The page's [metric definitions](#results) and Stickler's [Document Packet Splitting Evaluation](https://awslabs.github.io/stickler/Guides/Document_Packet_Splitting/) have more.
 
 </details>
 
@@ -341,14 +341,14 @@ Failed packets per run: DocSplit — Holistic · Claude Haiku 5.5: 1, 0, 1; DocS
 
 <!-- END GENERATED APPROACHES -->
 
-## How to improve splitting and classification on your documents
+## Improving splitting and classification
 
 **Your definitions.** The classification model picks a document class by comparing each
 section with the description of every document class. Name the features that tell a class
 apart from its closest neighbor. For classes that still get confused, add a few-shot example.
 A small decision model is more sensitive to this wording than an LLM: give it one line per
 class about what the page looks like, such as "a typed formal letter with a salutation
-(Dear ...) and a signature" ([SC-12](#can-a-decision-model-classify-the-sections)).
+(Dear ...) and a signature" ([SC-12](#decision-model-for-section-classification)).
 See [Improving accuracy](../idp-fundamentals/splitting-and-classification.md#improving-accuracy).
 
 **Data quality.** Long files, documents of the same class back to back, and pages that match
@@ -357,18 +357,18 @@ find where a document starts.
 
 **Settings.**
 
-| Setting | What it changes | Questions |
+| Setting | What it changes | Benchmarks |
 |---|---|---|
-| Granularity and strategy | Page by page or the whole file at once, in one call or with section detection first | [SC-11](#does-holistic-classification-beat-page-by-page-classification) |
-| What the model reads | Page text, page images, or both | [SC-02](#do-i-need-page-images-in-the-classification-prompt), [SC-09](#planned) |
-| Classification model | The model that reads the pages | [SC-11](#does-holistic-classification-beat-page-by-page-classification), [SC-13](#which-way-of-splitting-and-classifying-should-i-use) |
-| Who classifies each section | An LLM, or a small decision model, after section detection | [SC-12](#can-a-decision-model-classify-the-sections), [SC-13](#which-way-of-splitting-and-classifying-should-i-use) |
-| Class descriptions | Descriptions written for the LLM prompt, or one line about what each page looks like | [SC-12](#can-a-decision-model-classify-the-sections) |
-| Window size | How many pages a holistic call sees at once | [SC-04](#how-long-a-packet-can-holistic-classification-handle) |
+| Granularity and strategy | Page by page or the whole file at once, in one call or with section detection first | [SC-11](#holistic-or-page-by-page-classification) |
+| What the model reads | Page text, page images, or both | [SC-02](#page-images-in-the-classification-prompt), [SC-09](#planned) |
+| Classification model | The model that reads the pages | [SC-11](#holistic-or-page-by-page-classification), [SC-13](#splitting-approaches-by-model) |
+| Who classifies each section | An LLM, or a small decision model, after section detection | [SC-12](#decision-model-for-section-classification), [SC-13](#splitting-approaches-by-model) |
+| Class descriptions | Descriptions written for the LLM prompt, or one line about what each page looks like | [SC-12](#decision-model-for-section-classification) |
+| Window size | How many pages a holistic call sees at once | [SC-04](#holistic-window-size-on-long-packets) |
 | Few-shot examples | Sample pages with their correct class, added to the prompt | [SC-06](#planned) |
 | Section splitting | Detect sections, or keep every file as one section | [SC-10](#planned) |
 
-## Questions
+## Results
 
 <details>
 <summary>What the metrics mean</summary>
@@ -392,13 +392,13 @@ Full definitions: [Document Split Classification Metrics](../evaluation.md#docum
 
 <!-- BEGIN GENERATED FAQ -->
 
-### Does holistic classification beat page-by-page classification?
+### Holistic or page-by-page classification
 
 ![Holistic classification with Claude Sonnet 5.5 beats page by page: section accuracy against classification cost per 1,000 packets, one point per granularity, strategy and model](../../images/benchmark-guidance/SC-11-packet.svg)
 
 *Bands show ±2 standard errors.*
 
-**Answer:** Holistic classification is a good place to start. On 20 packets, Claude Sonnet 5.5 got 91% of sections exactly right holistically, against 76% page by page, for $201 of classification per 1,000 packets. Claude Haiku 5.5 reading text only got 88% on 98 packets for $2.58 ([SC-02](#do-i-need-page-images-in-the-classification-prompt)). [Which way of splitting and classifying should I use?](#which-way-of-splitting-and-classifying-should-i-use) compares the approaches on 100 packets. Test it on your own packets.
+**Finding:** Holistic classification is a good place to start. On 20 packets, Claude Sonnet 5.5 got 91% of sections exactly right holistically, against 76% page by page, for $201 of classification per 1,000 packets. Claude Haiku 5.5 reading text only got 88% on 98 packets for $2.58 ([SC-02](#page-images-in-the-classification-prompt)). [Splitting approaches by model](#splitting-approaches-by-model) compares the approaches on 100 packets. Test it on your own packets.
 
 **The economics:** Claude Sonnet 5.5 instead of Claude Haiku 5.5 adds $177 of classification per 1,000 packets and gets 710 more sections right, so it costs $0.25 per section it saves. Choose it when finding and fixing a misfiled or mis-split document costs you more than $0.25.
 
@@ -493,13 +493,13 @@ Failed packets per run: Page by page · Amazon Nova 2 Lite: 1, 0, 0; Page by pag
 
 </details>
 
-### Do I need page images in the classification prompt?
+### Page images in the classification prompt
 
 ![Text alone gets the most sections right, for the least: section accuracy against classification cost per 1,000 packets, one point per classification input](../../images/benchmark-guidance/SC-02-packet.svg)
 
 *Bands show ±2 standard errors.*
 
-**Answer:** Text only is a good place to start. Holistic classification with Claude Haiku 5.5 got 88% of sections exactly right from the OCR text alone, against 75% with page images as well and 65% with images alone. It also cost a tenth as much: $2.58 against $26 of classification per 1,000 packets. Test it on your own packets.
+**Finding:** Text only is a good place to start. Holistic classification with Claude Haiku 5.5 got 88% of sections exactly right from the OCR text alone, against 75% with page images as well and 65% with images alone. It also cost a tenth as much: $2.58 against $26 of classification per 1,000 packets. Test it on your own packets.
 
 **The economics:** Text only instead of text and images saves $23.1 of classification per 1,000 packets and gets 551 more sections right.
 
@@ -537,13 +537,13 @@ Failed packets per run: Text and images (baseline): 1, 0, 1.
 
 </details>
 
-### How long a packet can holistic classification handle?
+### Holistic window size on long packets
 
 ![A 10-page window costs 60% less on long packets, and gets at least as many sections right: section accuracy against classification cost per 1,000 packets, one point per pages per holistic call](../../images/benchmark-guidance/SC-04-packet.svg)
 
 *Bands show ±2 standard errors.*
 
-**Answer:** Holistic classification reads a long packet in overlapping windows of pages. On packets of 30 to 60 pages with Claude Haiku 5.5, a 10-page window is a good place to start. It got the most sections exactly right, 67% against 62% with the default 20 pages, and cost 60% less: $39 against $103 of classification per 1,000 packets. The saving comes from pricing: a 20-page window with page images usually goes over 100,000 tokens, and Claude Haiku 5.5 charges more above that. A 15-page window cost about the same as 10 but got no more right than 20; a 40-page window cost the most. Test it on your own packets.
+**Finding:** Holistic classification reads a long packet in overlapping windows of pages. On packets of 30 to 60 pages with Claude Haiku 5.5, a 10-page window is a good place to start. It got the most sections exactly right, 67% against 62% with the default 20 pages, and cost 60% less: $39 against $103 of classification per 1,000 packets. The saving comes from pricing: a 20-page window with page images usually goes over 100,000 tokens, and Claude Haiku 5.5 charges more above that. A 15-page window cost about the same as 10 but got no more right than 20; a 40-page window cost the most. Test it on your own packets.
 
 **The economics:** 10 pages instead of 20 pages saves $64.4 of classification per 1,000 packets and gets 599 more sections right.
 
@@ -585,13 +585,13 @@ Failed packets per run: 20 pages (default): 2, 0, 0.
 
 </details>
 
-### Can a decision model classify the sections?
+### Decision model for section classification
 
 ![With one-line descriptions, Decider 2B comes close to Haiku 5.5 at classifying sections: label accuracy against classification cost per 1,000 packets, one point per which model classifies each section, and the class descriptions](../../images/benchmark-guidance/SC-12-packet.svg)
 
 *Bands show ±2 standard errors.*
 
-**Answer:** Claude Haiku 5.5 is a good place to start for classifying sections. The Strands Decider 2B comes close if you give each class a one-line description of what its pages look like and send it the first two page images. It then gave the right class to 95% of correctly split sections, against 98% for Claude Haiku 5.5 with the same descriptions, at about the same cost ($31 per 1,000 packets). With the preset's longer class descriptions, written for an LLM, it got 77%. Both got about the same share of sections exactly right (77% and 78%), because most errors come from finding where each section starts, which Claude Haiku 5.5 does in every row. Test it on your own packets.
+**Finding:** Claude Haiku 5.5 is a good place to start for classifying sections. The Strands Decider 2B comes close if you give each class a one-line description of what its pages look like and send it the first two page images. It then gave the right class to 95% of correctly split sections, against 98% for Claude Haiku 5.5 with the same descriptions, at about the same cost ($31 per 1,000 packets). With the preset's longer class descriptions, written for an LLM, it got 77%. Both got about the same share of sections exactly right (77% and 78%), because most errors come from finding where each section starts, which Claude Haiku 5.5 does in every row. Test it on your own packets.
 
 **The economics:** The Strands Decider 2B, reading the first two page images with one-line class descriptions, and Claude Haiku 5.5 show no measurable difference in cost or accuracy.
 
@@ -637,17 +637,17 @@ Failed packets per run: LLM · Claude Haiku 5.5: 8, 10; LLM · Claude Haiku 5.5 
 
 </details>
 
-### Which way of splitting and classifying should I use?
+### Splitting approaches by model
 
-See [Which approach should I use?](#which-approach-should-i-use).
+See [Approach comparison](#approach-comparison).
 
-### Do long packets change which approach to use?
+### Long or short packets
 
 ![With Claude Haiku 5.5, long packets cost every approach whole sections: section accuracy against classification cost per 1,000 packets, one point per approach and packet length](../../images/benchmark-guidance/SC-14-packet.svg)
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** On packets of 30 to 60 pages with Claude Haiku 5.5, holistic classification with a 10-page window is a good place to start ([SC-04](#how-long-a-packet-can-holistic-classification-handle)). It got 67% of sections exactly right, as many as splitting first and then classifying each section, for $39 of classification per 1,000 packets, against $125 for split-then-classify and $45 for page by page. With the default 20-page window, holistic and page by page both got 62%. Holistic grouped pages better (grouping score 0.88 against 0.82) but cost 2.3 times as much ($103), because its calls went over the 100,000 tokens above which Claude Haiku 5.5 charges more. Every approach did worse on long packets than on packets of 5 to 20 pages. Test it on your own packets.
+**Finding:** On packets of 30 to 60 pages with Claude Haiku 5.5, holistic classification with a 10-page window is a good place to start ([SC-04](#holistic-window-size-on-long-packets)). It got 67% of sections exactly right, as many as splitting first and then classifying each section, for $39 of classification per 1,000 packets, against $125 for split-then-classify and $45 for page by page. With the default 20-page window, holistic and page by page both got 62%. Holistic grouped pages better (grouping score 0.88 against 0.82) but cost 2.3 times as much ($103), because its calls went over the 100,000 tokens above which Claude Haiku 5.5 charges more. Every approach did worse on long packets than on packets of 5 to 20 pages. Test it on your own packets.
 
 <details>
 <summary>Details</summary>
@@ -685,10 +685,10 @@ Failed packets per run: DocSplit — Holistic · Claude Haiku 5.5: 1, 0, 1; DocS
 
 We haven't run these yet.
 
-- Do few-shot examples help classification? (SC-06)
-- How much do class descriptions matter? (SC-07)
-- Does accuracy drop as I add document classes? (SC-08)
-- How small can classification images be? (SC-09)
-- If every file is one document, should I turn splitting off? (SC-10)
+- Few-shot examples for classification (SC-06)
+- Class descriptions (SC-07)
+- Number of document classes (SC-08)
+- Classification image size (SC-09)
+- Splitting off for one-document files (SC-10)
 
 <!-- END GENERATED FAQ -->
