@@ -21,7 +21,12 @@ from rich.table import Table
 from idp_sdk import IDPClient
 
 logger = logging.getLogger(__name__)
+#: Result tables and statistics, which are what `display_*` exists to show.
 console = Console()
+#: Progress lines a search prints while it runs. They go to stderr because the
+#: caller may be putting a payload on stdout: `idp-cli status --batch-id b
+#: --format json` printed both lines ahead of its JSON, so `| jq` failed at char 0.
+err_console = Console(stderr=True)
 
 
 class TrackingTableSearcher:
@@ -72,7 +77,7 @@ class TrackingTableSearcher:
 
         try:
             status_label = object_status or "ALL"
-            console.print(
+            err_console.print(
                 f"[yellow]Searching tracking table for PK containing '{pk}' and ObjectStatus='{status_label}'...[/yellow]"
             )
 
@@ -106,7 +111,7 @@ class TrackingTableSearcher:
                     break
 
             count = len(matching_items)
-            console.print(f"[green]✓ Found {count} matching documents[/green]")
+            err_console.print(f"[green]✓ Found {count} matching documents[/green]")
 
             return {
                 "success": True,

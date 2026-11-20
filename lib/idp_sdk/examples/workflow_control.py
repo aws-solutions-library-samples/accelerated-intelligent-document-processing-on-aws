@@ -124,22 +124,29 @@ def main():
             print(f"Getting status for document: {args.document_id}")
             status = client.document.get_status(document_id=args.document_id)
             # Convert single document status to batch-like format for display
-            from idp_sdk import BatchStatus
+            from idp_sdk import BatchStatus, DocumentBucket, classify_document_state
 
+            # Count the document under the same progress bucket `batch.get_status`
+            # uses. A document mid-pipeline carries its current step (OCR,
+            # EXTRACTING, ...) as its status, never "PROCESSING", so comparing the
+            # status with a hand-picked list of names misses most of them.
+            bucket = classify_document_state(status.status)
             status = BatchStatus(
                 batch_id="single-doc",
                 documents=[status],
                 total=1,
-                completed=1 if status.status.value == "COMPLETED" else 0,
-                failed=1 if status.status.value == "FAILED" else 0,
-                in_progress=1
-                if status.status.value in ["PROCESSING", "RUNNING"]
-                else 0,
-                queued=1 if status.status.value == "QUEUED" else 0,
-                awaiting_review=1 if status.status.value == "HITL_IN_PROGRESS" else 0,
-                success_rate=1.0 if status.status.value == "COMPLETED" else 0.0,
-                all_complete=status.status.value
-                in ["COMPLETED", "FAILED", "HITL_IN_PROGRESS"],
+                completed=int(bucket == DocumentBucket.COMPLETED),
+                failed=int(bucket == DocumentBucket.FAILED),
+                in_progress=int(bucket == DocumentBucket.RUNNING),
+                queued=int(bucket == DocumentBucket.QUEUED),
+                awaiting_review=int(bucket == DocumentBucket.AWAITING_REVIEW),
+                success_rate=1.0 if bucket == DocumentBucket.COMPLETED else 0.0,
+                all_complete=bucket
+                in (
+                    DocumentBucket.COMPLETED,
+                    DocumentBucket.FAILED,
+                    DocumentBucket.AWAITING_REVIEW,
+                ),
             )
 
         print("\nBatch Status:")

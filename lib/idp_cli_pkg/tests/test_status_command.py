@@ -537,3 +537,56 @@ class TestStatusCommandIntegration:
         mock_tracking_searcher.search_by_pk_and_status.assert_called_once()
         mock_tracking_searcher.calculate_timing_statistics.assert_called_once()
         mock_tracking_searcher.display_timing_statistics.assert_called_once()
+
+
+class TestStatusJsonStdoutIsPureJson:
+    """`status --batch-id ... --format json` puts nothing but the payload on stdout.
+
+    The searcher is real here and only its DynamoDB client is stubbed, because
+    the lines that broke `| jq` were printed by the searcher itself; a test that
+    mocks the searcher cannot see them (#2199).
+    """
+
+    def test_the_searchers_progress_lines_go_to_stderr(
+        self, runner, mock_batch_processor
+    ):
+        import json
+
+        from idp_cli.search_tracking_table import TrackingTableSearcher
+
+        dynamodb = Mock()
+        dynamodb.scan.return_value = {
+            "Items": [
+                {
+                    "PK": {"S": "doc#batch-123/doc1.pdf"},
+                    "ObjectKey": {"S": "batch-123/doc1.pdf"},
+                    "ObjectStatus": {"S": "COMPLETED"},
+                }
+            ]
+        }
+
+        def offline_init(self, stack_name, region=None):
+            self.stack_name = stack_name
+            self.region = region
+            self.dynamodb = dynamodb
+            self.table_name = "test-table"
+
+        with patch.object(TrackingTableSearcher, "__init__", offline_init):
+            result = runner.invoke(
+                cli,
+                [
+                    "status",
+                    "--stack-name",
+                    "test-stack",
+                    "--batch-id",
+                    "batch-123",
+                    "--format",
+                    "json",
+                ],
+            )
+
+        dynamodb.scan.assert_called_once()
+        payload = json.loads(result.stdout)
+        assert isinstance(payload, dict)
+        assert "Searching tracking table" in result.stderr
+        assert "Found 1 matching documents" in result.stderr

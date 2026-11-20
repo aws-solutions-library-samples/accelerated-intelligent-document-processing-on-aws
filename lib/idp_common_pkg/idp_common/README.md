@@ -232,6 +232,22 @@ class Status(Enum):
     MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"             # No malware verdict obtainable; refused (fail-closed)
 ```
 
+`PENDING_UPLOAD` and `IN_PROGRESS` are also members, but they are Jobs API
+statuses (a job's and a job file's) and no document tracking record stores them in
+`ObjectStatus`. `JOB_LEVEL_STATUSES` names those two, and `DOCUMENT_STATUS_VALUES`
+is every other member's value, in enum order: the statuses a document can be
+recorded with. `idp-cli delete-documents --status-filter`, `idp-cli status
+--object-status` and the SDK's `batch.delete_documents(status_filter=...)` all
+accept exactly that set. There is no `PROCESSING` status; a document being
+processed carries its current step (`OCR`, `EXTRACTING`, ...).
+
+```python
+from idp_common.models import DOCUMENT_STATUS_VALUES
+
+assert "EXTRACTING" in DOCUMENT_STATUS_VALUES
+assert "PROCESSING" not in DOCUMENT_STATUS_VALUES
+```
+
 The malware statuses are reachable only when the `MalwareScanning` stack parameter
 is not `DISABLED`. A `QUARANTINED` or `MALWARE_SCAN_FAILED` document has no pages,
 no sections and no workflow execution; the verdict travels on the document's
