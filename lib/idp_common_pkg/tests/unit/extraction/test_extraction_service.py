@@ -1268,7 +1268,6 @@ class TestProcessingFlow:
         md = {
             "extraction_method": "traditional",
             "extraction_model": "us.anthropic.claude-sonnet-5",
-            "ocr_analysis": {"tables_detected": 0},
             "assessment_batch_split_stats": {"batch_count": 1, "concurrent_batches": 1},
         }
         flow = svc._build_processing_flow(md, "traditional", False)
@@ -1288,6 +1287,9 @@ class TestProcessingFlow:
         uncounted = svc._build_processing_flow(
             {"extraction_method": "traditional"}, "traditional", False
         )
+        empty = svc._build_processing_flow(
+            {"extraction_method": "agentic", "ocr_analysis": {}}, "agentic", False
+        )
         counted = svc._build_processing_flow(
             {"extraction_method": "agentic", "ocr_analysis": {"tables_detected": 0}},
             "agentic",
@@ -1299,6 +1301,7 @@ class TestProcessingFlow:
             "detail": "",
             "status": "ok",
         }
+        assert empty["stages"][0]["detail"] == ""
         assert counted["stages"][0]["detail"] == "no markdown tables"
 
     def test_advanced_flow_shards_tabletool_confidence_geometry(self):

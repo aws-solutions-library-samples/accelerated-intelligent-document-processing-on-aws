@@ -5198,8 +5198,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         # 1) OCR
         ocr_detail = ""
-        if "ocr_analysis" in metadata:
-            tables_seen = (metadata.get("ocr_analysis") or {}).get("tables_detected", 0)
+        if metadata.get("ocr_analysis"):
+            tables_seen = metadata["ocr_analysis"].get("tables_detected", 0)
             ocr_detail = (
                 f"{tables_seen} markdown table(s) in text"
                 if tables_seen
