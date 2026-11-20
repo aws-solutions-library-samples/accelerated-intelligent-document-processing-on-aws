@@ -4685,6 +4685,48 @@ TERRAFORM_DEPLOY_LOG = "idp-cli-deploy.log"
 TERRAFORM_DELETE_LOG = "idp-cli-delete.log"
 TERRAFORM_LOG_TAIL_LINES = 120
 
+#: The re-plan after apply (check_terraform_convergence): its output, and the
+#: saved plan `show -json` reads. The plan file holds every planned value,
+#: sensitive ones in clear, so it is deleted once read and never copied to S3.
+TERRAFORM_REPLAN_LOG = "terraform-replan.log"
+TERRAFORM_REPLAN_PLAN_FILE = "replan.tfplan"
+#: A refresh of every resource through Cloud Control, which is most of a plan's
+#: time; an estimate, well under the suite allowance below.
+TERRAFORM_REPLAN_TIMEOUT_SECONDS = 45 * 60
+#: How many changed addresses the failure names before it summarises the rest.
+TERRAFORM_REPLAN_LISTED_CHANGES = 25
+#: The step_results row the re-plan's verdict is reported under.
+TERRAFORM_CONVERGENCE_STEP = "Step 2b: Terraform re-plan after apply is empty"
+#: The step_results row a Terraform run refused before the steps reports under.
+TERRAFORM_STEPS_REFUSED_ROW = "Steps not started (too little build time left)"
+
+
+def _log_group_arn_gains_wildcard(before, after) -> bool:
+    """The planned value is the stored log-group ARN with CloudFormation's
+    ``:*`` appended, and nothing else differs."""
+    return isinstance(before, str) and bool(before) and after == f"{before}:*"
+
+
+#: Re-plan changes check_terraform_convergence reports without failing the run,
+#: one Terraform address each, with the single attribute path the change may
+#: touch, a test the before and after values of that path must pass, and the
+#: issue the change is a known defect under. A change on a listed address that
+#: touches any other attribute, or fails the test, or is not a plain update, still
+#: fails the run. Registered in scripts/tests/gate_exemptions.json; the staleness
+#: test in scripts/sdlc/tests/test_terraform_replan_convergence.py fails once the
+#: generated module stops producing the shape an entry describes.
+TERRAFORM_REPLAN_EXEMPT_CHANGES = {
+    # #2006: the translator writes a log group's GetAtt Arn in CloudFormation's
+    # form, "<arn>:*", and Cloud Control stores the stage's access-log
+    # destination without the suffix, so the plan shows the suffix being added
+    # again after every apply.
+    "module.idp.module.apiresolverstack.awscc_apigateway_stage.http_api_stage": (
+        ("access_log_setting", "destination_arn"),
+        _log_group_arn_gains_wildcard,
+        2006,
+    ),
+}
+
 #: Heads the consolidated summary, and marks the failure email's subject, on a
 #: Terraform run, so its result is never read as the CloudFormation nightly's.
 #: The Terraform schedule runs every night too, so the label names the deploy
@@ -5189,7 +5231,7 @@ def terraform_log_tail(directory, lines=TERRAFORM_LOG_TAIL_LINES):
     `apply` names the failing resource and the provider's error in its output.
     """
     chunks = []
-    for name in (TERRAFORM_DEPLOY_LOG, TERRAFORM_DELETE_LOG):
+    for name in (TERRAFORM_DEPLOY_LOG, TERRAFORM_REPLAN_LOG, TERRAFORM_DELETE_LOG):
         path = os.path.join(directory, name)
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
@@ -5393,6 +5435,244 @@ def _sweep_terraform_resource_directory(cf, stack_name, deployer=None, clients=N
     return left
 
 
+def _changed_paths(before, after, unknown, path=()):
+    """Every leaf attribute path at which a planned change differs.
+
+    ``unknown`` is the change's ``after_unknown`` at the same position: a value
+    known only after apply counts as changed, since nothing says it will equal
+    the stored one. Objects are compared key by key and equal-length lists item
+    by item; anything else that differs is changed at its own path.
+    """
+    if unknown is True:
+        return [path]
+    if isinstance(before, dict) and isinstance(after, dict):
+        unknown = unknown if isinstance(unknown, dict) else {}
+        found = []
+        for key in sorted(set(before) | set(after) | set(unknown)):
+            found += _changed_paths(
+                before.get(key), after.get(key), unknown.get(key), (*path, key)
+            )
+        return found
+    if (
+        isinstance(before, list)
+        and isinstance(after, list)
+        and len(before) == len(after)
+    ):
+        unknown = unknown if isinstance(unknown, list) else []
+        found = []
+        for index, (old, new) in enumerate(zip(before, after)):
+            mark = unknown[index] if index < len(unknown) else None
+            found += _changed_paths(old, new, mark, (*path, index))
+        return found
+    return [] if before == after else [path]
+
+
+def _value_at(value, path):
+    for key in path:
+        if isinstance(value, dict):
+            value = value.get(key)
+        elif isinstance(value, list) and isinstance(key, int) and key < len(value):
+            value = value[key]
+        else:
+            return None
+    return value
+
+
+def _replan_exemption(change):
+    """The issue a re-plan change is a registered known defect under, or None.
+
+    Matches only a plain update of a listed address whose one changed attribute
+    is the listed path, with before and after values the entry's test accepts.
+    """
+    entry = TERRAFORM_REPLAN_EXEMPT_CHANGES.get(change.get("address"))
+    detail = change.get("change") or {}
+    if entry is None or detail.get("actions") != ["update"]:
+        return None
+    path, accepts, issue = entry
+    before, after = detail.get("before"), detail.get("after")
+    changed = _changed_paths(before, after, detail.get("after_unknown"))
+    if changed != [path] or not accepts(
+        _value_at(before, path), _value_at(after, path)
+    ):
+        return None
+    return issue
+
+
+def _describe_change(change):
+    """One line naming an address, its actions and the attribute paths it
+    changes. Paths only: the values can be sensitive and the line is printed."""
+    detail = change.get("change") or {}
+    actions = "/".join(detail.get("actions") or ["?"])
+    line = f"{change.get('address', '?')} ({actions})"
+    if detail.get("actions") == ["update"]:
+        paths = [
+            ".".join(str(part) for part in path)
+            for path in _changed_paths(
+                detail.get("before"), detail.get("after"), detail.get("after_unknown")
+            )
+        ]
+        if paths:
+            shown = ", ".join(paths[:8])
+            more = f" and {len(paths) - 8} more" if len(paths) > 8 else ""
+            line += f": {shown}{more}"
+    return line
+
+
+def judge_terraform_replan(returncode, plan_json, log_tail=""):
+    """The verdict on the re-plan after apply, from `plan -detailed-exitcode`'s
+    exit status and the saved plan's `show -json` text.
+
+    Returns ``{"status", "detail", "changes", "known"}``. ``status`` is
+    ``converged`` (exit 0, or exit 2 whose every change is a registered known
+    defect in TERRAFORM_REPLAN_EXEMPT_CHANGES), ``drift`` (exit 2 with any other
+    change), or ``error`` (exit 1, a timeout, or a plan that could not be read):
+    the re-plan did not answer, so whether the module converges is unknown.
+    ``changes`` and ``known`` are the description lines of the failing and the
+    registered changes. Only ``converged`` passes.
+    """
+    verdict = {"status": "error", "detail": "", "changes": [], "known": []}
+    if returncode == 0:
+        verdict.update(status="converged", detail="the re-plan after apply is empty")
+        return verdict
+    if returncode != 2:
+        tail = (log_tail or "").strip()[-600:]
+        verdict["detail"] = (
+            f"`terraform plan -detailed-exitcode` exited {returncode}, so whether "
+            "the module converges is unknown"
+            + (f"; plan output ends: {tail}" if tail else "")
+        )
+        return verdict
+    try:
+        plan = json.loads(plan_json or "")
+    except ValueError:
+        verdict["detail"] = (
+            "the re-plan after apply is not empty (exit 2), and its saved plan "
+            "could not be read to name the changes"
+        )
+        return verdict
+    for change in plan.get("resource_changes") or []:
+        if (change.get("change") or {}).get("actions") == ["no-op"]:
+            continue
+        issue = _replan_exemption(change)
+        line = _describe_change(change)
+        if issue is None:
+            verdict["changes"].append(line)
+        else:
+            verdict["known"].append(f"known defect #{issue}: {line}")
+    for name, output in sorted((plan.get("output_changes") or {}).items()):
+        actions = (output or {}).get("actions") or ["?"]
+        if actions != ["no-op"]:
+            verdict["changes"].append(f"output.{name} ({'/'.join(actions)})")
+    if not verdict["changes"] and not verdict["known"]:
+        verdict["changes"].append(
+            "exit 2 with no resource or output change in the saved plan"
+        )
+    if verdict["changes"]:
+        listed = verdict["changes"][:TERRAFORM_REPLAN_LISTED_CHANGES]
+        rest = len(verdict["changes"]) - len(listed)
+        verdict.update(
+            status="drift",
+            detail=(
+                f"the re-plan after apply is not empty: {len(verdict['changes'])} "
+                "change(s), so the module does not converge: "
+                + "; ".join(listed)
+                + (f"; and {rest} more" if rest > 0 else "")
+            ),
+        )
+    else:
+        verdict.update(
+            status="converged",
+            detail=(
+                "the re-plan after apply holds only registered known defects: "
+                + "; ".join(verdict["known"])
+            ),
+        )
+    return verdict
+
+
+def check_terraform_convergence(terraform):
+    """Re-plan the deployment straight after its apply; the plan must be empty.
+
+    `plan -detailed-exitcode` exits 0 for an empty plan, 2 for a non-empty one
+    and 1 on error. `-lock=false` because the plan writes no state and its saved
+    plan is never applied, while a plan killed by the timeout would leave the S3
+    lock file behind and block the run's own destroy. The plan's text goes to TERRAFORM_REPLAN_LOG rather than the
+    build log, which gets the bounded list judge_terraform_replan makes from the
+    saved plan's JSON. That JSON carries sensitive values in clear, so it is read
+    here without being echoed, and the saved plan is deleted afterwards.
+    """
+    binary = shlex.quote(terraform.binary)
+    directory = shlex.quote(terraform.directory)
+    log_path = os.path.join(terraform.directory, TERRAFORM_REPLAN_LOG)
+    plan_path = os.path.join(terraform.directory, TERRAFORM_REPLAN_PLAN_FILE)
+    replan = run_command(
+        f"TF_IN_AUTOMATION=1 {binary} -chdir={directory} plan -input=false "
+        "-lock=false -no-color -detailed-exitcode "
+        f"-out={TERRAFORM_REPLAN_PLAN_FILE} "
+        f"> {shlex.quote(log_path)} 2>&1",
+        check=False,
+        timeout=TERRAFORM_REPLAN_TIMEOUT_SECONDS,
+    )
+    log_tail = ""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as handle:
+            log_tail = handle.read()[-2000:]
+    except OSError:
+        pass
+    plan_json = None
+    if replan.returncode == 2:
+        try:
+            shown = subprocess.run(  # nosec B603 - fixed argv, no shell
+                [
+                    terraform.binary,
+                    f"-chdir={terraform.directory}",
+                    "show",
+                    "-json",
+                    TERRAFORM_REPLAN_PLAN_FILE,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+                env={**os.environ, "TF_IN_AUTOMATION": "1"},
+            )
+            plan_json = shown.stdout if shown.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"⚠️ Could not read the re-plan's saved plan: {e}")
+    try:
+        os.remove(plan_path)
+    except OSError:
+        pass
+    verdict = judge_terraform_replan(replan.returncode, plan_json, log_tail)
+    icon = "✅" if verdict["status"] == "converged" else "❌"
+    print(f"{icon} Terraform re-plan after apply: {verdict['detail']}")
+    for line in verdict["known"]:
+        print(f"   ⚠️ not failing the run, registered known defect: {line}")
+    return verdict
+
+
+def terraform_convergence_rows(convergence):
+    """The step_results row for a re-plan verdict: ``{}`` for a run that made
+    none (CloudFormation), otherwise one row, failed on drift or error, and
+    passed with the registered known defects named when there are any."""
+    if not convergence:
+        return {}
+    if convergence["status"] != "converged":
+        return {
+            TERRAFORM_CONVERGENCE_STEP: {
+                "status": "failed",
+                "error": convergence["detail"],
+            }
+        }
+    known = convergence.get("known") or []
+    return {
+        TERRAFORM_CONVERGENCE_STEP: {
+            "status": "passed",
+            "error": "; ".join(known),
+        }
+    }
+
+
 def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
     """One Terraform deploy + health check of the primary stack.
 
@@ -5454,7 +5734,16 @@ def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
     )
     if deploy.returncode == 0 and healthy:
         print(f"✅ Terraform deployment completed ({detail})")
-        return {"stack_name": stack_name, "success": True, "iac": IAC_TERRAFORM}
+        print("Step 2b: Re-planning the Terraform deployment...")
+        return {
+            "stack_name": stack_name,
+            "success": True,
+            "iac": IAC_TERRAFORM,
+            # Reported as a step by deploy_and_test_stack, which still runs the
+            # suite: a module that does not converge is a defect of its own, and
+            # the suite's result is worth having beside it.
+            "convergence": check_terraform_convergence(terraform),
+        }
 
     detail = (
         f"idp-cli deploy --terraform exit {deploy.returncode}; {detail}"
@@ -6085,6 +6374,15 @@ def deploy_and_test_stack(
 
         print("✅ Stack is healthy")
 
+        # The re-plan's verdict leads the step table, because it describes the
+        # deployment the steps then use, and it is carried on every return from
+        # here on so no early exit drops it.
+        convergence = deploy_result.get("convergence")
+        convergence_rows = terraform_convergence_rows(convergence)
+        convergence_failed = bool(convergence) and (
+            convergence["status"] != "converged"
+        )
+
         if terraform is not None:
             shortfall = terraform_suite_time_shortfall(
                 time.monotonic() if run_started is None else run_started
@@ -6097,6 +6395,17 @@ def deploy_and_test_stack(
                     "failure_type": "deploy",
                     "iac": IAC_TERRAFORM,
                     "error": f"Terraform run refused before the steps: {shortfall}",
+                    "convergence_failed": convergence_failed,
+                    # The refusal is a failed row of its own: the summary reads
+                    # the rows in preference to `success`, so the re-plan's row
+                    # alone, when it passed, would render this run as a pass.
+                    "step_results": {
+                        **convergence_rows,
+                        TERRAFORM_STEPS_REFUSED_ROW: {
+                            "status": "failed",
+                            "error": shortfall,
+                        },
+                    },
                 }
 
         # Run tests 3-10 in parallel (Step 4 BDA now uses config-sync-bda + --config-version, no activation race)
@@ -6110,10 +6419,13 @@ def deploy_and_test_stack(
 
         # Per-step status for the consolidated end-of-run summary table. Steps
         # not reached (fail-fast cancels the rest) stay "cancelled".
-        step_results = {
-            f"{step}: {name}": {"status": "cancelled", "error": ""}
-            for _, step, name, _ in ALL_TEST_STEPS
-        }
+        step_results = dict(convergence_rows)
+        step_results.update(
+            {
+                f"{step}: {name}": {"status": "cancelled", "error": ""}
+                for _, step, name, _ in ALL_TEST_STEPS
+            }
+        )
 
         failed_test = None
         # No `with` block: its shutdown(wait=True) would join still-running
@@ -6194,6 +6506,25 @@ def deploy_and_test_stack(
                     "step_results": step_results,
                 }
             _emit(step_results)
+
+        if convergence_failed:
+            # Every step passed and the run still fails: the module did not
+            # converge. "drift" and "error" are told apart in the message.
+            label = (
+                "does not converge"
+                if convergence["status"] == "drift"
+                else "re-plan could not run"
+            )
+            print(f"❌ All steps passed, but the Terraform deployment {label}")
+            return {
+                "stack_name": stack_name,
+                "success": False,
+                "failure_type": "deploy",
+                "iac": IAC_TERRAFORM,
+                "error": f"{TERRAFORM_CONVERGENCE_STEP} failed: {convergence['detail']}",
+                "convergence_failed": True,
+                "step_results": step_results,
+            }
 
         print("✅ All tests passed")
         return {
@@ -7182,16 +7513,26 @@ def terraform_failure_prompt(result, stack_name):
     events carry for CloudFormation.
     """
     log_tail = result.get("terraform_log_tail") or "(no Terraform log captured)"
+    convergence = ""
+    if result.get("convergence_failed"):
+        convergence = (
+            "\n    The apply itself succeeded. The run failed because the re-plan "
+            "straight after\n    it (`terraform plan -detailed-exitcode`, "
+            f"{TERRAFORM_REPLAN_LOG} below) was not\n    empty or could not run: "
+            "the deployment does not converge. The changed\n    addresses and "
+            "attribute paths are in the deployment error; for drift the root\n    "
+            "cause is those changes, not an `Error:` block, so name them.\n"
+        )
     return dedent(f"""
     A Terraform deployment of the IDP accelerator (`idp-cli deploy --terraform`)
     failed. Analyze the Terraform output to determine the root cause.
-
+    {convergence}
     Deployment name: {stack_name}
 
     Deployment error:
     {result.get("error", "")}
 
-    Tail of the Terraform log (init and apply output):
+    Tail of the Terraform log (init and apply output, then the re-plan's):
     {log_tail}
 
     GROUNDING RULES — follow strictly:
