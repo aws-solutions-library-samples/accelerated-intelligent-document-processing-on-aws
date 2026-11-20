@@ -163,17 +163,20 @@ capabilities:
       - question:tables-span-pages
 
   - id: assessment-confidence
-    title: Per-field confidence scores and bounding boxes
+    title: Configurable confidence assessment and bounding boxes (pipeline mode)
     description: >-
       Extraction produces a confidence score and, optionally, a page location for each
       field. extraction.confidence.mode is separate (default; a dedicated pass, default
-      model Amazon Nova Lite, lists batched 25 items at a time and split further on
-      truncation), integrated (confidence on the extraction call) or off. Measured on
+      model Amazon Nova Lite, with lists scored in batches of at most 25 rows, sized
+      down from the confidence model's output limit to 13 rows for a 3-column list on
+      Nova Lite with bounding boxes, and split further on truncation), integrated (confidence on the extraction call) or off. Measured on
       the v0.6.14 benchmark, integrated was not cheaper than separate in simple mode and
       cost about 42% more at the default model in advanced mode; only off saved money.
       With the default Nova Lite confidence model, 0 of 119,937 confidence values on
       that grid scored below 0.9, including wrong values, so a threshold around 0.8
-      rarely routes a document to review.
+      rarely routes a document to review. In BDA mode field confidence comes from BDA's
+      own output, with the configured thresholds applied, and these settings do not
+      apply.
     evidence:
       - docs/extraction-and-confidence.md#confidence-mode-separate-vs-integrated-vs-off
       - docs/human-review.md#confidence-threshold-configuration
@@ -243,11 +246,13 @@ capabilities:
       by default (summarization.enabled) and the default model is the 1-million-token
       context variant of Claude Sonnet 5; arrays longer than 50 items are elided from
       the prompt by default. In the v0.6.0 scaling study a 6,400-row, 131-page document
-      extracted completely and then failed at summarization, a single non-sharded call;
-      that size was not re-measured on v0.6.14, and turning summarization off avoids
-      the risk.
+      extracted completely and then failed at summarization, a single non-sharded call.
+      The step now truncates over-long input to fit the model's window instead of
+      failing, so a very large document's summary may rest on truncated input; that
+      size was not re-measured on v0.6.14.
     evidence:
       - docs/architecture.md#document-summarization
+      - lib/idp_common_pkg/idp_common/summarization/service.py
       - docs/extraction-scaling-guide.md#advanced-mode-limits-are-cost-and-downstream-steps-not-completeness
       - lib/idp_common_pkg/idp_common/config/system_defaults/base-summarization.yaml
     modes: [bda, pipeline]
@@ -309,8 +314,10 @@ capabilities:
       Discovery analyses sample documents, with or without labelled ground truth, and
       drafts a document class with a JSON Schema of its fields; it can auto-detect
       section boundaries in a multi-section PDF. Multi-document collection discovery
-      embeds a folder of mixed documents, clusters them and drafts one class per
-      cluster, filtering clusters of fewer than 2 documents as noise. In BDA mode the
+      embeds a folder of mixed documents (default embedding model Cohere Embed v4,
+      us.cohere.embed-v4:0), clusters them and drafts one class per
+      cluster, filtering clusters smaller than discovery.multi_document.min_cluster_size
+      (2 by default) as noise. In BDA mode the
       result can also create BDA blueprints. It accepts PDF and image files only (.pdf,
       .png, .jpg, .jpeg, .tiff, .tif, and .webp for collection discovery).
     evidence:
@@ -485,14 +492,14 @@ capabilities:
       and optional external MCP servers. It remembers the last 20 turns of a
       conversation and stores conversations in the customer's account. The Code
       Intelligence agent uses a third-party service and is opt-in; the default model
-      is Claude Haiku 4.5. A separate Chat with Document action answers questions about
-      one document.
+      is Claude Haiku 4.5. Chat with Document, a separate feature configured under
+      chat, answers questions about one document.
     evidence:
       - docs/agent-companion-chat.md
       - docs/agent-companion-chat.md#code-intelligence-and-third-party-services
       - docs/code-intelligence.md
       - docs/custom-MCP-agent.md
-    configuration: [agents.chat_companion.model_id, chat.enabled]
+    configuration: [agents.chat_companion.model_id]
     related:
       - capability:error-analyzer
       - capability:reporting-database
@@ -519,8 +526,8 @@ capabilities:
       with Cognito OAuth 2.0, exposes five tools to external AI applications: search
       (natural-language analytics), process, reprocess, status and get_results. It is
       off by default (stack parameter EnableMCP, default false), and turning it off
-      revokes every service credential issued for it. A private-network deployment
-      disables it.
+      revokes every service credential issued for it. The private-network runbook
+      requires EnableMCP false.
     evidence:
       - docs/mcp-server.md
       - docs/mcp-server.md#enabling-and-disabling-the-feature
@@ -602,8 +609,8 @@ capabilities:
       One stack can serve several tenants: an Input-bucket prefix maps documents to a
       configuration profile, a user's scope limits them to documents of matching
       profiles, and a tenant declaration ties prefixes and profile patterns together.
-      Stack parameter TenantIsolationMode=Strict makes it fail closed (unscoped users
-      see nothing; uploads outside or across tenants are refused). Isolation is
+      Stack parameter TenantIsolationMode=Strict makes it fail closed (unscoped non-Admin
+      users see nothing; uploads outside or across tenants are refused). Isolation is
       enforced by the application, not IAM: processing functions, tables and buckets
       are shared, throughput is shared, and test sets carry no tenant; the docs advise
       separate stacks or accounts where a tenant needs credential separation, its own
@@ -770,7 +777,8 @@ capabilities:
       every 30 minutes, so a new document is not queryable at once. It is controlled by
       the DocumentKnowledgeBase stack parameter, on (Create) by default, needs access
       to the embedding model (default Titan Text Embeddings V2) and is removed in
-      headless and private-network deployments.
+      headless deployments; the private-network runbook requires DocumentKnowledgeBase
+      DISABLED.
     evidence:
       - docs/knowledge-base.md
       - docs/knowledge-base.md#configuration
@@ -810,9 +818,11 @@ capabilities:
       estimated cost per document from a pricing table in the configuration, which can
       be edited to reflect negotiated prices; a reprocessed document's estimate sums all
       its runs. The same metering lands in the reporting database for Athena queries,
-      and a DocumentEstimatedCost CloudWatch metric can be alarmed on. Model calls whose
-      result was discarded are still counted. Bedrock application inference profiles
-      can attribute costs in AWS billing.
+      and a DocumentEstimatedCost CloudWatch metric can be alarmed on. Completed model
+      calls whose result is not used are counted, but the calls of an attempt that Step
+      Functions retries after a transient error are not, so the estimate can be lower
+      than the bill. Bedrock application inference profiles can attribute costs in AWS
+      billing.
     evidence:
       - docs/cost-calculator.md#cost-monitoring-and-estimation
       - docs/reporting-database.md#metering-table

@@ -16,7 +16,7 @@ reviewed it against (`reviewed_for_version`).
 | File | Use it for |
 |---|---|
 | `solution-profile.yaml` | What the accelerator is, its support model, and `signals`: keywords and phrases that suggest a need it serves, and `anti_signals` that suggest it does not |
-| `capabilities.yaml` | What it does, the processing mode each capability works in (`pipeline` or `bda`), and its status (`ga`, `preview`, `experimental`) |
+| `capabilities.yaml` | What it does, the processing mode each capability works in (`pipeline` or `bda`), and its status (`ga`, `preview`, `experimental`, `deprecated` or `retired`) |
 | `limitations.yaml` | Where it stops, with numbers, how much each limit matters (`impact`), the questions that detect it (`detect_with`) and what mitigates it |
 | `extension-points.yaml` | Every documented way to change its behaviour, with a gap category, effort and upgrade risk |
 | `discovery-questions.yaml` | The questions that decide fit and configuration, and what each answer implies |
@@ -95,5 +95,6 @@ Give a short assessment a person can check:
 - the open questions;
 - the support model: the customer deploys, owns and operates the accelerator.
 
-State what you inferred separately from what the profile says, and never present a
-`preview` or `experimental` capability as generally available.
+State what you inferred separately from what the profile says, never present a
+`preview` or `experimental` capability as generally available, and never recommend a
+`deprecated` or `retired` capability for new work.

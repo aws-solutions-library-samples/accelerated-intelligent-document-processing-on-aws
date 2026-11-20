@@ -53,8 +53,9 @@ options:
       A template transform (idp-cli deploy --headless) deploys the whole processing
       backend without the web UI, its REST API, Cognito, the CloudFront-facing WAF,
       the agents and chat, human review, the knowledge base and the web-UI-dependent
-      parts of Discovery. Documents are submitted by S3 upload, idp-cli, the SDK or,
-      in GovCloud, an optional Jobs REST API. It suits API-only integrations and
+      parts of Discovery. Documents are submitted by S3 upload, idp-cli, the SDK or
+      the optional Jobs REST API (EnableJobsApi, which needs DeployInVPC and is
+      required in GovCloud). It suits API-only integrations and
       environments whose policy rules out Cognito, CloudFront or a UI; in a commercial
       Region it can transform the published template, and in GovCloud it is built from
       source.
@@ -90,7 +91,8 @@ options:
   - id: vpc-secured
     title: VPC-secured mode (Lambda functions in the customer's VPC)
     description: >-
-      Stack parameter DeployInVPC with an existing VPC, at least 2 private subnets and
+      Stack parameter DeployInVPC with an existing VPC, at least 2 private subnets (and
+      2 public subnets with NAT Gateways unless images and packages are mirrored) and
       a Lambda security group places the Lambda functions and CodeBuild image builds
       in the customer's VPC, reaching AWS services through gateway endpoints (S3,
       DynamoDB) and interface endpoints (SQS, Step Functions, Lambda, CloudWatch, KMS,
@@ -109,17 +111,20 @@ options:
   - id: private-network
     title: Private-network deployment with the web UI hosted on a private API Gateway
     description: >-
-      For environments with no public entry point, WebUIHosting=APIGateway with
-      ApiGatewayVisibility=PRIVATE serves the web UI and its data API from one private
-      REST API reachable only through an execute-api interface endpoint in the VPC,
-      with every Lambda in the VPC and service traffic on VPC endpoints. Browser
-      uploads go to S3 through NAT by default or through a customer-managed S3
-      interface endpoint. The internet-facing features, the MCP server and the
-      knowledge base, are disabled, and users reach the UI over VPN, Direct Connect,
-      WorkSpaces or similar.
+      For environments where the web UI and API must have no public endpoint,
+      WebUIHosting=APIGateway with ApiGatewayVisibility=PRIVATE serves the web UI and
+      its data API from one private REST API reachable only through an execute-api
+      interface endpoint in the VPC; Cognito sign-in still needs a route from the
+      browser to the public Cognito endpoint. It runs
+      every Lambda in the VPC with service traffic on VPC endpoints. Browser uploads go
+      to S3 through NAT by default or through a customer-managed S3 interface endpoint.
+      The runbook requires the MCP server and the knowledge base to be disabled
+      (EnableMCP false, DocumentKnowledgeBase DISABLED), and users reach the UI over
+      VPN, Direct Connect, WorkSpaces or similar.
     evidence:
       - docs/deployment-private-network.md
       - docs/deployment-private-network.md#two-deployment-models
+      - docs/deployment-private-network.md#cognito-idp-egress-browser-only-consideration
       - docs/apigateway-hosting.md#configuration
     status: ga
     partitions: [aws]
@@ -179,11 +184,15 @@ prerequisites:
     description: >-
       Every model the configuration names, plus the knowledge-base embedding model,
       must be callable from the stack's Region before documents are processed. The
-      README lists all Amazon Nova models, Titan Text Embeddings V2, and Anthropic
-      Claude 3.x and 4.x models; the GovCloud guide lists its own defaults, and the EU
-      and Canada guides list the inference-profile mappings used there. Quick Start
-      needs a Claude model for schema authoring.
+      shipped defaults call Amazon Nova 2 Lite, Nova Lite and Nova Pro, Claude Sonnet 5
+      (including its 1M-context variant), Claude Opus 4.8 (1M context), Claude Opus 4.6
+      (1M context), Claude Sonnet 4.6 and Claude Haiku 4.5, with Cohere Embed v4 for
+      multi-document discovery and Titan Text Embeddings V2 for the knowledge base. The
+      GovCloud guide lists its own defaults, and the EU and Canada guides list the
+      inference-profile mappings used there; Quick Start needs a Claude model for
+      schema authoring.
     evidence:
+      - lib/idp_common_pkg/idp_common/config/system_defaults/
       - README.md
       - docs/govcloud-deployment.md#prerequisites
       - docs/eu-region-model-support.md
@@ -251,7 +260,9 @@ prerequisites:
       deployers, the repository ships an example CloudFormation service role that
       CloudFormation assumes on the user's behalf, so the user needs only
       iam:PassRole; it is a deployment role rather than a least-privilege one, holding
-      cloudformation:* and service wildcards on 25 services, and is contained by a
+      cloudformation:* plus service-level wildcards on every service the templates
+      deploy (including GuardDuty, and AppSync for upgrades from before 0.6.0), and is
+      contained by a
       mandatory permissions boundary, a stack-name prefix on its IAM grants and a trust
       policy limited to CloudFormation in the same account. The deploying credentials
       also need ECR permissions for the image builds, and GuardDuty permissions when

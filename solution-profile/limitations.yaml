@@ -39,7 +39,8 @@ limitations:
       extraction runs with ExtractionInputTooLarge (Bedrock's "Input is too long
       for requested model"), and the document fails rather than returning partial
       data. On the v0.6.14 benchmark a 3,200-row, 66-page statement was refused on
-      every simple-mode run at the shipped default and at the control model, in 47
+      every simple-mode run at the shipped default and at the control model (Claude Sonnet
+      4.6), in 47
       to 58 seconds, with OCR and classification already billed (about $1.05); a
       1,600-row, 33-page statement was not refused at the control model. Sizes
       between 33 and 66 pages were not measured, so 66 pages is where refusal was
@@ -215,9 +216,10 @@ limitations:
       Textract's coverage depends on the operation: plain text detection and
       Queries are English only, Forms covers six European languages, and Tables,
       Layout and Signatures (the default features) cover the broadest set.
-      Handwriting recognition is English only. Low-resource languages need the
-      Bedrock OCR backend and substantially more testing, by the docs' guidance 5
-      to 10 times the 50 to 100 documents typical for a high-resource language.
+      Textract's handwriting recognition is English only. A language outside the
+      coverage of the configured Textract features needs the Bedrock OCR backend, and
+      low-resource languages often need 5 to 10 times the 50 to 100 test documents
+      typical for a high-resource language.
     evidence:
       - docs/languages.md#bda-mode
       - docs/languages.md#textract-backend-language-limitations
@@ -299,9 +301,9 @@ limitations:
       keeps the web UI served by API Gateway without CloudFront and answers chat
       without streaming, because CloudFront and Lambda Function URLs are not
       available there. In every GovCloud variant the BDA OCR backend is
-      unavailable (Textract is the default), and multi-document discovery fails at
-      its embedding step for lack of a multimodal embedding model as checked on
-      2026-07-17. Model defaults come from the GovCloud preset, which pins Nova
+      unavailable (Textract is the default). In the govcloud variant multi-document
+      discovery fails at its embedding step for lack of a multimodal embedding model
+      as checked on 2026-07-17; the headless variant removes multi-document discovery. Model defaults come from the GovCloud preset, which pins Nova
       and Claude Sonnet 4.5 GovCloud ids.
     evidence:
       - docs/govcloud-deployment.md#not-available-in-govcloud-all-deploy-modes
@@ -418,8 +420,7 @@ limitations:
     description: >-
       The accelerator processes documents and hands structured data onward. Long
       term document storage, records management, retention policy, e-signature,
-      workflow approvals and content collaboration are out of scope and will not
-      be added.
+      workflow approvals and content collaboration are out of scope.
     evidence:
       - ROADMAP.md#non-goals
     impact: high
@@ -451,9 +452,9 @@ limitations:
     description: >-
       Bedrock model quality, Textract accuracy, Bedrock Data Automation behaviour,
       service quotas and throttling are matters for AWS Support, not for the
-      repository's issue tracker. An accuracy gap caused by a model or OCR service
-      is addressed by configuration (another model, backend or prompt), not by a
-      fix in the accelerator.
+      repository's issue tracker. As guidance, an accuracy gap caused by a model or
+      OCR service is usually closed by configuration (another model, backend or
+      prompt) rather than waiting on a fix in the accelerator.
     evidence:
       - ROADMAP.md#non-goals
       - CONTRIBUTING.md#reporting-bugs-and-requesting-features
@@ -474,6 +475,7 @@ limitations:
       supported list is reached through a LambdaHook.
     evidence:
       - ROADMAP.md#non-goals
+      - docs/lambda-hook-inference.md
     impact: low
     detect_with:
       - question:accuracy-target
@@ -519,12 +521,13 @@ limitations:
       Fixes land on the develop branch and ship in the next release; there are no
       release branches. Older tags stay deployable but are not maintained, and
       the supported version is the most recent one, so a deployment that needs
-      fixes has to keep upgrading. Releases came roughly weekly between v0.6.10
-      (2026-09-25) and v0.6.15 (2026-11-13).
+      fixes has to keep upgrading. Releases are cut when ready, with no published
+      calendar; six were tagged between v0.6.10 (2026-09-25) and v0.6.15
+      (2026-11-13), one to two weeks apart.
     evidence:
       - ROADMAP.md#non-goals
       - GOVERNANCE.md#branch-and-release-model
-      - CHANGELOG.md
+      - https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/releases
     impact: medium
     detect_with:
       - question:operating-team

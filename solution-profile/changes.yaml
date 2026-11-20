@@ -161,6 +161,10 @@ releases:
         affects: [capability:test-studio]
       - text: Branch scripts on idp-cli status exit_code; a script that treated 2 as not finished will now stop on a document that cannot finish.
         affects: [capability:idp-cli]
+      - text: Expect an Annotator's updateDocumentSections calls to be refused outside the test sets assigned to them; Admin and Reviewer are unchanged.
+        affects: [capability:test-studio, capability:hitl-review-queues]
+      - text: Before enabling MalwareScanning, decide AllowUnscannableDocuments; the fail-closed default refuses password-protected PDFs.
+        affects: [capability:malware-scanning]
     affects: [capability:malware-scanning, capability:configuration-profiles, deployment:cloudformation, capability:cost-reporting, capability:bedrock-model-choice]
     evidence: [CHANGELOG.md]
 

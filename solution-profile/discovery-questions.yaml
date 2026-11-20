@@ -220,8 +220,10 @@ questions:
         refs: [capability:bedrock-model-choice]
       - when: completeness matters for every document
         then: >-
-          Read processing issues, not status: a smaller loss of 30 or more rows is
-          flagged, but up to 29 rows can go missing unreported. Reconcile against an
+          Read processing issues, not status: a loss of 30 or more rows is flagged
+          when the section's OCR shows a matching table, up to 29 rows can go missing
+          unreported, and a list with no matching OCR table may not be flagged at all.
+          Reconcile against an
           expected total downstream where one exists. See
           docs/extraction-scaling-guide.md.
         refs: [capability:advanced-extraction, question:business-rules]
@@ -362,7 +364,8 @@ questions:
           monthly volume times the measured cost per document plus the always-on
           floor, with 50% headroom. Measured v0.6.14 figures span roughly two orders
           of magnitude, from $0.02 to $0.04 per document in Simple mode on a 20-document
-          real corpus to $0.60 average in Advanced mode on a synthetic bank-statement
+          real corpus extracted with Claude Sonnet 4.6, to $0.60 average in Advanced
+          mode with the shipped default (Claude Sonnet 5) on a synthetic bank-statement
           grid. See docs/cost-calculator.md.
         refs: [capability:cost-reporting, delivery:accuracy-baseline]
       - when: low volume, or a pilot

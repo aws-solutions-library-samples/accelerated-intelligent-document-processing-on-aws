@@ -120,6 +120,7 @@ extension_points:
       - docs/json-schema-migration.md#aws-idp-extensions
       - docs/configuration.md#evaluation-extensions-in-json-schema
       - lib/idp_common_pkg/idp_common/config/schema_constants.py
+      - docs/extraction-and-confidence.md#per-class-extraction-prompt-overrides
     when_to_use: >-
       Add a new document type, add or change the attributes extracted for one, or
       set how each field is scored against ground truth.
@@ -132,8 +133,8 @@ extension_points:
         The three thresholds are 0.0 to 1.0 by convention only; a percentage such
         as 50 is accepted and makes the field score 0.
       - >-
-        x-aws-idp-prompt-override is limited to 10,000 characters
-        (MAX_PROMPT_OVERRIDE_LENGTH).
+        A class's extraction prompts are overridden with
+        x-aws-idp-extraction-system-prompt and x-aws-idp-extraction-task-prompt.
       - >-
         In BDA mode classes are synchronised to BDA blueprints, which do not accept
         nested objects within objects or arrays of objects inside an object.
@@ -460,7 +461,8 @@ extension_points:
     description: >-
       The PostProcessingLambdaHookFunctionArn stack parameter names one Lambda
       function that is invoked asynchronously, through an EventBridge rule, after
-      each document's workflow finishes. It receives a snapshot of the processed
+      each document's Step Functions execution succeeds; failed executions do not
+      invoke it. It receives a snapshot of the processed
       document and cannot change it, fail it, or add to its processing time, which
       makes it the mechanism for fire-and-forget delivery to downstream systems.
     evidence:
@@ -471,6 +473,7 @@ extension_points:
       channel without extending document latency or risking a failed document.
     constraints:
       - Changing the target needs a stack update; there is one ARN per stack.
+      - A failed document is not delivered; failure notification needs another route.
       - >-
         Asynchronous invokes are capped at 1 MB; above that the function receives
         a compressed S3 reference that it must resolve itself.
@@ -497,7 +500,7 @@ extension_points:
       preset with the host, and can be installed and removed without rebuilding
       the host. The idp_feature_sdk package provides idp-feature-cli to scaffold,
       validate, build and publish an extension. Paid extensions delivered through
-      AWS Marketplace are supported by the framework, but none exist yet.
+      AWS Marketplace are supported by the framework; as of v0.6.15 none is published.
     evidence:
       - docs/feature-platform.md
       - docs/feature-platform-developer-guide.md
@@ -564,14 +567,15 @@ extension_points:
     description: >-
       Changing templates, Lambda code or the shared library in a private copy
       meets any need but makes the customer the permanent owner of every upgrade.
-      Releases came roughly weekly in the period before this profile was
-      reviewed (v0.6.10 on 2026-09-25 through v0.6.15 on 2026-11-13, six
-      releases), there are no backports or long-term-support line, and the
-      internal library API changes between minor releases.
+      Releases are cut when ready, with no published calendar; six were tagged
+      between v0.6.10 (2026-09-25) and v0.6.15 (2026-11-13), one to two weeks
+      apart. There are no backports or long-term-support line, and the internal
+      library API changes between minor releases.
     evidence:
       - ROADMAP.md#non-goals
       - GOVERNANCE.md#branch-and-release-model
       - CHANGELOG.md
+      - https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/releases
     when_to_use: >-
       Only when no configuration, hook, extension or upstream contribution can
       meet a hard requirement, and the customer accepts merging every release by
@@ -579,8 +583,9 @@ extension_points:
     constraints:
       - >-
         Each release from v0.6.10 to v0.6.15 carried between 8 and 32 CHANGELOG
-        items marked Action that an upgrading deployment must act on; a fork has to
-        reconcile its changes with each of them.
+        items marked Action, each telling an upgrading deployment what to check or
+        change where it applies; a fork has to reconcile its changes with each of
+        them.
       - Fixes land only on develop and ship in the next release; older tags stay deployable but are not maintained.
       - idp_common signatures are not a stable contract before 1.0.
     effort: L
@@ -607,6 +612,7 @@ extension_points:
       - docs/capacity-planning.md#4-aws-service-quota-analysis
       - docs/capacity-planning.md#5-aws-service-quota-management
       - docs/service-tiers.md
+      - docs/canada-region-model-support.md#known-limitations
     when_to_use: >-
       The planned peak volume or latency target needs more model throughput than
       the account's default quotas allow.
@@ -673,7 +679,8 @@ extension_points:
       Bedrock-calling roles hold aws-marketplace Subscribe and ViewSubscriptions
       permissions for that. Paid feature-platform extensions are subscribed to in
       AWS Marketplace and then launched from the host's web console, with no
-      separate account to create; the framework supports them but none exist yet.
+      separate account to create; the framework supports them, and as of v0.6.15 none is
+      published.
     evidence:
       - docs/marketplace-subscription-next-steps.md
       - docs/feature-platform.md#subscription-checks-for-paid-extensions
