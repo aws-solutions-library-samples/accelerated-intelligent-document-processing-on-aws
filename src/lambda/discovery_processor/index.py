@@ -12,7 +12,7 @@ import boto3
 import requests
 from aws_requests_auth.aws_auth import AWSRequestsAuth
 from idp_common.discovery.classes_discovery import ClassesDiscovery
-from idp_common.discovery.rules_discovery import RulesDiscovery
+from idp_common.discovery.rules_discovery import PolicyGroupChangeRefused, RulesDiscovery
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -82,6 +82,16 @@ def handler(event, context):
             else:
                 result = process_discovery_job(job_id, document_key, ground_truth_key, bucket, version, page_range, class_name_hint)
             results.append(result)
+
+        except PolicyGroupChangeRefused as e:
+            # Final, not retryable: the job is already marked FAILED with the
+            # reason. Handing the message back to SQS would repeat the
+            # extraction about every 15 minutes for a day and could apply a
+            # replace or supersede the user has already seen fail, once the
+            # group changed. So it is not reported as a batch item failure.
+            status = 'Failed'
+            logger.warning(f"Rules discovery job {job_id} refused, not retried: {e}")
+            results.append({'status': 'refused', 'error': str(e)})
 
         except Exception as e:
             status = 'Failed'

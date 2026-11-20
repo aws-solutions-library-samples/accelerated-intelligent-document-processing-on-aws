@@ -506,13 +506,18 @@ def _assert_policy_group_change_possible(version, policy_group, mode, superseded
     if mode == 'append' or not policy_group:
         return
     from idp_common.config.configuration_manager import ConfigurationManager
-    from idp_common.discovery.rules_discovery import check_policy_group_change
+    from idp_common.discovery.rules_discovery import PolicyGroupChangeRefused, check_policy_group_change
 
     existing = ConfigurationManager().get_raw_configuration("Config", version=version) or {}
     policy_classes = existing.get('policy_classes') or []
     if not isinstance(policy_classes, list):
         policy_classes = []
-    check_policy_group_change(policy_classes, policy_group, mode, superseded_rules, version)
+    try:
+        check_policy_group_change(policy_classes, policy_group, mode, superseded_rules, version)
+    except PolicyGroupChangeRefused as e:
+        # The dispatcher maps a resolver error to a status by its class NAME, and
+        # only a plain ValueError (or KeyError) is a 400; the subclass would be a 500.
+        raise ValueError(str(e)) from None
 
 
 def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, prefix):

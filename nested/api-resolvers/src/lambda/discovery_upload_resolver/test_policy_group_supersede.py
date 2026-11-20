@@ -165,6 +165,22 @@ class TestRefusedBeforeAnythingIsCreated:
             )
         _nothing_created(index)
 
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"policyGroupMode": "supersede", "supersededRules": ["gone"]},
+            {"policyGroup": "Other Manual", "policyGroupMode": "replace"},
+        ],
+    )
+    def test_a_refusal_reaches_the_dispatcher_as_a_plain_value_error(
+        self, index, extra
+    ):
+        """The dispatcher keys its 400 on the class NAME `ValueError`, not a subclass."""
+        with pytest.raises(ValueError) as caught:
+            _upload(index, **extra)
+        assert type(caught.value).__name__ == "ValueError"
+        _nothing_created(index)
+
     def test_rule_names_are_exact(self, index):
         with pytest.raises(ValueError, match="no rule named 'Visit_Limit'"):
             _upload(index, policyGroupMode="supersede", supersededRules=["Visit_Limit"])

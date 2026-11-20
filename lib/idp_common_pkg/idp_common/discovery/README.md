@@ -181,17 +181,28 @@ is never inferred. `normalize_policy_group_change` validates the shape (mode, a
 group for the non-append modes, rule names only for `supersede`) and
 `check_policy_group_change` the target (the group's class exists; every superseded
 name is one of its rules, exactly). The upload resolver calls both before minting a
-URL and `_save_rules_to_config` calls both again under the save lease, so a target
-that vanished in between fails the job without writing. A non-append upload that
-extracted no rules also fails without writing. Superseded rules are deleted from
-the active ruleset; the profile's revisions keep them.
+URL; `discovery_rules_from_document` calls the target check again before the model
+runs and `_save_rules_to_config` once more under the save lease, so a target that
+vanished in between fails the job without writing. A non-append upload that
+extracted no rules also fails without writing. Every such refusal is a
+`PolicyGroupChangeRefused` (a `ValueError`), propagated unwrapped so the discovery
+Lambda can tell it from a failure: it marks the job FAILED and keeps the message out
+of `batchItemFailures`, because an SQS retry would repeat the extraction and could
+apply the change after the group changed. The resolver re-raises it as a plain
+`ValueError`, because the dispatcher maps an error to a 400 by its class name.
+A save whose `upload_id` the profile's record already holds (`find_recorded_upload`)
+writes nothing, both before the model runs and under the lease, so a redelivered job
+cannot add its rules twice; the result then carries `alreadySaved`. Superseded rules
+are deleted from the active ruleset; the revision the save cuts keeps the previous
+ruleset, subject to revision retention.
 
 Every save appends an entry to the class's `x-aws-idp-policy-uploads` list:
 `uploadId` (the discovery job id), `document` (file name), `savedAt`, `mode`,
 `rules` (names as saved) and `superseded` (`{rule, uploadId, document}` of the
 upload that had supplied each, from `policy_rule_sources`, which replays the list).
 Ungrouped uploads record themselves on their own class too. Rule validation reads
-none of it. The result's `groupChange` (`{mode, rules, superseded}`) is what the
+none of it. Rules are identified by name, so a rule deleted and re-added by hand
+under the same name keeps its earlier attribution, and the list is never trimmed. The result's `groupChange` (`{mode, rules, superseded}`) is what the
 discovery Lambda puts in the job's status message.
 
 ### Multi-record samples produce a suggestion, not a setting (#765)

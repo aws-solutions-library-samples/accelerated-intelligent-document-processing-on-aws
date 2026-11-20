@@ -149,6 +149,19 @@ POLICY_GROUP_MODES = (
 )
 
 
+class PolicyGroupChangeRefused(ValueError):
+    """A grouped upload that cannot be applied to the profile as it stands.
+
+    The group is missing or carried by several classes, a superseded rule is
+    not in the group, or a replace or supersede extracted no rules. Raised by
+    :func:`check_policy_group_change` and the save. A ``ValueError``, so the
+    upload resolver answers it with a 400. It is deterministic, so the
+    discovery processor marks the job FAILED and does not hand the message back
+    to SQS: a retry would repeat the extraction and could apply a replace or
+    supersede the user has already seen fail, once the group changed.
+    """
+
+
 def normalize_policy_group_change(
     policy_group: Optional[str], mode: Any, superseded_rules: Any
 ) -> "tuple[str, List[str]]":
@@ -205,7 +218,7 @@ def find_policy_group_class(
     ]
     if len(matches) > 1:
         names = ", ".join(str(pc.get("x-aws-idp-policy-type") or "?") for pc in matches)
-        raise ValueError(
+        raise PolicyGroupChangeRefused(
             f"Policy group '{group}' is carried by {len(matches)} policy classes "
             f"({names}), so there is no one class to add this upload's rules to. "
             f"Merge them, or remove the group from all but one, in Configuration "
@@ -234,14 +247,14 @@ def check_policy_group_change(
     was not, so it is an error, never a no-op. The upload resolver calls this
     before anything is uploaded (an HTTP 400), and the save calls it again under
     its lease, because the group can change between the two. Raises
-    ``ValueError``.
+    :class:`PolicyGroupChangeRefused`.
     """
     if mode == POLICY_GROUP_MODE_APPEND or not group:
         return
     where = f" in configuration profile '{version}'" if version else ""
     target = find_policy_group_class(policy_classes, group)
     if target is None:
-        raise ValueError(
+        raise PolicyGroupChangeRefused(
             f"Policy group '{group}' does not exist{where}, so there are no rules "
             f"to {mode}. Upload with Add to group to create it."
         )
@@ -249,11 +262,30 @@ def check_policy_group_change(
         held = set(_rule_names(target))
         missing = [r for r in superseded_rules if r not in held]
         if missing:
-            raise ValueError(
+            raise PolicyGroupChangeRefused(
                 f"Policy group '{group}'{where} has no rule named "
                 f"{', '.join(repr(r) for r in missing)}, so nothing would supersede "
                 f"it. Choose the superseded rules from the group's current rules."
             )
+
+
+def find_recorded_upload(
+    policy_classes: List[Dict[str, Any]], upload_id: Optional[str]
+) -> "Optional[tuple[Dict[str, Any], Dict[str, Any]]]":
+    """The ``(policy class, upload entry)`` that already records ``upload_id``.
+
+    A discovery job's id is its upload id, so a job whose save already landed
+    finds itself here when SQS delivers its message again; the save is then
+    skipped instead of adding the same rules a second time.
+    """
+    if not upload_id:
+        return None
+    for pc in policy_classes:
+        uploads = pc.get(X_AWS_IDP_POLICY_UPLOADS) if isinstance(pc, dict) else None
+        for entry in uploads if isinstance(uploads, list) else []:
+            if isinstance(entry, dict) and entry.get("uploadId") == upload_id:
+                return pc, entry
+    return None
 
 
 def policy_rule_sources(policy_class: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -540,6 +572,19 @@ class RulesDiscovery:
         )
 
         try:
+            # Before the model runs: a job already saved (a repeated delivery)
+            # or a change the profile cannot take costs no extraction. The save
+            # checks both again under its lease.
+            if self.config_manager and self.version:
+                current = self._current_policy_classes(self.version)
+                recorded = find_recorded_upload(current, upload_id)
+                if recorded:
+                    return self._already_saved_result(*recorded)
+                if group:
+                    check_policy_group_change(
+                        current, group, mode, superseded, self.version
+                    )
+
             file_in_bytes = S3Util.get_bytes(bucket=input_bucket, key=input_prefix)
             file_extension = os.path.splitext(input_prefix)[1].lower()[1:]
 
@@ -591,11 +636,55 @@ class RulesDiscovery:
                 "groupChange": dict(self._group_change),
             }
 
+        except PolicyGroupChangeRefused as e:
+            # Kept as its own type, not re-wrapped: the caller must be able to
+            # tell a refusal (final) from a failure (worth a retry).
+            logger.warning(f"Refusing the policy group change for {input_prefix}: {e}")
+            raise
         except Exception as e:
             logger.error(
                 f"Error extracting rules from {input_prefix}: {e}", exc_info=True
             )
             raise Exception(f"Failed to extract rules from {input_prefix}: {str(e)}")
+
+    def _current_policy_classes(self, version: str) -> List[Dict[str, Any]]:
+        item = cast(
+            Optional[IDPConfig],
+            self.config_manager.get_configuration("Config", version=version),
+        )
+        return list(item.policy_classes) if item and item.policy_classes else []
+
+    def _already_saved_result(
+        self, policy_class: Dict[str, Any], entry: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """The result of a job whose save already landed: what it saved, unchanged."""
+        class_name = str(policy_class.get("x-aws-idp-policy-type") or "")
+        rules = [str(r) for r in entry.get("rules") or []]
+        message = (
+            f"This upload's rules were already saved to policy class '{class_name}' "
+            f"(upload {entry.get('uploadId')}); a repeated delivery of the job saved "
+            f"nothing again."
+        )
+        logger.warning(message)
+        self._save_warnings = [message]
+        self._group_change = {
+            "mode": entry.get("mode") or POLICY_GROUP_MODE_APPEND,
+            "rules": rules,
+            "superseded": list(entry.get("superseded") or []),
+        }
+        return {
+            "status": "SUCCESS",
+            "rules": [
+                {
+                    "x-aws-idp-policy-type": class_name,
+                    "x-aws-idp-rule-type": class_name,
+                    "rule_properties": {r: {} for r in rules},
+                }
+            ],
+            "warnings": [message],
+            "groupChange": dict(self._group_change),
+            "alreadySaved": True,
+        }
 
     def discovery_rules_from_document_local(self, file_path: str) -> Dict[str, Any]:
         """
@@ -1344,6 +1433,19 @@ class RulesDiscovery:
         if existing_item and existing_item.policy_classes:
             existing_policy_classes = list(existing_item.policy_classes)
 
+        # A delivery of a job whose save already landed writes nothing: without
+        # this, SQS redelivering a saved job adds its rules (as `_2` copies) and
+        # its record entry a second time.
+        # A save without a job id records a fresh random id, which never matches.
+        recorded = find_recorded_upload(existing_policy_classes, upload.get("uploadId"))
+        if recorded:
+            self._already_saved_result(*recorded)
+            name = str(recorded[0].get("x-aws-idp-policy-type") or "")
+            for rule in rules:
+                rule["x-aws-idp-policy-type"] = name
+                rule["x-aws-idp-rule-type"] = name
+            return [name] * len(rules)
+
         # Reshape each discovered rule class into the JSON-Schema-compatible
         # shape the UI's Policy Schema tab expects:
         #   - x-aws-idp-policy-type  (discriminator the UI reads)
@@ -1460,7 +1562,7 @@ class RulesDiscovery:
             # Replacing or superseding with nothing would delete the group's
             # rules on the strength of an extraction that found none, which is
             # far likelier to be a failed extraction than an intended repeal.
-            raise ValueError(
+            raise PolicyGroupChangeRefused(
                 f"This upload produced no rules, so policy group '{group}' was "
                 f"left unchanged rather than having rules {mode}d by nothing."
             )

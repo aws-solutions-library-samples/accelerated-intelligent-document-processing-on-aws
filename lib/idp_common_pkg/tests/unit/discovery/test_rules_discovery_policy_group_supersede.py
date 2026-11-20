@@ -36,6 +36,7 @@ from idp_common.config.constants import CONFIG_TYPE_CONFIG
 from idp_common.config.models import IDPConfig
 from idp_common.discovery import rules_discovery as rd
 from idp_common.discovery.rules_discovery import (
+    PolicyGroupChangeRefused,
     RulesDiscovery,
     check_policy_group_change,
     normalize_policy_group_change,
@@ -157,7 +158,7 @@ class TestReplaceTheGroupsRules:
     def test_an_upload_that_produced_no_rules_replaces_nothing(self, aws, monkeypatch):
         _base(aws, monkeypatch)
         before = _policy_classes()
-        with pytest.raises(Exception, match="produced no rules"):
+        with pytest.raises(PolicyGroupChangeRefused, match="produced no rules"):
             _run(aws, monkeypatch, "document/empty.pdf", _chapter({}), "replace")
         assert _policy_classes() == before
 
@@ -377,6 +378,14 @@ class TestProvenance:
         assert set(policy_rule_sources(pc)) == {"a"}
         assert policy_rule_sources({"rule_properties": {"a": {}}, UPLOADS_KEY: 3}) == {}
 
+    def test_a_recorded_rule_the_class_no_longer_holds_has_no_source(self):
+        """Deleted by hand in the Policy Schema tab: still in the record, not in the class."""
+        pc = {
+            "rule_properties": {"kept": {}},
+            UPLOADS_KEY: [{"uploadId": "u1", "rules": ["kept", "deleted"]}],
+        }
+        assert set(policy_rule_sources(pc)) == {"kept"}
+
     def test_rule_validation_still_reads_a_class_carrying_the_record(
         self, aws, monkeypatch
     ):
@@ -436,6 +445,14 @@ class TestGroupChangeArguments:
         check_policy_group_change(classes, "g", "supersede", ["Visit_Limit"])
         with pytest.raises(ValueError, match="no rule named 'visit_limit'"):
             check_policy_group_change(classes, "G", "supersede", ["visit_limit"])
+
+    def test_a_rule_held_only_by_another_class_is_not_the_groups(self):
+        classes = [
+            {"x-aws-idp-policy-group": "G", "rule_properties": {"mine": {}}},
+            {"x-aws-idp-policy-type": "other", "rule_properties": {"theirs": {}}},
+        ]
+        with pytest.raises(PolicyGroupChangeRefused, match="no rule named 'theirs'"):
+            check_policy_group_change(classes, "G", "supersede", ["theirs"])
 
     def test_append_needs_no_existing_group(self):
         check_policy_group_change([], "G", "append", [])
@@ -544,3 +561,139 @@ class TestTheDiscoveryJobCarriesTheGroupChange:
         assert run["policy_group_mode"] is None
         assert "appended to policy group 'NCCI Manual'" in status
         assert "Superseded" not in status
+
+
+@pytest.mark.unit
+class TestARefusalIsFinalAndASavedJobIsNotSavedTwice:
+    """SQS redelivers a failed message; neither a refusal nor a saved job may act twice."""
+
+    def test_a_refusal_keeps_its_type_and_skips_the_model(self, aws, monkeypatch):
+        _base(aws, monkeypatch)
+        calls: List[str] = []
+        s3 = aws
+        s3.put_object(Bucket=DOCS, Key="document/rider.pdf", Body=b"%PDF-1.4")
+        d = RulesDiscovery(
+            input_bucket=DOCS, input_prefix="document/rider.pdf", config=IDPConfig()
+        )
+        d.config_manager = ConfigurationManager()
+        d.version = PROFILE
+        monkeypatch.setattr(d, "_extract_rules", lambda *_a: calls.append("model"))
+        with pytest.raises(PolicyGroupChangeRefused, match="no rule named 'gone'"):
+            d.discovery_rules_from_document(
+                DOCS,
+                "document/rider.pdf",
+                policy_group=GROUP,
+                policy_group_mode="supersede",
+                superseded_rules=["gone"],
+            )
+        assert calls == []
+
+    def test_a_refusal_at_save_time_keeps_its_type(self, aws, monkeypatch):
+        """The group changed after the pre-check: the save-time refusal is typed too."""
+        d = RulesDiscovery(input_bucket=DOCS, input_prefix="k", config=IDPConfig())
+        d.config_manager = ConfigurationManager()
+        d.version = PROFILE
+        with pytest.raises(PolicyGroupChangeRefused, match="does not exist"):
+            d._save_rules_to_config(
+                _chapter({"r": "?"}), policy_group=GROUP, policy_group_mode="replace"
+            )
+
+    def test_a_redelivered_job_is_not_saved_or_extracted_again(self, aws, monkeypatch):
+        _base(aws, monkeypatch)
+        _run(
+            aws, monkeypatch, "document/ch3.pdf", _chapter({"r3": "?"}), upload_id="j3"
+        )
+        before = _policy_classes()
+        calls: List[str] = []
+        aws.put_object(Bucket=DOCS, Key="document/ch3.pdf", Body=b"%PDF-1.4")
+        d = RulesDiscovery(
+            input_bucket=DOCS, input_prefix="document/ch3.pdf", config=IDPConfig()
+        )
+        d.config_manager = ConfigurationManager()
+        d.version = PROFILE
+        monkeypatch.setattr(
+            d,
+            "_extract_rules",
+            lambda *_a: calls.append("model") or _chapter({"r3": "?"}),
+        )
+        result = d.discovery_rules_from_document(
+            DOCS, "document/ch3.pdf", policy_group=GROUP, upload_id="j3"
+        )
+        assert calls == []
+        assert _policy_classes() == before
+        assert result["alreadySaved"] is True
+        assert result["rules"][0]["x-aws-idp-policy-type"] == "NCCI_Manual"
+        assert any("already saved" in w for w in result["warnings"])
+
+    def test_a_second_save_of_one_job_under_the_lease_writes_nothing(self, aws):
+        """Two deliveries racing past the pre-check: the lease-held check stops one."""
+        d = RulesDiscovery(input_bucket=DOCS, input_prefix="k", config=IDPConfig())
+        d.config_manager = ConfigurationManager()
+        d.version = PROFILE
+        d._save_rules_to_config(
+            _chapter({"a": "?"}), policy_group=GROUP, upload_id="j1"
+        )
+        d._save_rules_to_config(
+            _chapter({"a": "?"}), policy_group=GROUP, upload_id="j1"
+        )
+        (pc,) = _policy_classes()
+        assert list(pc["rule_properties"]) == ["a"]
+        assert [e["uploadId"] for e in pc[UPLOADS_KEY]] == ["j1"]
+
+    def test_saves_without_a_job_id_are_never_taken_for_repeats(self, aws):
+        d = RulesDiscovery(input_bucket=DOCS, input_prefix="k", config=IDPConfig())
+        d.config_manager = ConfigurationManager()
+        d.version = PROFILE
+        d._save_rules_to_config(_chapter({"a": "?"}), policy_group=GROUP)
+        d._save_rules_to_config(_chapter({"b": "?"}), policy_group=GROUP)
+        (pc,) = _policy_classes()
+        assert list(pc["rule_properties"]) == ["a", "b"]
+
+
+@pytest.mark.unit
+class TestTheProcessorDoesNotRetryARefusal:
+    def _handle(self, monkeypatch, error: Exception):
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        module = _load_processor(monkeypatch)
+        statuses: List[tuple] = []
+
+        class FakeRulesDiscovery:
+            version = PROFILE
+
+            def __init__(self, **kwargs):
+                pass
+
+            def discovery_rules_from_document(self, **kwargs):
+                raise error
+
+        monkeypatch.setattr(module, "RulesDiscovery", FakeRulesDiscovery)
+        monkeypatch.setattr(module, "_wait_for_s3_object", lambda *a, **k: None)
+        monkeypatch.setattr(
+            module, "update_job_status", lambda *a, **k: statuses.append((a, k))
+        )
+        body = {
+            "jobId": "job-9",
+            "documentKey": "document/rider.pdf",
+            "bucket": DOCS,
+            "version": PROFILE,
+            "discoveryType": "rules",
+            "policyGroup": GROUP,
+            "policyGroupMode": "supersede",
+            "supersededRules": ["gone"],
+        }
+        result = module.handler(
+            {"Records": [{"messageId": "m1", "body": json.dumps(body)}]}, None
+        )
+        return result, statuses
+
+    def test_a_refusal_fails_the_job_and_is_not_handed_back_to_sqs(self, monkeypatch):
+        result, statuses = self._handle(
+            monkeypatch, PolicyGroupChangeRefused("has no rule named 'gone'")
+        )
+        assert result["batchItemFailures"] == []
+        failed = [a for a, _k in statuses if len(a) > 1 and a[1] == "FAILED"]
+        assert failed and "has no rule named 'gone'" in failed[-1][2]
+
+    def test_any_other_failure_is_still_retried(self, monkeypatch):
+        result, _ = self._handle(monkeypatch, RuntimeError("Bedrock throttled"))
+        assert result["batchItemFailures"] == [{"itemIdentifier": "m1"}]
