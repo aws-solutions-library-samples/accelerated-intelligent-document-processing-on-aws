@@ -827,6 +827,18 @@ terraform-check: ## Translate template.yaml to Terraform offline, then init + va
 		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
 		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
 	@$(MAKE) --no-print-directory terraform-scan-diff
+	@$(MAKE) --no-print-directory terraform-replay-releases
+
+# The current translator over the template tree of every release listed in
+# terraform/tools/replay_releases.json, each at the commit recorded there, offline:
+# a translator change that breaks the translation of a release a deployment may
+# still be on fails here rather than at that deployment's upgrade. It reads the
+# repository's own history (git archive of the recorded commits), so it needs a
+# clone holding them and no network; both CI jobs check out full history for it.
+# Add a release to the file when it is tagged.
+TERRAFORM_REPLAY_JOBS ?= 4
+terraform-replay-releases: ## Replay the current translator offline over the template tree of each release in terraform/tools/replay_releases.json; fail on any failure
+	@$(PYTHON) terraform/tools/replay_releases.py --check --jobs $(TERRAFORM_REPLAY_JOBS)
 
 # The static-scan diff: checkov over the CloudFormation templates and over the
 # Terraform generated from them, failing when the Terraform side has a finding the
