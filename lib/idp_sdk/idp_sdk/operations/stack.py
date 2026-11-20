@@ -326,9 +326,11 @@ class StackOperation:
                 (that provider has no ``default_tags``), and ``main.tf`` gives
                 them to the ``aws`` provider's ``default_tags``. A tag a
                 template sets on a resource keeps its value. They replace the
-                deployment's tags (``{}`` removes them); ``None`` keeps the tags
-                of the previous deploy from this directory. Refused for a module
-                published before the module accepted tags.
+                deployment's tags; ``None`` keeps the tags of the previous
+                deploy from this directory. ``{}`` stops passing tags, which
+                removes them from the ``aws`` resources but may leave them on
+                ``awscc`` resources (see ``write_root_config``). At most 10, and
+                refused for a module published before the module accepted tags.
 
         Returns:
             StackDeploymentResult with operation ``APPLY`` and the label stack's

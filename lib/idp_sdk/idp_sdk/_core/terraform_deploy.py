@@ -616,6 +616,9 @@ def check_assume_role_arn(role_arn: Optional[str]) -> Optional[str]:
 
 #: The module variable ``--tags`` sets, and the root variable of the same name.
 TAGS_VARIABLE = "tags"
+#: ``default_tags`` reaches every ``aws`` resource, the module's S3 objects among
+#: them, and S3 allows an object at most 10 tags (a stack allows 50).
+MAX_DEPLOYMENT_TAGS = 10
 
 
 def render_provider_blocks(
@@ -833,10 +836,14 @@ def write_root_config(
     ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
 
     ``tags`` replaces the deployment's tags, as a CloudFormation update given
-    tags replaces the stack's (an empty dict removes them). ``None`` keeps the
-    tags this directory's ``terraform.tfvars`` holds from the previous deploy,
-    as a CloudFormation update given none keeps the stack's. Refuses tags for a
-    module that has no tags input (its manifest has no ``tagsVariable``).
+    tags replaces the stack's. An empty dict stops passing any: the ``aws``
+    resources lose them, but an ``awscc`` resource whose template sets no tags
+    is given ``null``, which the provider may read as "keep what is there", so
+    those may keep the tags they have. ``None`` keeps the tags this directory's
+    ``terraform.tfvars`` holds from the previous deploy, as a CloudFormation
+    update given none keeps the stack's. Refuses tags for a module that has no
+    tags input (its manifest has no ``tagsVariable``), and more than
+    :data:`MAX_DEPLOYMENT_TAGS`.
 
     Refuses a ``main.tf`` that idp-cli did not write. A parameter that is not
     passed keeps the value the deployment has, as a CloudFormation update keeps
@@ -988,6 +995,12 @@ def write_root_config(
             "before the Terraform module accepted tags). Use a newer module, or "
             f"deploy without tags: remove the tags line from {tfvars}, or pass "
             "tags={} to the SDK."
+        )
+    if len(values.tags) > MAX_DEPLOYMENT_TAGS:
+        raise IDPConfigurationError(
+            f"{len(values.tags)} tags given; a Terraform deployment takes at most "
+            f"{MAX_DEPLOYMENT_TAGS}, because the aws provider's default_tags also "
+            "tag the module's S3 objects, which S3 limits to 10 tags each"
         )
     if values.tags_kept:
         logger.info(

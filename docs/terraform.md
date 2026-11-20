@@ -329,6 +329,14 @@ module has when it is created, and a later change to `tags` does not change them
 rather than replacing the collection and its vector index. With `tags` left empty, the
 module plans exactly what it did before it had the variable.
 
+Two limits follow from how the tags are applied. `default_tags` also tags the
+module's S3 objects (the label stack's template and the resource directory), and S3
+allows an object at most 10 tags, so keep the map to 10 tags; `idp-cli` refuses more.
+And emptying `tags` after it held some is not a reliable way to remove them from the
+`awscc` resources: a resource whose template sets no tags is then given `null`, which
+the `awscc` provider may treat as "keep what is there". Removing a tag from the map
+does remove it, because the attribute then carries the remaining tags.
+
 As with a CloudFormation deployment, the first apply sends a temporary password to
 `admin_email`, and a second email asks you to confirm the alerts subscription. Confirm
 it, or alarm notifications reach nobody (see
@@ -522,7 +530,7 @@ The options are:
 | `--stack-name` | the deployment name, which becomes `stack_name` |
 | `--admin-email` | the administrator's email address, which becomes `admin_email` |
 | `--parameters "K=V,K2=V2"` | settings by their CloudFormation parameter names, as on the CloudFormation path; an unknown name is an error |
-| `--tags "K=V,K2=V2"` | tags for every taggable resource, as CloudFormation stack tags are: `main.tf` gives them to the module's `tags` variable and to the `aws` provider's `default_tags` (see [Tagging the deployment](#tagging-the-deployment)), and `terraform.tfvars` records them. Passing tags replaces the deployment's tags; omitting them keeps the ones `terraform.tfvars` in the directory holds from the previous deploy, as a CloudFormation update keeps a stack's. A deploy from a new directory has no record of earlier tags, so pass them again there. A module published before the module had a `tags` variable refuses them |
+| `--tags "K=V,K2=V2"` | tags for every taggable resource, as CloudFormation stack tags are: `main.tf` gives them to the module's `tags` variable and to the `aws` provider's `default_tags` (see [Tagging the deployment](#tagging-the-deployment)), and `terraform.tfvars` records them. Passing tags replaces the deployment's tags; omitting them keeps the ones `terraform.tfvars` in the directory holds from the previous deploy, as a CloudFormation update keeps a stack's. A deploy from a new directory has no record of earlier tags, so pass them again there. At most 10 tags (see [Tagging the deployment](#tagging-the-deployment)); a module published before the module had a `tags` variable refuses them |
 | `--terraform-module-url URL` | the module source URL; by default the CLI uses the latest published module for the Region, chosen the same way the CloudFormation deploy chooses its default template |
 | `--from-code DIR` | build the templates from a local checkout, publish them with the Terraform module (`idp-cli publish --terraform`), and deploy that module. The build options `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template` apply as on the CloudFormation path. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url` |
 | `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |

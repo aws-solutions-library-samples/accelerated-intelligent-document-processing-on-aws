@@ -83,27 +83,32 @@ def test_every_type_the_registry_calls_taggable_is_found_with_its_tag_property()
 
 
 # ------------------------------------------------------- the generated tree
-def _translate(out: Path, variant: str | None) -> Path:
+def _translate(out: Path, variant: str | None, mode: str = "hybrid") -> Path:
     args = [str(REPO / "template.yaml"), "--offline", "--out", str(out)]
     args += ["--label-template", str(REPO / "template.yaml"), "--version", "0.0.0"]
+    args += ["--mode", mode]
     if variant:
         args += ["--variant", variant]
     assert main(args) == 0
     return out
 
 
-@pytest.mark.parametrize("variant", [v for _, v in TEMPLATE_VARIANTS])
+@pytest.mark.parametrize(
+    ("variant", "mode"),
+    [(v, "hybrid") for _, v in TEMPLATE_VARIANTS] + [(None, "awscc")],
+)
 def test_every_taggable_awscc_resource_in_the_tree_takes_the_module_tags(
-    variant, vendored, tmp_path
+    variant, mode, vendored, tmp_path
 ):
     """Scans the generated HCL. A taggable awscc resource whose tag attribute
     is absent, or does not read ``var.tags``, fails here; so does a nested
-    module the parent does not pass the tags to."""
-    root = _translate(tmp_path / "m", variant)
+    module the parent does not pass the tags to. ``--mode awscc`` sends the
+    hand-mapped types (functions, roles, buckets, tables) to awscc too."""
+    root = _translate(tmp_path / "m", variant, mode)
     tf_to_cfn = {
         awscc_type_name(t): t for t in json.loads(CREATE_ONLY.read_text())["types"]
     }
-    merged, missing, modules = 0, [], 0
+    merged, missing = 0, []
     for path in sorted(root.rglob("*.tf")):
         text = path.read_text()
         for tf_type, name, body in RESOURCE.findall(text):
@@ -118,13 +123,17 @@ def test_every_taggable_awscc_resource_in_the_tree_takes_the_module_tags(
             else:
                 missing.append(f"{path.relative_to(root)}: {tf_type}.{name}")
         for name, body in MODULE.findall(text):
-            modules += 1
             if not re.search(r"^  tags = var\.tags$", body, re.M):
                 missing.append(f"{path.relative_to(root)}: module.{name}")
         if path.name == "variables.tf":
             assert 'variable "tags" {' in text, path
     assert merged, "no taggable awscc resource in the tree"
     assert not missing, missing
+    # The root refuses AWS's reserved prefix at plan.
+    assert (
+        'condition = alltrue([for k in keys(var.tags) : !startswith(lower(k), "aws:")])'
+        in (root / "variables.tf").read_text()
+    )
 
 
 # ------------------------------------------------------- fragments
@@ -228,6 +237,8 @@ def test_map_and_json_shapes(tmp_path):
         "  tags = length(var.tags) > 0 ? jsonencode(var.tags) : null\n"
         in _one(tmp_path, as_json)["main.tf"]
     )
+    own = _one(tmp_path, as_json, {"Tags": {"a": "1"}})["main.tf"]
+    assert "  tags = jsonencode(merge(var.tags, jsondecode(" in own
 
 
 def test_a_tag_property_not_named_tags_is_merged(tmp_path):

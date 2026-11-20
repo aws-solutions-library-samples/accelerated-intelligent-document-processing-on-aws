@@ -699,6 +699,14 @@ class TestTags:
             _write(tmp_path, admin_email=None)
         assert (tmp_path / "main.tf").read_text() == before
 
+    def test_more_tags_than_an_s3_object_takes_are_refused(self, tmp_path):
+        tags = {f"k{i}": "v" for i in range(11)}
+        with pytest.raises(IDPConfigurationError, match="at most 10"):
+            _write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags)
+        assert not (tmp_path / "main.tf").exists()
+        tags.pop("k0")
+        assert len(_write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags).tags) == 10
+
     def test_set_assume_role_keeps_the_default_tags(self, tmp_path):
         _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a"})
         tf.set_assume_role(tmp_path / "main.tf", ROLE, REGION)
