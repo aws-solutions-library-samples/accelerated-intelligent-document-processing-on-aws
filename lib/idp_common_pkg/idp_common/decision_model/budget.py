@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Sequence, Tuple
+import re
+from typing import Iterator, Sequence, Tuple
 
 from idp_common.decision_model.invoker import DecisionModelRefused
 from idp_common.decision_model.wire import CONTEXT_WINDOW_TOKENS
@@ -48,18 +49,61 @@ LINE_BREAK_BACKOFF_SHARE = 0.1
 MIN_EVIDENCE_SHARE = 0.5
 
 
+#: Tokens counted for each character, by class. Every character not named here,
+#: digits, ASCII punctuation and non-ASCII such as CJK, counts as a whole token.
+#: A letter in a run of letters and digits that holds a digit (a serial, an
+#: invoice number, a hex id) is split by the tokenizer almost letter by letter.
+MIXED_RUN_LETTER_TOKENS = 0.75
+#: A letter in a run of letters only: words, all-capital headings included.
+WORD_LETTER_TOKENS = 0.5
+#: A space, tab or line break.
+WHITESPACE_TOKENS = 0.5
+
+_ALNUM_RUN = re.compile(r"[A-Za-z0-9]+")
+
+
+def _token_weights(text: str) -> Iterator[float]:
+    """The estimated tokens of each character of ``text``, in order.
+
+    Weighted from how the decider's tokenizer (a Qwen-family model in the v1
+    release) splits text, measured with that model's own tokenizer and against
+    the live decider (#2051): every digit is a token of its own, and so is ASCII
+    punctuation (the pipes, slashes, commas and points of a markdown statement
+    table); a letter beside digits in one run is nearly one; a non-ASCII
+    character such as CJK is about one. Word letters, which run three to five a
+    token, are counted at two a token, and whitespace at ``WHITESPACE_TOKENS``.
+    """
+    position = 0
+    for run in _ALNUM_RUN.finditer(text):
+        yield from (_other_weight(c) for c in text[position : run.start()])
+        letter = (
+            MIXED_RUN_LETTER_TOKENS
+            if any("0" <= c <= "9" for c in run.group())
+            else WORD_LETTER_TOKENS
+        )
+        for c in run.group():
+            yield 1.0 if "0" <= c <= "9" else letter
+        position = run.end()
+    yield from (_other_weight(c) for c in text[position:])
+
+
+def _other_weight(c: str) -> float:
+    return WHITESPACE_TOKENS if c in " \t\n\r" else 1.0
+
+
 def estimate_tokens(text: str) -> float:
     """A conservative token count for ``text``, from its characters.
 
-    Weighted for how the decider's tokenizer (a Qwen-family model in the v1
-    release) splits text: every digit is a token of its own, which makes invoice
-    and table text dense, and a non-ASCII character such as CJK is about one. Other
-    text runs three to four characters a token; it is counted at two, which leaves
-    room for punctuation-heavy OCR.
+    The sum of each character's weight (see ``_token_weights``). Measured with
+    the decider's tokenizer, it is within about 5% of the real count or above it
+    on markdown and tab-separated statement tables, figures, phone numbers,
+    serials and hex ids that mix letters and digits, and common CJK, which
+    ``PROMPT_RESERVE_TOKENS`` covers; on prose it is three to four times the real
+    count. It still undercounts letter-only random codes (to about 1.35 times)
+    and rare CJK characters such as uncommon name characters (to about 1.9
+    times), which the tokenizer splits into several byte tokens each.
     """
-    digits = sum(1 for c in text if "0" <= c <= "9")
-    non_ascii = sum(1 for c in text if ord(c) > 127)
-    return digits + non_ascii + (len(text) - digits - non_ascii) / 2
+    return sum(_token_weights(text))
 
 
 def state_budget(max_input_tokens: int, question_tokens: float, images: int) -> float:
@@ -80,8 +124,8 @@ def truncate_to_tokens(text: str, budget: float) -> Tuple[str, int]:
         return text, 0
     used = 0.0
     end = 0
-    for end, c in enumerate(text):
-        used += 1 if ("0" <= c <= "9" or ord(c) > 127) else 0.5
+    for end, weight in enumerate(_token_weights(text)):
+        used += weight
         if used > budget:
             break
     kept = text[:end]
