@@ -194,6 +194,52 @@ def test_a_value_that_is_not_create_only_is_no_edge(schema):
     assert [e for e in safety.custom_output_edges(tr)] == []
 
 
+# ------------------------------------- B2: types Cloud Control cannot update
+def eic_fragment(**props) -> dict:
+    """An EventInvokeConfig the way the templates write one: OnFailure set,
+    OnSuccess unset, which Lambda reads back as an empty object (#2183)."""
+    return {
+        "Resources": {
+            "Fn": FN,
+            "Dlq": {"Type": "AWS::SQS::Queue", "Properties": {}},
+            "Eic": {
+                "Type": "AWS::Lambda::EventInvokeConfig",
+                "Properties": {
+                    "FunctionName": {"Ref": "Fn"},
+                    "Qualifier": "$LATEST",
+                    "MaximumRetryAttempts": 2,
+                    "DestinationConfig": {
+                        "OnFailure": {"Destination": {"Fn::GetAtt": ["Dlq", "Arn"]}}
+                    },
+                    **props,
+                },
+            },
+        }
+    }
+
+
+def _lifecycle(block: str) -> str:
+    return block[block.index("lifecycle {") :]
+
+
+def test_an_event_invoke_config_is_replaced_rather_than_updated(schema):
+    tr = translated(eic_fragment(), schema)
+    main_tf = tr.emitted["Eic"]
+    head, resource = main_tf.split('resource "awscc_lambda_event_invoke_config"')
+    life = _lifecycle(resource)
+    # Every settable property is ignored by the update and drives a replacement
+    # through the key, so awscc never sends Cloud Control an update.
+    assert "ignore_changes = [maximum_retry_attempts, destination_config]" in life
+    assert "replace_triggered_by = [terraform_data.eic_settings_key]" in life
+    assert 'resource "terraform_data" "eic_settings_key"' in head
+    assert "maximum_retry_attempts = 2" in head
+    assert "destination_config" in head and "awscc_sqs_queue.dlq.arn" in head
+    # The create-only properties replace the resource anyway; they stay out
+    # of both lists so their own diff still reads as one.
+    assert "function_name" not in life and "qualifier" not in life
+    assert "function_name" not in head and "qualifier" not in head
+
+
 # ------------------------------------------------------- whole standard template
 @pytest.fixture(scope="module")
 def standard(tmp_path_factory) -> Path:
