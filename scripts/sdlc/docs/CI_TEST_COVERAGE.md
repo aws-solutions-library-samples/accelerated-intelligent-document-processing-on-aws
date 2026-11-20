@@ -350,15 +350,10 @@ The plan's own text is kept in `terraform-replan.log` beside the deploy log. It 
 non-sensitive values as Terraform prints them, and on a failed run it reaches the
 failure analysis and the evidence bundle in the Terraform log tail, the same route
 the apply's output takes.
-`TERRAFORM_REPLAN_EXEMPT_CHANGES` lists the re-plan changes that are known defects
-and are reported without failing the run, one address each, registered in
-`scripts/tests/gate_exemptions.json`. It holds the API Gateway stage's
-access-log destination (#2006), accepted only as a plain update that adds `:*` to the
-stored ARN and touches nothing else on that resource; a pass that relied on it names
-the defect in the row.
-`scripts/sdlc/tests/test_terraform_replan_convergence.py` translates the template
-offline and fails once the generated module stops producing the shape an entry
-describes, so the entry goes when #2006 is fixed.
+No re-plan change is accepted as a known defect: every change fails the run. The
+API Gateway stage's access-log destination used to re-plan after every apply, because
+the translator wrote the log group's ARN in CloudFormation's `:*` form and the stage
+stores it without the suffix (#2006); the translator now writes the bare ARN there.
 
 **Scheduling it after the CloudFormation nightly.** Both runs hold
 `resource_group: integration_deploy`, so whichever reaches `integration_tests`

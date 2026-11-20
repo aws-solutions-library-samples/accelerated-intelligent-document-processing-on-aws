@@ -112,6 +112,10 @@ AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
     ("AWS::Cognito::UserPoolClient", "LogoutURLs"): "distinct",
     # API Gateway drops an empty response template.
     ("AWS::ApiGateway::Method", "Integration"): "drop_empty_templates",
+    # A log group's GetAtt Arn ends in ":*" and the stage stores its access-log
+    # destination without it, so the re-plan after an apply would add the suffix
+    # back every time (#2006). The provider's bare ARN is what is read back.
+    ("AWS::ApiGateway::Stage", "AccessLogSetting"): "bare_log_group_arn",
 }
 
 # Functions that walk the stack tree at run time. Under Terraform they get the
@@ -858,6 +862,8 @@ class Translator:
                 x = self._role_name(x)
             if fixup == "drop_empty_templates":
                 x = _drop_empty_templates(x)
+            if fixup == "bare_log_group_arn":
+                x = self._bare_log_group_arn(x)
             rendered = self.expr(x, child)
             if fixup == "distinct":
                 rendered = f"try(distinct({rendered}), {rendered})"
@@ -963,6 +969,35 @@ class Translator:
             if attr == "Arn" and target and target.cfn_type == "AWS::IAM::Role":
                 return {"Ref": name}
         return v
+
+    def _bare_log_group_arn(self, v: Any) -> Any:
+        """``v`` with every ``DestinationArn: GetAtt <LogGroup>.Arn`` in it, at any
+        depth (an ``Fn::If`` branch included), naming the log group's ARN without
+        CloudFormation's ``:*``. Any other destination, a Firehose stream's or a
+        literal, is left as written."""
+        from .aws_mappers import BARE_ARN_ATTR
+
+        if isinstance(v, list):
+            return [self._bare_log_group_arn(x) for x in v]
+        if not isinstance(v, dict):
+            return v
+        out = {}
+        for k, x in v.items():
+            if k == "DestinationArn" and isinstance(x, dict) and set(x) == {
+                "Fn::GetAtt"
+            }:
+                arg = x["Fn::GetAtt"]
+                name, attr = arg.split(".", 1) if isinstance(arg, str) else arg
+                target = self.plans.get(name)
+                if (
+                    attr == "Arn"
+                    and target is not None
+                    and target.cfn_type == "AWS::Logs::LogGroup"
+                ):
+                    out[k] = {"Fn::GetAtt": [name, BARE_ARN_ATTR]}
+                    continue
+            out[k] = self._bare_log_group_arn(x)
+        return out
 
     def emit_custom(self, plan: Plan, res: dict[str, Any]) -> str:
         props = dict(plan.props)
