@@ -34,6 +34,7 @@ matching action in the function's own identity policy.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set
@@ -284,3 +285,124 @@ def test_the_versioned_grants_are_scoped_and_partition_parameterised(
                 f"{action} is granted on {rendered!r}; a bucket-level action belongs "
                 "on the bucket ARN and an object-level action on the /* form"
             )
+
+
+def _role_statements(template: str, function: str) -> List[dict]:
+    doc = yaml.load((REPO_ROOT / template).read_text(), Loader=_CfnLoader) or {}
+    resource = (doc.get("Resources") or {}).get(function)
+    assert resource, f"{function} is not declared in {template}"
+    statements: List[dict] = []
+    for entry in (resource.get("Properties") or {}).get("Policies") or []:
+        if isinstance(entry, dict) and "Statement" in entry:
+            statements.extend(
+                s for s in entry["Statement"] if s.get("Effect") == "Allow"
+            )
+    return statements
+
+
+def _rendered_resources(statement: dict) -> List[str]:
+    """Each resource as a string: ``!Sub`` verbatim, ``!GetAtt X.Arn`` as ``${X.Arn}``."""
+    resources = statement.get("Resource")
+    if isinstance(resources, (str, dict)):
+        resources = [resources]
+    rendered = []
+    for resource in resources or []:
+        if isinstance(resource, dict) and "Fn::Sub" in resource:
+            rendered.append(resource["Fn::Sub"])
+        elif isinstance(resource, dict) and "Fn::GetAtt" in resource:
+            rendered.append("${" + resource["Fn::GetAtt"] + "}")
+        else:
+            rendered.append(resource)
+    return rendered
+
+
+#: Both roles that run ``delete_single_document`` under their own identity, and how each
+#: template spells the two bucket ARNs. The CLI and SDK run it with the caller's own
+#: credentials, which no template here governs.
+DELETE_ROLES = [
+    pytest.param(
+        "nested/api-resolvers/template.yaml",
+        "DeleteDocumentResolverFunction",
+        {
+            "input": "arn:${AWS::Partition}:s3:::${InputBucketName}",
+            "output": "arn:${AWS::Partition}:s3:::${OutputBucketName}",
+        },
+        id="delete-resolver",
+    ),
+    pytest.param(
+        "template.yaml",
+        "WorkflowTracker",
+        {"input": "${InputBucket.Arn}", "output": "${OutputBucket.Arn}"},
+        id="workflow-tracker",
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("template, function, buckets", DELETE_ROLES)
+@pytest.mark.parametrize("bucket", ["input", "output"])
+@pytest.mark.parametrize(
+    "action, suffix", [("s3:ListBucketVersions", ""), ("s3:DeleteObjectVersion", "/*")]
+)
+def test_each_delete_role_holds_the_versioned_purge_on_each_bucket(
+    template, function, buckets, bucket, action, suffix
+):
+    """Per bucket, not per role: the purge runs against the Input **and** the Output
+    bucket, and a grant on one says nothing about the other.
+
+    The coverage test above unions every S3 action the role holds, so a role holding
+    ``s3:DeleteObjectVersion`` on the Output bucket alone satisfies it while every input
+    version purge is refused (#2166). Each action is checked against the exact resource
+    it acts on — the bucket ARN for the listing, ``/*`` for the delete — because a
+    bucket-level action on ``/*`` (or the reverse) is granted on nothing.
+    """
+    expected = buckets[bucket] + suffix
+    holders = [
+        s
+        for s in _role_statements(template, function)
+        if action in ([s["Action"]] if isinstance(s["Action"], str) else s["Action"])
+    ]
+    assert holders, f"{function} does not grant {action} at all"
+    granted_on = [r for s in holders for r in _rendered_resources(s)]
+    assert expected in granted_on, (
+        f"{function} ({template}) does not grant {action} on the {bucket} bucket "
+        f"({expected}); it is granted on {granted_on}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("template, function, buckets", DELETE_ROLES)
+@pytest.mark.parametrize(
+    "action, suffix", [("s3:ListBucketVersions", ""), ("s3:DeleteObjectVersion", "/*")]
+)
+def test_the_versioned_purge_is_granted_on_nothing_but_the_two_buckets(
+    template, function, buckets, action, suffix
+):
+    """Scope, the other half of the presence check above.
+
+    Presence alone accepts a grant that also names ``*``, the Working bucket, or a
+    hardcoded-partition ARN, all of which widen what a compromised delete role can
+    destroy irreversibly. Every resource that holds either versioned action on these
+    roles must be the Input or Output bucket in the form that action acts on.
+    """
+    allowed = {buckets["input"] + suffix, buckets["output"] + suffix}
+    # Matched as IAM does, by glob: ``s3:*`` or ``s3:DeleteObject*`` grants the
+    # versioned action as surely as spelling it out, so a literal comparison would
+    # wave a wildcard statement on ``*`` through.
+    granted_on = {
+        r
+        for s in _role_statements(template, function)
+        if any(
+            fnmatch.fnmatchcase(action, granted)
+            for granted in (
+                [s["Action"]] if isinstance(s["Action"], str) else s["Action"]
+            )
+        )
+        for r in _rendered_resources(s)
+    }
+    assert granted_on, f"{function} does not grant {action} at all"
+    extra = sorted(granted_on - allowed)
+    assert not extra, (
+        f"{function} ({template}) grants {action} beyond the Input and Output "
+        f"buckets: {extra}"
+    )

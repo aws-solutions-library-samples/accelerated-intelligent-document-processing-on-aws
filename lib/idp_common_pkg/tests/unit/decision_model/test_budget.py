@@ -189,3 +189,22 @@ def test_evidence_under_half_the_budget_is_refused_and_over_half_is_sent():
     # Evidence about 60% of the budget: sent.
     kept = fit_text(text, estimate_tokens(header + "x" * 62), "pages 1", [header])
     assert kept == header + "x" * 62
+
+
+def test_evidence_of_exactly_half_the_budget_is_sent_and_a_token_less_refused():
+    """Pins ``MIN_EVIDENCE_SHARE`` at one half to within a thousandth (#2212).
+
+    The tests above refuse at 30% and send at 60%, which a share of 0.4 or 0.55
+    passes as well. Here every character weighs one token or a half: a header
+    of 499.5 tokens leaves 500 digits, exactly half of the budget of 1000, and
+    the request is sent; a header one token longer leaves 499, and it is refused.
+    """
+    for header_length, digits, sent in ((499, 500, True), (500, 499, False)):
+        header = "#" * header_length + "\n"
+        text = header + "7" * 2000
+        if sent:
+            kept = fit_text(text, 1000, "pages 1", [header])
+            assert kept == header + "7" * digits
+        else:
+            with pytest.raises(DecisionModelRefused):
+                fit_text(text, 1000, "pages 1", [header])

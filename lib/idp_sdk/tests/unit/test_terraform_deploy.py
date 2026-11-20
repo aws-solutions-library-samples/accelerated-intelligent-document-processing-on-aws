@@ -27,6 +27,23 @@ from idp_sdk.exceptions import IDPConfigurationError, IDPStackError
 
 pytestmark = pytest.mark.unit
 
+
+def _fresh_bucket_s3() -> MagicMock:
+    """An S3 client double for a bucket with nothing in it yet: every read is
+    ``NoSuchKey``, every listing is empty, and the service model is botocore's
+    real one, so the conditional-write capability check sees the real API."""
+    import botocore.session
+    from botocore.exceptions import ClientError
+
+    s3 = MagicMock()
+    s3.get_object.side_effect = ClientError(
+        {"Error": {"Code": "NoSuchKey", "Message": "absent"}}, "GetObject"
+    )
+    s3.get_paginator.return_value.paginate.return_value = [{}]
+    s3.meta.service_model = botocore.session.get_session().get_service_model("s3")
+    return s3
+
+
 REGION = "us-west-2"
 BUCKET = "tfspike-111122223333-us-west-2"
 
@@ -202,7 +219,7 @@ class TestVariantNames:
 
     def test_upload_uses_the_variant_names(self, tmp_path):
         _tree(tmp_path)
-        s3 = MagicMock()
+        s3 = _fresh_bucket_s3()
         info = tf.upload_module(
             s3,
             module_dir=tmp_path,
@@ -217,6 +234,7 @@ class TestVariantNames:
             "p/2/terraform/idp-terraform-headless-2.zip",
             "p/2/terraform/idp-terraform-headless-2.zip.sha256",
             "p/terraform/idp-terraform-headless-latest.json",
+            "p/terraform/idp-terraform-headless-versions.json",
         ]
         assert info["moduleUrl"].endswith("idp-terraform-headless-2.zip")
 
@@ -278,7 +296,7 @@ class TestZip:
 class TestUpload:
     def test_uploads_zip_checksum_and_pointer(self, tmp_path):
         _tree(tmp_path)
-        s3 = MagicMock()
+        s3 = _fresh_bucket_s3()
         info = tf.upload_module(
             s3,
             module_dir=tmp_path,
@@ -293,6 +311,7 @@ class TestUpload:
             zip_key,
             zip_key + ".sha256",
             "tfspike/terraform/idp-terraform-latest.json",
+            "tfspike/terraform/idp-terraform-versions.json",
         }
         digest = hashlib.sha256(puts[zip_key]["Body"]).hexdigest()
         assert info["sha256"] == digest
@@ -310,7 +329,7 @@ class TestUpload:
 
     def test_public_applies_the_acl(self, tmp_path):
         _tree(tmp_path)
-        s3 = MagicMock()
+        s3 = _fresh_bucket_s3()
         tf.upload_module(
             s3,
             module_dir=tmp_path,
@@ -1233,6 +1252,69 @@ class TestDeployOperation:
                 pointer_url="https://x.test/ptr.json",
                 terraform_dir=str(tmp_path),
             )
+
+    def _index_fetch(self, data, sha256):
+        """A fetch serving a versions index with 0.6.14 and 0.6.15, and the
+        module zip at the URL the index entry resolves to."""
+        base = "https://s3.us-west-2.amazonaws.com/b/p"
+        index = {
+            "schemaVersion": tf.VERSIONS_INDEX_SCHEMA,
+            "versions": [
+                tf.build_index_entry("0.6.14", "p/0.6.14/old.zip", "1" * 64, "d"),
+                tf.build_index_entry("0.6.15", "p/0.6.15/pinned.zip", sha256, "d"),
+            ],
+        }
+        fetched = []
+
+        def fetch(url, s3_factory=None):
+            fetched.append(url)
+            if url == f"{base}/terraform/idp-terraform-versions.json":
+                return json.dumps(index).encode()
+            if url == f"{base}/0.6.15/pinned.zip":
+                return data
+            raise AssertionError(f"unexpected fetch {url}")
+
+        return fetch, fetched, f"{base}/terraform/idp-terraform-latest.json"
+
+    def test_a_module_version_is_resolved_through_the_index(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        data = _module_zip()
+        fetch, fetched, pointer_url = self._index_fetch(
+            data, hashlib.sha256(data).hexdigest()
+        )
+        monkeypatch.setattr(tf, "fetch_url", fetch)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: f"/usr/bin/{b}")
+        calls = _Calls({SHOW_PLAN: json.dumps({"resource_changes": []})})
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        result = client.stack.deploy_terraform(
+            admin_email="a@example.com",
+            pointer_url=pointer_url,
+            module_version="0.6.15",
+            terraform_dir=str(tmp_path),
+        )
+        # The pointer itself is never read; the zip is the pinned version's.
+        assert pointer_url not in fetched
+        assert fetched[-1].endswith("/0.6.15/pinned.zip")
+        assert "/0.6.15/pinned.zip" in (tmp_path / "main.tf").read_text()
+        assert result.success
+
+    def test_a_module_version_whose_bytes_differ_from_the_index_is_refused(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        fetch, _, pointer_url = self._index_fetch(_module_zip(), "2" * 64)
+        monkeypatch.setattr(tf, "fetch_url", fetch)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        with pytest.raises(IDPConfigurationError, match="but the versions index says"):
+            client.stack.deploy_terraform(
+                admin_email="a@example.com",
+                pointer_url=pointer_url,
+                module_version="0.6.15",
+                terraform_dir=str(tmp_path),
+            )
+        assert list(tmp_path.iterdir()) == []
 
     def test_a_cloudformation_stack_of_that_name_is_refused(
         self, monkeypatch, tmp_path
