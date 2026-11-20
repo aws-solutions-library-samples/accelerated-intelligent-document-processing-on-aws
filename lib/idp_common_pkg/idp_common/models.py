@@ -1469,10 +1469,6 @@ class Document:
                 f"S3 metadata for {input_key}: "
                 f"{document_attributes.loggable_metadata(metadata)}"
             )
-            if read_attributes:
-                attribute_intake = document_attributes.read_object_attributes(
-                    metadata, input_bucket, s3_client
-                )
             config_version = metadata.get("config-version")
             config_revision = coerce_revision(metadata.get("config-revision"))
             if config_version:
@@ -1502,6 +1498,13 @@ class Document:
                 logger.info(
                     f"Document {input_key} submitted by {submission_source}"
                     + (f" for test set {test_set_id}" if test_set_id else "")
+                )
+            # Last, after every control key has been read, so nothing a caller put
+            # in its attributes can cost the document its configuration pin.
+            # read_object_attributes does not raise for bad input.
+            if read_attributes:
+                attribute_intake = document_attributes.read_object_attributes(
+                    metadata, input_bucket, s3_client
                 )
         except Exception as e:
             logger.warning(f"Could not read S3 metadata for {input_key}: {e}")

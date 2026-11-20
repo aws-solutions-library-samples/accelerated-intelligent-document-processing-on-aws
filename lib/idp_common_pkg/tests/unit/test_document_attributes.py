@@ -500,3 +500,45 @@ def test_document_attributes_does_not_import_models():
         for alias in node.names
     }
     assert not any(name.startswith("idp_common") for name in imported), imported
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_deeply_nested_sidecar_is_dropped_and_costs_nothing_else():
+    """A sidecar within the size bound can nest deeply enough to exhaust the JSON
+    parser's stack. It must be dropped with a warning, and the document must keep
+    its configuration pin and its valid inline attributes."""
+    s3 = _s3()
+    depth = da.MAX_TOTAL_BYTES // 2 - 8
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="in/doc.pdf" + da.SIDECAR_SUFFIX,
+        Body=b'{"a":' + b"[" * depth + b"]" * depth + b"}",
+    )
+    s3.put_object(
+        Bucket=BUCKET,
+        Key="in/doc.pdf",
+        Body=b"%PDF",
+        Metadata={
+            "config-version": "v1",
+            da.SIDECAR_URI_METADATA_KEY: f"s3://{BUCKET}/in/doc.pdf"
+            + da.SIDECAR_SUFFIX,
+            "idp-attr-ok": "kept",
+        },
+    )
+    doc = Document.from_s3_event(_event("in/doc.pdf"), "out")
+    assert doc.config_version == "v1"
+    assert doc.attributes == {"ok": "kept"}
+    (issue,) = doc.processing_issues
+    assert issue.code == da.ISSUE_ATTRIBUTES_DROPPED
+
+
+@pytest.mark.unit
+def test_an_unexpected_failure_reading_attributes_is_reported_not_raised():
+    class Exploding(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    intake = da.read_object_attributes(Exploding(), BUCKET, s3_client=None)
+    assert intake.attributes == {}
+    assert intake.dropped and "RuntimeError" in intake.dropped[0][1]

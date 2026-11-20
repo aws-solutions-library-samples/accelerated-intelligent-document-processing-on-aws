@@ -253,7 +253,9 @@ def _read_sidecar(
         return None, f"sidecar larger than {MAX_TOTAL_BYTES} bytes"
     try:
         data = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a body within the size bound can still nest deeply
+        # enough to exhaust the parser's stack.
         return None, "sidecar is not valid UTF-8 JSON"
     if not isinstance(data, dict):
         return None, "sidecar is not a JSON object"
@@ -269,6 +271,19 @@ def read_object_attributes(
     is named. Never raises for bad input: anything out of bounds is dropped and
     reported in :attr:`AttributeIntake.dropped`.
     """
+    try:
+        return _read_object_attributes(metadata, bucket, s3_client)
+    except Exception as e:  # noqa: BLE001 - this route never raises; see docstring
+        # Nothing in the rules should get here. If something does, the document
+        # still processes, without attributes and with the warning saying so.
+        return AttributeIntake(
+            dropped=[("(all)", f"attributes could not be read ({type(e).__name__})")]
+        )
+
+
+def _read_object_attributes(
+    metadata: Mapping[str, str], bucket: str, s3_client: Any
+) -> AttributeIntake:
     candidate: Dict[Any, Any] = {}
     early_drops: List[Tuple[str, str]] = []
 
