@@ -41,7 +41,7 @@ _spec.loader.exec_module(mod)
 
 REGION = "us-east-1"
 ACCOUNT = "111122223333"
-STACK_ID = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/idp/0a1b2c3d-1111-2222-3333-444455556666"
+STACK_ID = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/idp/0a1b2c3d-1111-2222-3333-abcdef012345"
 KEY = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 OTHER_KEY = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/0987dcba-09fe-87dc-65ba-ab0987654321"
 
@@ -151,7 +151,7 @@ class TestCreate:
     @pytest.mark.parametrize(
         "field,value,needle",
         [
-            ("AWSAccountId", "444455556666", "account"),
+            ("AWSAccountId", "999988887777", "account"),
             ("KeyManager", "AWS", "AWS managed"),
             ("KeySpec", "RSA_2048", "symmetric"),
             ("KeyUsage", "SIGN_VERIFY", "ENCRYPT_DECRYPT"),
