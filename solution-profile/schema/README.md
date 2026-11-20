@@ -6,6 +6,17 @@ against them. They are kept byte-for-byte as published and must not be edited he
 not even to reformat them. A change to the contract is made by its owners and then
 copied in again whole.
 
+## Provenance
+
+| | |
+|---|---|
+| What | The Solution Profile contract, version 1: its README, JSON Schema and reference validator |
+| Vendored | 2026-11-20, unchanged |
+| Maintained | Outside this repository, by the contract's owners. Only they change it; this repository takes a new version by copying the files in again |
+| Integrity | The sha256 of each file is pinned below and checked by `scripts/tests/test_solution_profile.py` |
+
+## Files
+
 | File | What it is |
 |---|---|
 | [`v1/README.md`](v1/README.md) | The contract: the files, their fields and the gap taxonomy |
