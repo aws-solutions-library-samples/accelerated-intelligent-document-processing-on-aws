@@ -2567,6 +2567,34 @@ class TestPrefixMappingLookupFailureIsRecordedOnTheDocument:
         assert mock_sqs.send_message.called is True
         assert document.processing_issues == []
 
+    def test_the_resolver_is_given_a_real_profile_existence_check(self):
+        """#597, item 3 at ingest: the refusal depends on `profile_exists`, so the
+        seam handed to the resolver must answer from the profile head item -- a
+        present head reads as existing and an absent one as missing."""
+        import index
+
+        document = _issue_document("acme/x.pdf")
+        table = MagicMock()
+        table.get_item.side_effect = lambda **kw: (
+            {"Item": {"Configuration": kw["Key"]["Configuration"]}}
+            if kw["Key"]["Configuration"] == "Config#present"
+            else {}
+        )
+        with (
+            patch.object(index, "_config_table", return_value=table),
+            patch.object(index, "PrefixMappingStore") as mock_store,
+            patch.object(index, "ConfigurationManager"),
+            patch.object(
+                index, "resolve_config_assignment", return_value=FakeAssignment()
+            ) as mock_resolve,
+        ):
+            mock_store.return_value.list.return_value = []
+            index.resolve_configuration(document, "acme/x.pdf")
+        exists = mock_resolve.call_args.kwargs["profile_exists"]
+        assert callable(exists)
+        assert exists("present") is True
+        assert exists("absent") is False
+
     def test_a_successful_read_records_nothing(self):
         document = _issue_document()
         metrics, _, _ = self._run(document)
