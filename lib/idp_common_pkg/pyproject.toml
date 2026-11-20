@@ -102,7 +102,7 @@ ocr = [
   "Pillow==13.0.0",
   "pypdfium2>=5.5.0",
   "amazon-textract-textractor[pandas]==1.9.2",
-  "numpy==1.26.4",
+  "numpy==2.5.4",
   "pandas==2.2.3",
   "openpyxl==3.1.5",
   "xlrd==2.0.2",
@@ -195,7 +195,7 @@ agents = [
 multi_document_discovery = [
   "scikit-learn>=1.5.0",       # KMeans clustering and silhouette analysis
   "scipy>=1.14.0",             # KDTree for nearest-neighbor search
-  "numpy==1.26.4",             # Embedding matrices and vector operations
+  "numpy==2.5.4",             # Embedding matrices and vector operations
   "Pillow==13.0.0",            # Image processing for document rendering
   "pypdfium2>=5.5.0",          # PDF page rendering
   "jinja2>=3.1.0",             # Prompt template rendering
@@ -332,7 +332,7 @@ all = [
   "Pillow==13.0.0",
   "pypdfium2>=5.5.0",
   "amazon-textract-textractor[pandas]==1.9.2",
-  "numpy==1.26.4",
+  "numpy==2.5.4",
   "pandas==2.2.3",
   # Discovery/clustering module deps — before Stickler 1.0 these were pulled
   # transitively via ``stickler-eval==0.5.0``; 1.0 dropped scikit-learn as a
