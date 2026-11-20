@@ -21,10 +21,19 @@ refuses three commands:
   a bare push follows ``push.default``, so the two settings that pick one of the
   branch name and the upstream do not also get the other; and ``--tags`` with no
   refspec has no branch destination at all.
-* ``gh pr merge`` for a pull request that has a **failing** check. The pull request
-  is read past the options that take a separate value, and ``--repo`` is honoured
-  on either side of the subcommand, because misreading either one leaves the check
-  unable to run and so allows the merge with nothing printed.
+* ``gh pr merge`` for a pull request that has a **failing** check, or whose base is
+  a shared branch and whose head is **not yet verified**: no check has concluded on
+  it, or one is still running (#2115). The
+  pull request is read past the options that take a separate value, and ``--repo``
+  is honoured on either side of the subcommand, because misreading either one
+  leaves the check unable to run and so allows the merge with nothing printed.
+  The second refusal is scoped twice over: a pull request into any other base (a
+  batch branch such as ``backlog/staging``, which gets no CI by design) is not
+  judged, and a pull request from a **fork** whose head carries no check that is
+  still running is allowed with a line on stderr saying nothing verified it. Some
+  fork pull requests here get no GitHub CI at all, and refusing those would block
+  their only route; a fork whose checks *are* running is held like any other. See
+  ``read_merge_route``.
 
 It also *says something without refusing anything*, in one case: when another session
 has been running git commands in the same working directory, or when the branch there
@@ -32,8 +41,9 @@ moved between two of this session's commands. That is advice rather than a verdi
 why it is only advice is in the co-tenancy item of the uncovered list below.
 
 Overrides, because each refusal has a legitimate case: set
-``ALLOW_SHARED_BRANCH=1`` for the first two and ``ALLOW_RED_MERGE=1`` for the
-third. Both are read from an inline assignment on the command itself
+``ALLOW_SHARED_BRANCH=1`` for the first two, ``ALLOW_RED_MERGE=1`` for a merge
+with a failing check, and ``ALLOW_UNCHECKED_MERGE=1`` for a merge into a shared
+branch whose head is not yet verified. All three are read from an inline assignment on the command itself
 (``ALLOW_SHARED_BRANCH=1 git push origin develop``) and from the environment.
 Inline is the form to reach for, because it applies to one command: a variable
 exported in the assistant's Bash tool is gone by the next call, but one exported
@@ -56,8 +66,15 @@ checkout and *knowingly merging red* through ``gh``. It is not a substitute for
 required status checks, and these are the routes it does not see:
 
 * A merge performed in the browser.
-* A pull request whose checks never ran at all (a fork PR gets no GitHub CI
-  here, and refusing those would block the only route they have).
+* A **fork** pull request whose checks never ran at all (a fork PR gets no GitHub
+  CI here, and refusing those would block the only route they have). It is
+  allowed with a note on stderr; a same-repository one into a shared branch is
+  refused.
+* A check that never *starts*. A workflow whose run was never created contributes
+  no entry to the head's rollup, so a head whose quick checks all finished while a
+  gate workflow failed to queue at all reads as verified. Telling gate checks from
+  the rest would mean a second copy of the workflow inventory
+  ``check_branch_protection.py`` derives.
 * ``git push --no-verify``, which also skips the companion ``pre-push`` hook.
 * Anything that reaches ``git`` other than as the first word of a segment: a
   script file (``sh deploy.sh``), ``bash -c``, ``eval``, ``xargs``, a wrapper that
@@ -108,7 +125,7 @@ Two behaviours that are deliberate rather than oversights:
   repository whose working branch is ``main``, a commit there is refused. The
   override is the answer for that.
 
-The two override variables are not registered in
+The three override variables are not registered in
 ``scripts/tests/gate_exemptions.json``, and that is a decision rather than an
 omission. That registry governs places where a **gate** is turned off for a file,
 a line or a rule, and it exists because such a reason is written once and then
@@ -146,6 +163,7 @@ import subprocess  # noqa: S404 - fixed argv, no shell; see _git/_gh
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 #: Branches that changes reach through a pull request rather than directly.
 SHARED_BRANCHES = frozenset({"develop", "main"})
@@ -156,6 +174,33 @@ ALLOW_SHARED_BRANCH = "ALLOW_SHARED_BRANCH"
 #: Environment (or inline) variable that permits merging a pull request whose
 #: checks are failing.
 ALLOW_RED_MERGE = "ALLOW_RED_MERGE"
+
+#: Environment (or inline) variable that permits merging a pull request into a
+#: shared branch although its head is not yet verified (#2115).
+ALLOW_UNCHECKED_MERGE = "ALLOW_UNCHECKED_MERGE"
+
+#: Check-run conclusions that mean the check ran to a verdict on the head. The
+#: others GitHub reports -- ``SKIPPED``, ``CANCELLED``, ``STALE`` -- say that a
+#: check exists without anything having been verified, so a head carrying only
+#: those is as unverified as one carrying none.
+VERDICT_CONCLUSIONS = frozenset(
+    {
+        "SUCCESS",
+        "FAILURE",
+        "NEUTRAL",
+        "TIMED_OUT",
+        "ACTION_REQUIRED",
+        "STARTUP_FAILURE",
+    }
+)
+
+#: Commit-status states (the older API beside check runs) that are a verdict.
+VERDICT_STATES = frozenset({"SUCCESS", "FAILURE", "ERROR"})
+
+#: Commit-status states that mean the status has not settled. Every check-run
+#: status other than ``COMPLETED`` (``QUEUED``, ``IN_PROGRESS``, ``WAITING``, ...)
+#: is unsettled too, without needing a list.
+UNSETTLED_STATES = frozenset({"PENDING", "EXPECTED"})
 
 #: Override values that mean "yes". Anything else -- including ``0`` and
 #: ``false`` -- leaves the guard on, so spelling out a refusal of the override
@@ -384,7 +429,7 @@ GIT_LONG_OPTIONS = {
 }
 
 #: Per-subprocess timeout. A single command can spend several of these -- one
-#: `git` call per reading, plus a `gh pr checks` -- so the total can exceed the
+#: `git` call per reading, or a `gh pr checks` plus a `gh pr view` -- so the total can exceed the
 #: 15 s the hook is given in ``.claude/settings.json``. Being killed there is not
 #: a hazard: the harness treats a hook that does not answer as no answer, which
 #: allows the command, the same direction every other unknown takes here. The
@@ -956,6 +1001,152 @@ def failing_checks(
     ]
 
 
+class MergeRoute(NamedTuple):
+    """What a merge needs to know about a pull request besides its failures."""
+
+    base: str
+    fork: bool
+    head: str
+    concluded: int
+    #: Checks on the head that have not finished yet, by name.
+    running: tuple[str, ...] = ()
+
+    @property
+    def verified(self) -> bool:
+        """Whether the head's checks have all finished and at least one reached a verdict.
+
+        One concluded check is not enough on its own. Measured on a pull request into
+        ``develop``: the dependency audit, CodeQL and the docs build finish within a
+        minute of a push, while the unit, package and coverage suites and the SRT scan
+        -- the gates #2115 was about -- run for several more, and SRT then failed. A
+        rule satisfied by the first finished check would have allowed that merge.
+        """
+        return self.concluded > 0 and not self.running
+
+
+def read_merge_route(
+    pr: str | None, repo: Path, selector: str | None = None
+) -> MergeRoute | None:
+    """The base, origin and number of concluded checks of ``pr``, or ``None``.
+
+    One ``gh pr view`` answers all of it, and against the pull request's *current*
+    head: ``statusCheckRollup`` is the head commit's rollup, so a head pushed after
+    the last run carries no result from that run. That is the case behind #2115 --
+    a pull request that had conflicted with its base, and so had no checks, was
+    resolved, pushed and merged before the new run reported anything.
+
+    Measured on gh 2.105.0: a pull request GitHub ran no check for answers
+    ``"statusCheckRollup": []`` with exit 0, whereas ``gh pr checks`` exits 1
+    with "no checks reported" on stderr and nothing on stdout -- which is why the
+    failing-check reader cannot tell "no checks" from "cannot read", and this
+    reader exists rather than a second reading of that one.
+
+    ``None`` for anything that does not parse, so the caller fails open.
+    """
+    argv = ["gh", "pr", "view"]
+    if pr:
+        argv.append(pr)
+    if selector:
+        argv += ["--repo", selector]
+    argv += ["--json", "baseRefName,isCrossRepository,headRefOid,statusCheckRollup"]
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            argv,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        view = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(view, dict):
+        return None
+    base = view.get("baseRefName")
+    fork = view.get("isCrossRepository")
+    head = view.get("headRefOid")
+    rollup = view.get("statusCheckRollup")
+    if not (
+        isinstance(base, str)
+        and base
+        and isinstance(fork, bool)
+        and isinstance(rollup, list)
+    ):
+        return None
+    concluded = 0
+    running: list[str] = []
+    for item in rollup:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("context") or "?")
+        if item.get("__typename") == "StatusContext":
+            state = item.get("state")
+            concluded += state in VERDICT_STATES
+            if state in UNSETTLED_STATES:
+                running.append(name)
+        elif item.get("status") == "COMPLETED":
+            concluded += item.get("conclusion") in VERDICT_CONCLUSIONS
+        else:
+            running.append(name)
+    return MergeRoute(
+        base,
+        fork,
+        head if isinstance(head, str) else "",
+        concluded,
+        tuple(running),
+    )
+
+
+def _unchecked_merge_reason(route: MergeRoute) -> str:
+    head = f" ({route.head[:12]})" if route.head else ""
+    if route.running:
+        what = (
+            f"this pull request's head{head} still has checks running, and it merges "
+            f"into {route.base}, which is a shared branch:\n"
+            + "\n".join(f"  - {name}" for name in route.running)
+            + "\n\n"
+        )
+    else:
+        what = (
+            f"no check has concluded on this pull request's head{head}, and it "
+            f"merges into {route.base}, which is a shared branch.\n\n"
+        )
+    return (
+        f"Blocked: {what}"
+        "The commit that would land is verified only once every check on it has "
+        "finished: the quick checks finish within a minute of a push, and the "
+        'test suites and the security scan several minutes later. "no checks '
+        'reported" usually means the pull request conflicted with its base, so '
+        "GitHub ran nothing; after the conflict is resolved and pushed, the new run "
+        "has to finish before the head is verified (#2115).\n"
+        "Wait for the checks to conclude, or run the CI gate set locally with:\n"
+        "  make premerge\n"
+        "or re-run with the override in front of the command if you are merging "
+        "an unverified head deliberately:\n"
+        f"  {ALLOW_UNCHECKED_MERGE}=1 <your command>\n"
+        "A pull request from a fork with no check still running is not refused "
+        "here, since some fork pull requests get no GitHub CI in this repository, "
+        "and neither is one into a branch "
+        f"other than {' or '.join(sorted(SHARED_BRANCHES))}."
+    )
+
+
+def _fork_unchecked_note(route: MergeRoute) -> str:
+    return (
+        "shared-branch guard: this pull request comes from a fork and its head has "
+        "no finished set of checks, so nothing verified what merges into "
+        f"{route.base}. "
+        "Some fork pull requests get no GitHub CI here; `make premerge` on a checkout of "
+        "the head is the local substitute."
+    )
+
+
 def gh_repo_selector(tokens: list[str]) -> str | None:
     """The ``--repo``/``-R`` a ``gh`` command names, or ``None`` for "this one".
 
@@ -1298,26 +1489,31 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
 
         is_merge, pull_request = gh_merge(argv)
         if is_merge:
+            selector = gh_repo_selector(argv)
             if _allowed(ALLOW_RED_MERGE, inline):
                 note(_waived(ALLOW_RED_MERGE, "this pull request's checks"))
+            else:
+                failures = failing_checks(pull_request, base, selector)
+                if failures:
+                    return _red_merge_reason(failures)
+            # The two refusals are separate decisions with separate overrides:
+            # waiving a known-unrelated red check says nothing about whether the
+            # head was checked at all.
+            if _allowed(ALLOW_UNCHECKED_MERGE, inline):
+                note(
+                    _waived(
+                        ALLOW_UNCHECKED_MERGE,
+                        "whether this pull request's head has any concluded check",
+                    )
+                )
                 continue
-            failures = failing_checks(pull_request, base, gh_repo_selector(argv))
-            if not failures:
+            route = read_merge_route(pull_request, base, selector)
+            if route is None or route.base not in SHARED_BRANCHES or route.verified:
                 continue
-            return (
-                "Blocked: this pull request has failing checks.\n\n"
-                + "\n".join(f"  - {name}" for name in failures)
-                + "\n\nNo check on this repository is a *required* status check, so "
-                "GitHub will let this merge proceed — which is exactly how 12 HIGH "
-                "security findings reached develop once before (see the header of "
-                ".github/workflows/security-checks.yml).\n"
-                "Fix the failures, or re-run with the override in front of the "
-                "command if the failure is known-unrelated and you are merging "
-                f"deliberately:\n  {ALLOW_RED_MERGE}=1 <your command>\n"
-                "Only concluded failures are counted here; a pending or skipped check "
-                "is not one, and a pull request whose checks never ran is not refused "
-                "at all."
-            )
+            if route.fork and not route.running:
+                note(_fork_unchecked_note(route))
+                continue
+            return _unchecked_merge_reason(route)
 
     if tenancy_repo is not None:
         for line in tenancy_notices(
@@ -1326,6 +1522,23 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
             note(line)
 
     return None
+
+
+def _red_merge_reason(failures: list[str]) -> str:
+    return (
+        "Blocked: this pull request has failing checks.\n\n"
+        + "\n".join(f"  - {name}" for name in failures)
+        + "\n\nNo check on this repository is a *required* status check, so "
+        "GitHub will let this merge proceed — which is exactly how 12 HIGH "
+        "security findings reached develop once before (see the header of "
+        ".github/workflows/security-checks.yml).\n"
+        "Fix the failures, or re-run with the override in front of the "
+        "command if the failure is known-unrelated and you are merging "
+        f"deliberately:\n  {ALLOW_RED_MERGE}=1 <your command>\n"
+        "Only concluded failures are counted here; a pending or skipped check "
+        "is not one. A head with no concluded check is refused separately "
+        f"(override {ALLOW_UNCHECKED_MERGE}=1)."
+    )
 
 
 def main() -> int:

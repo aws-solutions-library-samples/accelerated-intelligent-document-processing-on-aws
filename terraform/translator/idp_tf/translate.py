@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import hcl, suppressions
+from . import create_only, hcl, suppressions
 from .awscc_schema import ANY, AwsccSchema, Hint, awscc_type_name
 
 NO_VALUE = {"Ref": "AWS::NoValue"}
@@ -57,7 +57,13 @@ PERMISSIONS_BOUNDARY_PARAMETER = "PermissionsBoundaryArn"
 #: has a key parameter but no logging bucket of its own, so the root's flow down.
 BRIDGE_KMS_VAR = "cfn_bridge_kms_key_arn"
 BRIDGE_LOG_BUCKET_VAR = "cfn_bridge_access_log_bucket"
-RESERVED_VARS = (STACK_NAME_VAR, BRIDGE_KMS_VAR, BRIDGE_LOG_BUCKET_VAR)
+#: The module's tags, merged into the tag attribute of every ``awscc`` resource
+#: whose schema has one (``awscc`` has no ``default_tags``), and passed down to
+#: every nested module. Tags the template sets on a resource win over these.
+TAGS_VAR = "tags"
+RESERVED_VARS = (STACK_NAME_VAR, BRIDGE_KMS_VAR, BRIDGE_LOG_BUCKET_VAR, TAGS_VAR)
+#: ``var.tags`` as awscc's ``[{key, value}]`` tag shape.
+_TAGS_KV = f"[for k, v in var.{TAGS_VAR} : {{ key = k, value = v }}]"
 # A module variable carrying a plan-time-known stand-in for a parameter that a
 # condition reads. Resource attributes are replaced by a non-empty placeholder,
 # which is exactly what CloudFormation's condition sees: a resource id is never
@@ -833,6 +839,11 @@ class Translator:
 
     def emit_awscc(self, plan: Plan, res: dict[str, Any]) -> str:
         hint = self.schema.hint(plan.cfn_type)
+        try:
+            tag_attr = self.schema.tag_attribute(plan.cfn_type)
+        except ValueError as exc:
+            raise TranslationError(f"{plan.logical_id}: {exc}") from exc
+        tags_merged = False
         lines = []
         for k, x in plan.props.items():
             found = hint.attr(k)
@@ -850,9 +861,24 @@ class Translator:
             rendered = self.expr(x, child)
             if fixup == "distinct":
                 rendered = f"try(distinct({rendered}), {rendered})"
+            if tag_attr and tf_name == tag_attr[0]:
+                rendered = self._merge_tags(plan, x, rendered, tag_attr[1])
+                tags_merged = True
             lines.append(f"{tf_name} = {rendered}")
+        if tag_attr and not tags_merged:
+            lines.append(f"{tag_attr[0]} = {_module_tags(tag_attr[1])}")
         head, tail = self.meta_lines(plan, res)
         state_owned: list[str] = []
+        comments: list[str] = []
+        if tag_attr and tags_are_create_only(plan.cfn_type, tag_attr[0]):
+            # The registry makes this type's tags create-only, so a change to
+            # the module's tags would replace the resource. They are applied
+            # when it is created, as a tag-on-create policy needs, and kept.
+            state_owned.append(tag_attr[0])
+            comments.append(
+                f"# {tag_attr[0]}: create-only for {plan.cfn_type}; set when the "
+                "resource is created and not changed afterwards"
+            )
         generated = GENERATED_NAMES.get(plan.cfn_type)
         if generated and generated[0] not in plan.props:
             # Cloud Control names an unnamed resource of this type with no stack
@@ -870,7 +896,6 @@ class Translator:
             )
             state_owned.append(tf_name)
         triggers: list[str] = []
-        comments: list[str] = []
         keys: list[str] = []
         override = LIFECYCLE_OVERRIDES.get((plan.cfn_type, plan.logical_id))
         if override:
@@ -905,6 +930,29 @@ class Translator:
             tail = tail + comments + [hcl.block("lifecycle", body).rstrip()]
         return "".join(keys) + hcl.block(
             f'resource "{plan.tf_type}" "{plan.name}"', head + lines + tail
+        )
+
+    def _merge_tags(self, plan: Plan, value: Any, rendered: str, shape: str) -> str:
+        """The template's own tags on a resource, ``rendered``, with the
+        module's merged in. A key the template sets keeps the template's value.
+        With ``var.tags`` empty the expression's value is ``rendered``'s."""
+        if shape == "map":
+            return f"merge(var.{TAGS_VAR}, {rendered})"
+        if shape == "json":
+            return f"jsonencode(merge(var.{TAGS_VAR}, jsondecode({rendered})))"
+        keys: list[str] = []
+        for item in value if isinstance(value, list) else [value]:
+            found = _literal_tag_keys(item)
+            if found is None:
+                raise TranslationError(
+                    f"{plan.logical_id}: {plan.cfn_type} tags must be a list of "
+                    "entries with a literal Key (or a Fn::If between such entries "
+                    "and AWS::NoValue) for the module's tags to be merged in"
+                )
+            keys.extend(hcl.string(k) for k in found if hcl.string(k) not in keys)
+        return (
+            f"concat([for k, v in var.{TAGS_VAR} : {{ key = k, value = v }} "
+            f"if !contains({hcl.lst(keys)}, k)], {rendered})"
         )
 
     def _role_name(self, v: Any) -> Any:
@@ -980,6 +1028,7 @@ class Translator:
             f'{STACK_NAME_VAR} = "${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"',
             f"{BRIDGE_KMS_VAR} = {self.bridge_kms_key() or 'null'}",
             f"{BRIDGE_LOG_BUCKET_VAR} = {self.bridge_access_log_bucket() or 'null'}",
+            f"{TAGS_VAR} = var.{TAGS_VAR}",
         ]
         for p, value in params.items():
             if p not in child.param_vars:
@@ -1180,6 +1229,7 @@ class Translator:
                 ),
             )
         ]
+        out.append(self._tags_variable())
         if not self.is_root:
             # Required, so nothing scanning this module alone reads a null
             # default as the value; the parent always passes both.
@@ -1241,6 +1291,43 @@ class Translator:
                     )
                 )
         return "\n".join(out)
+
+    def _tags_variable(self) -> str:
+        if not self.is_root:
+            return hcl.block(
+                f'variable "{TAGS_VAR}"',
+                [
+                    "type = map(string)",
+                    "default = {}",
+                    'description = "Tags for every taggable resource, passed '
+                    'from the parent module."',
+                ],
+            )
+        return hcl.block(
+            f'variable "{TAGS_VAR}"',
+            [
+                "type = map(string)",
+                "default = {}",
+                "description = "
+                + hcl.string(
+                    "Tags for every taggable resource of the deployment, as "
+                    "CloudFormation stack tags are. They are merged into each "
+                    "awscc resource, because the awscc provider has no "
+                    "default_tags; give the same map to the aws provider's "
+                    "default_tags for the aws resources. A tag the template "
+                    "sets on a resource keeps its value."
+                ),
+                hcl.block(
+                    "validation",
+                    [
+                        f"condition = alltrue([for k in keys(var.{TAGS_VAR}) : "
+                        '!startswith(lower(k), "aws:")])',
+                        'error_message = "Tag keys may not start with aws:, '
+                        'which AWS reserves."',
+                    ],
+                ).rstrip(),
+            ],
+        )
 
     def _validations(self, p: str, spec: dict[str, Any], ptype: str) -> list[str]:
         """CloudFormation's parameter constraints as Terraform validations, so a
@@ -1755,6 +1842,49 @@ class Translator:
                 "value = local.cfn_resource_directory_self",
             ],
         )
+
+
+def tags_are_create_only(cfn_type: str, tag_attribute: str) -> bool:
+    """True when the registry lists the type's tag property as create-only, so
+    changing the module's tags would replace the resource."""
+    return any(
+        len(p) == 1 and hcl.norm(p[0]) == hcl.norm(tag_attribute)
+        for p in create_only.paths(cfn_type)
+    )
+
+
+def _literal_tag_keys(item: Any) -> list[str] | None:
+    """The keys a ``Tags`` list entry can set, or None when one is not a literal.
+    An entry is ``{Key, Value}`` or a ``Fn::If`` whose branches are entries or
+    ``AWS::NoValue``."""
+    if item == {"Ref": "AWS::NoValue"}:
+        return []
+    if not isinstance(item, dict):
+        return None
+    if set(item) == {"Fn::If"} and isinstance(item["Fn::If"], list):
+        if len(item["Fn::If"]) != 3:
+            return None
+        out: list[str] = []
+        for branch in item["Fn::If"][1:]:
+            found = _literal_tag_keys(branch)
+            if found is None:
+                return None
+            out.extend(found)
+        return out
+    if isinstance(item.get("Key"), str):
+        return [item["Key"]]
+    return None
+
+
+def _module_tags(shape: str) -> str:
+    """The module's tags for a resource the template gives none: null when
+    there are none, which is what the attribute was without the merge."""
+    value = {
+        "kv": _TAGS_KV,
+        "map": f"var.{TAGS_VAR}",
+        "json": f"jsonencode(var.{TAGS_VAR})",
+    }[shape]
+    return f"length(var.{TAGS_VAR}) > 0 ? {value} : null"
 
 
 def _emptiness_operand(node: Any) -> Any:

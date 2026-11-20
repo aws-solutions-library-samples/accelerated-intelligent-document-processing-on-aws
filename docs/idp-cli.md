@@ -552,6 +552,7 @@ Notes and caveats:
 - **Format:** comma-separated `key=value` pairs. Tag keys may contain spaces and the characters `. : / + - _` (a value may itself contain `=`; only the first `=` splits key from value). Commas inside a tag value are not supported.
 - **Update behavior:** re-running `deploy` with `--tags` **replaces** the stack's entire tag set with what you pass. Omitting `--tags` on an update **preserves** the existing tags (unlike a bare AWS API call, which would clear them).
 - **Not every resource type accepts propagated tags.** CloudFormation propagation is best-effort — a small number of resource types (e.g. some Cognito, CloudFront, and custom resources) do not receive stack tags. This is an AWS platform limitation, not a configuration option.
+- **With `--terraform`:** the Terraform module applies the tags to every taggable resource the same way; omitting `--tags` keeps the tags of the previous deploy from the same `--terraform-dir`. See [Tagging the deployment](terraform.md#tagging-the-deployment).
 - **Cost allocation:** to use these tags in AWS Cost Explorer / cost allocation reports you must additionally activate them as *cost allocation tags* in the Billing console (a one-time, account-level step); this CLI option does not do that for you.
 
 ```bash

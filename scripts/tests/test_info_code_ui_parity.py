@@ -79,11 +79,13 @@ UNRESOLVED_SEVERITY_SITES = {
         "'error' if fail_action == 'reject' else 'warning'",
     ): (1, "a conditional over two literals, neither of them 'info'"),
     (
-        "lib/idp_common_pkg/idp_common/dynamodb/service.py",
+        "lib/idp_common_pkg/idp_common/models.py",
         "iss.get('severity', 'info')",
     ): (
         1,
-        "deserialization, not declaration: it rebuilds a stored issue and takes "
+        "deserialize_issue_list, called by dynamodb/service.py to rebuild the "
+        "section and document lists. Deserialization, not declaration: it "
+        "rebuilds a stored issue and takes "
         "its code from data too, so it introduces no code this gate could "
         "enumerate. It can produce 'info' — and that is harmless here precisely "
         "because the code it carries was declared at one of the literal sites.",

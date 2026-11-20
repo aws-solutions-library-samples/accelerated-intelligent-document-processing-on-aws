@@ -1712,7 +1712,10 @@ AWS_PROFILE=default gh pr merge <pr> --repo <repo> --merge --delete-branch
 ```
 
 **On red CI checks.** The `check_shared_branch.py` hook refuses `gh pr merge` on
-a *concluded* failing check. Before overriding, establish whether the failure is
+a *concluded* failing check. It also refuses a merge into `develop` or `main` whose
+head whose checks have not all finished (`ALLOW_UNCHECKED_MERGE=1`), so the promotion PR
+waits for its run; a merge into `backlog/staging` is not judged on that, which is
+what lets fixer PRs merge there before CI. Before overriding, establish whether the failure is
 the PR's or inherited: compare the run's `createdAt` against `develop`'s last
 commit, and read the actual failing step. Every red check on a PR last night
 turned out to be a defect already fixed on `develop` that the branch had not

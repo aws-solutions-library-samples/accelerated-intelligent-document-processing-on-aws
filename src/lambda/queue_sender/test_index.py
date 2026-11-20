@@ -2540,9 +2540,9 @@ class TestPrefixMappingLookupFailureIsRecordedOnTheDocument:
         """The issue is shown to anyone who can see the document; an AWS error
         message can carry a role ARN, and with it an account id."""
         document = _issue_document()
-        secret = "arn:aws:sts::123456789012:assumed-role/x/y is not authorized"
+        aws_message = "arn:aws:sts::123456789012:assumed-role/x/y is not authorized"
         error = ClientError(
-            {"Error": {"Code": "AccessDeniedException", "Message": secret}},
+            {"Error": {"Code": "AccessDeniedException", "Message": aws_message}},
             "GetItem",
         )
         self._run(document, list_error=error)
