@@ -23,6 +23,7 @@ import uuid
 from typing import Optional
 
 import strands
+from pydantic import ValidationError
 
 from idp_common.synthesis import catalog as catalog_mod
 from idp_common.synthesis import engine, schema_author, schema_bridge
@@ -376,6 +377,22 @@ def set_processing_options_impl(
         return json.dumps(
             {"config_version": version_name, "refused": True, "error": str(e)}
         )
+    except ValidationError:
+        logger.error(
+            f"Profile '{version_name}' does not validate; options not set",
+            exc_info=True,
+        )
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "refused": False,
+                "error": (
+                    "This profile's stored configuration does not pass validation, "
+                    "so its options were not changed. Open it on Configuration > "
+                    "View/Edit Configuration to see what needs fixing."
+                ),
+            }
+        )
     except ValueError as e:
         return json.dumps(
             {"config_version": version_name, "refused": False, "error": str(e)}
@@ -416,6 +433,25 @@ def request_document_generation_impl(
         schema = json.loads(schema_text)
     except json.JSONDecodeError:
         return json.dumps({"error": "schema_text is not valid JSON"})
+
+    from idp_common.config.configuration_manager import ConfigurationManager
+    from idp_common.synthesis import bootstrap as bootstrap_mod
+
+    try:
+        bootstrap_mod.refuse_protected_profile(
+            config_version, config_manager=ConfigurationManager()
+        )
+    except bootstrap_mod.ProtectedProfileError as e:
+        return json.dumps({"enqueued": False, "refused": True, "reason": str(e)})
+    except Exception:
+        logger.error(f"Could not check profile '{config_version}'", exc_info=True)
+        return json.dumps(
+            {
+                "enqueued": False,
+                "refused": False,
+                "reason": "The profile could not be checked; try again.",
+            }
+        )
 
     job_id = uuid.uuid4().hex
     allowed = schema_bridge.field_names(schema)

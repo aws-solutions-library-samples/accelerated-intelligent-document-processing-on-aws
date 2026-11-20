@@ -118,7 +118,7 @@ ends the conversation.
    |---|---|---|
    | How many documents a file holds | one (an invoice, a W-2, a statement) · several (a loan packet, a bundle of forms) · one per page (a stack of scanned receipts) | **Section splitting** under Classification › *Advanced — known document shape*: `disabled`, `llm_determined` or `page` |
    | Whether a document can hold a long table | yes (a bank statement, a transaction log, an invoice with pages of line items) · no | **Extraction mode** under Extraction: `advanced` or `simple` |
-   | Whether to summarize each document | off unless you ask for summaries | **Summarization (Optional)**: `enabled` |
+   | Whether to summarize each document | off unless you ask for summaries | **Summarization (Optional)**: `enabled`, `true` or `false` |
 
    It asks one plain question only when it can't tell, such as *"Does each file
    hold one invoice, or can one file hold several documents?"* Simple extraction
