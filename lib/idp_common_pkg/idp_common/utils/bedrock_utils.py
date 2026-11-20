@@ -787,8 +787,11 @@ _BEDROCK_MODEL_OPERATIONS = frozenset(
 
 
 def _is_bedrock_server_error(error: BaseException) -> bool:
-    """Whether ``error`` is a Bedrock model call's ``ClientError`` for an HTTP 500,
-    502, 503 or 504 reply, whatever its code (#2036)."""
+    """Whether ``error`` is a Bedrock model call's ``ClientError`` whose status
+    :func:`~idp_common.bedrock.model_utils.http_server_error_status` reads as
+    retryable: an HTTP 500, 502, 503 or 504 reply whatever its code (#2036), or a
+    429 whose reply named no error type, so botocore made ``"429"`` the code
+    (#2112). A 429 with a named code is left to the name."""
     return (
         isinstance(error, botocore.exceptions.ClientError)
         and getattr(error, "operation_name", None) in _BEDROCK_MODEL_OPERATIONS
@@ -838,9 +841,10 @@ def async_exponential_backoff_retry[T, **P](
     keeps trying, because there is no burst to suppress that close to the wall and
     an attempt may still succeed. See :func:`_backoff_or_none`.
 
-    An HTTP 500, 502, 503 or 504 from a Bedrock model call is part of the default
-    code vocabulary: a caller that passes its own ``retryable_errors`` gets exactly
-    those codes and no 5xx rule (#2036)."""
+    An HTTP 500, 502, 503 or 504 from a Bedrock model call, and a bare ``"429"``
+    (:func:`_is_bedrock_server_error`), is part of the default code vocabulary: a
+    caller that passes its own ``retryable_errors`` gets exactly those codes and no
+    status rule (#2036, #2112)."""
     # A narrowed vocabulary turns the 5xx rule off with it.
     retries_server_errors = retryable_errors is None
     # Use defaults if not provided
