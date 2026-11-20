@@ -15,16 +15,25 @@ read. (The LLM emits `x-aws-idp-rule-type`; `to_policy_class` converts it. The
 `rule_classes` config key was renamed to `policy_classes` in v0.5.9.)
 """
 
+import contextlib
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, cast
+import re
+import secrets
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterator, List, Optional, cast
 
 from idp_common import bedrock, image
 from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.config.schema_constants import (
+    X_AWS_IDP_POLICY_GROUP,
+    X_AWS_IDP_POLICY_UPLOADS,
+)
 from idp_common.discovery.discovered_text import clean_rule_classes
 from idp_common.utils import extract_json_from_text
 from idp_common.utils.s3util import S3Util
@@ -52,6 +61,256 @@ MISSING_VERSION_MESSAGE = (
     "Rules discovery needs the configuration profile to save into: pass version=. "
     "There is no fallback to the active profile."
 )
+
+
+#: Longest policy group name accepted, after surrounding whitespace is removed.
+POLICY_GROUP_MAX_LENGTH = 64
+
+# A group name starts with a letter or digit and holds letters, digits, spaces,
+# underscores, hyphens and dots. It is shown back to the user and stored on the
+# policy class, and the class name is derived from it, so the alphabet is kept to
+# what survives that derivation recognisably.
+_POLICY_GROUP_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]*$")
+
+#: How long one rules-discovery save may hold a profile's save lease before
+#: another save may take it over. A save is one configuration read and one write
+#: (plus its revision), so this is far above what one needs; it bounds how long a
+#: save that died while holding the lease can block the next one.
+POLICY_SAVE_LEASE_SECONDS = 300
+
+#: How long a save waits for another save into the same profile to finish.
+POLICY_SAVE_LEASE_WAIT_SECONDS = 60
+
+
+def normalize_policy_group(value: Any) -> Optional[str]:
+    """Validate a user-named policy group, returning it normalised or None.
+
+    None, an empty string and whitespace mean "no group": the upload keeps the
+    per-upload class naming it has always had. Anything else must be a string of
+    at most :data:`POLICY_GROUP_MAX_LENGTH` characters matching
+    ``_POLICY_GROUP_PATTERN``; runs of whitespace are collapsed to one space.
+    Raises ``ValueError`` naming the rule otherwise. This is the one definition:
+    the upload resolver calls it to refuse a bad name before anything is
+    uploaded, and :class:`RulesDiscovery` calls it again before saving.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("policyGroup must be a string")
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+    if len(normalized) > POLICY_GROUP_MAX_LENGTH:
+        raise ValueError(
+            f"policyGroup must be at most {POLICY_GROUP_MAX_LENGTH} characters"
+        )
+    if not _POLICY_GROUP_PATTERN.match(normalized):
+        raise ValueError(
+            "policyGroup must start with a letter or digit and contain only "
+            "letters, digits, spaces, underscores, hyphens and dots"
+        )
+    return normalized
+
+
+def policy_group_key(group: str) -> str:
+    """The identity two group names are compared by: case and spacing ignored.
+
+    ``"NCCI Manual"`` and ``"ncci  manual"`` are the same group, so a chapter
+    uploaded with a differently-typed name still lands in the class the earlier
+    chapters built rather than silently starting a second one.
+    """
+    return " ".join(group.split()).casefold()
+
+
+def policy_group_class_name(group: str) -> str:
+    """The policy class name a group's first upload creates.
+
+    Deterministic, unlike ``_derive_class_name_from_key``'s per-upload random
+    suffix, so every upload in the group names the same class. The class is found
+    again by its stored group (``x-aws-idp-policy-group``), not by this name, so a
+    collision with an unrelated class only changes the name the group's class is
+    created under (``_2``), never which class later uploads append to.
+    """
+    sanitized = re.sub(r"[^A-Za-z0-9]+", "_", group).strip("_")
+    return sanitized or "policy_group"
+
+
+#: How a grouped upload changes its group's rules. ``append`` adds them (the
+#: default, and the only behaviour before superseding existed); ``replace``
+#: makes them the group's whole ruleset; ``supersede`` removes the rules the
+#: uploader named and adds the upload's. Rule identity is never inferred.
+POLICY_GROUP_MODE_APPEND = "append"
+POLICY_GROUP_MODE_REPLACE = "replace"
+POLICY_GROUP_MODE_SUPERSEDE = "supersede"
+POLICY_GROUP_MODES = (
+    POLICY_GROUP_MODE_APPEND,
+    POLICY_GROUP_MODE_REPLACE,
+    POLICY_GROUP_MODE_SUPERSEDE,
+)
+
+
+class PolicyGroupChangeRefused(ValueError):
+    """A grouped upload that cannot be applied to the profile as it stands.
+
+    The group is missing or carried by several classes, a superseded rule is
+    not in the group, or a replace or supersede extracted no rules. Raised by
+    :func:`check_policy_group_change` and the save. A ``ValueError``, so the
+    upload resolver answers it with a 400. It is deterministic, so the
+    discovery processor marks the job FAILED and does not hand the message back
+    to SQS: a retry would repeat the extraction and could apply a replace or
+    supersede the user has already seen fail, once the group changed.
+    """
+
+
+def normalize_policy_group_change(
+    policy_group: Optional[str], mode: Any, superseded_rules: Any
+) -> "tuple[str, List[str]]":
+    """Validate the shape of a group change, returning ``(mode, superseded_rules)``.
+
+    ``policy_group`` is already normalised (see :func:`normalize_policy_group`).
+    A missing or empty ``mode`` is ``append``. ``replace`` and ``supersede``
+    need a group; ``supersede`` needs at least one rule name and the others take
+    none. Rule names are exact (no trimming or case folding, because they are
+    matched against the group's rule names exactly) and duplicates are dropped
+    in order. Raises ``ValueError`` naming the argument otherwise. Whether the
+    group and the names exist is :func:`check_policy_group_change`'s question.
+    """
+    if mode is None or mode == "":
+        mode = POLICY_GROUP_MODE_APPEND
+    if not isinstance(mode, str) or mode not in POLICY_GROUP_MODES:
+        raise ValueError(
+            f"policyGroupMode must be one of {', '.join(POLICY_GROUP_MODES)}"
+        )
+    if superseded_rules is None:
+        superseded_rules = []
+    if not isinstance(superseded_rules, list) or not all(
+        isinstance(r, str) and r for r in superseded_rules
+    ):
+        raise ValueError("supersededRules must be a list of rule names")
+    names = list(dict.fromkeys(superseded_rules))
+    if mode != POLICY_GROUP_MODE_APPEND and not policy_group:
+        raise ValueError(f"policyGroupMode '{mode}' needs a policyGroup")
+    if mode == POLICY_GROUP_MODE_SUPERSEDE and not names:
+        raise ValueError(
+            "policyGroupMode 'supersede' needs supersededRules: name the group's "
+            "rules this upload supersedes"
+        )
+    if mode != POLICY_GROUP_MODE_SUPERSEDE and names:
+        raise ValueError("supersededRules applies only to policyGroupMode 'supersede'")
+    return mode, names
+
+
+def find_policy_group_class(
+    policy_classes: List[Dict[str, Any]], group: str
+) -> Optional[Dict[str, Any]]:
+    """The one policy class carrying ``group`` (by :func:`policy_group_key`), or None.
+
+    Raises ``ValueError`` when more than one class carries it, because there is
+    then no one class an upload into the group could change.
+    """
+    key = policy_group_key(group)
+    matches = [
+        pc
+        for pc in policy_classes
+        if isinstance(pc, dict)
+        and isinstance(pc.get(X_AWS_IDP_POLICY_GROUP), str)
+        and policy_group_key(pc[X_AWS_IDP_POLICY_GROUP]) == key
+    ]
+    if len(matches) > 1:
+        names = ", ".join(str(pc.get("x-aws-idp-policy-type") or "?") for pc in matches)
+        raise PolicyGroupChangeRefused(
+            f"Policy group '{group}' is carried by {len(matches)} policy classes "
+            f"({names}), so there is no one class to add this upload's rules to. "
+            f"Merge them, or remove the group from all but one, in Configuration "
+            f"→ Policy Schema, then run the upload again."
+        )
+    return matches[0] if matches else None
+
+
+def _rule_names(policy_class: Optional[Dict[str, Any]]) -> List[str]:
+    props = (policy_class or {}).get("rule_properties")
+    return list(props) if isinstance(props, dict) else []
+
+
+def check_policy_group_change(
+    policy_classes: List[Dict[str, Any]],
+    group: Optional[str],
+    mode: str,
+    superseded_rules: List[str],
+    version: str = "",
+) -> None:
+    """Refuse a ``replace`` or ``supersede`` that has nothing to act on.
+
+    Both need the group's class to exist, and every name in a ``supersede``
+    must be a rule the class holds now. A declared supersession that finds no
+    target would leave the user believing a contradiction was resolved when it
+    was not, so it is an error, never a no-op. The upload resolver calls this
+    before anything is uploaded (an HTTP 400), and the save calls it again under
+    its lease, because the group can change between the two. Raises
+    :class:`PolicyGroupChangeRefused`.
+    """
+    if mode == POLICY_GROUP_MODE_APPEND or not group:
+        return
+    where = f" in configuration profile '{version}'" if version else ""
+    target = find_policy_group_class(policy_classes, group)
+    if target is None:
+        raise PolicyGroupChangeRefused(
+            f"Policy group '{group}' does not exist{where}, so there are no rules "
+            f"to {mode}. Upload with Add to group to create it."
+        )
+    if mode == POLICY_GROUP_MODE_SUPERSEDE:
+        held = set(_rule_names(target))
+        missing = [r for r in superseded_rules if r not in held]
+        if missing:
+            raise PolicyGroupChangeRefused(
+                f"Policy group '{group}'{where} has no rule named "
+                f"{', '.join(repr(r) for r in missing)}, so nothing would supersede "
+                f"it. Choose the superseded rules from the group's current rules."
+            )
+
+
+def find_recorded_upload(
+    policy_classes: List[Dict[str, Any]], upload_id: Optional[str]
+) -> "Optional[tuple[Dict[str, Any], Dict[str, Any]]]":
+    """The ``(policy class, upload entry)`` that already records ``upload_id``.
+
+    A discovery job's id is its upload id, so a job whose save already landed
+    finds itself here when SQS delivers its message again; the save is then
+    skipped instead of adding the same rules a second time.
+    """
+    if not upload_id:
+        return None
+    for pc in policy_classes:
+        uploads = pc.get(X_AWS_IDP_POLICY_UPLOADS) if isinstance(pc, dict) else None
+        for entry in uploads if isinstance(uploads, list) else []:
+            if isinstance(entry, dict) and entry.get("uploadId") == upload_id:
+                return pc, entry
+    return None
+
+
+def policy_rule_sources(policy_class: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Which recorded upload supplied each rule of ``policy_class``.
+
+    Replays the class's upload record (``x-aws-idp-policy-uploads``) oldest
+    first: an upload's superseded rules stop being attributed to anyone, then its
+    own rules are attributed to it. Returns ``{rule name: {"uploadId",
+    "document", "savedAt"}}`` for the rules the class holds now; a rule with no
+    entry was not added by a recorded upload (added in the Policy Schema tab,
+    or saved before uploads were recorded).
+    """
+    sources: Dict[str, Dict[str, Any]] = {}
+    uploads = policy_class.get(X_AWS_IDP_POLICY_UPLOADS)
+    for entry in uploads if isinstance(uploads, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        for s in entry.get("superseded") or []:
+            if isinstance(s, dict):
+                sources.pop(str(s.get("rule")), None)
+        source = {k: entry.get(k) for k in ("uploadId", "document", "savedAt")}
+        for name in entry.get("rules") or []:
+            sources[str(name)] = source
+    held = set(_rule_names(policy_class))
+    return {name: src for name, src in sources.items() if name in held}
 
 
 def to_policy_class(rule_class: Dict[str, Any], unique_type: str) -> Dict[str, Any]:
@@ -234,6 +493,13 @@ class RulesDiscovery:
         # Non-fatal advisories raised by the last save (regex-less classes,
         # duplicated rule names). Surfaced in the discovery job's statusMessage.
         self._save_warnings: List[str] = []
+        # What the last grouped save did to its group: the mode, the rules it
+        # added and the rules it superseded (with who supplied them). Surfaced in
+        # the discovery job's statusMessage.
+        self._group_change: Dict[str, Any] = {}
+        # True when the last save found this upload already recorded (a repeated
+        # delivery of the job) and wrote nothing.
+        self._already_saved = False
 
         if config is not None:
             self.config = config
@@ -261,7 +527,13 @@ class RulesDiscovery:
         self.bedrock_client = bedrock.BedrockClient(region=self.region)
 
     def discovery_rules_from_document(
-        self, input_bucket: str, input_prefix: str
+        self,
+        input_bucket: str,
+        input_prefix: str,
+        policy_group: Optional[str] = None,
+        policy_group_mode: Optional[str] = None,
+        superseded_rules: Optional[List[str]] = None,
+        upload_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Extract rules from a policy document stored in S3.
@@ -272,6 +544,18 @@ class RulesDiscovery:
         Args:
             input_bucket: S3 bucket name
             input_prefix: S3 key for the policy document
+            policy_group: Optional user-named policy group. Uploads naming the
+                same group accumulate into one policy class: the first creates
+                it, later ones append their rules to it (see
+                ``_save_rules_to_config``). Without one, each upload creates its
+                own class, as it always has.
+            policy_group_mode: How a grouped upload changes the group's rules:
+                ``append`` (default), ``replace`` or ``supersede``. See
+                :data:`POLICY_GROUP_MODES`.
+            superseded_rules: For ``supersede``, the exact names of the group's
+                rules this upload supersedes.
+            upload_id: Identifies this upload in the class's upload record
+                (the discovery job id). A fresh id when omitted.
 
         Returns:
             Dict with status and extracted rules
@@ -285,8 +569,25 @@ class RulesDiscovery:
         # Refuse before the model runs rather than after: the save is what needs it.
         if self.config_manager and not self.version:
             raise ValueError(MISSING_VERSION_MESSAGE)
+        group = normalize_policy_group(policy_group)
+        mode, superseded = normalize_policy_group_change(
+            group, policy_group_mode, superseded_rules
+        )
 
         try:
+            # Before the model runs: a job already saved (a repeated delivery)
+            # or a change the profile cannot take costs no extraction. The save
+            # checks both again under its lease.
+            if self.config_manager and self.version:
+                current = self._current_policy_classes(self.version)
+                recorded = find_recorded_upload(current, upload_id)
+                if recorded:
+                    return self._already_saved_result(*recorded)
+                if group:
+                    check_policy_group_change(
+                        current, group, mode, superseded, self.version
+                    )
+
             file_in_bytes = S3Util.get_bytes(bucket=input_bucket, key=input_prefix)
             file_extension = os.path.splitext(input_prefix)[1].lower()[1:]
 
@@ -304,15 +605,30 @@ class RulesDiscovery:
             # Override the model-assigned rule type with a filename-derived
             # name so each uploaded document produces a distinguishable policy
             # class in the UI (e.g. "NCCI_Medicare_Policy_ab12cd34").
-            derived_name = self._derive_class_name_from_key(input_prefix)
+            # A grouped upload is named after its group instead, so every upload
+            # in the group names the same class.
+            derived_name = (
+                policy_group_class_name(group)
+                if group
+                else self._derive_class_name_from_key(input_prefix)
+            )
             if derived_name:
                 for rc in extracted_rules:
                     rc["x-aws-idp-rule-type"] = derived_name
 
             # Save to configuration if config_manager is available
             self._save_warnings = []
+            self._group_change = {}
+            self._already_saved = False
             if self.config_manager:
-                self._save_rules_to_config(extracted_rules)
+                self._save_rules_to_config(
+                    extracted_rules,
+                    policy_group=group,
+                    policy_group_mode=mode,
+                    superseded_rules=superseded,
+                    upload_id=upload_id,
+                    document=input_prefix,
+                )
 
             # Warnings ride along on the result so the calling Lambda can put
             # them in the job's statusMessage. A CloudWatch WARNING alone does
@@ -321,13 +637,69 @@ class RulesDiscovery:
                 "status": "SUCCESS",
                 "rules": extracted_rules,
                 "warnings": list(self._save_warnings),
+                "groupChange": dict(self._group_change),
+                "alreadySaved": self._already_saved,
             }
 
+        except PolicyGroupChangeRefused as e:
+            # Kept as its own type, not re-wrapped: the caller must be able to
+            # tell a refusal (final) from a failure (worth a retry).
+            logger.warning(f"Refusing the policy group change for {input_prefix}: {e}")
+            raise
         except Exception as e:
             logger.error(
                 f"Error extracting rules from {input_prefix}: {e}", exc_info=True
             )
             raise Exception(f"Failed to extract rules from {input_prefix}: {str(e)}")
+
+    def _current_policy_classes(self, version: str) -> List[Dict[str, Any]]:
+        """The profile's policy classes, read raw (as the upload resolver reads them).
+
+        Raw, because this read is outside the save lease: the model-backed read
+        can migrate a legacy profile and write it back, which only the save may
+        do. Group classes and upload records are both newer than any legacy
+        format, so a raw read sees every one of them.
+        """
+        raw = self.config_manager.get_raw_configuration("Config", version=version)
+        classes = (raw or {}).get("policy_classes") if isinstance(raw, dict) else None
+        return (
+            [c for c in classes if isinstance(c, dict)]
+            if isinstance(classes, list)
+            else []
+        )
+
+    def _already_saved_result(
+        self, policy_class: Dict[str, Any], entry: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """The result of a job whose save already landed: what it saved, unchanged."""
+        class_name = str(policy_class.get("x-aws-idp-policy-type") or "")
+        rules = [str(r) for r in entry.get("rules") or []]
+        message = (
+            f"This upload's rules were already saved to policy class '{class_name}' "
+            f"(upload {entry.get('uploadId')}); a repeated delivery of the job saved "
+            f"nothing again."
+        )
+        logger.warning(message)
+        self._save_warnings = [message]
+        self._already_saved = True
+        self._group_change = {
+            "mode": entry.get("mode") or POLICY_GROUP_MODE_APPEND,
+            "rules": rules,
+            "superseded": list(entry.get("superseded") or []),
+        }
+        return {
+            "status": "SUCCESS",
+            "rules": [
+                {
+                    "x-aws-idp-policy-type": class_name,
+                    "x-aws-idp-rule-type": class_name,
+                    "rule_properties": {r: {} for r in rules},
+                }
+            ],
+            "warnings": [message],
+            "groupChange": dict(self._group_change),
+            "alreadySaved": True,
+        }
 
     def discovery_rules_from_document_local(self, file_path: str) -> Dict[str, Any]:
         """
@@ -900,9 +1272,6 @@ class RulesDiscovery:
         fresh name (the append-only merge logic in ``_save_rules_to_config``
         then appends a new policy class entry per upload).
         """
-        import re
-        import secrets
-
         filename = os.path.basename(s3_key or "")
         stem = os.path.splitext(filename)[0]
         stem = re.sub(r"^\d{8}_\d{6}_", "", stem)
@@ -919,17 +1288,123 @@ class RulesDiscovery:
             return f"policy_{suffix}"
         return f"{sanitized}_{suffix}"
 
-    def _save_rules_to_config(self, rules: List[Dict[str, Any]]) -> List[str]:
+    @contextlib.contextmanager
+    def _policy_save_lease(self, version: str) -> Iterator[None]:
+        """Hold the profile's rules-discovery save lease for one read-modify-write.
+
+        ``_save_rules_to_config`` reads the profile, adds to ``policy_classes`` and
+        writes the whole profile back, so two discovery jobs saving into one profile
+        at once would each write a list missing the other's rules — for two
+        chapters of one policy group, a chapter's rules silently gone. The lease is
+        one item in the configuration table, created with a conditional put that
+        succeeds only when no unexpired lease exists, and deleted on exit only by
+        its holder. A save that cannot take it within
+        :data:`POLICY_SAVE_LEASE_WAIT_SECONDS` fails the job rather than writing
+        unguarded. A holder that died is taken over once its lease is older than
+        :data:`POLICY_SAVE_LEASE_SECONDS`.
+
+        It serialises rules-discovery saves only. The profile's other writers do
+        not take it — a Policy Schema edit saved from the UI, a classes-discovery
+        save, and the upload resolver's Replace clear — so one of those overlapping
+        a rules save into the same profile can still overwrite one with the other.
+        """
+        from botocore.exceptions import ClientError
+
+        table = self.config_manager.table
+        key = {"Configuration": f"PolicyDiscoverySaveLease#{version}"}
+        token = secrets.token_hex(16)
+        deadline = time.monotonic() + POLICY_SAVE_LEASE_WAIT_SECONDS
+        delay = 0.05
+        while True:
+            now = int(time.time())
+            try:
+                table.put_item(
+                    Item={
+                        **key,
+                        "LeaseToken": token,
+                        "LeaseExpiresAt": now + POLICY_SAVE_LEASE_SECONDS,
+                    },
+                    ConditionExpression=(
+                        "attribute_not_exists(Configuration) OR LeaseExpiresAt < :now"
+                    ),
+                    ExpressionAttributeValues={":now": now},
+                )
+                break
+            except ClientError as e:
+                if (
+                    e.response.get("Error", {}).get("Code")
+                    != "ConditionalCheckFailedException"
+                ):
+                    raise
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Configuration profile '{version}' has been held by another "
+                    f"Policy Discovery save for over {POLICY_SAVE_LEASE_WAIT_SECONDS}s, "
+                    f"so this job's rules were not saved. Either another job is still "
+                    f"saving, or one stopped while saving and its hold expires "
+                    f"{POLICY_SAVE_LEASE_SECONDS}s after it began. Run the upload again."
+                )
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
+        try:
+            yield
+        finally:
+            try:
+                table.delete_item(
+                    Key=key,
+                    ConditionExpression="LeaseToken = :token",
+                    ExpressionAttributeValues={":token": token},
+                )
+            except ClientError as e:
+                # Expired and taken over by another save: that save owns it now.
+                logger.warning(f"Could not release the policy save lease: {e}")
+
+    def _save_rules_to_config(
+        self,
+        rules: List[Dict[str, Any]],
+        policy_group: Optional[str] = None,
+        policy_group_mode: Optional[str] = None,
+        superseded_rules: Optional[List[str]] = None,
+        upload_id: Optional[str] = None,
+        document: Optional[str] = None,
+    ) -> List[str]:
         """
         Save extracted rules to the configuration as policy_classes.
 
         Saves to the versioned configuration record ("Config#<version>") so the
-        UI's version-aware Policy Schema tab displays them. Merges with
-        existing policy_classes by x-aws-idp-rule-type, replacing rules of the
-        same type.
+        UI's version-aware Policy Schema tab displays them.
+
+        Without ``policy_group`` the save is append-only by class: each rule class
+        becomes a new policy class, its type name suffixed (``_2``, ...) if it
+        collides with an existing one.
+
+        With ``policy_group``, every rule from every rule class goes into the ONE
+        policy class carrying that group (``x-aws-idp-policy-group``, compared by
+        :func:`policy_group_key`). The first upload creates it. What a later
+        upload does to it is ``policy_group_mode``:
+
+        * ``append`` (default): the upload's rules are added; a rule whose name
+          the class already holds is added under a suffixed name (``_2``, ...)
+          and reported, never merged into or replacing the earlier one.
+        * ``replace``: the upload's rules become the class's whole ruleset.
+        * ``supersede``: the rules named in ``superseded_rules`` are removed and
+          the upload's rules are added; one with a superseded rule's name takes
+          that name, others append as above.
+
+        In every mode the class keeps its name, description, regexes and other
+        keys. Superseded rules are removed from the active ruleset (earlier
+        revisions of the profile still hold them), and the class's upload record
+        (``x-aws-idp-policy-uploads``) gains an entry naming this upload, the
+        rules it supplied and the rules it superseded with the upload that had
+        supplied each.
 
         Args:
             rules: List of rule_class objects to save into policy_classes
+            policy_group: Normalised policy group name, or None
+            policy_group_mode: ``append``, ``replace`` or ``supersede``
+            superseded_rules: Exact rule names a ``supersede`` removes
+            upload_id: This upload's id in the upload record (a fresh one if None)
+            document: The uploaded document's key, recorded by file name
         """
         version = getattr(self, "version", None)
         if not version:
@@ -937,7 +1412,33 @@ class RulesDiscovery:
             # into whichever profile documents are currently processed under, which
             # is not a profile anyone chose for this run.
             raise ValueError(MISSING_VERSION_MESSAGE)
+        group = normalize_policy_group(policy_group)
+        mode, superseded = normalize_policy_group_change(
+            group, policy_group_mode, superseded_rules
+        )
+        upload = {
+            "uploadId": upload_id or secrets.token_hex(8),
+            "document": os.path.basename(document or "") or None,
+            "savedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "mode": mode,
+        }
 
+        with self._policy_save_lease(version):
+            return self._save_rules_to_config_locked(
+                rules, version, group, mode, superseded, upload
+            )
+
+    def _save_rules_to_config_locked(
+        self,
+        rules: List[Dict[str, Any]],
+        version: str,
+        group: Optional[str],
+        mode: str = POLICY_GROUP_MODE_APPEND,
+        superseded: Optional[List[str]] = None,
+        upload: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        """The read-modify-write of ``_save_rules_to_config``, under its lease."""
+        upload = dict(upload or {"mode": mode})
         existing_item_raw = self.config_manager.get_configuration(
             "Config", version=version
         )
@@ -946,6 +1447,19 @@ class RulesDiscovery:
         existing_policy_classes = []
         if existing_item and existing_item.policy_classes:
             existing_policy_classes = list(existing_item.policy_classes)
+
+        # A delivery of a job whose save already landed writes nothing: without
+        # this, SQS redelivering a saved job adds its rules (as `_2` copies) and
+        # its record entry a second time.
+        # A save without a job id records a fresh random id, which never matches.
+        recorded = find_recorded_upload(existing_policy_classes, upload.get("uploadId"))
+        if recorded:
+            self._already_saved_result(*recorded)
+            name = str(recorded[0].get("x-aws-idp-policy-type") or "")
+            for rule in rules:
+                rule["x-aws-idp-policy-type"] = name
+                rule["x-aws-idp-rule-type"] = name
+            return [name] * len(rules)
 
         # Reshape each discovered rule class into the JSON-Schema-compatible
         # shape the UI's Policy Schema tab expects:
@@ -957,22 +1471,44 @@ class RulesDiscovery:
         existing_types = {
             rc.get("x-aws-idp-policy-type") for rc in existing_policy_classes
         }
-        assigned_types: List[str] = []
-        for new_rule in rules:
-            new_type = (
-                new_rule.get("x-aws-idp-rule-type")
-                or new_rule.get("x-aws-idp-policy-type")
-                or "policy_rules"
+        group_warnings: List[str] = []
+        self._group_change = {}
+        if group:
+            # Checked again here, under the lease, because the group can have
+            # changed since the upload resolver checked it.
+            check_policy_group_change(
+                existing_policy_classes, group, mode, superseded or [], version
             )
-            unique_type = new_type
-            suffix = 2
-            while unique_type in existing_types:
-                unique_type = f"{new_type}_{suffix}"
-                suffix += 1
-            assigned_types.append(unique_type)
+            assigned_types, group_warnings, self._group_change = self._merge_into_group(
+                rules,
+                group,
+                existing_policy_classes,
+                existing_types,
+                mode,
+                superseded or [],
+                upload,
+            )
+        else:
+            assigned_types = []
+            for new_rule in rules:
+                new_type = (
+                    new_rule.get("x-aws-idp-rule-type")
+                    or new_rule.get("x-aws-idp-policy-type")
+                    or "policy_rules"
+                )
+                unique_type = new_type
+                suffix = 2
+                while unique_type in existing_types:
+                    unique_type = f"{new_type}_{suffix}"
+                    suffix += 1
+                assigned_types.append(unique_type)
 
-            existing_policy_classes.append(to_policy_class(new_rule, unique_type))
-            existing_types.add(unique_type)
+                new_class = to_policy_class(new_rule, unique_type)
+                new_class[X_AWS_IDP_POLICY_UPLOADS] = [
+                    {**upload, "rules": _rule_names(new_class), "superseded": []}
+                ]
+                existing_policy_classes.append(new_class)
+                existing_types.add(unique_type)
 
         if not existing_item:
             existing_item = IDPConfig()
@@ -989,7 +1525,9 @@ class RulesDiscovery:
 
         logger.info(
             f"Saved {len(rules)} rule classes to Config#{version}.policy_classes "
-            f"(total: {len(existing_policy_classes)}, assigned: {assigned_types})"
+            f"(total: {len(existing_policy_classes)}, assigned: {assigned_types}"
+            + (f", policy group: {group!r}, mode: {mode}" if group else "")
+            + ")"
         )
 
         # Report the two states this save can silently create. Both are checked
@@ -1001,10 +1539,131 @@ class RulesDiscovery:
             for w in (
                 self._warn_if_no_regex(existing_policy_classes, version),
                 self._warn_if_rules_duplicated(existing_policy_classes, rules),
+                *group_warnings,
             )
             if w
         ]
         return assigned_types
+
+    @staticmethod
+    def _merge_into_group(
+        rules: List[Dict[str, Any]],
+        group: str,
+        policy_classes: List[Dict[str, Any]],
+        existing_types: set,
+        mode: str = POLICY_GROUP_MODE_APPEND,
+        superseded: Optional[List[str]] = None,
+        upload: Optional[Dict[str, Any]] = None,
+    ) -> "tuple[List[str], List[str], Dict[str, Any]]":
+        """Put every rule in ``rules`` into the group's one policy class.
+
+        Mutates ``policy_classes`` in place: the group's class is updated, or
+        created and appended when no class carries the group yet (``append``
+        only; :func:`check_policy_group_change` has refused the other modes).
+        Returns the class name assigned to each rule class (the same name for
+        all of them), any warnings to report, and a summary of the change for
+        the job's status: ``{"mode", "rules", "superseded"}``.
+        """
+        superseded = list(superseded or [])
+        upload = dict(upload or {"mode": mode})
+        target = find_policy_group_class(policy_classes, group)
+
+        incoming: List[tuple] = []  # (rule name, reshaped rule definition)
+        for rc in rules:
+            reshaped = to_policy_class(rc, "_")
+            incoming.extend((reshaped["rule_properties"]).items())
+
+        if mode != POLICY_GROUP_MODE_APPEND and not incoming:
+            # Replacing or superseding with nothing would delete the group's
+            # rules on the strength of an extraction that found none, which is
+            # far likelier to be a failed extraction than an intended repeal.
+            raise PolicyGroupChangeRefused(
+                f"This upload produced no rules, so policy group '{group}' was "
+                f"left unchanged rather than having rules {mode}d by nothing."
+            )
+
+        if target is not None:
+            props = target.get("rule_properties")
+            if not isinstance(props, dict):
+                props = {}
+            target["rule_properties"] = props
+            class_name = str(
+                target.get("x-aws-idp-policy-type")
+                or target.get("x-aws-idp-rule-type")
+                or target.get("$id")
+            )
+        else:
+            base = policy_group_class_name(group)
+            class_name = base
+            suffix = 2
+            while class_name in existing_types:
+                class_name = f"{base}_{suffix}"
+                suffix += 1
+            first = next((rc for rc in rules if rc.get("description")), None)
+            target = to_policy_class(
+                {"description": first.get("description")} if first else {},
+                class_name,
+            )
+            target[X_AWS_IDP_POLICY_GROUP] = group
+            props = target["rule_properties"]
+            policy_classes.append(target)
+            existing_types.add(class_name)
+
+        # Who supplied each rule, read before anything is removed, so the record
+        # of what this upload superseded says whose rule it was.
+        sources = policy_rule_sources(target)
+        if mode == POLICY_GROUP_MODE_REPLACE:
+            removing = list(props)
+        elif mode == POLICY_GROUP_MODE_SUPERSEDE:
+            removing = superseded
+        else:
+            removing = []
+        superseded_record = []
+        for name in removing:
+            props.pop(name)
+            src = sources.get(name) or {}
+            superseded_record.append(
+                {
+                    "rule": name,
+                    "uploadId": src.get("uploadId"),
+                    "document": src.get("document"),
+                }
+            )
+
+        renamed: List[str] = []
+        added: List[str] = []
+        for name, definition in incoming:
+            unique = name
+            suffix = 2
+            while unique in props:
+                unique = f"{name}_{suffix}"
+                suffix += 1
+            if unique != name:
+                renamed.append(f"{name} → {unique}")
+            props[unique] = definition
+            added.append(unique)
+
+        uploads = target.get(X_AWS_IDP_POLICY_UPLOADS)
+        if not isinstance(uploads, list):
+            uploads = []
+        uploads.append({**upload, "rules": added, "superseded": superseded_record})
+        target[X_AWS_IDP_POLICY_UPLOADS] = uploads
+
+        warnings: List[str] = []
+        if renamed:
+            shown = ", ".join(renamed[:10])
+            more = f" (and {len(renamed) - 10} more)" if len(renamed) > 10 else ""
+            message = (
+                f"{len(renamed)} rule name(s) from this upload already existed in "
+                f"policy group '{group}' and were added alongside the existing rule "
+                f"under a new name, not in place of it: {shown}{more}. Each copy is "
+                f"evaluated on every document. If they are the same rule, remove one "
+                f"in Configuration → Policy Schema, or upload again superseding it."
+            )
+            logger.warning(message)
+            warnings.append(message)
+        change = {"mode": mode, "rules": added, "superseded": superseded_record}
+        return [class_name] * len(rules), warnings, change
 
     @staticmethod
     def _warn_if_no_regex(

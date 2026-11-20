@@ -198,13 +198,25 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
 The resolution order is:
 
 1. `--region` on the subcommand, if given.
-2. Otherwise boto3's own chain: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
-   `region` configured for the selected `--profile` (or `AWS_PROFILE`), then EC2
-   instance metadata.
+2. Otherwise boto3's own chain: `AWS_DEFAULT_REGION`, then the `region`
+   configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
+   read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
+3. Otherwise `AWS_REGION`, for a shell that sets only that variable, as many
+   environments and other AWS SDKs do. This step applies to the commands that
+   work out the Region before calling AWS and pass it on: the configuration
+   commands that read a stack, `test-result`, `test-compare`, `abort-test-run`,
+   `discover-multidoc`, `deploy` (including the upload of a local
+   `--custom-config` and the `--terraform --from-code` build), `publish`, and
+   `rerun-inference` (and its alias `reprocess`). Other commands rely on boto3
+   alone, so in such a shell they need `--region` or `AWS_DEFAULT_REGION`.
 
-Nothing substitutes a hardcoded region for the configuration commands, so a
-command run with no `--region` and no region resolvable from the environment fails
-with boto3's `NoRegionError` rather than guessing.
+No command substitutes a hardcoded Region. A command run with no `--region` and
+no Region resolvable from the environment fails rather than guessing: the Test
+Studio commands, `discover-multidoc`, `deploy`, `publish` and `rerun-inference`
+say the Region could not be determined (`publish` says a Region is required), and
+the others fail with boto3's `NoRegionError` ("You must specify
+a region"). `remove-deleted-stack-resources` is the exception: it sweeps several
+Regions, and its `--region` defaults to `us-west-2`.
 
 `--region` applies to every AWS call a command makes, not only to the
 CloudFormation lookup that resolves a resource's name. That distinction is the
@@ -225,6 +237,15 @@ report success. It therefore covers
 A whole-tree check (`scripts/tests/test_config_region_threading.py`) asserts that
 no code outside a Lambda builds a configuration client without a region, so a new
 command cannot reintroduce the gap.
+
+The configuration commands that read a stack (`config-download`, `config-upload`,
+`config-activate` and the rest) also set both `AWS_REGION` and
+`AWS_DEFAULT_REGION` to the Region the stack was found in, for the rest of the
+command. A model setting the configuration leaves out resolves to that Region's
+inference profile (see [EU Region Model Support](eu-region-model-support.md)), and
+that lookup reads `AWS_REGION` first, so a shell whose `AWS_REGION` names another
+Region would otherwise get that Region's profiles, such as `us.` ids in a file
+downloaded from an EU stack.
 
 Three commands take no `--region` because they make no AWS calls at all:
 `config-create`, `config-validate` and `validate-manifest`.
@@ -383,6 +404,7 @@ idp-cli deploy [OPTIONS]
 - `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
 - `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
+- `--terraform-state`: `local` (default) keeps the Terraform state in `terraform.tfstate` in `--terraform-dir`; `s3` keeps it in an encrypted, versioned S3 bucket `idp-tf-<stack-name>-<account>-<region>` that the CLI creates if missing (and never deletes), locked with the DynamoDB table `idp-tf-lock-<stack-name>`. A directory that already holds a local state is refused with `s3`; moving it is not supported yet. Used with `--terraform`; refused without it. See [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3)
 
 **Note:** `--from-code`, `--template-url`, and `--template-file` are mutually exclusive. Use `--from-code` for development/testing from local source, `--template-url` for production deployments from a pre-published template, and `--template-file` to deploy a locally-built template.
 
@@ -531,6 +553,7 @@ Notes and caveats:
 - **Format:** comma-separated `key=value` pairs. Tag keys may contain spaces and the characters `. : / + - _` (a value may itself contain `=`; only the first `=` splits key from value). Commas inside a tag value are not supported.
 - **Update behavior:** re-running `deploy` with `--tags` **replaces** the stack's entire tag set with what you pass. Omitting `--tags` on an update **preserves** the existing tags (unlike a bare AWS API call, which would clear them).
 - **Not every resource type accepts propagated tags.** CloudFormation propagation is best-effort — a small number of resource types (e.g. some Cognito, CloudFront, and custom resources) do not receive stack tags. This is an AWS platform limitation, not a configuration option.
+- **With `--terraform`:** the Terraform module applies the tags to every taggable resource the same way; omitting `--tags` keeps the tags of the previous deploy from the same `--terraform-dir`. See [Tagging the deployment](terraform.md#tagging-the-deployment).
 - **Cost allocation:** to use these tags in AWS Cost Explorer / cost allocation reports you must additionally activate them as *cost allocation tags* in the Billing console (a one-time, account-level step); this CLI option does not do that for you.
 
 ```bash
@@ -655,11 +678,11 @@ idp-cli delete [OPTIONS]
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume during the delete (used with `--terraform`)
 
 **S3 Bucket Behavior:**
-- **LoggingBucket**: `DeletionPolicy: Retain` - Always kept (unless using `--force-delete-all`)
-- **All other buckets**: `DeletionPolicy: RetainExceptOnCreate` - Deleted if empty
-- CloudFormation can ONLY delete S3 buckets if they're empty
+- **LoggingBucket, ConfigurationBucket, TestSetBucket and WebUIBucket**: `DeletionPolicy: Retain` - kept when the stack is deleted (unless using `--force-delete-all`)
+- **The other data buckets** (input, output, working, discovery, reporting, evaluation baseline, MCP content and fine-tuning data): `DeletionPolicy: RetainExceptOnCreate` - also kept when the stack is deleted; CloudFormation deletes them only when the stack's own creation fails and rolls back. The API Gateway hosting staging bucket is the exception: it is deleted with the stack
 - Use `--empty-buckets` to automatically empty buckets before deletion
 - Use `--force-delete-all` to delete ALL remaining resources after CloudFormation completes
+- The KMS key that encrypts the buckets is retained too, and costs about $1 a month until you schedule its deletion; see [The retained KMS key](#the-retained-kms-key)
 
 **Force Delete All Behavior:**
 
@@ -699,6 +722,10 @@ from one that deleted cleanly.
 - All CloudWatch Log Groups (retained by CloudFormation)
 - All S3 buckets including LoggingBucket
 - Handles nested stack resources automatically
+
+The retained KMS key is **not** deleted by `--force-delete-all`; the cleanup summary
+names it and prints the `aws kms schedule-key-deletion` command. See
+[The retained KMS key](#the-retained-kms-key) below.
 
 **Examples:**
 
@@ -871,6 +898,41 @@ Proceeding with stack deletion...
 
 **Note:** CREATE operations cannot be cancelled directly - they must complete or roll back naturally. UPDATE operations can be cancelled immediately.
 
+#### The retained KMS key
+
+A stack deployed with a key of your own ([`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md))
+created no key, so nothing in this section applies to it: `delete` names the supplied
+key, says it is yours and that the retained data stays encrypted with it, and prints
+no deletion steps.
+
+The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
+data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would
+leave every object in the retained buckets unreadable once its deletion window ended.
+Its alias, `alias/<stack-name>-customer-encryption-key`, is deleted with the stack, so
+a new stack with the same name creates its own key and alias. The key's description
+names the stack it belonged to.
+
+A retained key costs about $1 a month, rising to at most $3 a month once its yearly
+automatic rotation has run twice. A key scheduled for deletion is not charged. `delete`
+does not delete it, with or without `--force-delete-all`, because scheduling a key's
+deletion makes everything it encrypted unreadable, including data copied out of the
+buckets with its encryption intact. Once you no longer need any of the retained data:
+
+1. Find the key id. After a `--force-delete-all` or Terraform delete the CLI prints it.
+   Otherwise it is the `KMSMasterKeyID` of a retained bucket's default encryption
+   (`aws s3api get-bucket-encryption --bucket <retained-bucket-name>`), or the physical
+   id of `CustomerManagedEncryptionKey` in
+   `aws cloudformation list-stack-resources --stack-name <stack-id>`, which works for a
+   deleted stack when given its stack id.
+2. Delete the retained buckets, or make sure nothing you still need is encrypted with
+   the key.
+3. Schedule the key's deletion. The waiting period is 7 to 30 days, and
+   `aws kms cancel-key-deletion` undoes it until then:
+
+   ```bash
+   aws kms schedule-key-deletion --key-id <key-id> --pending-window-in-days 7
+   ```
+
 #### Deleting a Terraform deployment
 
 `delete --terraform` removes a Terraform deployment, keeping the resources CloudFormation would retain. See [Terraform deployments](#terraform-deployments-1) below and [Terraform Deployment](./terraform.md#deleting).
@@ -897,7 +959,7 @@ With `--from-code`, `deploy --terraform` first builds and publishes the template
 
 When the module comes from the pointer, idp-cli downloads the zip to read its `idp-terraform.json` and refuses it if its SHA-256 differs from the pointer's `sha256`. That is a consistency check of the copy idp-cli reads, against the manifest beside it: Terraform downloads the module again itself, and that download is not checked. A module named with `--terraform-module-url` is not checked at all, because there is no pointer to compare it with; to verify an archive, see [Verifying the archive](./terraform.md#verifying-the-archive).
 
-The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, the values of the earlier deploy, remembered by CloudFormation parameter name in `idp-cli-parameters.json`, are kept and the new `--parameters` applied over them. Only values that were passed are remembered, not the defaults in effect, so a parameter never passed takes the new module's default: unlike a CloudFormation update, which keeps the previous value of every parameter it is not given, an upgrade to a release that changed a default applies the new one. Pass the old value explicitly to keep it (see [Upgrading](./terraform.md#upgrading)). An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
+The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, as on a CloudFormation update, every parameter not passed keeps the value the deployment has, whether it was set or defaulted, and the new `--parameters` are applied over them; a parameter new in the release takes its default. The values are read from the deployment's label stack, which records each parameter's value in effect, so a second operator deploying from another directory against the same state gets the same settings, and a deployment made by an earlier `idp-cli` keeps its defaulted values on its first upgrade. `NoEcho` values, which the label stack leaves out, come from the directory's `idp-cli-parameters.json`, which after each apply records every parameter's value in effect by CloudFormation parameter name. Before the plan the command lists the kept values that differ from the new module's defaults and the new parameters that took their defaults. Without a label stack (`enable_cfn_stack_label = false`), a directory an earlier `idp-cli` wrote holds only the passed values, so the parameters never passed take the new defaults, and the command warns, naming each whose default changed (see [Upgrading](./terraform.md#upgrading)). An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
 
 `delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained, plus the log groups AWS services created for the deployment's resources, which the destroy leaves (see [Deleting](./terraform.md#deleting)). `--force-delete-all` does not apply.
 
@@ -1042,13 +1104,14 @@ idp-cli run-inference [OPTIONS]
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
 - `--batch-id`: Custom batch ID (auto-generated if omitted, ignored with --test-set)
-- `--batch-prefix`: Prefix for auto-generated batch ID (default: `cli-batch`)
+- `--batch-prefix`: Prefix for auto-generated batch ID (default: `cli-batch`). A generated batch ID is `<prefix>-<YYYYMMDD-HHMMSS>-<8 hex characters>`: the UTC time it was created, then a random suffix, so two batches started with the same prefix in the same second get different IDs. Pass `--batch-id` to choose the ID yourself.
 - `--file-pattern`: File pattern for directory/S3 scanning (default: `*.pdf`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
+- `--attribute KEY=VALUE` (repeatable) and `--attributes-file <json>`: [Document attributes](./document-attributes.md) stored with every document and returned with its results. Values given with `--attribute` are strings and override the file's value for the same key; a manifest's `attributes` column overrides both per row. An invalid set is refused before anything is uploaded. Not accepted with `--test-set`
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
@@ -1202,7 +1265,7 @@ idp-cli reprocess \
 idp-cli reprocess \
     --stack-name my-stack \
     --step extraction \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --monitor
 
 # Automated rerun (skip confirmation - perfect for CI/CD)
@@ -1213,6 +1276,11 @@ idp-cli reprocess \
     --force \
     --monitor
 ```
+
+**Documents that could not be queued** are listed after the summary, one per line,
+with the reason. `Document not found` means the stack's tracking table has no record
+for that key. Any other failure — a stack with no tracking table, a DynamoDB error,
+a document the malware gate refuses — is printed as itself.
 
 **What Gets Cleared:**
 
@@ -1263,7 +1331,7 @@ idp-cli status [OPTIONS]
 
 The `--batch-id` option performs a PK substring search in the DynamoDB tracking table. This means:
 - It searches for all documents where the PK (Primary Key) contains your search string
-- You can search for exact batch IDs: `cli-batch-20251015-143000`
+- You can search for exact batch IDs: `cli-batch-20251015-143000-7f3a9c1e`
 - You can search for partial matches: `batch-123` finds all documents with "batch-123" in their path
 - You can search across multiple batches: `invoice` finds all documents with "invoice" in their name
 
@@ -1273,7 +1341,7 @@ The `--batch-id` option performs a PK substring search in the DynamoDB tracking 
 # Search for all documents in a batch (PK substring search)
 idp-cli status \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000
+    --batch-id cli-batch-20251015-143000-7f3a9c1e
 
 # Search for documents across batches with partial match
 idp-cli status \
@@ -1505,13 +1573,13 @@ idp-cli download-results [OPTIONS]
 # Download all results
 idp-cli download-results \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --output-dir ./results/
 
 # Download only extraction results
 idp-cli download-results \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --output-dir ./results/ \
     --file-types sections
 
@@ -1534,7 +1602,7 @@ idp-cli download-results \
 
 ```
 ./results/
-└── cli-batch-20251015-143000/
+└── cli-batch-20251015-143000-7f3a9c1e/
     └── invoice.pdf/
         ├── pages/
         │   └── 1/
@@ -1685,18 +1753,18 @@ idp-cli delete-documents \
 # Delete all documents in a batch
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123
+    --batch-id cli-batch-20250123-091500-2b8e4d60
 
 # Delete only failed documents in a batch
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123 \
+    --batch-id cli-batch-20250123-091500-2b8e4d60 \
     --status-filter FAILED
 
 # Dry run to see what would be deleted
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123 \
+    --batch-id cli-batch-20250123-091500-2b8e4d60 \
     --dry-run
 
 # Delete documents matching a wildcard pattern
@@ -1726,15 +1794,15 @@ idp-cli delete-documents \
 **Output Example:**
 ```
 Connecting to stack: my-stack
-Getting documents for batch: cli-batch-20250123
+Getting documents for batch: cli-batch-20250123-091500-2b8e4d60
 Found 15 document(s) in batch
   (filtered by status: FAILED)
 
 ⚠️  Documents to be deleted:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • cli-batch-20250123/doc1.pdf
-  • cli-batch-20250123/doc2.pdf
-  • cli-batch-20250123/doc3.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc1.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc2.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc3.pdf
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Delete 3 document(s) permanently? [y/N]: y
@@ -2819,6 +2887,15 @@ Nothing is printed when the stack has no revision history. A save that changes
 nothing records no new revision, so the number printed is then the revision
 already current — which is still the correct one to pin.
 
+**Warnings:** when validation runs (the default), the command prints the same
+warnings [`config-validate`](#config-validate) reports for the file, under a
+`Warnings:` heading: for example an unread key, with the field it was probably
+meant to be, or a class whose prompt is too short for prompt caching to engage.
+They are non-fatal. The configuration is stored and the exit code stays 0. When
+validation refuses the upload, the warnings are printed beside the error,
+because an unread key is often the reason a value did not take. With
+`--no-validate`, nothing is checked and no warnings are printed. Both commands print each warning exactly as written, so a key or value containing square brackets is shown verbatim.
+
 ---
 
 ### `config-list`
@@ -3165,8 +3242,8 @@ idp-cli test-compare \
 
 **Output:**
 - **Console**: Side-by-side table with accuracy, precision, recall, F1 score, and cost for each test run
-- **JSON file**: `comparison-<timestamp>.json` - Complete comparison data with full test results and config differences
-- **CSV file**: `comparison-<timestamp>.csv` - Metrics table suitable for spreadsheets
+- **JSON file**: `comparison-<timestamp>-<suffix>.json` - Complete comparison data with full test results and config differences
+- **CSV file**: `comparison-<timestamp>-<suffix>.csv` - Metrics table suitable for spreadsheets
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs

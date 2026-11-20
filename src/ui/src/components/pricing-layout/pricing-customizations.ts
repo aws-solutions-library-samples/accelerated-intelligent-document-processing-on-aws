@@ -88,3 +88,22 @@ export const hasPricingCustomizations = (current: unknown, defaults: unknown): b
   }
   return false;
 };
+
+/**
+ * Looks up a unit's price in the shipped default table, or `undefined` when the
+ * defaults have no such unit.
+ *
+ * This is what tells a default row from a custom one on the Pricing page: a row
+ * is a default row when its entry and unit name are in the defaults, whatever its
+ * current price, so a default the administrator has overridden is still a default
+ * row. A default row cannot usefully be deleted — the backend lays the saved
+ * table over the defaults per unit, so the unit comes back after a save and
+ * reload — and the price returned here is what "Restore default price" writes.
+ * Of two default rows with the same names the last one is used, as the cost
+ * readers do.
+ */
+export const defaultUnitPriceLookup = (defaults: unknown): ((entryName: string, unitName: string) => string | undefined) => {
+  const def = defaults as PricingTableLike | null | undefined;
+  const prices = def && Array.isArray(def.pricing) ? priceMap(def) : new Map<string, string>();
+  return (entryName, unitName) => prices.get(unitKey(String(entryName), String(unitName)));
+};

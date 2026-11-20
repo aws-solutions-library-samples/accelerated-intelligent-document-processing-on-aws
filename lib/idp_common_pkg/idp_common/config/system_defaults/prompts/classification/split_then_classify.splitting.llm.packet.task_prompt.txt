@@ -1,0 +1,18 @@
+{# Contract: ranges only. Must ask for a "segments" array of "ordinal_start_page" and
+"ordinal_end_page", with no type. Page numbers count from the first page the call is shown.
+Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. #}
+<task-description> Split the document packet below into the separate documents it contains. Report only the page range each document occupies. Do NOT name or classify the documents. </task-description>
+{BOUNDARY_HINTS}
+<segmentation-instructions> 1. Read every page of the packet before deciding anything. A boundary is a statement about the packet, not about one page. 2. A new document STARTS on a page that carries an opening identity block: the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement date or period, and account or reference numbers. 3. A page CONTINUES the current document when it lacks that opening block. Repeated table column headings (for example "Date | Description | Amount") are printed on every page of a long table and do NOT start a new document. 4. Pagination is strong evidence: "Page 1 of 3" starts a document, "Page 2 of 3" or "continued" does not. 5. Two copies of the same form filed back to back are TWO documents. Report two ranges rather than one merged range. 6. Every page of the packet must belong to exactly one range. Ranges must be contiguous, must not overlap, and must cover the full page range in order. </segmentation-instructions>
+<output-format> Report page numbers exactly as they are labelled in the packet below, where the first page shown is page 1. {
+  "segments": [
+    {
+      "ordinal_start_page": <first page of this document>,
+      "ordinal_end_page": <last page of this document>,
+      "boundary_reason": "The opening-block elements and pagination evidence that place this document's start and end here"
+    }
+  ]
+} </output-format>
+<<CACHEPOINT>>
+<document-text> {DOCUMENT_TEXT} </document-text>
+<document-images> {DOCUMENT_IMAGE} </document-images>

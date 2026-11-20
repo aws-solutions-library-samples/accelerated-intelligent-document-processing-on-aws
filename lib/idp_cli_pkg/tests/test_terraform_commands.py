@@ -92,6 +92,8 @@ class TestDeployTerraform:
             "terraform_bin": "terraform",
             "assume_role_arn": None,
             "allow_replace_retained": False,
+            "tags": None,
+            "terraform_state": "local",
         }
         client.stack.deploy.assert_not_called()
         # The deploy prints the application URL; compare it parsed, by host.
@@ -148,6 +150,72 @@ class TestDeployTerraform:
         kwargs = client.stack.deploy_terraform.call_args.kwargs
         assert kwargs["allow_replace_retained"] is True
 
+    @pytest.mark.parametrize(
+        "extra, expected",
+        [
+            ([], "local"),
+            (["--terraform-state", "s3"], "s3"),
+            (["--terraform-state", "S3"], "s3"),
+            (["--terraform-state", "local"], "local"),
+        ],
+    )
+    def test_the_state_backend_reaches_the_sdk(self, runner, extra, expected):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    *extra,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kwargs = client.stack.deploy_terraform.call_args.kwargs
+        assert kwargs["terraform_state"] == expected
+
+    def test_an_unknown_state_backend_is_refused(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--terraform-state",
+                    "gcs",
+                ],
+            )
+        assert result.exit_code != 0
+        client.stack.deploy_terraform.assert_not_called()
+
+    def test_the_state_backend_without_terraform_is_refused(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--terraform-state",
+                    "s3",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "--terraform-state is used with --terraform" in result.output
+        client.stack.deploy.assert_not_called()
+
     def test_the_stateful_guard_flag_has_a_new_name_and_keeps_the_old(self, runner):
         client = _client()
         with patch.object(cli_module, "IDPClient", return_value=client):
@@ -190,7 +258,6 @@ class TestDeployTerraform:
         [
             (["--custom-config", "./c.yaml"], "--custom-config"),
             (["--template-url", "https://x/t.yaml"], "--template-url"),
-            (["--tags", "a=b"], "--tags"),
             (["--max-concurrent", "5"], "--max-concurrent"),
         ],
     )
@@ -211,6 +278,57 @@ class TestDeployTerraform:
             )
         assert result.exit_code == 1
         assert flag in result.output
+        client.stack.deploy_terraform.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "extra,tags",
+        [
+            (
+                ["--tags", "CostCenter=42,Owner=team a"],
+                {"CostCenter": "42", "Owner": "team a"},
+            ),
+            # Blank segments, or no option, keep the deployment's tags, as on
+            # the CloudFormation path.
+            (["--tags", ","], None),
+            ([], None),
+        ],
+    )
+    def test_tags_reach_the_sdk(self, runner, extra, tags):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                ]
+                + extra,
+            )
+        assert result.exit_code == 0, result.output
+        assert client.stack.deploy_terraform.call_args.kwargs["tags"] == tags
+
+    def test_malformed_tags_are_refused_before_the_sdk(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--tags",
+                    "novalue",
+                ],
+            )
+        assert result.exit_code != 0
+        assert "--tags" in result.output
         client.stack.deploy_terraform.assert_not_called()
 
     def test_an_sdk_error_exits_one(self, runner):
@@ -584,6 +702,58 @@ class TestDeployTerraformFromCode:
         client.publish.build.assert_not_called()
         client.stack.deploy_terraform.assert_not_called()
 
+    @pytest.mark.parametrize("source", ["default_session", "AWS_REGION"])
+    def test_without_region_it_builds_where_resolve_region_says(
+        self, runner, monkeypatch, source
+    ):
+        """No ``--region``: a ``boto3.setup_default_session`` Region is honoured
+        over ``AWS_DEFAULT_REGION`` (which a fresh ``boto3.Session()`` would read),
+        and a shell setting only ``AWS_REGION`` still resolves."""
+        import boto3
+
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        if source == "default_session":
+            boto3.setup_default_session(region_name="eu-central-1")
+        else:
+            monkeypatch.delenv("AWS_DEFAULT_REGION")
+            monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        client = self._client()
+        with patch.object(cli_module, "IDPClient", return_value=client) as ctor:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--from-code",
+                    ".",
+                    "--stack-name",
+                    "tfidp",
+                    "--bucket-basename",
+                    "b",
+                    "--prefix",
+                    "p",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert client.publish.build.call_args.kwargs["region"] == "eu-central-1"
+        assert {c.kwargs.get("region") for c in ctor.call_args_list} == {"eu-central-1"}
+
+    def test_without_region_anywhere_nothing_is_built(self, runner, monkeypatch):
+        import boto3
+
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.delenv("AWS_REGION")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        client = self._client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                ["deploy", "--terraform", "--from-code", ".", "--stack-name", "t"],
+            )
+        assert result.exit_code == 1, result.output
+        assert "Region could not be determined" in result.output
+        client.publish.build.assert_not_called()
+
     def test_a_failed_build_deploys_nothing(self, runner):
         client = self._client(success=False)
         result = self._invoke(runner, client)
@@ -645,6 +815,40 @@ class TestRetainedReportOutput:
         assert "API Gateway account settings for this Region" in out
         assert role in out
         assert "Wq3x9" not in out
+
+    def test_the_retained_kms_key_says_why_and_how_to_delete_it(self):
+        key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+        out = self._output(
+            self._report(
+                (
+                    "awscc_kms_key",
+                    "customer_managed_encryption_key",
+                    {"id": key_id, "key_id": key_id},
+                ),
+                ("aws_s3_bucket", "input_bucket", {"bucket": "tfidp-input"}),
+                retained=[
+                    "awscc_kms_key.customer_managed_encryption_key",
+                    "aws_s3_bucket.input_bucket",
+                ],
+            )
+        )
+        assert f"KMS key {key_id}, which encrypts the retained buckets" in out
+        assert "KMS key kept" in out
+        assert "about $1 a month" in out
+        assert (
+            f"aws kms schedule-key-deletion --key-id {key_id} "
+            "--pending-window-in-days 7"
+        ) in out
+
+    def test_no_kms_note_without_a_retained_key(self):
+        out = self._output(
+            self._report(
+                ("aws_s3_bucket", "input_bucket", {"bucket": "tfidp-input"}),
+                retained=["aws_s3_bucket.input_bucket"],
+            )
+        )
+        assert "tfidp-input" in out
+        assert "KMS key kept" not in out
 
     def test_service_created_log_groups_are_listed(self):
         out = self._output(

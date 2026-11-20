@@ -360,6 +360,23 @@ export type ConfigPrefixMapping = {
   updatedBy?: Maybe<Scalars['String']['output']>;
 };
 
+export type ConfigPrefixMappingHistoryEntry = {
+  action: Scalars['String']['output'];
+  actor?: Maybe<Scalars['String']['output']>;
+  after?: Maybe<ConfigPrefixMapping>;
+  before?: Maybe<ConfigPrefixMapping>;
+  prefix: Scalars['String']['output'];
+  seq: Scalars['Int']['output'];
+  timestamp?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
+export type ConfigPrefixMappingHistoryResponse = {
+  entries?: Maybe<Array<Maybe<ConfigPrefixMappingHistoryEntry>>>;
+  error?: Maybe<ConfigurationError>;
+  nextBefore?: Maybe<Scalars['Int']['output']>;
+  success: Scalars['Boolean']['output'];
+};
+
 export type ConfigPrefixMappingMutationResponse = {
   error?: Maybe<ConfigurationError>;
   mapping?: Maybe<ConfigPrefixMapping>;
@@ -586,6 +603,7 @@ export type Document = DynamoDbBase & {
   PageCount?: Maybe<Scalars['Int']['output']>;
   Pages?: Maybe<Array<Maybe<Page>>>;
   ProcessingIssueCount?: Maybe<Scalars['Int']['output']>;
+  ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;
   QueuedTime?: Maybe<Scalars['AWSDateTime']['output']>;
   RuleValidationResult?: Maybe<Scalars['AWSJSON']['output']>;
   RuleValidationResultUri?: Maybe<Scalars['String']['output']>;
@@ -1908,9 +1926,12 @@ export type MutationUploadDiscoveryDocumentArgs = {
   groundTruthFileName?: InputMaybe<Scalars['String']['input']>;
   pageLabels?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
   pageRanges?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  policyGroup?: InputMaybe<Scalars['String']['input']>;
+  policyGroupMode?: InputMaybe<Scalars['String']['input']>;
   prefix?: InputMaybe<Scalars['String']['input']>;
   saveMode?: InputMaybe<Scalars['String']['input']>;
   skipJobCreation?: InputMaybe<Scalars['Boolean']['input']>;
+  supersededRules?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
@@ -2097,6 +2118,7 @@ export type Query = {
    */
   listCatalogFeatures?: Maybe<Array<CatalogFeature>>;
   listChatSessions?: Maybe<ChatSessionConnection>;
+  listConfigPrefixMappingHistory?: Maybe<ConfigPrefixMappingHistoryResponse>;
   listConfigPrefixMappings?: Maybe<ConfigPrefixMappingsResponse>;
   listConfigProfileRevisions?: Maybe<ConfigProfileRevisionsResponse>;
   listConfigurationLibrary?: Maybe<ConfigurationLibraryResponse>;
@@ -2338,6 +2360,13 @@ export type QueryListChatSessionsArgs = {
   limit?: InputMaybe<Scalars['Int']['input']>;
   nextToken?: InputMaybe<Scalars['String']['input']>;
   surface?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryListConfigPrefixMappingHistoryArgs = {
+  before?: InputMaybe<Scalars['Int']['input']>;
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  prefix?: InputMaybe<Scalars['String']['input']>;
 };
 
 

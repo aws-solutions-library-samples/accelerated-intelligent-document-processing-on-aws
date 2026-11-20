@@ -559,6 +559,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         proc = subprocess.run(  # nosec B603 - fixed argv, repo-local script
             ["bash", str(GENERATE_SCRIPT)],
             cwd=str(REPO_ROOT),
+            # The generator honours DEP_MANIFEST_DIR; pin it to the directory
+            # read below, or an inherited value sends the fresh manifests
+            # elsewhere and a stale manifest left there is audited instead.
+            env={**os.environ, "DEP_MANIFEST_DIR": str(MANIFEST_DIR)},
             capture_output=True,
             text=True,
         )
@@ -595,7 +599,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     # gate to fail: it reports success while covering nothing. That is not
     # hypothetical — a missing `jq` left node-packages.txt empty (the file was
     # still created by the shell redirect, so an exists() check passed). The
-    # generator also only warns, without failing, when a lockfile is absent. So
+    # generator also only warns, without failing, when it finds no lockfile. So
     # require BOTH ecosystems to be represented and treat a shortfall as a broken
     # audit rather than a passing one.
     empty = [

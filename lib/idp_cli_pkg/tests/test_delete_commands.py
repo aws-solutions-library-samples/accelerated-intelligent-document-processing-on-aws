@@ -582,6 +582,48 @@ class TestDeleteAgainstRealServices:
         assert "Status: DELETE_COMPLETE" in result.output
         # The retained LoggingBucket note belongs to a completed deletion.
         assert "LoggingBucket (if exists) is retained by design" in result.output
+        # So does the retained KMS key's, which says how to find the key now
+        # that its alias is gone (#2011).
+        assert "KMS key kept" in result.output
+        assert "aws s3api get-bucket-encryption --bucket" in result.output
+        assert "aws cloudformation list-stack-resources --stack-name arn:" in (
+            result.output
+        )
+        assert "aws kms schedule-key-deletion --key-id <key-id>" in result.output
+
+    def test_a_supplied_key_is_reported_as_the_customers_not_for_deletion(self):
+        """A stack deployed with CustomerManagedKmsKeyArn created no key (#2016).
+
+        Its data is encrypted with the supplied key, which may protect other data
+        too, so the command must name that key as the customer's and must not
+        print the schedule-deletion steps it prints for a key the stack created.
+        """
+        key = (
+            "arn:aws:kms:us-east-1:111122223333:key/"
+            "1234abcd-12ab-34cd-56ef-1234567890ab"
+        )
+        template = json.loads(_stack_template(["cmk-bucket"]))
+        template["Parameters"] = {
+            "CustomerManagedKmsKeyArn": {"Type": "String", "Default": ""}
+        }
+        with mock_aws():
+            boto3.client("cloudformation", region_name="us-east-1").create_stack(
+                StackName="cmk",
+                TemplateBody=json.dumps(template),
+                Parameters=[
+                    {"ParameterKey": "CustomerManagedKmsKeyArn", "ParameterValue": key}
+                ],
+            )
+            result = CliRunner().invoke(
+                cli, ["delete", "--stack-name", "cmk", "--force", "--wait"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Stack deleted successfully!" in result.output
+        assert "the key you supplied" in result.output
+        assert key in result.output
+        assert "KMS key kept" not in result.output
+        assert "schedule-key-deletion" not in result.output
 
     def test_without_wait_it_reports_a_deletion_started_rather_than_finished(self):
         """`delete` without `--wait` must not claim the stack is gone.
@@ -615,6 +657,7 @@ class TestDeleteAgainstRealServices:
         assert "idp-cli delete --stack-name unwaited --force --wait" in result.output
         # The retained-bucket note belongs to a completed deletion, not a started one.
         assert "retained by design" not in result.output
+        assert "KMS key kept" not in result.output
 
     def test_an_sdk_error_is_reported_and_exits_non_zero(self):
         """An unexpected failure must not be swallowed into a zero exit code."""
@@ -1087,6 +1130,40 @@ class TestDeleteFailureReporting:
         assert "swept-logging" in result.output
         # The retained-bucket note is for plain deletions; force-cleanup removes it.
         assert "retained by design" not in result.output
+        # No KMS key was reported, so no key note.
+        assert "KMS key kept" not in result.output
+
+    def test_the_cleanup_phase_names_the_kms_key_it_kept(self):
+        """#2011: the key that encrypted the buckets is retained by the stack and
+        not deleted by the cleanup; the summary names it and says how to schedule
+        its deletion."""
+        key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+        client = self._client_returning(
+            StackDeletionResult(
+                success=True,
+                status="DELETE_COMPLETE",
+                stack_name="swept",
+                cleanup_result={
+                    "buckets_deleted": ["swept-input"],
+                    "errors": [],
+                    "kms_keys_retained": [key_id],
+                },
+            )
+        )
+
+        with patch("idp_cli.cli.IDPClient", return_value=client):
+            result = CliRunner().invoke(
+                cli,
+                ["delete", "--stack-name", "swept", "--force", "--force-delete-all"],
+            )
+
+        assert result.exit_code == 0
+        assert "KMS key kept" in result.output
+        assert "about $1 a month" in result.output
+        assert (
+            f"aws kms schedule-key-deletion --key-id {key_id} "
+            "--pending-window-in-days 7"
+        ) in result.output
 
     def test_the_cleanup_phase_reports_what_it_could_not_delete(self):
         """A resource the sweep failed on has to be named, or it is leaked silently."""

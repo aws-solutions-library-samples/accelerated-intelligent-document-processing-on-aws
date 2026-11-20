@@ -23,7 +23,11 @@ exclude = [
 
 # Include YAML and MD files for system defaults configuration
 [tool.setuptools.package-data]
-"idp_common.config.system_defaults" = ["*.yaml", "*.md"]
+# prompts/: one file per default prompt, which the base-*.yaml files reference
+# with {_file: ...} (GitHub #1652). MANIFEST.in includes them too, and either
+# entry alone ships them; both are kept so removing one does not drop the
+# prompts. tests/unit/config/test_default_prompt_files.py builds a wheel to check.
+"idp_common.config.system_defaults" = ["*.yaml", "*.md", "prompts/**/*.txt"]
 "idp_common.discovery.prompts" = ["*.jinja2"]
 "idp_common.rule_validation.z3.config" = ["*.yaml"]
 

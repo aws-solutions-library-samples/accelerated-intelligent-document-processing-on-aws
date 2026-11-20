@@ -162,8 +162,10 @@ LIVE_STACK_SECTION_PREFIXES = ("Stack tests",)
 #: How many targets that wholesale exclusion covers today, audited when written.
 #: 27 since ``stacktest-terraform-upgrade`` joined the section: it deploys one
 #: release's Terraform module, upgrades it in place to another and destroys it, so it
-#: needs a live deployment of its own and cannot run in a scanned section.
-LIVE_STACK_SECTION_TARGET_COUNT = 27
+#: needs a live deployment of its own and cannot run in a scanned section. 28 since
+#: ``stacktest-load`` joined: it submits documents to an existing deployed stack and
+#: reads their executions back, so it cannot run without one.
+LIVE_STACK_SECTION_TARGET_COUNT = 28
 
 #: Name shapes that make a target a check wherever it lives. This is what stops
 #: :data:`GATE_SECTION_PREFIXES` from being a section-scoped hole: a ``check-*`` or
@@ -995,7 +997,9 @@ def test_the_recipe_slice_stops_at_the_recipe() -> None:
         "`make <gate>` can be found in the slice without lint-cicd invoking it. "
         "Narrow _lint_cicd_recipe()."
     )
-    assert 10 < len(recipe.splitlines()) < 120, (
+    # A plausibility bound, not a budget: the stray-target check above is what
+    # catches a widened slice. Each gate step in lint-cicd is about six lines.
+    assert 10 < len(recipe.splitlines()) < 140, (
         f"the lint-cicd slice is {len(recipe.splitlines())} lines, which is not a "
         "plausible length for one recipe — check _lint_cicd_recipe()."
     )

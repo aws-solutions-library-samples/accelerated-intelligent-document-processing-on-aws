@@ -131,6 +131,26 @@ describe('ReviewTaskContext reasons', () => {
     await userEvent.click(chip);
     expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ sectionId: '2', field: 'employer_name' }));
   });
+
+  it('names a section whose extraction failed, with the issue that says why (#2038)', async () => {
+    // The label is the section's extraction_failed issue message, as ProcessResults stores it.
+    const label = "No fields were extracted from this section: Amazon Bedrock's content filter withheld the model's reply.";
+    const failed = { kind: 'extraction_failed', sectionId: '2', field: null, label, score: 0, threshold: 0.8 };
+    const withFailed = {
+      item: { reasons: [failed, reason(0)], reasonCount: 2, escalated: false },
+      checklist: [],
+    } as unknown as ReviewItemDetail;
+    const onReasonClick = vi.fn();
+    renderWithIntl(<ReviewTaskContext detail={withFailed} onReasonClick={onReasonClick} />);
+    const chip = screen.getByRole('button', { name: 'Extraction failed' });
+    expect(screen.queryByText(/0\.00 < 0\.80/)).toBeNull();
+    await userEvent.click(chip);
+    expect(screen.getByText('Section 2')).toBeTruthy();
+    expect(screen.getByText(/Extraction failed for this section/)).toBeTruthy();
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.queryByText(/^Confidence /)).toBeNull();
+    expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ sectionId: '2', kind: 'extraction_failed' }));
+  });
 });
 
 describe('ReviewTaskContext sent to review', () => {

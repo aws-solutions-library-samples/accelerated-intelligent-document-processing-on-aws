@@ -32,7 +32,8 @@
 
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
+import { render as rtlRender, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 const { mockGraphql } = vi.hoisted(() => ({ mockGraphql: vi.fn() }));
 vi.mock('../../../api/client-shim', () => ({
@@ -86,6 +87,15 @@ vi.mock('../../../hooks/use-config-profile-revisions', () => ({
 
 import ConfigPrefixMappingsLayout from '../ConfigPrefixMappingsLayout';
 
+// The change-history panel and its row action declare their text as react-intl
+// messages, so the page needs the provider the app mounts.
+const render = (ui: React.ReactElement) =>
+  rtlRender(
+    <IntlProvider locale="en" defaultLocale="en">
+      {ui}
+    </IntlProvider>,
+  );
+
 const MAPPINGS = [
   {
     prefix: 'acme/invoices/',
@@ -99,6 +109,12 @@ const MAPPINGS = [
     updatedBy: 'admin@example.com',
   },
 ];
+
+const historyResponse = vi.hoisted(() => ({
+  current: { success: true, entries: [] as unknown[], nextBefore: null as number | null } as Record<string, unknown>,
+}));
+
+const historyCalls = () => mockGraphql.mock.calls.filter(([args]) => String(args.query).includes('listConfigPrefixMappingHistory'));
 
 const listCalls = () => mockGraphql.mock.calls.filter(([args]) => String(args.query).includes('listConfigPrefixMappings')).length;
 
@@ -130,6 +146,9 @@ const routeGraphql = ({ query }: { query: string }) => {
   // The Tenants section above the mappings makes its own list request.
   if (query.includes('listTenants')) {
     return Promise.resolve({ data: { listTenants: { success: true, isolationMode: 'Off', tenants: [] } } });
+  }
+  if (query.includes('listConfigPrefixMappingHistory')) {
+    return Promise.resolve({ data: { listConfigPrefixMappingHistory: historyResponse.current } });
   }
   if (query.includes('resolveConfigPrefixMapping')) {
     return Promise.resolve({ data: { resolveConfigPrefixMapping: { success: false } } });
@@ -472,5 +491,85 @@ describe('ConfigPrefixMappingsLayout', () => {
     render(<ConfigPrefixMappingsLayout />);
     await screen.findByText('acme/invoices/');
     expect(screen.getByRole('button', { name: 'Refresh mappings' })).toBeInTheDocument();
+  });
+});
+
+describe('ConfigPrefixMappingsLayout change history (#597)', () => {
+  beforeEach(() => {
+    mockGraphql.mockReset();
+    mockGraphql.mockImplementation(routeGraphql);
+    historyResponse.current = {
+      success: true,
+      nextBefore: 4,
+      entries: [
+        {
+          seq: 6,
+          timestamp: '2026-11-19T10:00:00Z',
+          actor: 'editor@example.com',
+          prefix: 'acme/invoices/',
+          action: 'update',
+          before: { configProfile: 'lending', configRevision: null, metadataPrecedence: 'mapping', enabled: true },
+          after: { configProfile: 'invoices', configRevision: 3, metadataPrecedence: 'reject', enabled: false },
+        },
+        {
+          seq: 5,
+          timestamp: '2026-11-18T10:00:00Z',
+          actor: 'creator@example.com',
+          prefix: 'acme/invoices/',
+          action: 'create',
+          before: null,
+          after: { configProfile: 'lending', configRevision: null, metadataPrecedence: 'mapping', enabled: true },
+        },
+      ],
+    };
+  });
+
+  it('asks for nothing until the panel is opened', async () => {
+    render(<ConfigPrefixMappingsLayout />);
+    await screen.findByText('acme/invoices/');
+    expect(historyCalls()).toHaveLength(0);
+  });
+
+  it("opens one mapping's history from its row and says what changed and who changed it", async () => {
+    render(<ConfigPrefixMappingsLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Change history of acme/invoices/' }));
+
+    await screen.findByText('editor@example.com');
+    const [[args]] = historyCalls();
+    expect(args.variables.prefix).toBe('acme/invoices/');
+    expect(screen.getByText('Showing changes to acme/invoices/ only.')).toBeTruthy();
+    expect(screen.getByText('Profile: lending → invoices')).toBeTruthy();
+    expect(screen.getByText('Revision: published revision → r3')).toBeTruthy();
+    expect(screen.getByText('Conflict mode: mapping wins → refuse the conflict')).toBeTruthy();
+    expect(screen.getByText('Enabled: yes → no')).toBeTruthy();
+    expect(screen.getByText('Assigned lending (published revision), conflict mode mapping wins')).toBeTruthy();
+    expect(screen.getByText('creator@example.com')).toBeTruthy();
+  });
+
+  it('pages on from the cursor the server returned, under the same filter', async () => {
+    render(<ConfigPrefixMappingsLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Change history of acme/invoices/' }));
+    await screen.findByText('editor@example.com');
+
+    historyResponse.current = { success: true, nextBefore: null, entries: [] };
+    fireEvent.click(screen.getByRole('button', { name: 'Load older changes' }));
+
+    await waitFor(() => expect(historyCalls()).toHaveLength(2));
+    expect(historyCalls()[1][0].variables).toEqual({ prefix: 'acme/invoices/', before: 4 });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load older changes' })).toBeNull());
+  });
+
+  it('falls back to its own translated message when the server gives none', async () => {
+    historyResponse.current = { success: false, error: null };
+    render(<ConfigPrefixMappingsLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Change history of acme/invoices/' }));
+    expect(await screen.findByText('Failed to load the mapping history')).toBeTruthy();
+  });
+
+  it("shows the server's refusal rather than an empty log", async () => {
+    historyResponse.current = { success: false, error: { type: 'Error', message: 'The server said no' } };
+    render(<ConfigPrefixMappingsLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Change history of acme/invoices/' }));
+    expect(await screen.findByText('The server said no')).toBeTruthy();
   });
 });

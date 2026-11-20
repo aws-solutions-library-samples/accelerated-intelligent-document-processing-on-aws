@@ -804,6 +804,40 @@ class TestRegionAndTemplateResolution:
             == TEMPLATE_URLS["eu-central-1"]
         )
 
+    def test_a_default_session_region_is_honoured(self, monkeypatch):
+        """A Region given to ``boto3.setup_default_session`` is deployed to.
+
+        ``AWS_DEFAULT_REGION`` (``us-east-1``, from ``conftest``) names another
+        Region, which a freshly built ``boto3.Session()`` would read instead.
+        """
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        boto3.setup_default_session(region_name="eu-central-1")
+        patcher, client_cls, client = _patched_client()
+        try:
+            result = _deploy("--stack-name", STACK, "--admin-email", EMAIL)
+        finally:
+            patcher.stop()
+        assert result.exit_code == 0, result.output
+        assert client_cls.call_args.kwargs["region"] == "eu-central-1"
+        assert (
+            client.stack.deploy.call_args.kwargs["template_url"]
+            == TEMPLATE_URLS["eu-central-1"]
+        )
+
+    def test_with_only_aws_region_set_it_is_used(self, monkeypatch):
+        """boto3 does not read ``AWS_REGION``; ``deploy`` resolves it and hands
+        it to the SDK client explicitly."""
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        patcher, client_cls, client = _patched_client()
+        try:
+            result = _deploy("--stack-name", STACK, "--admin-email", EMAIL)
+        finally:
+            patcher.stop()
+        assert result.exit_code == 0, result.output
+        assert client_cls.call_args.kwargs["region"] == "eu-central-1"
+
     def test_an_undeterminable_region_names_both_ways_to_supply_one(
         self, monkeypatch, api_calls
     ):
@@ -815,6 +849,7 @@ class TestRegionAndTemplateResolution:
         """
         monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
         monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
         patcher, client_cls, _client = _patched_client()
         try:
             result = _deploy("--stack-name", STACK, "--admin-email", EMAIL)
@@ -1948,6 +1983,7 @@ class TestTheCommandSurface:
             "terraform_bin",
             "terraform_assume_role_arn",
             "terraform_allow_replace_retained",
+            "terraform_state",
         }
 
     def test_only_stack_name_is_required(self):

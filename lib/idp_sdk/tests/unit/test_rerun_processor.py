@@ -28,26 +28,31 @@ SQS message body. A ``MagicMock`` in any of those positions would accept a delet
 aimed at the wrong bucket, a section list that was emptied rather than replaced,
 and an update expression DynamoDB would reject.
 
-Three findings are pinned here as current behaviour, each with a docstring saying
-so. The largest is that ``_get_idp_common_path`` cannot succeed in this repository
-layout, which makes the whole feature inoperable while reporting every document as
-"not found"; the tests that exercise the working path substitute a correct path so
-that the rest of the module is still covered.
+Findings that are current behaviour rather than intent are pinned with a
+docstring saying so. The module reaches ``idp_common`` by importing it, and the
+tests exercise that real import with nothing substituted: a test that patches
+the lookup out cannot see the lookup break, which is how a path helper that had
+stopped resolving went unnoticed while every test here stayed green.
 """
 
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
+import textwrap
 
 import boto3
 import pytest
 from moto import mock_aws
 
 import idp_common
+from idp_common.dynamodb.client import DynamoDBError
 from idp_common.models import Document, Page, Section, Status
 from idp_sdk._core import rerun_processor
-from idp_sdk._core.rerun_processor import RerunProcessor, _get_idp_common_path
+from idp_sdk._core.rerun_processor import RerunProcessor
+from idp_sdk.exceptions import IDPResourceNotFoundError
 
 STACK_NAME = "idp-rerun-stack"
 INPUT_BUCKET = "idp-rerun-input"
@@ -205,25 +210,6 @@ def aws(aws_credentials):
 
 
 @pytest.fixture
-def idp_common_importable(monkeypatch):
-    """Point ``_get_idp_common_path`` at the checkout's real ``idp_common_pkg``.
-
-    The production helper cannot find it (see ``TestIdpCommonPathResolution``), and
-    with it raising, every code path that reads or writes a document is
-    short-circuited before it starts. The substitute is derived from the already
-    imported ``idp_common`` so it always names *this* checkout, and ``sys.path`` is
-    snapshotted because the code under test inserts into it and never removes the
-    entry.
-    """
-    package_root = str(pathlib.Path(idp_common.__file__).resolve().parents[1])
-    assert (pathlib.Path(package_root) / "idp_common").is_dir()
-    monkeypatch.setattr(rerun_processor, "_get_idp_common_path", lambda: package_root)
-    original_sys_path = list(sys.path)
-    yield package_root
-    sys.path[:] = original_sys_path
-
-
-@pytest.fixture
 def processor(aws):
     return RerunProcessor(STACK_NAME, region=aws["region"])
 
@@ -312,51 +298,127 @@ def _document_with_two_sections() -> Document:
 
 
 @pytest.mark.unit
-class TestIdpCommonPathResolution:
-    """Where the processor looks for ``idp_common``, and why it never finds it."""
+class TestIdpCommonResolution:
+    """How the processor reaches ``idp_common``: by importing it, from anywhere."""
 
-    def test_the_helper_cannot_resolve_idp_common_in_this_layout(self):
-        """DEFECT: ``rerun_processor.py:31-42`` computes a path that never exists.
+    def test_a_relocated_copy_of_the_sdk_still_reaches_idp_common(self, tmp_path):
+        """The SDK must work from wherever it is installed, not only from ``lib/``.
 
-        The helper walks two directories up from its own location and then looks
-        for ``lib/idp_common_pkg``. Its comment says the starting point is
-        ``idp_cli/idp_cli/``, which it no longer is: this module lives at
-        ``lib/idp_sdk/idp_sdk/_core/``, so two levels up is ``lib/idp_sdk`` and the
-        path it builds is ``lib/idp_sdk/lib/idp_common_pkg``. That directory does
-        not exist in the repository and would not exist for an installed copy
-        either, where the same arithmetic lands inside ``site-packages``.
-
-        The premise is asserted rather than assumed: if the layout ever changes so
-        that the path resolves, this test fails and says so rather than quietly
-        pinning nothing.
+        A copy of ``idp_sdk`` is placed in a bare directory standing in for
+        ``site-packages`` — no ``lib/idp_common_pkg`` anywhere above it — and
+        ``_get_document`` is driven in a fresh interpreter that imports that
+        copy. ``idp_common`` comes from ``PYTHONPATH``, as an installed
+        dependency would. The stack is given no tracking table, so the call
+        cannot reach AWS: the only way to get the tracking-table error is to have
+        imported ``idp_common`` first and got past it. A lookup that computes a
+        path from the module's own location fails here, whatever the checkout
+        looks like, because the copy has no checkout around it.
         """
-        expected = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(rerun_processor.__file__))),
-            "lib",
-            "idp_common_pkg",
+        site = tmp_path / "site-packages"
+        site.mkdir()
+        sdk_root = pathlib.Path(rerun_processor.__file__).resolve().parents[1]
+        shutil.copytree(
+            sdk_root, site / "idp_sdk", ignore=shutil.ignore_patterns("__pycache__")
         )
-        assert not os.path.exists(expected), (
-            "the layout changed; _get_idp_common_path may now resolve and this "
-            "test and its companion below should be revisited"
+        common_root = pathlib.Path(idp_common.__file__).resolve().parents[1]
+        probe = textwrap.dedent(
+            f"""
+            import idp_sdk
+            assert idp_sdk.__file__.startswith({str(site)!r}), idp_sdk.__file__
+            from idp_sdk._core.rerun_processor import RerunProcessor
+            processor = RerunProcessor.__new__(RerunProcessor)
+            processor.stack_name = "relocated-stack"
+            processor.region = "us-east-1"
+            processor.resources = {{"DocumentsTable": ""}}
+            try:
+                processor._get_document("lending_package.pdf")
+            except Exception as error:
+                print(type(error).__name__ + ": " + str(error))
+            else:
+                print("NO ERROR")
+            """
+        )
+        env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+        env["PYTHONPATH"] = os.pathsep.join([str(site), str(common_root)])
+
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
 
-        with pytest.raises(RuntimeError, match="idp_common_pkg not found"):
-            _get_idp_common_path()
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == (
+            "IDPResourceNotFoundError: TrackingTable not found in stack "
+            "'relocated-stack': the stack has no TrackingTable resource, or its "
+            "resources could not be listed"
+        )
 
-    def test_the_substitute_path_used_by_the_other_tests_is_this_checkout(
-        self, idp_common_importable
+    def test_an_idp_common_that_cannot_be_imported_is_reported_as_that(
+        self, processor, aws, stored_document, monkeypatch
     ):
-        """Guard on the test scaffolding, not on production code.
+        """A broken install is an error, never an absent document.
 
-        Every test below that touches a document relies on the substituted path.
-        If that path pointed at another checkout the whole file would be green
-        about the wrong code, which is the failure mode ``conftest.py``'s
-        provenance guard exists to prevent — so it is checked here too.
+        ``sys.modules`` holding ``None`` for a name makes importing it raise
+        ``ImportError``, which is what a missing or half-installed dependency
+        looks like. Turning that into ``None`` — by any ``except`` around the
+        import — is the shape of the defect that disabled reprocessing, where an
+        environment failure was reported as "Document not found".
         """
-        assert idp_common_importable == str(
-            pathlib.Path(idp_common.__file__).resolve().parents[1]
-        )
-        assert "idp_common_pkg" in idp_common_importable
+        monkeypatch.setitem(sys.modules, "idp_common.docs_service", None)
+
+        with pytest.raises(ImportError):
+            processor._get_document(stored_document)
+
+        result = processor.rerun_documents([stored_document], step="extraction")
+        (failure,) = result["failed_documents"]
+        assert failure["error"] != "Document not found"
+        assert "idp_common.docs_service" in failure["error"]
+        assert _queued_messages(aws) == []
+
+    def test_the_module_never_touches_sys_path(self):
+        """Statically: the module source contains no reference to ``sys.path``.
+
+        The runtime check below cannot see an insertion guarded by "not already
+        present", because the test environment already has ``idp_common`` on the
+        path; reading the source can.
+        """
+        import ast
+
+        tree = ast.parse(pathlib.Path(rerun_processor.__file__).read_text())
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "path"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"sys", "_sys"}
+        ]
+        imports_sys = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            and any(alias.name == "sys" for alias in node.names)
+            or (isinstance(node, ast.ImportFrom) and node.module == "sys")
+        ]
+        assert offenders == [] and imports_sys == []
+
+    def test_the_module_does_not_edit_sys_path(self, processor, aws, stored_document):
+        """Reading a document leaves ``sys.path`` exactly as it found it.
+
+        Inserting into ``sys.path`` at call time is how the module used to reach
+        ``idp_common``, and every call added another entry that was never
+        removed. An installed dependency needs no such entry.
+        """
+        before = list(sys.path)
+
+        processor._get_document(stored_document)
+        processor._update_document_status(processor._get_document(stored_document))
+
+        assert sys.path == before
 
 
 @pytest.mark.unit
@@ -371,7 +433,8 @@ class TestConstruction:
         ``tracking_table_name`` reads, so the processor makes no lookup of its
         own. The GraphQL URL is scraped out of the ``WebUITestEnvFile`` output — a
         multi-line ``.env`` blob. A failure here leaves the processor unable to
-        read any document, which it reports as "Document not found".
+        read any document, and each document is then reported failed with the
+        missing table named in its error.
         """
         assert processor.resources["DocumentsTable"] == TRACKING_TABLE
         assert processor.resources["AppSyncApiUrl"] == APPSYNC_URL
@@ -386,8 +449,7 @@ class TestConstruction:
         against a partially deployed stack; instead the table name is empty, a
         warning logged during construction names the missing table and the stack,
         and the failure surfaces later, per document. The warning comes from
-        ``StackInfo``, which resolves the table for every processor. Pinned
-        because the swallowing is also what makes the path defect above so quiet.
+        ``StackInfo``, which resolves the table for every processor.
         """
         aws["cfn"].create_stack(
             StackName="idp-rerun-no-table", TemplateBody=_template(with_table=False)
@@ -454,10 +516,9 @@ class TestConstruction:
         monkeypatch.delenv("AWS_REGION", raising=False)
         monkeypatch.delenv("AWS_PROFILE", raising=False)
         monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
 
-        with pytest.raises(
-            ValueError, match="--region or configure AWS_DEFAULT_REGION"
-        ):
+        with pytest.raises(ValueError, match="--region, or set AWS_DEFAULT_REGION"):
             RerunProcessor(STACK_NAME)
 
     def test_an_ambient_region_is_picked_up_when_none_is_passed(self, aws):
@@ -472,13 +533,43 @@ class TestConstruction:
         assert processor.region == aws["region"]
         assert processor.resources["DocumentsTable"] == TRACKING_TABLE
 
+    def test_a_default_session_region_is_honoured(self, aws, monkeypatch):
+        """A Region given to ``boto3.setup_default_session`` is where the stack is
+        looked for.
+
+        ``AWS_DEFAULT_REGION`` names a Region the stack is not in, which is what a
+        freshly built ``boto3.Session()`` would read, so that lookup would refuse
+        the stack as absent.
+        """
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        boto3.setup_default_session(region_name=aws["region"])
+
+        processor = RerunProcessor(STACK_NAME)
+
+        assert processor.region == aws["region"]
+        assert processor.resources["DocumentsTable"] == TRACKING_TABLE
+
+    def test_with_only_aws_region_set_it_is_used(self, aws, monkeypatch):
+        """boto3 does not read ``AWS_REGION``; the processor resolves it and
+        passes it to every client it builds."""
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.setenv("AWS_REGION", aws["region"])
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+
+        processor = RerunProcessor(STACK_NAME)
+
+        assert processor.region == aws["region"]
+        assert processor.lambda_client.meta.region_name == aws["region"]
+        assert processor.sqs_client.meta.region_name == aws["region"]
+
 
 @pytest.mark.unit
 class TestGetDocument:
     """Reading a document back out of the real tracking table."""
 
     def test_a_stored_document_round_trips_with_its_pages_and_sections(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         document = processor._get_document(stored_document)
 
@@ -492,7 +583,7 @@ class TestGetDocument:
         )
 
     def test_the_bucket_names_are_overwritten_from_the_stack_resources(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """The tracking row does not record which buckets the document came from.
 
@@ -505,13 +596,11 @@ class TestGetDocument:
         assert document.input_bucket == INPUT_BUCKET
         assert document.output_bucket == OUTPUT_BUCKET
 
-    def test_a_document_that_is_not_in_the_table_reads_as_none(
-        self, processor, aws, idp_common_importable
-    ):
+    def test_a_document_that_is_not_in_the_table_reads_as_none(self, processor, aws):
         assert processor._get_document("never-processed.pdf") is None
 
     def test_the_environment_variables_it_borrows_are_restored(
-        self, processor, aws, stored_document, idp_common_importable, monkeypatch
+        self, processor, aws, stored_document, monkeypatch
     ):
         """``_get_document`` mutates process-global environment to talk to DynamoDB.
 
@@ -521,15 +610,17 @@ class TestGetDocument:
         the process — including another stack's — at this stack's table.
         """
         monkeypatch.setenv("TRACKING_TABLE", "some-other-stacks-table")
-        monkeypatch.setenv("AWS_REGION", aws["region"])
+        # A Region other than the stack's, so a value left behind is visible.
+        other_region = "eu-west-3" if aws["region"] != "eu-west-3" else "eu-west-2"
+        monkeypatch.setenv("AWS_REGION", other_region)
 
-        processor._get_document(stored_document)
+        assert processor._get_document(stored_document) is not None
 
         assert os.environ["TRACKING_TABLE"] == "some-other-stacks-table"
-        assert os.environ["AWS_REGION"] == aws["region"]
+        assert os.environ["AWS_REGION"] == other_region
 
     def test_variables_that_were_unset_are_removed_again_not_left_behind(
-        self, processor, aws, stored_document, idp_common_importable, monkeypatch
+        self, processor, aws, stored_document, monkeypatch
     ):
         """Restoring "absent" means deleting, not writing an empty string.
 
@@ -546,26 +637,32 @@ class TestGetDocument:
         assert "TRACKING_TABLE" not in os.environ
         assert "AWS_REGION" not in os.environ
 
-    def test_a_missing_tracking_table_resource_is_indistinguishable_from_no_document(
-        self, processor, aws, stored_document, idp_common_importable, caplog
+    def test_a_missing_tracking_table_resource_raises_rather_than_reading_as_none(
+        self, processor, aws, stored_document
     ):
-        """DEFECT (contributing): every failure to read becomes "not found".
+        """``None`` means "no row for this key" and nothing else.
 
-        ``_get_document`` wraps its whole body in ``except Exception`` and returns
-        ``None``, so a misconfigured stack, an ``AccessDenied`` on the table and a
-        document that genuinely was never processed all produce the same answer,
-        and ``rerun_documents`` reports all three as ``Document not found``. This
-        is the mechanism that hides the path defect above, and it is why that
-        defect presents as a plausible-looking per-document result rather than as
-        an error. The reason reaches only the log, where it names the missing
-        resource and the stack.
+        A misconfigured stack, an ``AccessDenied`` on the table and a document
+        that was never processed used to produce the same ``None``, which
+        ``rerun_documents`` reports as ``Document not found``. The first two are
+        not that, so they propagate and are reported as themselves.
         """
         processor.resources["DocumentsTable"] = ""
 
-        with caplog.at_level("ERROR"):
-            assert processor._get_document(stored_document) is None
+        with pytest.raises(
+            IDPResourceNotFoundError,
+            match=f"TrackingTable not found in stack '{STACK_NAME}'",
+        ):
+            processor._get_document(stored_document)
 
-        assert f"TrackingTable not found in stack '{STACK_NAME}'" in caplog.text
+    def test_a_dynamodb_failure_raises_rather_than_reading_as_none(
+        self, processor, aws, stored_document
+    ):
+        """A table the caller cannot read is an error, not an absent document."""
+        processor.resources["DocumentsTable"] = "a-table-that-does-not-exist"
+
+        with pytest.raises(DynamoDBError, match="Get item failed: Requested resource"):
+            processor._get_document(stored_document)
 
 
 @pytest.mark.unit
@@ -771,7 +868,7 @@ class TestUpdateDocumentStatus:
     """Writing the rewound document back so the UI sees QUEUED immediately."""
 
     def test_the_tracking_row_is_updated_through_the_appsync_branch(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """With a GraphQL URL present the processor takes the "AppSync" branch.
 
@@ -795,7 +892,7 @@ class TestUpdateDocumentStatus:
         assert row["WorkflowStatus"]["S"] == "RUNNING"
 
     def test_the_tracking_row_is_updated_without_a_graphql_url_too(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         del processor.resources["AppSyncApiUrl"]
         document = processor._prepare_for_extraction_rerun(
@@ -807,7 +904,7 @@ class TestUpdateDocumentStatus:
         assert _tracking_row(aws)["ObjectStatus"]["S"] == "QUEUED"
 
     def test_the_stale_execution_arn_and_completion_time_are_not_cleared(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """DEFECT: the tracking row keeps pointing at the finished previous run.
 
@@ -839,7 +936,7 @@ class TestUpdateDocumentStatus:
         assert after["CompletionTime"] == before["CompletionTime"]
 
     def test_a_failure_to_update_is_swallowed_so_the_rerun_still_happens(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """The status write is a courtesy to the UI, not part of the contract.
 
@@ -857,7 +954,7 @@ class TestUpdateDocumentStatus:
         assert _tracking_row(aws)["ObjectStatus"]["S"] == "COMPLETED"
 
     def test_the_variables_it_borrows_are_put_back_as_they_were(
-        self, processor, aws, stored_document, idp_common_importable, monkeypatch
+        self, processor, aws, stored_document, monkeypatch
     ):
         """The write path borrows three variables and must return all three.
 
@@ -878,7 +975,7 @@ class TestUpdateDocumentStatus:
         assert os.environ["AWS_REGION"] == aws["region"]
 
     def test_every_variable_that_was_unset_is_removed_again(
-        self, processor, aws, stored_document, idp_common_importable, monkeypatch
+        self, processor, aws, stored_document, monkeypatch
     ):
         """All three borrowed variables are cleaned up, not just the table name.
 
@@ -902,42 +999,54 @@ class TestUpdateDocumentStatus:
 
 
 @pytest.mark.unit
-class TestRerunDocumentsAsShipped:
-    """``rerun_documents`` with the production path helper in place."""
+class TestRerunDocumentsReportsTheRealError:
+    """What ``rerun_documents`` puts in ``failed_documents`` when a read fails."""
 
-    def test_every_document_is_reported_not_found_even_when_it_exists(
+    def test_a_stored_document_is_queued_with_nothing_substituted(
         self, processor, aws, stored_document
     ):
-        """DEFECT: the rerun feature is inoperable, and reports a plausible lie.
+        """The whole path, with ``idp_common`` reached the way production reaches it.
 
-        With ``_get_idp_common_path`` raising (see
-        ``TestIdpCommonPathResolution``), ``_get_document`` catches the
-        ``RuntimeError`` and returns ``None``, which ``rerun_documents`` reports as
-        ``Document not found``. So a rerun of a document that is sitting in the
-        tracking table, with its artifacts in S3, queues nothing, deletes nothing,
-        updates nothing, and returns a result an operator would read as "that
-        document isn't there" — sending them to look at the wrong thing.
-
-        Every document fails this way, so the defect is total rather than
-        intermittent. This test deliberately does *not* use the
-        ``idp_common_importable`` fixture: it is the as-shipped behaviour.
+        No part of the lookup is patched, so a lookup that cannot find
+        ``idp_common`` fails this test instead of being routed around.
         """
         result = processor.rerun_documents([stored_document], step="classification")
 
-        assert result == {
-            "documents_queued": 0,
-            "documents_failed": 1,
-            "failed_documents": [
-                {"object_key": stored_document, "error": "Document not found"}
-            ],
-            "step": "classification",
-        }
+        assert result["failed_documents"] == []
+        assert result["documents_queued"] == 1
+        assert len(_queued_messages(aws)) == 1
+
+    def test_a_stack_without_a_tracking_table_is_reported_as_that(
+        self, processor, aws, stored_document
+    ):
+        """The reason reaches the caller, not only the log.
+
+        The CLI prints each entry of ``failed_documents``, so this string is
+        what an operator reads. "Document not found" would send them to look for
+        a document that is sitting in the table.
+        """
+        processor.resources["DocumentsTable"] = ""
+
+        result = processor.rerun_documents([stored_document], step="classification")
+
+        assert result["documents_queued"] == 0
+        (failure,) = result["failed_documents"]
+        assert failure["object_key"] == stored_document
+        assert failure["error"] != "Document not found"
+        assert f"TrackingTable not found in stack '{STACK_NAME}'" in failure["error"]
         assert _queued_messages(aws) == []
-        assert _output_keys(aws) == [
-            "lending_package.pdf/sections/1/result.json",
-            "lending_package.pdf/sections/2/result.json",
-        ]
         assert _tracking_row(aws)["ObjectStatus"]["S"] == "COMPLETED"
+
+    def test_a_dynamodb_failure_is_reported_as_that(
+        self, processor, aws, stored_document
+    ):
+        processor.resources["DocumentsTable"] = "a-table-that-does-not-exist"
+
+        result = processor.rerun_documents([stored_document], step="extraction")
+
+        (failure,) = result["failed_documents"]
+        assert failure["error"] == "Get item failed: Requested resource not found"
+        assert _queued_messages(aws) == []
 
 
 @pytest.mark.unit
@@ -945,7 +1054,7 @@ class TestRerunDocumentsEndToEnd:
     """``rerun_documents`` with ``idp_common`` reachable, so the real path runs."""
 
     def test_a_classification_rerun_queues_resets_and_deletes(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """One document through the whole sequence, checked in all three places.
 
@@ -974,7 +1083,7 @@ class TestRerunDocumentsEndToEnd:
         assert _output_keys(aws) == []
 
     def test_an_extraction_rerun_keeps_the_sections_and_the_artifacts(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         result = processor.rerun_documents([stored_document], step="extraction")
 
@@ -991,7 +1100,7 @@ class TestRerunDocumentsEndToEnd:
         ]
 
     def test_one_missing_document_does_not_stop_the_others(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """A partial failure must be partial.
 
@@ -1010,7 +1119,7 @@ class TestRerunDocumentsEndToEnd:
         assert len(_queued_messages(aws)) == 1
 
     def test_an_unrecognised_step_is_reported_per_document_not_raised(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """A mistyped step name becomes a per-document failure, not an error.
 
@@ -1114,7 +1223,7 @@ class TestTheMalwareGateIsNotBypassable:
         ],
     )
     def test_a_gated_document_is_refused_and_never_queued(
-        self, processor, aws, idp_common_importable, status, expected_in_error
+        self, processor, aws, status, expected_in_error
     ):
         item = _tracking_item()
         item["ObjectStatus"] = {"S": status}
@@ -1128,7 +1237,7 @@ class TestTheMalwareGateIsNotBypassable:
         # The property that matters: the pipeline never heard about it.
         assert _queued_messages(aws) == []
 
-    def test_the_row_is_left_alone(self, processor, aws, idp_common_importable):
+    def test_the_row_is_left_alone(self, processor, aws):
         """The refusal happens before ``_update_document_status``, so a refused
         document keeps its malware status rather than being reset to QUEUED — which
         would both lose the verdict and make the document look admitted in the UI.
@@ -1142,7 +1251,7 @@ class TestTheMalwareGateIsNotBypassable:
         assert _tracking_row(aws)["ObjectStatus"]["S"] == "QUARANTINED"
 
     def test_its_clean_siblings_in_a_batch_still_run(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document
     ):
         """Skipped-and-reported rather than raised, and this is why.
 
@@ -1164,9 +1273,7 @@ class TestTheMalwareGateIsNotBypassable:
         queued = [message["input_key"] for message in _queued_messages(aws)]
         assert queued == [stored_document]
 
-    def test_an_ordinary_document_is_unaffected(
-        self, processor, aws, stored_document, idp_common_importable
-    ):
+    def test_an_ordinary_document_is_unaffected(self, processor, aws, stored_document):
         """Non-vacuity: the guard must not refuse everything. A COMPLETED document
         has no malware status and reprocesses normally."""
         result = processor.rerun_documents([stored_document], step="extraction")

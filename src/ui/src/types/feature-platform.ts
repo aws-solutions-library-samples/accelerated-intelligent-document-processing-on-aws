@@ -11,6 +11,8 @@
  * src/ui/src/graphql/generated/ and this file becomes a re-export shim.
  */
 
+import type { Locale } from '../i18n/locales';
+
 export type FeatureEntitlementState = 'NONE' | 'ACTIVE' | 'EXPIRED';
 
 /** "oss" = open-source bundled feature (install directly); "marketplace" =
@@ -200,6 +202,14 @@ export interface FeatureContext {
    * seller-side check.
    */
   entitlementVerified: boolean;
+  /**
+   * The web UI's language: one of the enabled locales (`en`; `fr-CA` once its catalog
+   * ships; `en-XA` on pseudo-locale builds), exactly as `LocaleProvider` resolved it,
+   * never a raw stored or browser value. A language switch re-renders the feature's
+   * component with the new value; it does not remount it. Extensions declare it
+   * optional (`locale?: string`): hosts older than this field do not pass it.
+   */
+  locale: Locale;
 }
 
 declare global {

@@ -98,6 +98,20 @@ class SummarizationService:
         # store_results parameter controls whether to create and store the markdown report
 ```
 
+When a section's summary fails, `process_document` records the error on the document
+and returns it with status `FAILED`, except for a transient failure (a throttle that
+outlasted the Bedrock client's retries, a read timeout, a bare HTTP 5xx), which it
+raises as `idp_common.utils.transient_errors.TransientError` so the caller can retry
+the document. `SummarizationStep` retries that name. A document with no sections is
+summarized in one call, and any failure of that call is raised as it is.
+
+The raised `TransientError` carries the usage of the sections that finished, and of
+any reply a failed section had received, as its failure metering
+(`utils.failure_metering`). The summarization Lambda writes that usage to the
+tracking record and leaves the document's status at `SUMMARIZING`, so a document about
+to be retried is not shown as failed. A hard failure merges the same usage into the
+`FAILED` document it returns.
+
 ### When a summary cannot be produced
 
 `process_text` returns a stub summary rather than raising in two cases, so the

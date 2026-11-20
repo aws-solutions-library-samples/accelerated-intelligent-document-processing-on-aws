@@ -428,15 +428,15 @@ The second is that `ruff` still does not read everything, and what it skips is
 now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
-when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 71 files
-holding 172 pre-existing findings, and `[format] exclude` names 156 files that
-`ruff format` has never been run over. Both counts fall as files are paid off, and
-`scripts/tests/test_contributing_doc.py` reads them out of
-`scripts/lint_debt.json` and fails if the right figure appears nowhere on this page.
-⚠️ It checks for *presence*, not for absence of a wrong one, so it cannot see a second
-stale copy of the count — which is how this file once carried three sentences quoting
-two different numbers with that gate green. If you change a count, change every
-occurrence. Two further entries in the
+when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names the files
+that held pre-existing findings, and `[format] exclude` names the files that
+`ruff format` has never been run over. Both lists shrink as files are paid off, so
+this page does not quote their sizes. Both arrays are generated from
+`scripts/lint_debt.json`, so its `lintDebt` and `formatDebt` objects are the
+source of truth, and a green `python3 scripts/check_lint_debt.py` prints both
+sizes.
+`scripts/tests/test_documented_counts.py` fails if a figure for either list is
+written back into prose. Two further entries in the
 top-level
 `extend-exclude` are scope decisions rather than debt — the vendored
 `pii-anonymizer` tree, and `**/*.ipynb`, because `E402`/`F811`/`I001` describe a
@@ -670,8 +670,10 @@ It also resolves this repository's own packages, via `pyrightconfig.json`'s
 `extraPaths`. That matters more than it sounds: without it `idp_common` did not
 resolve, `reportMissingImports` is configured `"none"`, and so **no call into the
 shared library could produce a diagnostic** — the gate read every file and proved
-much less than that suggests. If you add a `lib/<something>` distribution, add its
-package root to `extraPaths`; the suite fails until you do.
+much less than that suggests. If you add a `lib/<something>` distribution, or a
+distribution anywhere else whose package is imported from outside its own directory
+(as `scripts/` imports `idp_tf` from `terraform/translator`), add its package root to
+`extraPaths`; the suite fails until you do.
 
 Errors fail it and warnings do not. To see today's warning split, run
 `make typecheck` and read the tally it prints rather than a list written here — it
@@ -864,8 +866,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 **Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
 88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
 an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`
-still excludes a named list of 82 files from the linter and 171 from the
-formatter. Both caveats are explained under
+still excludes a named list of files from the linter and another from the
+formatter (their sizes are the `lintDebt` and `formatDebt` entries in
+`scripts/lint_debt.json`). Both caveats are explained under
 [the local gate set](#before-every-commit), along with how to pay one of those
 files off. Types are checked
 with `basedpyright` (`pyrightconfig.json`), which is installed separately with

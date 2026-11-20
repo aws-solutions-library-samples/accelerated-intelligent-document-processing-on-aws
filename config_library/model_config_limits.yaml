@@ -288,8 +288,31 @@ model_limits:
   # ---------------------------------------------------------------------------
   # Amazon Nova Models (all generations)
   # ---------------------------------------------------------------------------
-  # Nova Pro/Lite: 300K context; Nova Micro: 128K; Nova 2: 300K. Use the
-  # conservative 300K for the family (the context buffer adds further safety).
+  # The family does not share one window, so the members whose model card gives
+  # a different one have their own entry, placed BEFORE the family pattern (first
+  # match wins). Each figure is from that model's Bedrock model card.
+  #
+  # Nova 2 Lite: 1M context, 64K max output (its Bedrock model card; the Nova 2
+  # user guide states 65,536 output tokens, and the card's smaller figure is the
+  # one used). The family pattern below also matches it (through `2`), so
+  # without this entry it would be auto-sized for a window under a third of its
+  # real one, with a 10K output cap.
+  - pattern: "nova-2-lite"
+    max_output_tokens: 64000
+    max_input_tokens: 1000000
+    description: "Amazon Nova 2 Lite - 1M context, 64K max output"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-2-lite.html"
+  # Nova Micro: 128K context, 10K max output. The family's 300K would size its
+  # shards larger than its whole window.
+  - pattern: "nova-micro"
+    max_output_tokens: 10000
+    max_input_tokens: 128000
+    description: "Amazon Nova Micro - 128K context, 10K max output"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-micro.html"
+  # Nova Pro and Nova Lite: 300K context, 10K max output (their model cards).
+  # `2` keeps any other Nova 2 id on these conservative values: Nova 2 Pro is
+  # offered here only as a fine-tuning base model and has no Bedrock model card
+  # to take a window from, so it is not given Nova 2 Lite's.
   # `premier` stays in this pattern even though Nova Premier is end-of-life and
   # no longer selectable. Like pricing.yaml and the template's quota-code maps,
   # this file is consulted for whatever model a DEPLOYED stack's stored config
@@ -297,11 +320,11 @@ model_limits:
   # get_model_max_output_tokens raise "Unsupported model ID ... run
   # discover_model_limits.py" for such a config, replacing Bedrock's accurate
   # end-of-life error with a misleading one.
-  - pattern: "nova-(premier|pro|lite|micro|2)"
+  - pattern: "nova-(premier|pro|lite|2)"
     max_output_tokens: 10000
     max_input_tokens: 300000
-    description: "Amazon Nova models (Premier, Pro, Lite, Micro, Nova 2) - ~300K context"
-    reference: "https://docs.aws.amazon.com/nova/latest/userguide/what-is-nova.html"
+    description: "Amazon Nova Pro, Lite, Premier and other Nova 2 models - 300K context, 10K max output"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-pro.html"
 
   # ---------------------------------------------------------------------------
   # Unknown Models

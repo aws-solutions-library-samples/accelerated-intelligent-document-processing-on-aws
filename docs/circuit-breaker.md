@@ -221,7 +221,7 @@ Where each coefficient is `1` if the corresponding trigger is enabled and `0` ot
 |-----------|---------|-------------|
 | `CircuitBreakerEnabled` | `false` | Master switch. Set to `true` to provision the alarm, SNS topic, manager Lambda, and traffic gate. |
 | `CircuitBreakerTriggerServiceUnavailable` | `true` | Count `BedrockServiceUnavailable` errors (see [Error categories](#error-categories)) toward threshold. |
-| `CircuitBreakerTriggerThrottling` | `false` | Count `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded`. |
+| `CircuitBreakerTriggerThrottling` | `false` | Count `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded`, and an HTTP 429 reply that names no error type. |
 | `CircuitBreakerTriggerQuotaLimit` | `false` | Count `ServiceQuotaExceededException`. |
 | `CircuitBreakerFailureThreshold` | `3` | Combined error count per 5-minute period to breach. |
 | `CircuitBreakerEvaluationPeriods` | `1` | Consecutive periods that must breach. |
@@ -237,7 +237,7 @@ The Bedrock client in `idp_common` emits category-specific CloudWatch metrics un
 | Metric | Bedrock exception code(s) | Typical cause |
 |--------|---------------------------|---------------|
 | `BedrockServiceUnavailable` | `ServiceUnavailableException`, or an HTTP 503 whose code names no other category. On the bedrock-mantle path (OpenAI models), any HTTP 500 or above | Bedrock service degradation or regional outage |
-| `BedrockThrottling` | `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded` | Client-side throughput limits reached |
+| `BedrockThrottling` | `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded`, or an HTTP 429 that names no error type (botocore's code `"429"`) | Client-side throughput limits reached |
 | `BedrockQuotaLimit` | `ServiceQuotaExceededException` | Account quota exhausted for the model |
 
 These metrics are emitted unconditionally, independent of `CircuitBreakerEnabled`, so you can observe Bedrock error rates even when the circuit breaker is disabled.

@@ -38,6 +38,7 @@ export default defineConfig({
               slug: "references",
             },
             { label: "Hands-on Workshops", slug: "workshops" },
+            { label: "Solution Profile", slug: "solution-profile" },
           ],
         },
         {
@@ -226,6 +227,10 @@ export default defineConfig({
               ],
             },
             {
+              label: "Document Attributes",
+              slug: "document-attributes",
+            },
+            {
               label: "Document Versions",
               slug: "document-versions",
             },
@@ -268,6 +273,7 @@ export default defineConfig({
           items: [
             { label: "Threat Model", slug: "threat-model" },
             { label: "Malware Scanning", slug: "malware-scanning" },
+            { label: "Customer Managed KMS Key", slug: "customer-managed-kms-key" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",

@@ -4685,6 +4685,42 @@ TERRAFORM_DEPLOY_LOG = "idp-cli-deploy.log"
 TERRAFORM_DELETE_LOG = "idp-cli-delete.log"
 TERRAFORM_LOG_TAIL_LINES = 120
 
+#: The re-plan after apply (check_terraform_convergence): its output, and the
+#: saved plan `show -json` reads. The plan file holds every planned value,
+#: sensitive ones in clear, so it is deleted once read and never copied to S3.
+TERRAFORM_REPLAN_LOG = "terraform-replan.log"
+TERRAFORM_REPLAN_PLAN_FILE = "replan.tfplan"
+#: A refresh of every resource through Cloud Control, which is most of a plan's
+#: time; an estimate, well under the suite allowance below.
+TERRAFORM_REPLAN_TIMEOUT_SECONDS = 45 * 60
+#: How many changed addresses the failure names before it summarises the rest.
+TERRAFORM_REPLAN_LISTED_CHANGES = 25
+#: The step_results row the re-plan's verdict is reported under.
+TERRAFORM_CONVERGENCE_STEP = "Step 2b: Terraform re-plan after apply is empty"
+#: The step_results row a Terraform run refused before the steps reports under.
+TERRAFORM_STEPS_REFUSED_ROW = "Steps not started (too little build time left)"
+
+#: The resource-parity check (check_terraform_parity): a CloudFormation twin of
+#: the same commit, deployed beside the Terraform deployment, compared with it by
+#: terraform/tools/parity.py against that tool's baseline. Opt-in per schedule,
+#: and only on a Terraform run: the variable the schedule carries, the field it
+#: reaches the build in, and the suffix of the twin's stack name.
+TERRAFORM_PARITY_VARIABLE = "IDP_TERRAFORM_PARITY"
+TERRAFORM_PARITY_OPTION = "terraform_parity"
+TERRAFORM_PARITY_TWIN_SUFFIX = "cfn"
+#: The step_results row the parity verdict is reported under.
+TERRAFORM_PARITY_STEP = (
+    "Step 2c: Terraform deployment matches its CloudFormation twin "
+    "(terraform/tools/parity.py)"
+)
+#: How long the parity check waits, after the Terraform deploy and its re-plan,
+#: for the twin's deploy to finish. The two deploys start together, so this is
+#: the margin by which the CloudFormation deploy may be the slower one.
+TERRAFORM_PARITY_TWIN_WAIT_SECONDS = 60 * 60
+#: How many differences the row names before it summarises the rest.
+TERRAFORM_PARITY_LISTED_DIFFERENCES = 25
+
+
 #: Heads the consolidated summary, and marks the failure email's subject, on a
 #: Terraform run, so its result is never read as the CloudFormation nightly's.
 #: The Terraform schedule runs every night too, so the label names the deploy
@@ -5189,7 +5225,7 @@ def terraform_log_tail(directory, lines=TERRAFORM_LOG_TAIL_LINES):
     `apply` names the failing resource and the provider's error in its output.
     """
     chunks = []
-    for name in (TERRAFORM_DEPLOY_LOG, TERRAFORM_DELETE_LOG):
+    for name in (TERRAFORM_DEPLOY_LOG, TERRAFORM_REPLAN_LOG, TERRAFORM_DELETE_LOG):
         path = os.path.join(directory, name)
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
@@ -5393,6 +5429,544 @@ def _sweep_terraform_resource_directory(cf, stack_name, deployer=None, clients=N
     return left
 
 
+def _changed_paths(before, after, unknown, path=()):
+    """Every leaf attribute path at which a planned change differs.
+
+    ``unknown`` is the change's ``after_unknown`` at the same position: a value
+    known only after apply counts as changed, since nothing says it will equal
+    the stored one. Objects are compared key by key and equal-length lists item
+    by item; anything else that differs is changed at its own path.
+    """
+    if unknown is True:
+        return [path]
+    if isinstance(before, dict) and isinstance(after, dict):
+        unknown = unknown if isinstance(unknown, dict) else {}
+        found = []
+        for key in sorted(set(before) | set(after) | set(unknown)):
+            found += _changed_paths(
+                before.get(key), after.get(key), unknown.get(key), (*path, key)
+            )
+        return found
+    if (
+        isinstance(before, list)
+        and isinstance(after, list)
+        and len(before) == len(after)
+    ):
+        unknown = unknown if isinstance(unknown, list) else []
+        found = []
+        for index, (old, new) in enumerate(zip(before, after)):
+            mark = unknown[index] if index < len(unknown) else None
+            found += _changed_paths(old, new, mark, (*path, index))
+        return found
+    return [] if before == after else [path]
+
+
+def _describe_change(change):
+    """One line naming an address, its actions and the attribute paths it
+    changes. Paths only: the values can be sensitive and the line is printed."""
+    detail = change.get("change") or {}
+    actions = "/".join(detail.get("actions") or ["?"])
+    line = f"{change.get('address', '?')} ({actions})"
+    if detail.get("actions") == ["update"]:
+        paths = [
+            ".".join(str(part) for part in path)
+            for path in _changed_paths(
+                detail.get("before"), detail.get("after"), detail.get("after_unknown")
+            )
+        ]
+        if paths:
+            shown = ", ".join(paths[:8])
+            more = f" and {len(paths) - 8} more" if len(paths) > 8 else ""
+            line += f": {shown}{more}"
+    return line
+
+
+def judge_terraform_replan(returncode, plan_json, log_tail=""):
+    """The verdict on the re-plan after apply, from `plan -detailed-exitcode`'s
+    exit status and the saved plan's `show -json` text.
+
+    Returns ``{"status", "detail", "changes"}``. ``status`` is ``converged``
+    (exit 0), ``drift`` (exit 2, whatever the changes are), or ``error`` (exit 1, a timeout, or a plan that could not be read):
+    the re-plan did not answer, so whether the module converges is unknown.
+    ``changes`` holds the description lines of the changes. Only ``converged``
+    passes.
+    """
+    verdict = {"status": "error", "detail": "", "changes": []}
+    if returncode == 0:
+        verdict.update(status="converged", detail="the re-plan after apply is empty")
+        return verdict
+    if returncode != 2:
+        tail = (log_tail or "").strip()[-600:]
+        verdict["detail"] = (
+            f"`terraform plan -detailed-exitcode` exited {returncode}, so whether "
+            "the module converges is unknown"
+            + (f"; plan output ends: {tail}" if tail else "")
+        )
+        return verdict
+    try:
+        plan = json.loads(plan_json or "")
+    except ValueError:
+        verdict["detail"] = (
+            "the re-plan after apply is not empty (exit 2), and its saved plan "
+            "could not be read to name the changes"
+        )
+        return verdict
+    for change in plan.get("resource_changes") or []:
+        if (change.get("change") or {}).get("actions") == ["no-op"]:
+            continue
+        verdict["changes"].append(_describe_change(change))
+    for name, output in sorted((plan.get("output_changes") or {}).items()):
+        actions = (output or {}).get("actions") or ["?"]
+        if actions != ["no-op"]:
+            verdict["changes"].append(f"output.{name} ({'/'.join(actions)})")
+    if not verdict["changes"]:
+        verdict["changes"].append(
+            "exit 2 with no resource or output change in the saved plan"
+        )
+    listed = verdict["changes"][:TERRAFORM_REPLAN_LISTED_CHANGES]
+    rest = len(verdict["changes"]) - len(listed)
+    verdict.update(
+        status="drift",
+        detail=(
+            f"the re-plan after apply is not empty: {len(verdict['changes'])} "
+            "change(s), so the module does not converge: "
+            + "; ".join(listed)
+            + (f"; and {rest} more" if rest > 0 else "")
+        ),
+    )
+    return verdict
+
+
+def check_terraform_convergence(terraform):
+    """Re-plan the deployment straight after its apply; the plan must be empty.
+
+    `plan -detailed-exitcode` exits 0 for an empty plan, 2 for a non-empty one
+    and 1 on error. `-lock=false` because the plan writes no state and its saved
+    plan is never applied, while a plan killed by the timeout would leave the S3
+    lock file behind and block the run's own destroy. The plan's text goes to TERRAFORM_REPLAN_LOG rather than the
+    build log, which gets the bounded list judge_terraform_replan makes from the
+    saved plan's JSON. That JSON carries sensitive values in clear, so it is read
+    here without being echoed, and the saved plan is deleted afterwards.
+    """
+    binary = shlex.quote(terraform.binary)
+    directory = shlex.quote(terraform.directory)
+    log_path = os.path.join(terraform.directory, TERRAFORM_REPLAN_LOG)
+    plan_path = os.path.join(terraform.directory, TERRAFORM_REPLAN_PLAN_FILE)
+    replan = run_command(
+        f"TF_IN_AUTOMATION=1 {binary} -chdir={directory} plan -input=false "
+        "-lock=false -no-color -detailed-exitcode "
+        f"-out={TERRAFORM_REPLAN_PLAN_FILE} "
+        f"> {shlex.quote(log_path)} 2>&1",
+        check=False,
+        timeout=TERRAFORM_REPLAN_TIMEOUT_SECONDS,
+    )
+    log_tail = ""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as handle:
+            log_tail = handle.read()[-2000:]
+    except OSError:
+        pass
+    plan_json = None
+    if replan.returncode == 2:
+        try:
+            shown = subprocess.run(  # nosec B603 - fixed argv, no shell
+                [
+                    terraform.binary,
+                    f"-chdir={terraform.directory}",
+                    "show",
+                    "-json",
+                    TERRAFORM_REPLAN_PLAN_FILE,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+                env={**os.environ, "TF_IN_AUTOMATION": "1"},
+            )
+            plan_json = shown.stdout if shown.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"⚠️ Could not read the re-plan's saved plan: {e}")
+    try:
+        os.remove(plan_path)
+    except OSError:
+        pass
+    verdict = judge_terraform_replan(replan.returncode, plan_json, log_tail)
+    icon = "✅" if verdict["status"] == "converged" else "❌"
+    print(f"{icon} Terraform re-plan after apply: {verdict['detail']}")
+    return verdict
+
+
+def terraform_convergence_rows(convergence):
+    """The step_results row for a re-plan verdict: ``{}`` for a run that made
+    none (CloudFormation), otherwise one row, failed on drift or error and
+    passed otherwise."""
+    if not convergence:
+        return {}
+    if convergence["status"] != "converged":
+        return {
+            TERRAFORM_CONVERGENCE_STEP: {
+                "status": "failed",
+                "error": convergence["detail"],
+            }
+        }
+    return {TERRAFORM_CONVERGENCE_STEP: {"status": "passed", "error": ""}}
+
+
+# ---------------------------------------------------------------------------
+# Resource parity: the Terraform deployment against a CloudFormation twin
+#
+# A Terraform run whose schedule also carries IDP_TERRAFORM_PARITY=true deploys
+# the same commit's template with CloudFormation as a second stack (the twin),
+# with the parameters the Terraform deploy passes, at the same time as the
+# Terraform deploy. Once both are up and the re-plan has run, terraform/tools/
+# parity.py (`make terraform-parity`) compares them resource by resource against
+# its baseline, and the verdict is a row of the step table. The twin is then torn
+# down while the suite runs against the Terraform deployment, on its own thread,
+# in a `finally`, so every exit of the run reaches it, and main() joins that
+# teardown before the run's verdict is written.
+#
+# What fails the run is the tool's own judgement (Report.ok): an unexplained
+# difference, a resource on one side only, or a stale baseline entry. A type
+# Cloud Control cannot read is listed and does not fail it. A twin that did not
+# deploy, or a comparison that could not run, fails the row as an error, which
+# the row's wording keeps apart from a difference.
+# ---------------------------------------------------------------------------
+
+
+def terraform_parity_mode(
+    environ: dict | None = None, options: dict | None = None
+) -> bool:
+    """Whether this build runs the parity check: IDP_TERRAFORM_PARITY in the
+    environment (a run started by hand), else the schedule's choice in
+    ci_run_options.json. main() writes the answer back to the environment."""
+    env = os.environ if environ is None else environ
+    value = str(env.get(TERRAFORM_PARITY_VARIABLE, "")).strip().lower()
+    if not value and isinstance(options, dict):
+        value = "true" if options.get(TERRAFORM_PARITY_OPTION) is True else ""
+    return value == "true"
+
+
+def terraform_parity_unsupported_reason(environ: dict | None = None) -> str | None:
+    """Why this build cannot run the parity check, or None. It compares a
+    Terraform deployment with its twin, so it needs a Terraform run."""
+    if not terraform_run(environ):
+        return (
+            f"{TERRAFORM_PARITY_VARIABLE}=true needs {IAC_VARIABLE}=terraform: the "
+            "parity check compares the Terraform deployment with a CloudFormation "
+            "twin, and a CloudFormation run has no Terraform deployment"
+        )
+    return None
+
+
+def terraform_parity_twin_name(stack_name: str) -> str:
+    """The twin's stack name: the run's own name plus a suffix, so the startup
+    sweeps treat it as one of this run's stacks."""
+    return f"{stack_name}-{TERRAFORM_PARITY_TWIN_SUFFIX}"
+
+
+def _terraform_parity_tool():
+    """terraform/tools/parity.py, loaded by path: it is a script, not a package."""
+    import importlib.util
+
+    repo_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    path = os.path.join(repo_root, "terraform", "tools", "parity.py")
+    spec = importlib.util.spec_from_file_location("idp_terraform_parity", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    # Registered before it runs: its dataclasses resolve their module through
+    # sys.modules, and fail to define without it.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _role_session(role_arn):
+    """A boto3 session as ``role_arn``, built without touching the default
+    session, which other threads of this build are using."""
+    creds = boto3.client("sts").assume_role(
+        RoleArn=role_arn, RoleSessionName="idp-tf-parity", DurationSeconds=3600
+    )["Credentials"]
+    return boto3.Session(
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+        region_name=ci_region(),
+    )
+
+
+def judge_terraform_parity(report):
+    """{"status", "detail"} from a parity.Report: ``same`` when the tool's own
+    verdict (Report.ok) passes, ``differs`` otherwise.
+
+    The detail names each finding by resource and property path only. The
+    tool's per-property text carries both sides' values, and some resources Cloud
+    Control reads return a secret among their properties (a Cognito app client's
+    secret is one), so values stay out of the build log, the way the re-plan's
+    planned values do.
+    """
+    findings = [f"{who} {prop}" for who, prop, _ in report.differences]
+    findings += [f"{who} (only in CloudFormation)" for who in report.only_cfn]
+    findings += [f"{who} (only in Terraform)" for who in report.only_tf]
+    findings += [f"stale baseline entry {kind} {path}" for kind, path in report.stale]
+    tally = (
+        f"{len(report.differences)} unexplained difference(s), "
+        f"{len(report.only_cfn)} resource(s) only in CloudFormation, "
+        f"{len(report.only_tf)} only in Terraform, "
+        f"{len(report.stale)} stale baseline entr(y/ies)"
+    )
+    context = (
+        f"{report.compared} resources compared, "
+        f"{len(report.explained)} difference(s) explained by "
+        "terraform/tools/parity_baseline.json, "
+        f"{len(report.unreadable)} resource(s) Cloud Control cannot read"
+    )
+    if report.ok:
+        return {"status": "same", "detail": f"{tally}; {context}", "findings": []}
+    listed = findings[:TERRAFORM_PARITY_LISTED_DIFFERENCES]
+    more = len(findings) - len(listed)
+    # Led by the tally, because the summary table shows a row's first 120
+    # characters; "differs:" keeps a finding apart from "not compared:".
+    detail = (
+        f"differs: {tally} ({context}): "
+        + "; ".join(listed)
+        + (f"; and {more} more" if more else "")
+    )
+    return {"status": "differs", "detail": detail, "findings": findings}
+
+
+def check_terraform_parity(twin_name, stack_name, role_arn, *, session=None, tool=None):
+    """Compare the Terraform deployment ``stack_name`` with its CloudFormation
+    twin ``twin_name`` through terraform/tools/parity.py, as ``role_arn``.
+
+    As the Terraform deploy role because the build role holds no Cloud Control
+    grant (see terraform_deploy_role_template), and that role reads every
+    resource either deployment has, both being named under the run's prefix.
+    Returns judge_terraform_parity's verdict, or ``{"status": "error"}`` when the
+    comparison could not run at all, which is not a parity finding.
+    """
+    try:
+        tool = tool or _terraform_parity_tool()
+        session = session or _role_session(role_arn)
+        cfn = session.client("cloudformation")
+        baseline = json.loads(tool.BASELINE.read_text(encoding="utf-8"))["entries"]
+        report = tool.compare(
+            tool.cfn_tree(cfn, twin_name),
+            tool.tf_tree(cfn, session.client("s3"), stack_name),
+            # One read per paired resource on each side: ride out throttling
+            # rather than lose the whole comparison to one ThrottlingException.
+            session.client("cloudcontrol", config=_THROTTLE_RETRY_CONFIG),
+            session.client("lambda", config=_THROTTLE_RETRY_CONFIG),
+            baseline,
+            # The tool's per-resource lines carry property values; see
+            # judge_terraform_parity for why those are not printed.
+            log=lambda _line: None,
+        )
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - reported as the row
+        verdict = {
+            "status": "error",
+            "detail": f"not compared: the parity check could not run: {type(e).__name__}: {e}",
+            "findings": [],
+        }
+        print(f"❌ Terraform/CloudFormation parity: {verdict['detail']}")
+        return verdict
+    verdict = judge_terraform_parity(report)
+    icon = "✅" if verdict["status"] == "same" else "❌"
+    print(f"{icon} Terraform/CloudFormation parity: {verdict['detail']}")
+    for finding in verdict["findings"]:
+        print(f"    {finding}")
+    return verdict
+
+
+def terraform_parity_rows(parity):
+    """The step_results row for a parity verdict: ``{}`` when none was made,
+    otherwise one row, passed only when the tool found the two the same."""
+    if not parity:
+        return {}
+    if parity["status"] != "same":
+        return {TERRAFORM_PARITY_STEP: {"status": "failed", "error": parity["detail"]}}
+    return {TERRAFORM_PARITY_STEP: {"status": "passed", "error": ""}}
+
+
+class TerraformParityTwin:
+    """The CloudFormation twin's lifetime, on a thread of its own.
+
+    start() deploys the twin through the primary CloudFormation deploy attempt
+    (the same `-iam` pre-stack, boundary and `--parameters` pairs the Terraform
+    deploy uses); compare() waits for that deploy and runs the parity check;
+    release() lets the thread tear the twin down; join() waits for the teardown
+    and returns its findings. The teardown sits in the thread's `finally`, so a
+    failed deploy, a failed comparison and a run that never calls compare() all
+    reach it, and main() calls release() and join() on every path out of the
+    primary suite. The thread opts out of the suite's fail-fast abort, as a
+    probe's does: the twin is an independent stack.
+    """
+
+    def __init__(
+        self, stack_name, admin_email, template_url, *, deploy=None, teardown=None
+    ):
+        self.stack_name = stack_name
+        self.twin_name = terraform_parity_twin_name(stack_name)
+        self.admin_email = admin_email
+        self.template_url = template_url
+        self._deploy = deploy or _deploy_primary_stack_attempt
+        self._teardown = teardown or (lambda name: cleanup_stack({"stack_name": name}))
+        self._deployed = threading.Event()
+        self._released = threading.Event()
+        self.deploy_result: dict | None = None
+        self._executor = None
+        self._future = None
+
+    def _run(self):
+        _thread_local.never_abort = True
+        try:
+            print(
+                f"🪞 Deploying the CloudFormation twin {self.twin_name} for parity..."
+            )
+            try:
+                self.deploy_result = self._deploy(
+                    self.twin_name, self.admin_email, self.template_url
+                )
+            except Exception as e:  # noqa: BLE001
+                self.deploy_result = {"success": False, "error": str(e)}
+            self._deployed.set()
+            if self.deploy_result.get("success"):
+                self._released.wait()
+        finally:
+            self._deployed.set()
+            print(f"🧹 Tearing down the CloudFormation twin {self.twin_name}...")
+            findings = self._teardown(self.twin_name)
+        return findings
+
+    def start(self):
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._future = self._executor.submit(self._run)
+        return self
+
+    def compare(self, role_arn, *, wait_seconds=None, check=None):
+        """The parity verdict: an error when the twin did not deploy in time or
+        failed to deploy, else check_terraform_parity's."""
+        wait = (
+            TERRAFORM_PARITY_TWIN_WAIT_SECONDS if wait_seconds is None else wait_seconds
+        )
+        if not self._deployed.wait(wait):
+            return {
+                "status": "error",
+                "detail": (
+                    f"not compared: the CloudFormation twin {self.twin_name} had "
+                    f"not finished deploying {wait // 60} minutes after the "
+                    "Terraform deployment"
+                ),
+                "findings": [],
+            }
+        result = self.deploy_result or {}
+        if not result.get("success"):
+            cause = _twin_root_cause(result.get("cf_events"))
+            return {
+                "status": "error",
+                "detail": (
+                    f"not compared: the CloudFormation twin {self.twin_name} did "
+                    f"not deploy: {result.get('error', 'reason not recorded')}"
+                    + (f"; first failure: {cause}" if cause else "")
+                ),
+                "findings": [],
+            }
+        return (check or check_terraform_parity)(
+            self.twin_name, self.stack_name, role_arn
+        )
+
+    def release(self):
+        self._released.set()
+
+    def join(self, timeout=None):
+        """Release the twin and wait for its teardown, for at most ``timeout``
+        seconds (None waits for it); its findings, or one naming the twin when
+        the teardown raised or had not finished in time.
+
+        On a timeout the twin's thread is left running and the run goes on to
+        the Terraform teardown, so that teardown keeps its time reserve; a twin
+        that outlives the build is the startup stack sweep's, by its run prefix.
+        """
+        self.release()
+        if self._future is None:
+            return []
+        try:
+            findings = list(self._future.result(timeout=timeout) or [])
+        except FuturesTimeoutError:
+            findings = [
+                f"{self.twin_name}: its teardown had not finished when the "
+                "Terraform destroy's time reserve was reached; it is left running, "
+                "and to cleanup_stale_idp_stacks if the build ends first"
+            ]
+        except Exception as e:  # noqa: BLE001
+            findings = [f"{self.twin_name}: the twin's teardown raised {e}"]
+        finally:
+            self._executor.shutdown(wait=False)
+        return [f"parity twin: {f}" for f in findings]
+
+
+def _twin_root_cause(events):
+    """``<logical id> (<type>) <status>: <reason>`` for the first concrete
+    failure among a twin's captured CloudFormation events, or ""."""
+    real = [e for e in (events or []) if isinstance(e, dict) and "status" in e]
+    if not real:
+        return ""
+    first = _filter_root_cause_events(real)[0]
+    return (
+        f"{first.get('logical_id', '?')} ({first.get('resource_type', '?')}) "
+        f"{first.get('status', '')}: {first.get('reason', '')}"
+    )[:300]
+
+
+def terraform_parity_join_seconds(started, codebuild=None, now=None):
+    """How long main() may wait for the twin's teardown: what is left of this
+    build's timeout less the Terraform destroy's reserve, never negative. None
+    when the timeout cannot be read, which waits, as an unknown shortfall is
+    not refused elsewhere either."""
+    minutes = build_timeout_minutes(codebuild)
+    if minutes is None:
+        return None
+    elapsed = (time.monotonic() if now is None else now) - started
+    return max(0.0, minutes * 60 - elapsed - TERRAFORM_TEARDOWN_RESERVE_SECONDS)
+
+
+def start_terraform_parity_twin(parity, terraform, stack_name, admin_email, url):
+    """The started twin of a parity run, or None on any other run."""
+    if not parity or terraform is None:
+        return None
+    # Started with the Terraform deploy, so the two deploys overlap.
+    return TerraformParityTwin(stack_name, admin_email, url).start()
+
+
+def join_terraform_parity_twin(twin, started):
+    """The twin's teardown findings for the run's teardown verdict, ``[]`` when
+    the run has no twin. Bounded by terraform_parity_join_seconds."""
+    if twin is None:
+        return []
+    return twin.join(timeout=terraform_parity_join_seconds(started))
+
+
+def resolve_terraform_parity(options, stack_name, environ=None):
+    """Whether this build runs the parity check; written back to the
+    environment. Raises ValueError when it cannot (see
+    terraform_parity_unsupported_reason)."""
+    env = os.environ if environ is None else environ
+    parity = terraform_parity_mode(env, options)
+    env[TERRAFORM_PARITY_VARIABLE] = "true" if parity else ""
+    if parity:
+        refusal = terraform_parity_unsupported_reason(env)
+        if refusal:
+            raise ValueError(refusal)
+        print(
+            "🪞 Parity: a CloudFormation twin "
+            f"({terraform_parity_twin_name(stack_name)}) is deployed beside the "
+            "Terraform deployment and compared with it"
+        )
+    return parity
+
+
 def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
     """One Terraform deploy + health check of the primary stack.
 
@@ -5454,7 +6028,16 @@ def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
     )
     if deploy.returncode == 0 and healthy:
         print(f"✅ Terraform deployment completed ({detail})")
-        return {"stack_name": stack_name, "success": True, "iac": IAC_TERRAFORM}
+        print("Step 2b: Re-planning the Terraform deployment...")
+        return {
+            "stack_name": stack_name,
+            "success": True,
+            "iac": IAC_TERRAFORM,
+            # Reported as a step by deploy_and_test_stack, which still runs the
+            # suite: a module that does not converge is a defect of its own, and
+            # the suite's result is worth having beside it.
+            "convergence": check_terraform_convergence(terraform),
+        }
 
     detail = (
         f"idp-cli deploy --terraform exit {deploy.returncode}; {detail}"
@@ -6011,11 +6594,20 @@ def deploy_and_test_stack(
     progress_cb=None,
     terraform=None,
     run_started=None,
+    parity_twin=None,
 ):
     """Deploy and test the unified IDP stack.
 
     terraform, a TerraformRun, deploys it with Terraform instead of
     CloudFormation (IDP_IAC=terraform). The steps are the same either way.
+
+    parity_twin, a started TerraformParityTwin (Terraform runs with
+    IDP_TERRAFORM_PARITY=true), is compared with the Terraform deployment after
+    the re-plan and before the steps, and released for teardown straight after,
+    so the twin does not stand for the length of the suite. The verdict is the
+    TERRAFORM_PARITY_STEP row; like the re-plan's it fails the run without
+    stopping the steps. A deployment that never became healthy makes no
+    comparison and reports no row; the twin is torn down by main() either way.
 
     progress_cb, if given, is called with the current step_results dict at each
     milestone (after the parallel pool drains, and after each sequential step).
@@ -6085,6 +6677,25 @@ def deploy_and_test_stack(
 
         print("✅ Stack is healthy")
 
+        # The re-plan's verdict leads the step table, because it describes the
+        # deployment the steps then use, and it is carried on every return from
+        # here on so no early exit drops it.
+        convergence = deploy_result.get("convergence")
+        convergence_rows = terraform_convergence_rows(convergence)
+        convergence_failed = bool(convergence) and (
+            convergence["status"] != "converged"
+        )
+
+        # Before the time check below, so the time the comparison takes is
+        # counted against what the steps have left.
+        if parity_twin is not None and terraform is not None:
+            parity = parity_twin.compare(terraform.role_arn)
+            parity_twin.release()
+            convergence_rows.update(terraform_parity_rows(parity))
+        else:
+            parity = None
+        parity_failed = bool(parity) and parity["status"] != "same"
+
         if terraform is not None:
             shortfall = terraform_suite_time_shortfall(
                 time.monotonic() if run_started is None else run_started
@@ -6097,6 +6708,18 @@ def deploy_and_test_stack(
                     "failure_type": "deploy",
                     "iac": IAC_TERRAFORM,
                     "error": f"Terraform run refused before the steps: {shortfall}",
+                    "convergence_failed": convergence_failed,
+                    "parity_failed": parity_failed,
+                    # The refusal is a failed row of its own: the summary reads
+                    # the rows in preference to `success`, so the re-plan's row
+                    # alone, when it passed, would render this run as a pass.
+                    "step_results": {
+                        **convergence_rows,
+                        TERRAFORM_STEPS_REFUSED_ROW: {
+                            "status": "failed",
+                            "error": shortfall,
+                        },
+                    },
                 }
 
         # Run tests 3-10 in parallel (Step 4 BDA now uses config-sync-bda + --config-version, no activation race)
@@ -6110,10 +6733,13 @@ def deploy_and_test_stack(
 
         # Per-step status for the consolidated end-of-run summary table. Steps
         # not reached (fail-fast cancels the rest) stay "cancelled".
-        step_results = {
-            f"{step}: {name}": {"status": "cancelled", "error": ""}
-            for _, step, name, _ in ALL_TEST_STEPS
-        }
+        step_results = dict(convergence_rows)
+        step_results.update(
+            {
+                f"{step}: {name}": {"status": "cancelled", "error": ""}
+                for _, step, name, _ in ALL_TEST_STEPS
+            }
+        )
 
         failed_test = None
         # No `with` block: its shutdown(wait=True) would join still-running
@@ -6194,6 +6820,43 @@ def deploy_and_test_stack(
                     "step_results": step_results,
                 }
             _emit(step_results)
+
+        if convergence_failed:
+            # Every step passed and the run still fails: the module did not
+            # converge. "drift" and "error" are told apart in the message.
+            label = (
+                "does not converge"
+                if convergence["status"] == "drift"
+                else "re-plan could not run"
+            )
+            print(f"❌ All steps passed, but the Terraform deployment {label}")
+            return {
+                "stack_name": stack_name,
+                "success": False,
+                "failure_type": "deploy",
+                "iac": IAC_TERRAFORM,
+                "error": f"{TERRAFORM_CONVERGENCE_STEP} failed: {convergence['detail']}",
+                "convergence_failed": True,
+                "parity_failed": parity_failed,
+                "step_results": step_results,
+            }
+
+        if parity_failed:
+            # Every step passed and the module converged; the deployment is not
+            # the one CloudFormation makes from the same template.
+            print(
+                "❌ All steps passed, but the Terraform deployment does not match "
+                "its CloudFormation twin"
+            )
+            return {
+                "stack_name": stack_name,
+                "success": False,
+                "failure_type": "deploy",
+                "iac": IAC_TERRAFORM,
+                "error": f"{TERRAFORM_PARITY_STEP} failed: {parity['detail']}",
+                "parity_failed": True,
+                "step_results": step_results,
+            }
 
         print("✅ All tests passed")
         return {
@@ -7182,16 +7845,34 @@ def terraform_failure_prompt(result, stack_name):
     events carry for CloudFormation.
     """
     log_tail = result.get("terraform_log_tail") or "(no Terraform log captured)"
+    convergence = ""
+    if result.get("convergence_failed"):
+        convergence = (
+            "\n    The apply itself succeeded. The run failed because the re-plan "
+            "straight after\n    it (`terraform plan -detailed-exitcode`, "
+            f"{TERRAFORM_REPLAN_LOG} below) was not\n    empty or could not run: "
+            "the deployment does not converge. The changed\n    addresses and "
+            "attribute paths are in the deployment error; for drift the root\n    "
+            "cause is those changes, not an `Error:` block, so name them.\n"
+        )
+    if result.get("parity_failed"):
+        convergence += (
+            "\n    The run also failed, or failed only, because the deployment does "
+            "not match a\n    CloudFormation deployment of the same template "
+            "(terraform/tools/parity.py):\n    the resources and property paths "
+            "are in the deployment error. Name them;\n    they are not an "
+            "`Error:` block in the log.\n"
+        )
     return dedent(f"""
     A Terraform deployment of the IDP accelerator (`idp-cli deploy --terraform`)
     failed. Analyze the Terraform output to determine the root cause.
-
+    {convergence}
     Deployment name: {stack_name}
 
     Deployment error:
     {result.get("error", "")}
 
-    Tail of the Terraform log (init and apply output):
+    Tail of the Terraform log (init and apply output, then the re-plan's):
     {log_tail}
 
     GROUNDING RULES — follow strictly:
@@ -11692,7 +12373,8 @@ def send_failure_notification(subject, summary_text):
 # Weekly Terraform-migration run (IDP_RUN_TERRAFORM_MIGRATION=true)
 #
 # Instead of the primary suite, the build runs scripts/sdlc/terraform_migration_test.py:
-# it deploys a pinned awslabs/genai-idp-terraform release, migrates it in place onto
+# it deploys a pinned awslabs/genai-idp-terraform release (a different one each week,
+# TERRAFORM_MIGRATION_UPSTREAM_TAG), migrates it in place onto
 # the module this build published, verifies, and destroys both. Every AWS call the
 # driver and its subprocesses make (upstream's Terraform and the `aws` commands its
 # provisioners run, `idp-cli`, boto3) goes through one AWS profile that assumes this
@@ -11709,6 +12391,12 @@ def send_failure_notification(subject, summary_text):
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: The driver's ``--upstream-tag`` on every migration run: the release for the
+#: run's week, rotating through the releases the driver pins (UPSTREAM_RELEASES
+#: and rotated_upstream_tag in terraform_migration_test.py), so weekly runs cover
+#: each in turn and the summary names the one this run took. A reap passes it too,
+#: and the driver keeps the release the dead run's context recorded.
+TERRAFORM_MIGRATION_UPSTREAM_TAG = "rotate"
 #: The line the GitLab job's after_script reads the build's summary from (its
 #: `sed -n '/<marker>/,$p'` over the CodeBuild log, in .gitlab-ci.yml). Every
 #: path that ends a build with a summary prints it first.
@@ -11855,7 +12543,8 @@ def terraform_migration_driver_command(
     process it starts already run as the run's TFDeployRole through the AWS
     profile (render_migration_aws_config), and that role's trust admits only the
     build's principal, so asking it to assume itself is refused — by the SDK's
-    own lookups in ``migrate plan`` and by the new root's providers alike."""
+    own lookups in ``migrate plan`` and by the new root's providers alike. The
+    upstream release rotates (TERRAFORM_MIGRATION_UPSTREAM_TAG)."""
     mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
@@ -11878,6 +12567,8 @@ def terraform_migration_driver_command(
         terraform_migration_upstream_iam_path(new_name),
         "--upstream-permissions-boundary-arn",
         boundary_arn,
+        "--upstream-tag",
+        TERRAFORM_MIGRATION_UPSTREAM_TAG,
         *mirror,
     ]
 
@@ -12340,6 +13031,8 @@ def main():
     run_options = read_ci_run_options()
     terraform = None
     migration = False
+    parity = False
+    parity_twin = None
     try:
         iac = iac_mode(options=run_options)
         os.environ[IAC_VARIABLE] = iac
@@ -12365,6 +13058,7 @@ def main():
             terraform_bin = ensure_terraform_binary()
         else:
             print("IaC: CloudFormation")
+        parity = resolve_terraform_parity(run_options, stack_name)
     except Exception as e:  # noqa: BLE001
         refusal_text = label_ci_run(f"❌ Run refused before deploying anything: {e}")
         print(refusal_text)
@@ -12636,6 +13330,10 @@ def main():
             )
             publish_summary_to_s3(snapshot)
 
+        parity_twin = start_terraform_parity_twin(
+            parity, terraform, stack_name, admin_email, template_url
+        )
+
         try:
             result = deploy_and_test_stack(
                 stack_name,
@@ -12644,6 +13342,7 @@ def main():
                 progress_cb=_publish_progress,
                 terraform=terraform,
                 run_started=main_started,
+                parity_twin=parity_twin,
             )
             if not result["success"]:
                 print(f"[{stack_name}] ❌ Failed")
@@ -12695,8 +13394,18 @@ def main():
         #
         # Reached on BOTH the success and the failure path, and the result is a
         # verification read back off the account rather than a cleanup message.
+        #
+        # The parity twin first: its thread makes boto3 calls on the default
+        # session, which the Terraform teardown switches to the deploy role.
+        # Released after the comparison, it has normally been deleting while
+        # the suite ran; on an early failure this waits for its deploy too, but
+        # never into the Terraform destroy's time reserve.
+        twin_findings = join_terraform_parity_twin(parity_twin, main_started)
         result["teardown"] = teardown_primary_stack(
             result, stack_name, terraform=terraform
+        )
+        result["teardown"]["findings"] = (
+            list(result["teardown"].get("findings") or []) + twin_findings
         )
 
         if diagnostics_uri:

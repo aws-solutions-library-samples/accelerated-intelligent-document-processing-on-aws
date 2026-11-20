@@ -53,6 +53,7 @@ from typing_extensions import Self
 from idp_common.regional_models import (
     CLASSIFICATION_MODEL_ID,
     regional_default,
+    regional_shipped_model,
     stack_region,
 )
 
@@ -205,6 +206,61 @@ def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
             raise ValueError(f"must be a whole number, got {v!r}")
         return int(v)
     raise ValueError(f"must be a whole number, got {type(v).__name__}")
+
+
+def regional_field_default(model_id: str) -> str:
+    """A configuration field's declared model, callable from the stack's Region.
+
+    A field's declared default is the US inference profile the system defaults
+    ship. The deploy-time swap in ``src/lambda/update_configuration`` rewrites a
+    stored value for the stack's Region, but nothing rewrites a value the model
+    supplies for a key the input does not carry, so without this an EU stack sent a
+    ``us.`` profile, which Bedrock rejects there. Returns what the swap would have
+    written; a Region outside the families in
+    :data:`idp_common.regional_models.REGIONAL_DEFAULT_MODELS` (GovCloud, Asia
+    Pacific, and every other Region the swap leaves alone) gets ``model_id``
+    unchanged.
+    """
+    return regional_shipped_model(model_id, stack_region())
+
+
+def _regional_model_field_names(cls: type[BaseModel]) -> tuple[str, ...]:
+    """The fields of ``cls`` whose declared default is a US inference profile."""
+    return tuple(
+        name
+        for name, field in cls.model_fields.items()
+        if isinstance(field.default, str) and field.default.startswith("us.")
+    )
+
+
+class RegionalModelDefaults(BaseModel):
+    """Resolve an ABSENT model key to the stack's Region's profile.
+
+    Mixed into every configuration model with a model field whose declared default
+    is a ``us.`` profile. A key the input carries is left exactly as given, an
+    explicit ``us.`` id included: only a value the model would otherwise supply from
+    its declaration is translated, through :func:`regional_field_default`. That is
+    the same answer a *cleared* classification model already resolved to
+    (:func:`default_classification_model`), so absent and cleared now agree.
+
+    The declared default stays the US id, so reading ``model_fields[...].default``
+    still gives the value the system defaults ship and the parity tests compare.
+    ``tests/unit/config/test_regional_field_defaults.py`` asserts every such field
+    declared in this module is on a class that inherits this.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _regional_model_defaults(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        absent = [name for name in _regional_model_field_names(cls) if name not in data]
+        if not absent:
+            return data
+        resolved = dict(data)
+        for name in absent:
+            resolved[name] = regional_field_default(cls.model_fields[name].default)
+        return resolved
 
 
 class ImageConfig(BaseModel):
@@ -1023,10 +1079,11 @@ class ExternalModelConfig(BaseModel):
 #: is a request, so this bounds how many one section fans out to.
 DECISION_MODEL_MAX_CONFIDENCE_PAGES = 50
 
-#: The default ``decision_model.max_input_tokens``: the decider's 4,096-token window
-#: less the 512 reserved for its own prompt. Stated here rather than imported,
-#: because ``idp_common.decision_model`` imports this module; a test keeps it equal
-#: to ``idp_common.decision_model.DEFAULT_MAX_INPUT_TOKENS``.
+#: The default and the largest ``decision_model.max_input_tokens``: the decider's
+#: 4,096-token window less the 512 reserved for its own prompt. A larger value
+#: would let dense text overflow the window, so it is capped (#2111). Stated here
+#: rather than imported, because ``idp_common.decision_model`` imports this module;
+#: a test keeps it equal to ``idp_common.decision_model.DEFAULT_MAX_INPUT_TOKENS``.
 DECISION_MODEL_MAX_INPUT_TOKENS = 3584
 
 #: The least ``max_input_tokens`` accepted, so a request keeps room for a question.
@@ -1058,8 +1115,31 @@ def _require_room_for_text(
             f"{path}.max_input_tokens is {max_input_tokens}, but its question and "
             f"{images} page image(s) alone take about {math.ceil(reserved)} tokens, "
             "which leaves no room for page text with input 'text' or 'both'. Raise "
-            "max_input_tokens or set input to 'images'."
+            f"max_input_tokens (at most {DECISION_MODEL_MAX_INPUT_TOKENS}), shorten "
+            "the question, or set input to 'images'."
         )
+
+
+def _cap_max_input_tokens(value: int, path: str) -> int:
+    """``value`` capped at ``DECISION_MODEL_MAX_INPUT_TOKENS``, with a warning.
+
+    A larger limit would let dense text overflow the decision model's window
+    (#2111). Capped rather than refused, so a stored configuration saved with a
+    larger value before the cap existed still loads.
+    """
+    if value <= DECISION_MODEL_MAX_INPUT_TOKENS:
+        return value
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "%s.max_input_tokens is %d, over the decision model's %d-token window "
+        "less its prompt reserve; using %d",
+        path,
+        value,
+        DECISION_MODEL_MAX_INPUT_TOKENS,
+        DECISION_MODEL_MAX_INPUT_TOKENS,
+    )
+    return DECISION_MODEL_MAX_INPUT_TOKENS
 
 
 class ConfidenceDecisionModelConfig(ExternalModelConfig):
@@ -1145,8 +1225,9 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             "limit is cut from the end and never read by the decision model, so a "
             "value that appears only in the cut part is not seen: it scores low, "
             "and an empty field is not checked against that part. Default "
-            f"{DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's 4,096-token "
-            "window less 512 for its own prompt."
+            f"{DECISION_MODEL_MAX_INPUT_TOKENS}, which is also the most used (a "
+            "larger value is capped, with a warning): the decision model's "
+            "4,096-token window less 512 for its own prompt."
         ),
     )
 
@@ -1215,6 +1296,11 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
     @classmethod
     def parse_ints(cls, v: Any, info: ValidationInfo) -> int:
         return _parse_required_int(v, info, cls)
+
+    @field_validator("max_input_tokens", mode="after")
+    @classmethod
+    def max_input_tokens_fits_the_window(cls, v: int) -> int:
+        return _cap_max_input_tokens(v, "extraction.confidence.decision_model")
 
 
 class ConfidenceConfig(BaseModel):
@@ -1565,7 +1651,7 @@ class HITLConfig(BaseModel):
         return _parse_required_float(v, info, cls)
 
 
-class ExtractionConfig(BaseModel):
+class ExtractionConfig(RegionalModelDefaults):
     """Document extraction configuration"""
 
     postHook: List[PipelineHook] = Field(  # noqa: N815 — matches stored config key
@@ -2267,9 +2353,10 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
 #: ``test_classification_defaults_parity.py`` pins the two together.
 #:
 #: This is the US id. A cleared model resolves to
-#: :func:`default_classification_model`, its equivalent for the stack's Region:
-#: the deploy-time swap rewrites a stored profile, but not a value substituted
-#: while one is read, so an EU stack would otherwise send a ``us.`` profile.
+#: :func:`default_classification_model`, its equivalent for the stack's Region, and
+#: an absent one to the same id through :class:`RegionalModelDefaults`: the
+#: deploy-time swap rewrites a stored profile, but not a value substituted while one
+#: is read, so an EU stack would otherwise send a ``us.`` profile.
 DEFAULT_CLASSIFICATION_MODEL = CLASSIFICATION_MODEL_ID
 
 
@@ -2339,10 +2426,14 @@ def _implemented_method(
         return "llm"
     v_str = str(v).strip().lower()
     if v_str not in implemented:
+        pointer = (
+            f" {planned} is declared but not yet implemented; see GitHub issue #1329."
+            if planned
+            else ""
+        )
         raise ValueError(
             f"{path} must be one of {', '.join(repr(m) for m in implemented)}, got "
-            f"{v!r}. {planned} is declared but not yet implemented; see GitHub "
-            "issue #1329."
+            f"{v!r}.{pointer}"
         )
     return v_str
 
@@ -2355,7 +2446,7 @@ DECISION_MODEL_INPUTS = ("images", "text", "both")
 DECISION_MODEL_MAX_SECTION_PAGES = 4
 
 
-class ClassificationModelSettings(BaseModel):
+class ClassificationModelSettings(RegionalModelDefaults):
     """The settings of one LLM call. Reused by every classification call.
 
     One block, so a call's model, its parameters, what it is sent and how its page
@@ -2389,12 +2480,13 @@ class ClassificationModelSettings(BaseModel):
         default=DEFAULT_REASONING_EFFORT, description=_REASONING_EFFORT_DESCRIPTION
     )
     max_tokens: Optional[int] = Field(
-        default=None,
+        default=10000,
         gt=0,
         description=(
-            "Optional cap on output tokens. Leave empty to use the selected "
-            "model's maximum output limit (recommended). If set, it must not "
-            "exceed the model's limit."
+            "Cap on output tokens (default 10000). A classification reply is "
+            "short, and Bedrock holds input + max_tokens of the tokens-per-minute "
+            "quota while a call runs. Leave empty to use the selected model's "
+            "maximum output limit. If set, it must not exceed the model's limit."
         ),
     )
     modality: ClassificationModalityConfig = Field(
@@ -2638,11 +2730,91 @@ class SectionClassificationLLMConfig(ClassificationClassAssigningSettings):
     )
 
 
-class EmbeddingsConfig(BaseModel):
-    """Section classification by embedding similarity. **Declared, not implemented.**"""
+#: What ``section_classification.embeddings`` compares a section's page images
+#: against (``EmbeddingsConfig.references``).
+EMBEDDING_REFERENCE_SOURCES = ("examples", "descriptions")
 
-    model: str = Field(default="", description="A multimodal embeddings model.")
-    min_similarity: float = Field(default=0.0, ge=0.0, le=1.0)
+
+class EmbeddingsConfig(BaseModel):
+    """Section classification by embedding similarity (``method: embeddings``).
+
+    The section's page images are embedded and compared, by cosine similarity, with
+    reference vectors for each class: the class's few-shot example images
+    (``references: examples``) or its name and description (``references:
+    descriptions``). A class's score is its best-matching reference. The scores are
+    turned into a probability per class by a softmax at ``temperature``, and the
+    top probability is the section's confidence. A section whose best similarity is
+    below ``min_similarity``, or whose confidence is below
+    ``low_confidence.min_confidence``, is classified by the LLM block instead, which
+    is why ``method: embeddings`` requires ``low_confidence.on_low_confidence: llm``.
+    See ``idp_common.classification.embeddings_labeler``.
+    """
+
+    model: str = Field(
+        default="",
+        description=(
+            "A multimodal Bedrock embeddings model. Empty uses the Cohere Embed v4 "
+            "profile callable from the stack's Region (the multi-document discovery "
+            "default)."
+        ),
+    )
+    min_similarity: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "A section whose best cosine similarity to any class is below this is "
+            "classified by the LLM. 0 sends none on similarity alone."
+        ),
+    )
+    references: str = Field(
+        default="examples",
+        description=(
+            "'examples' compares a section with each class's few-shot example images "
+            "(x-aws-idp-examples); a class with none is never chosen by embeddings. "
+            "'descriptions' compares it with each class's name and description."
+        ),
+    )
+    temperature: float = Field(
+        default=0.034,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "The softmax temperature that turns the per-class similarities into "
+            "probabilities. Smaller is more confident. 0.034 was fitted on a held-out "
+            "split for Cohere Embed v4 with example images at 512 px; refit it when "
+            "the model, the image size or the references change."
+        ),
+    )
+    max_image_dimension: int = Field(
+        default=512,
+        ge=256,
+        le=2048,
+        description=(
+            "Page images are downscaled to fit this many pixels on their longer side "
+            "before they are embedded. Cohere Embed v4 bills an image by its pixel "
+            "count, so this decides the embedding cost."
+        ),
+    )
+
+    @field_validator("references", mode="before")
+    @classmethod
+    def validate_references(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "examples"
+        v_str = str(v).strip().lower()
+        if v_str not in EMBEDDING_REFERENCE_SOURCES:
+            raise ValueError(
+                "classification.split_then_classify.section_classification.embeddings."
+                f"references must be one of {', '.join(EMBEDDING_REFERENCE_SOURCES)}, "
+                f"got {v!r}"
+            )
+        return v_str
+
+    @field_validator("max_image_dimension", mode="before")
+    @classmethod
+    def parse_max_image_dimension(cls, v: Any) -> int:
+        return _parse_int_param(v, 512) or 512
 
 
 class DecisionModelConfig(ExternalModelConfig):
@@ -2701,7 +2873,8 @@ class DecisionModelConfig(ExternalModelConfig):
             "text or both, the section's text beyond the limit is cut from the end "
             "and never read by the decision model, so a class cue that appears only "
             "in the cut part is not seen. The first page is kept whole when it "
-            f"fits. Default {DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's "
+            f"fits. Default {DECISION_MODEL_MAX_INPUT_TOKENS}, which is also the most "
+            "used (a larger value is capped, with a warning): the decision model's "
             "4,096-token window less 512 for its own prompt."
         ),
     )
@@ -2774,6 +2947,14 @@ class DecisionModelConfig(ExternalModelConfig):
     def parse_max_input_tokens(cls, v: Any, info: ValidationInfo) -> int:
         return _parse_required_int(v, info, cls)
 
+    @field_validator("max_input_tokens", mode="after")
+    @classmethod
+    def max_input_tokens_fits_the_window(cls, v: int) -> int:
+        return _cap_max_input_tokens(
+            v,
+            "classification.split_then_classify.section_classification.decision_model",
+        )
+
     @field_validator("score_calibration", mode="before")
     @classmethod
     def validate_score_calibration(cls, v: Any) -> str:
@@ -2841,8 +3022,9 @@ class SectionClassificationConfig(BaseModel):
     method: str = Field(
         default="llm",
         description=(
-            "'llm' (one LLM call per section) or 'decision_model' (one choice "
-            "question per section, see `decision_model`). 'embeddings' is declared."
+            "'llm' (one LLM call per section), 'decision_model' (one choice "
+            "question per section, see `decision_model`) or 'embeddings' (page "
+            "images compared with class references, see `embeddings`)."
         ),
     )
     pages: str = Field(
@@ -2868,9 +3050,41 @@ class SectionClassificationConfig(BaseModel):
         return _implemented_method(
             v,
             "classification.split_then_classify.section_classification.method",
-            ("llm", "decision_model"),
-            "'embeddings'",
+            ("llm", "decision_model", "embeddings"),
+            "",
         )
+
+    @model_validator(mode="after")
+    def embeddings_need_an_llm_fallback(self) -> Self:
+        """Embeddings label only what they are sure of; the LLM labels the rest.
+
+        A similarity is not evidence the way an LLM's answer is: an embedding
+        always has a nearest class, including for a section of no configured
+        class. So the method ships only with the LLM fallback, and only with a
+        threshold that can send a section to it.
+        """
+        if self.method != "embeddings":
+            return self
+        path = "classification.split_then_classify.section_classification"
+        if self.low_confidence.on_low_confidence != "llm":
+            raise ValueError(
+                f"{path}.method is 'embeddings', which needs "
+                f"{path}.low_confidence.on_low_confidence 'llm': a section the "
+                "embeddings are not sure of is classified by the LLM settings, never "
+                "given the fallback class"
+            )
+        if (
+            not self.low_confidence.min_confidence
+            and not self.embeddings.min_similarity
+        ):
+            raise ValueError(
+                f"{path}.method is 'embeddings' but neither "
+                f"{path}.low_confidence.min_confidence nor "
+                f"{path}.embeddings.min_similarity is above 0, so no section could "
+                "ever be sent to the LLM. Set at least one (docs/classification.md "
+                "gives measured starting values)."
+            )
+        return self
 
     @model_validator(mode="after")
     def decision_model_needs_an_endpoint(self) -> Self:
@@ -2920,6 +3134,14 @@ SECTION_SPLITTING_VALUES = ("llm_determined", "disabled", "page")
 DEFAULT_SECTION_SPLITTING = "llm_determined"
 
 
+#: The values of ``document_shape.pageOrder``: classify pages in scan order, or in
+#: the order of their printed page numbers (``idp_common.classification.page_order``).
+PAGE_ORDER_VALUES = ("scan", "printed_page_numbers")
+
+#: What an unset ``pageOrder`` means: the scan order.
+DEFAULT_PAGE_ORDER = "scan"
+
+
 def _unusable_page_limit(value: Any) -> str:
     """``'ALL'``, plus the warning that the operator's page limit is not in force."""
     import logging
@@ -2956,6 +3178,18 @@ class DocumentShapeConfig(BaseModel):
         description=(
             "With sectionSplitting 'disabled', classify only the first N pages and "
             "give the whole document their majority class. 'ALL' classifies every page."
+        ),
+    )
+    pageOrder: str = Field(
+        default="scan",
+        description=(
+            "'scan' (default): pages are classified in the order they were scanned. "
+            "'printed_page_numbers': read each page's printed page number from its "
+            "OCR text (header and footer lines, no model call) and classify the "
+            "pages in that order, but only when every page has exactly one number "
+            "and the numbers form one gap-free sequence; otherwise the scan order "
+            "is kept and a warning issue says why. Page IDs in the results are "
+            "unchanged either way."
         ),
     )
 
@@ -3007,6 +3241,27 @@ class DocumentShapeConfig(BaseModel):
                 "classification.document_shape.sectionSplitting must be one of "
                 f"{', '.join(SECTION_SPLITTING_VALUES)} (or empty for the default, "
                 f"{DEFAULT_SECTION_SPLITTING}), got {v!r}"
+            )
+        return v_str
+
+    @field_validator("pageOrder", mode="before")
+    @classmethod
+    def validate_page_order(cls, v: Any) -> str:
+        """One of :data:`PAGE_ORDER_VALUES`; empty is the default; else raises.
+
+        Refused rather than normalised, as ``sectionSplitting`` is and for the
+        second of its two reasons: the key is new, so no stored profile can hold an
+        unrecognised value, and a misspelt ``printed_page_numbers`` read as
+        ``scan`` would switch the feature off with nothing to say so.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_PAGE_ORDER
+        v_str = str(v).strip().lower()
+        if v_str not in PAGE_ORDER_VALUES:
+            raise ValueError(
+                "classification.document_shape.pageOrder must be one of "
+                f"{', '.join(PAGE_ORDER_VALUES)} (or empty for the default, "
+                f"{DEFAULT_PAGE_ORDER}), got {v!r}"
             )
         return v_str
 
@@ -3203,7 +3458,7 @@ def class_assigning_llm_path(classification: Any) -> Tuple[str, ...]:
     )
 
 
-class SummarizationConfig(BaseModel):
+class SummarizationConfig(RegionalModelDefaults):
     """Document summarization configuration"""
 
     postHook: List[PipelineHook] = Field(  # noqa: N815 — matches stored config key
@@ -3286,7 +3541,7 @@ class SummarizationConfig(BaseModel):
         return int(v)
 
 
-class ChatConfig(BaseModel):
+class ChatConfig(RegionalModelDefaults):
     """Chat-with-Document configuration.
 
     Controls the interactive "Chat with Document" feature available on the
@@ -3401,6 +3656,16 @@ class OCRConfig(BaseModel):
     task_prompt: Optional[str] = Field(
         default=None, description="Task prompt for Bedrock OCR"
     )
+    max_tokens: Optional[int] = Field(
+        default=10000,
+        gt=0,
+        description=(
+            "Cap on output tokens for each Bedrock OCR page call (bedrock backend "
+            "only; default 10000). Bedrock holds input + max_tokens of the "
+            "tokens-per-minute quota while a call runs. Leave empty to use the "
+            "selected model's maximum output limit."
+        ),
+    )
     reasoning_effort: str = Field(
         default="medium",
         description=(
@@ -3420,6 +3685,12 @@ class OCRConfig(BaseModel):
     )
     max_workers: int = Field(default=20, gt=0, description="Max concurrent workers")
     image: ImageConfig = Field(default_factory=ImageConfig)
+
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def parse_max_tokens(cls, v: Any) -> Optional[int]:
+        """Parse optional max_tokens (empty/0 -> None = use model max)."""
+        return _parse_optional_max_tokens(v)
 
     @field_validator("max_workers", mode="before")
     @classmethod
@@ -3527,7 +3798,7 @@ class ErrorAnalyzerParameters(BaseModel):
         return _parse_required_int(v, info, cls)
 
 
-class ErrorAnalyzerConfig(BaseModel):
+class ErrorAnalyzerConfig(RegionalModelDefaults):
     """Error analyzer agent configuration"""
 
     model_id: str = Field(
@@ -3775,7 +4046,7 @@ COMMON MISTAKES TO AVOID:
     )
 
 
-class ChatCompanionConfig(BaseModel):
+class ChatCompanionConfig(RegionalModelDefaults):
     """Chat companion agent configuration"""
 
     model_id: str = Field(
@@ -4325,7 +4596,7 @@ class ModelConfigLimitsConfig(BaseModel):
         return self.model_dump(mode="python")
 
 
-class FactExtractionConfig(BaseModel):
+class FactExtractionConfig(RegionalModelDefaults):
     """Fact extraction configuration for rule validation"""
 
     # No config preset under config_library/ sets this field, so this default is
@@ -4366,7 +4637,7 @@ class FactExtractionConfig(BaseModel):
         return _parse_optional_max_tokens(v)
 
 
-class RuleValidationOrchestratorConfig(BaseModel):
+class RuleValidationOrchestratorConfig(RegionalModelDefaults):
     """Rule validation summarization configuration"""
 
     # See FactExtractionConfig.model above for why this default tracks the
@@ -4401,7 +4672,7 @@ class RuleValidationOrchestratorConfig(BaseModel):
         return _parse_optional_max_tokens(v)
 
 
-class Z3RuleTranslatorConfig(BaseModel):
+class Z3RuleTranslatorConfig(RegionalModelDefaults):
     """Z3 engine: translates natural language rules to SMT-LIB RuleJSON"""
 
     model: str = Field(
@@ -4423,7 +4694,7 @@ class Z3RuleTranslatorConfig(BaseModel):
     )
 
 
-class Z3ValueExtractionConfig(BaseModel):
+class Z3ValueExtractionConfig(RegionalModelDefaults):
     """Z3 engine: extracts parameter values from data"""
 
     model: str = Field(
@@ -4506,14 +4777,20 @@ class RuleValidationConfig(BaseModel):
         return _parse_required_int(v, info, cls)
 
 
-class EvaluationLLMMethodConfig(BaseModel):
+class EvaluationLLMMethodConfig(RegionalModelDefaults):
     """Evaluation LLM method configuration"""
 
     top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     max_tokens: Optional[int] = Field(
-        default=None,
+        default=10000,
         gt=0,
-        description="Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit.",
+        description=(
+            "Cap on output tokens (default 10000). A comparison reply is a short "
+            "JSON object, and Bedrock holds input + max_tokens of the "
+            "tokens-per-minute quota while a call runs. Leave empty to use the "
+            "selected model's maximum output limit. If set, it must not exceed "
+            "the model's limit."
+        ),
     )
     top_k: float = Field(default=5.0, ge=0.0)
     reasoning_effort: str = Field(
@@ -4590,7 +4867,7 @@ class EvaluationConfig(BaseModel):
     )
 
 
-class DiscoveryModelConfig(BaseModel):
+class DiscoveryModelConfig(RegionalModelDefaults):
     """Discovery model configuration for class extraction"""
 
     model_id: str = Field(
@@ -4637,7 +4914,7 @@ class AutoSplitModelConfig(DiscoveryModelConfig):
     )
 
 
-class MultiDocumentDiscoveryConfig(BaseModel):
+class MultiDocumentDiscoveryConfig(RegionalModelDefaults):
     """Multi-document discovery configuration for batch clustering.
 
     Settings for discovering document classes from a collection of documents

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from idp_tf import completeness, moved, safety, translate
+from idp_tf import completeness, create_only, moved, safety, translate
 from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
 from idp_tf.cli import VENDORED_SCHEMA, main, render_tree, tree_checks, tree_resources
 from idp_tf.translate import Translator
@@ -784,6 +784,14 @@ def _translate_owned_ignores(schema: AwsccSchema) -> dict[str, set[str]]:
         found = schema.hint(cfn_type).attr(prop)
         assert found is not None, (cfn_type, prop)
         owned.setdefault(awscc_type_name(cfn_type), set()).add(found[0])
+    # Tags the registry makes create-only are set at creation and kept
+    # (translate.tags_are_create_only), for every type the vendored schemas cover.
+    for cfn_type in create_only._load():
+        if not schema.has(cfn_type):
+            continue
+        tag = schema.tag_attribute(cfn_type)
+        if tag and translate.tags_are_create_only(cfn_type, tag[0]):
+            owned.setdefault(awscc_type_name(cfn_type), set()).add(tag[0])
     return owned
 
 
@@ -825,3 +833,45 @@ def test_every_ignore_changes_the_translator_emits_is_declared(standard_tree, sc
     assert not set(owned) & set(expected), "a type would be counted twice"
     expected.update(owned)
     assert _emitted_ignore_changes(standard_tree) == expected
+
+
+def test_the_key_check_feeds_no_create_only_property(standard):
+    """#2016: every supplied-key reference reads CustomerManagedKmsKeyCheck.KeyArn,
+    which the handler echoes from its KeyArn property, so Terraform renders the
+    variable and no create-only property waits on the invocation's result. Were
+    the echo not followed here, every queue, function and repository that takes
+    the key would be reported as replaced on any change to the check."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    edges = meta["customOutputEdges"]
+    assert edges, "no custom-output edges at all; the check reads nothing"
+    assert not [e for e in edges if "CustomerManagedKmsKeyCheck" in e["sources"]]
+
+
+def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard):
+    """#2011: `idp-cli delete --terraform` leaves `retainedAddresses` in place, so
+    the key that encrypts the retained buckets must be listed with them; the
+    alias is destroyed, so a new deployment of the same name can create its own."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    retained = set(meta["retainedAddresses"])
+    key = "awscc_kms_key.customer_managed_encryption_key"
+    assert key in retained
+    assert key in meta["statefulAddresses"]
+    main = (standard / "main.tf").read_text()
+    encrypted = {
+        label
+        for label, body in re.findall(
+            r'^resource "aws_s3_bucket_server_side_encryption_configuration" '
+            r'"(\w+)" \{\n(.*?)^\}',
+            main,
+            re.M | re.S,
+        )
+        # One instance since CustomerManagedKmsKeyArn can supply the key (#2016).
+        if f"{key}." in body or f"{key}[*]." in body
+    }
+    kept = {
+        a.split(".", 1)[1]
+        for a in retained
+        if a.startswith("aws_s3_bucket_server_side_encryption_configuration.")
+    }
+    assert encrypted & kept, "no retained bucket is encrypted with the key"
+    assert not any("kms_alias" in a for a in retained)

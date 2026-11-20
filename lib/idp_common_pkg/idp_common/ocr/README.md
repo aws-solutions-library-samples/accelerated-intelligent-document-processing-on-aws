@@ -174,6 +174,27 @@ for page_id, page in processed_document.pages.items():
     print(f"Page {page_id}: Text confidence data at {page.text_confidence_uri}")
 ```
 
+### Failed pages and transient errors
+
+`process_document` does not raise when a page fails. It appends the failure's text
+to `document.errors`, sets `document.status` to `FAILED`, and keeps the exception
+itself on `ocr_service.failure_causes`, in the order the failures were recorded
+(the list is reset at the start of each call). Text cannot tell a throttle, a read
+timeout or a bare HTTP 5xx from a deterministic failure, so a caller that wants to
+retry should judge the exceptions, not the messages:
+
+```python
+from idp_common.utils.transient_errors import TransientError, is_transient_error
+
+processed_document = ocr_service.process_document(document)
+transient = next((c for c in ocr_service.failure_causes if is_transient_error(c)), None)
+if transient is not None:
+    raise TransientError(transient, where="ocr") from transient
+```
+
+The OCR Lambda does exactly this, so `OCRStep` retries such a document instead of
+failing it.
+
 ### Legacy Pattern (Deprecated)
 
 ```python
@@ -213,6 +234,9 @@ ocr:
   bda_project_arn: null
   # For Bedrock backend only:
   model_id: "anthropic.claude-3-sonnet-20240229-v1:0"
+  # Output cap for each page call (shipped 10000); empty requests the model's
+  # maximum output, resolved from config_library/model_config_limits.yaml.
+  max_tokens: "10000"
   system_prompt: "You are an OCR system..."
   task_prompt: "Extract all text from this image..."
 ```

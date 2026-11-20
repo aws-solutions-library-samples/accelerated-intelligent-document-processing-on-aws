@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Stdlib-only and in this package, so it belongs to neither import tier below: it
 # cannot fail to import and nothing has to be stubbed for it.
@@ -450,17 +450,30 @@ TEMPLATE_URLS = {
 
 
 def _resolve_region(region: Optional[str]) -> str:
-    if region:
-        return region
-    import boto3
+    """``--region``, else the Region boto3 resolves; refuses when there is none.
 
-    found = boto3.session.Session().region_name  # type: ignore
+    ``idp_sdk.resolve_region``: ``--region``, then boto3's Region, then
+    ``AWS_REGION``. The answer is passed to the SDK client explicitly, which is
+    what makes an ``AWS_REGION``-only shell work although boto3 does not read it.
+    """
+    from idp_sdk import resolve_region
+
+    found = resolve_region(region)
     if not found:
         raise ValueError(
-            "Region could not be determined. Please specify --region or "
-            "configure AWS_DEFAULT_REGION"
+            "Region could not be determined. Please specify --region, or set "
+            "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
         )
     return found
+
+
+def _region_or_exit(region: Optional[str]) -> str:
+    """``_resolve_region``, printing its refusal and exiting 1 instead of raising."""
+    try:
+        return _resolve_region(region)
+    except ValueError as e:
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
 
 
 def _deploy_terraform(
@@ -477,6 +490,8 @@ def _deploy_terraform(
     govcloud: bool = False,
     assume_role_arn: Optional[str] = None,
     allow_replace_retained: bool = False,
+    tags: Optional[Dict[str, str]] = None,
+    terraform_state: Optional[str] = None,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
@@ -547,6 +562,8 @@ def _deploy_terraform(
             terraform_bin=terraform_bin,
             assume_role_arn=assume_role_arn,
             allow_replace_retained=allow_replace_retained,
+            tags=tags,
+            terraform_state=terraform_state or "local",
         )
         console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
         outputs = result.outputs
@@ -564,6 +581,67 @@ def _deploy_terraform(
         logger.error(f"Error deploying with Terraform: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
+
+
+_KMS_KEY_TYPES = ("AWS::KMS::Key", "aws_kms_key", "awscc_kms_key")
+
+
+def _print_retained_kms_keys(
+    key_ids: List[str],
+    stack_id: Optional[str] = None,
+    supplied_key_arn: Optional[str] = None,
+) -> None:
+    """Say that the deployment's KMS key was kept, what it costs and how to
+    schedule its deletion. With no ``key_ids``, say how to find the key.
+
+    A stack deployed with ``CustomerManagedKmsKeyArn`` created no key: its data
+    is encrypted with the supplied one, which is the customer's and may protect
+    other data too, so nothing here may suggest deleting it."""
+    if supplied_key_arn:
+        console.print(
+            "[bold]KMS key:[/bold] this stack encrypted its data with the key you "
+            "supplied (CustomerManagedKmsKeyArn). The stack did not create it and "
+            "did not delete it, and whatever data the stack wrote that still "
+            "exists stays encrypted with it:"
+        )
+        console.print(f"    - {supplied_key_arn}")
+        console.print(
+            "    Keep it while any of that data is needed; managing it is up to you."
+        )
+        return
+    console.print(
+        "[bold]KMS key kept:[/bold] the key that encrypts the retained buckets is "
+        "retained so their data stays readable. It costs about $1 a month ($3 "
+        "once automatic rotation has run twice)."
+    )
+    if key_ids:
+        for key_id in key_ids:
+            console.print(f"    - {key_id}")
+    else:
+        console.print(
+            "    Its id is the KMSMasterKeyID of a retained bucket's default "
+            "encryption:"
+        )
+        console.print(
+            "  [cyan]aws s3api get-bucket-encryption --bucket <retained-bucket-name>"
+            "[/cyan]"
+        )
+        if stack_id:
+            console.print("    or the CustomerManagedEncryptionKey row of:")
+            console.print(
+                f"  [cyan]aws cloudformation list-stack-resources --stack-name "
+                f"{stack_id}[/cyan]"
+            )
+    console.print(
+        "    Once no retained data encrypted with it is needed, delete those "
+        "buckets, then schedule the key's deletion (7 to 30 days; it can be "
+        "cancelled until then):"
+    )
+    for key_id in key_ids or ["<key-id>"]:
+        console.print(
+            f"  [cyan]aws kms schedule-key-deletion --key-id {key_id} "
+            "--pending-window-in-days 7[/cyan]"
+        )
 
 
 def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
@@ -608,6 +686,13 @@ def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
         )
     if any(entries.values()) or service_groups:
         console.print("Delete them manually if no longer needed.")
+    kms_keys = [
+        r.get("physical_id") or r.get("logical_id")
+        for r in entries["other"]
+        if r.get("type") in _KMS_KEY_TYPES
+    ]
+    if kms_keys:
+        _print_retained_kms_keys(kms_keys)
 
 
 def _delete_terraform(
@@ -837,7 +922,10 @@ def cli():
     help=(
         "Stack tags as key=value,key2=value2. Propagated by CloudFormation "
         "to all taggable resources and nested stacks. On update, providing "
-        "tags replaces the stack's tag set; omitting them preserves existing tags."
+        "tags replaces the stack's tag set; omitting them preserves existing tags. "
+        "With --terraform, the module tags every taggable resource the same way, "
+        "and omitting them keeps the tags of the previous deploy from "
+        "--terraform-dir."
     ),
 )
 @click.option("--wait", is_flag=True, help="Wait for stack operation to complete")
@@ -946,6 +1034,18 @@ def cli():
         "the earlier name (used with --terraform)"
     ),
 )
+@click.option(
+    "--terraform-state",
+    type=click.Choice(["local", "s3"], case_sensitive=False),
+    default=None,
+    help=(
+        "Where Terraform keeps the deployment's state (used with --terraform). "
+        "local (the default): terraform.tfstate in --terraform-dir. s3: an "
+        "encrypted, versioned bucket idp-tf-<stack-name>-<account>-<region>, "
+        "created if missing and kept on delete, locked with the DynamoDB table "
+        "idp-tf-lock-<stack-name>; a directory with a local state is refused"
+    ),
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -976,6 +1076,7 @@ def deploy(
     terraform_bin: str,
     terraform_assume_role_arn: Optional[str],
     terraform_allow_replace_retained: bool,
+    terraform_state: Optional[str],
 ):
     """
     Deploy or update IDP stack from command line
@@ -1024,17 +1125,7 @@ def deploy(
             )
             sys.exit(1)
         if from_code:
-            build_region = region
-            if not build_region:
-                import boto3
-
-                build_region = boto3.session.Session().region_name  # type: ignore
-                if not build_region:
-                    console.print(
-                        "[red]✗ Error: Region could not be determined. Please specify "
-                        "--region or configure AWS_DEFAULT_REGION.[/red]"
-                    )
-                    sys.exit(1)
+            build_region = _region_or_exit(region)
             if headless and govcloud:
                 console.print(
                     "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
@@ -1061,7 +1152,6 @@ def deploy(
             "--template-url": template_url,
             "--template-file": template_file,
             "--custom-config": custom_config,
-            "--tags": tags,
             "--role-arn": role_arn,
             "--no-rollback": no_rollback,
             "--log-level": log_level,
@@ -1080,8 +1170,18 @@ def deploy(
             govcloud=govcloud,
             assume_role_arn=terraform_assume_role_arn,
             allow_replace_retained=terraform_allow_replace_retained,
+            # As on the CloudFormation path, no tags (or only blank segments)
+            # keeps the deployment's tags.
+            tags=_parse_tags(tags) or None,
+            terraform_state=terraform_state,
         )
         return
+    if terraform_state:
+        console.print(
+            "[red]✗ Error: --terraform-state is used with --terraform; a "
+            "CloudFormation stack keeps no Terraform state.[/red]"
+        )
+        sys.exit(1)
     if terraform_assume_role_arn:
         console.print(
             "[red]✗ Error: --terraform-assume-role-arn is used with --terraform; "
@@ -1119,16 +1219,8 @@ def deploy(
             )
             sys.exit(1)
 
-        # Auto-detect region if not provided
-        if not region:
-            import boto3
-
-            session = boto3.session.Session()  # type: ignore
-            region = session.region_name
-            if not region:
-                raise ValueError(
-                    "Region could not be determined. Please specify --region or configure AWS_DEFAULT_REGION"
-                )
+        # `--region`, else boto3's Region, else `AWS_REGION`; refuses when none.
+        region = _resolve_region(region)
 
         # Handle deployment from local code
         template_path = None
@@ -1751,6 +1843,15 @@ def delete(
         # Get bucket information
         console.print(f"[bold blue]Analyzing stack: {stack_name}[/bold blue]")
         bucket_info = client.stack.get_bucket_info()
+        # Read before the stack is gone: a supplied key is reported as the
+        # customer's, never as one to schedule for deletion.
+        stack_parameters = client.stack.get_parameters()
+        supplied = (
+            stack_parameters.get("CustomerManagedKmsKeyArn")
+            if isinstance(stack_parameters, dict)
+            else None
+        )
+        supplied_key_arn = supplied if isinstance(supplied, str) and supplied else None
 
         # Show warning with bucket details
         console.print()
@@ -1961,6 +2062,13 @@ def delete(
                         console.print(f"  • {error['type']}: {error['resource']}")
                         console.print(f"    Error: {error['error']}")
 
+                if cleanup_result.get("kms_keys_retained") or supplied_key_arn:
+                    console.print()
+                    _print_retained_kms_keys(
+                        cleanup_result.get("kms_keys_retained") or [],
+                        supplied_key_arn=supplied_key_arn,
+                    )
+
                 console.print()
 
             except Exception as e:
@@ -1980,6 +2088,10 @@ def delete(
             )
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
+            console.print()
+            _print_retained_kms_keys(
+                [], stack_id=result.stack_id, supplied_key_arn=supplied_key_arn
+            )
             console.print()
 
         if deletion_failed:
@@ -2054,10 +2166,10 @@ def delete_documents_cmd(
           --document-ids "batch-123/doc1.pdf,batch-123/doc2.pdf"
 
       # Delete all documents in a batch
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60
 
       # Delete only failed documents in a batch
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123 --status-filter FAILED
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60 --status-filter FAILED
 
       # Delete documents matching a wildcard pattern
       idp-cli delete-documents --stack-name my-stack --pattern "batch-123/*.pdf"
@@ -2066,7 +2178,7 @@ def delete_documents_cmd(
       idp-cli delete-documents --stack-name my-stack --pattern "*invoice*" --status-filter FAILED
 
       # Dry run to see what would be deleted
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123 --dry-run
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60 --dry-run
 
       # Force delete without confirmation
       idp-cli delete-documents --stack-name my-stack --document-ids "batch-123/doc1.pdf" --force
@@ -2254,6 +2366,34 @@ def delete_documents_cmd(
         sys.exit(1)
 
 
+def _read_attribute_options(
+    attribute_pairs: Tuple[str, ...], attributes_file: Optional[str]
+) -> Dict[str, Any]:
+    """The `--attributes-file` object overlaid by each `--attribute key=value`.
+
+    Values given as pairs are strings. A key given twice as a pair is refused
+    rather than silently resolved. Raises ValueError (or OSError for the file).
+    """
+    attributes: Dict[str, Any] = {}
+    if attributes_file:
+        with open(attributes_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"{attributes_file}: must hold a JSON object")
+        attributes.update(data)
+    seen = set()
+    for pair in attribute_pairs:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise ValueError(f"--attribute {pair!r} is not in key=value form")
+        key = key.strip()
+        if key in seen:
+            raise ValueError(f"--attribute {key!r} is given more than once")
+        seen.add(key)
+        attributes[key] = value
+    return attributes
+
+
 def _process_impl(
     stack_name: str,
     manifest: Optional[str],
@@ -2272,9 +2412,32 @@ def _process_impl(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int] = None,
+    attribute_pairs: Tuple[str, ...] = (),
+    attributes_file: Optional[str] = None,
 ):
     """Implementation for process and run_inference commands"""
     try:
+        # Caller-supplied document attributes (#1851): `--attributes-file`, then
+        # each `--attribute key=value` on top. Only the input syntax is checked
+        # here; the SDK validates the set against the attribute rules and refuses
+        # an invalid one before anything is uploaded.
+        attributes = None
+        if attribute_pairs or attributes_file:
+            if test_set:
+                console.print(
+                    "[red]✗ Error: --attribute/--attributes-file cannot be used "
+                    "with --test-set[/red]"
+                )
+                sys.exit(1)
+            try:
+                attributes = _read_attribute_options(attribute_pairs, attributes_file)
+            except (OSError, ValueError) as e:
+                console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
+                sys.exit(1)
+        # Passed only when given, so a submission without attributes makes exactly
+        # the SDK call it always did.
+        attribute_kwargs = {"attributes": attributes} if attributes is not None else {}
+
         # Validate mutually exclusive options
         if not manifest and not directory and not s3_uri and not test_set:
             console.print(
@@ -2368,6 +2531,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif directory:
                 result = client.batch.process(
@@ -2379,6 +2543,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif s3_uri:
                 result = client.batch.process(
@@ -2390,6 +2555,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             else:
                 raise ValueError("No input source specified")
@@ -2508,6 +2674,23 @@ def _process_impl(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def process(
     stack_name: str,
     manifest: Optional[str],
@@ -2526,6 +2709,8 @@ def process(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Process documents
@@ -2594,6 +2779,8 @@ def process(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 
@@ -2656,7 +2843,7 @@ def reprocess(
       idp-cli reprocess \\
           --stack-name my-stack \\
           --step extraction \\
-          --batch-id cli-batch-20251015-143000 \\
+          --batch-id cli-batch-20251015-143000-7f3a9c1e \\
           --monitor
     """
     # Call the shared implementation directly. `rerun_inference` is the
@@ -2751,6 +2938,23 @@ def reprocess(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def run_inference(
     stack_name: str,
     manifest: Optional[str],
@@ -2769,6 +2973,8 @@ def run_inference(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Run inference on a batch of documents
@@ -2797,6 +3003,8 @@ def run_inference(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 
@@ -3350,7 +3558,7 @@ def download_results(
     Examples:
 
       # Download all results for a batch
-      idp-cli download-results --stack-name my-stack --batch-id cli-batch-20251015-143000 --output-dir ./results/
+      idp-cli download-results --stack-name my-stack --batch-id cli-batch-20251015-143000-7f3a9c1e --output-dir ./results/
 
       # Download only extraction results (sections)
       idp-cli download-results --stack-name my-stack --batch-id <id> --output-dir ./results/ --file-types sections
@@ -5714,11 +5922,7 @@ def config_validate(
             console.print("[green]✓ Pydantic validation passed[/green]")
 
             # Show warnings
-            if result.warnings:
-                console.print()
-                console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result.warnings:
-                    console.print(f"  ⚠ {warning}")
+            _print_config_warnings(result.warnings)
 
             # Check for document classes
             if result.class_count:
@@ -5758,11 +5962,7 @@ def config_validate(
             # which of the two the author wrote. On this path `warnings` holds these
             # findings and nothing else, since every other check runs only after the
             # configuration validates, so there is no duplication with the block above.
-            if result.warnings:
-                console.print()
-                console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result.warnings:
-                    console.print(f"  ⚠ {warning}")
+            _print_config_warnings(result.warnings)
             sys.exit(1)
 
     except FileNotFoundError as e:
@@ -5775,6 +5975,22 @@ def config_validate(
         logger.error(f"Error validating config: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
+
+
+def _print_config_warnings(warnings: list[str]) -> None:
+    """Print validation warnings for `config-validate` and `config-upload`.
+
+    Each warning is escaped. Warnings quote what the user wrote (a key path, a
+    `fallback_class` value), so text such as `[bold]` would otherwise be swallowed
+    as a style tag, misnaming the key, and a `[/x]` would raise and turn a valid
+    configuration into exit 1.
+    """
+    if not warnings:
+        return
+    console.print()
+    console.print("[bold yellow]Warnings:[/bold yellow]")
+    for warning in warnings:
+        console.print(f"  ⚠ {escape(warning)}")
 
 
 @cli.command(name="config-upload")
@@ -5889,6 +6105,10 @@ def config_upload(
             console.print(
                 f"[red]✗ Failed to upload configuration: {result.error}[/red]"
             )
+            # Printed on a refusal too: an unread key is often why a value the
+            # author set did not take, and the finding names the field it was meant
+            # to be. `config-validate` does the same on its failing branch.
+            _print_config_warnings(result.warnings)
             if result.error and "Validation" in result.error:
                 console.print(
                     "[yellow]Use --no-validate to skip validation (not recommended)[/yellow]"
@@ -5896,6 +6116,10 @@ def config_upload(
             sys.exit(1)
 
         console.print("[green]✓ Configuration uploaded successfully[/green]")
+        # Warnings are non-fatal: the configuration was stored and the exit code
+        # stays 0. They are the findings `config-validate` prints for the same file,
+        # which this command used to drop.
+        _print_config_warnings(result.warnings)
         console.print()
         if config_version:
             action = "created" if result.version_created else "updated"
@@ -7906,8 +8130,7 @@ def test_result(
       # Save results to file
       idp-cli test-result --stack-name my-stack --test-run-id fake-w2-20260409-123456 --wait --output-dir ./results
     """
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Use SDK to get test result
@@ -8047,10 +8270,8 @@ def test_compare(
         --test-run-ids "run1,run2,run3" --output-dir ./comparisons
     """
     import csv
-    from datetime import datetime, timezone
 
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Parse test run IDs. Blank segments are dropped, so a trailing comma no
@@ -8090,20 +8311,24 @@ def test_compare(
         # Save to files if output-dir specified
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            # One id for both files, unique even when two comparisons are saved
+            # to the same directory within one second.
+            from idp_sdk import generate_timestamped_id
+
+            comparison_id = generate_timestamped_id("comparison")
 
             # Save JSON (reconstruct result dict for compatibility)
             result_data = {
                 "metrics": metrics,
                 "configs": configs,
             }
-            json_file = os.path.join(output_dir, f"comparison-{timestamp}.json")
+            json_file = os.path.join(output_dir, f"{comparison_id}.json")
             with open(json_file, "w") as f:
                 json.dump(result_data, f, indent=2, default=str)
             console.print(f"[green]✓ Comparison JSON saved to: {json_file}[/green]")
 
             # Save CSV (metrics only)
-            csv_file = os.path.join(output_dir, f"comparison-{timestamp}.csv")
+            csv_file = os.path.join(output_dir, f"{comparison_id}.csv")
             with open(csv_file, "w", newline="") as f:
                 writer = csv.writer(f)
 
@@ -8292,8 +8517,7 @@ def abort_test_run(
       idp-cli abort-test-run --stack-name my-stack \\
         --test-run-ids "run1" --force
     """
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Parse test run IDs. Blank segments are dropped, which is what makes the

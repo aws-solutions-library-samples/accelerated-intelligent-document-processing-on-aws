@@ -192,7 +192,7 @@ class TestBatchProcessor:
     @patch("boto3.resource")
     def test_generate_batch_id(self, mock_resource, mock_client, mock_stack_info_class):
         """Test batch ID generation"""
-        import time
+        import re
 
         mock_stack_info = MagicMock()
         mock_stack_info.validate_stack.return_value = True
@@ -204,19 +204,13 @@ class TestBatchProcessor:
 
         processor = BatchProcessor("test-stack")
 
+        # No sleep: the random suffix keeps two ids from the same second apart.
         batch_id1 = processor._generate_batch_id("test-prefix")
-        time.sleep(1.1)  # Sleep to ensure different timestamp
         batch_id2 = processor._generate_batch_id("test-prefix")
-
-        # Should be unique (due to timestamp)
         assert batch_id1 != batch_id2
 
-        # Should start with prefix
-        assert batch_id1.startswith("test-prefix-")
-
-        # Should contain timestamp (format: prefix-YYYYMMDD-HHMMSS)
-        # Note: prefix itself may contain hyphens
-        assert len(batch_id1.split("-")) >= 3  # At least prefix, date, time
+        # Format: prefix-YYYYMMDD-HHMMSS-<8 hex>; the prefix may itself hold hyphens
+        assert re.fullmatch(r"test-prefix-\d{8}-\d{6}-[0-9a-f]{8}", batch_id1)
 
     @patch("idp_sdk._core.batch_processor.StackInfo")
     @patch("boto3.client")

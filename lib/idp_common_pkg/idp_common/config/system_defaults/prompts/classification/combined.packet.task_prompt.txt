@@ -1,0 +1,23 @@
+{# Contract: one call per packet or window. Must ask for a "segments" array whose items carry
+"ordinal_start_page", "ordinal_end_page" and "type". Page numbers count from the first page
+the call is shown, not the document's page 1.
+Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}.
+<<CACHEPOINT>> marks the end of the static prefix for prompt caching. #}
+<task-description> Analyse the document packet below and split it into the separate documents it contains. For each document, report the page range it occupies and its document type. </task-description>
+<document-types> {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>
+<few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>
+<segmentation-instructions> 1. Read every page of the packet before deciding anything. A boundary is a statement about the packet, not about one page. 2. A new document STARTS on a page that carries an opening identity block: the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement date or period, and account or reference numbers. 3. A page CONTINUES the current document when it lacks that opening block. Repeated table column headings (for example "Date | Description | Amount") are printed on every page of a long table and do NOT start a new document. 4. Pagination is strong evidence: "Page 1 of 3" starts a document, "Page 2 of 3" or "continued" does not. 5. Two copies of the same form filed back to back are TWO documents. Emit two segments of the same type rather than one merged segment. 6. Every page of the packet must belong to exactly one segment. Segments must be contiguous, must not overlap, and must cover the full page range in order. 7. CRITICAL: use only document types listed in <document-types>. If a segment matches none of them, use the closest listed type and say so in its reason. 8. PRECEDENCE: if a matched type's description gives explicit boundary or page-ordering instructions, follow those instead of rules 2-5 for that type. </segmentation-instructions>
+<output-format> Report page numbers exactly as they are labelled in the packet below, where the first page shown is page 1. {
+  "segments": [
+    {
+      "ordinal_start_page": <first page of this document>,
+      "ordinal_end_page": <last page of this document>,
+      "type": "exact_document_type_from_list",
+      "reason": "The opening-block elements and pagination evidence that place this document's start and end here"
+    }
+  ]
+} </output-format>
+<<CACHEPOINT>>
+<document-text> {DOCUMENT_TEXT} </document-text>
+<document-images> {DOCUMENT_IMAGE} </document-images>
+<final-instructions> Split the packet above by: 1. Applying the <segmentation-instructions> across every page 2. Selecting ONLY from document types in <document-types> 3. Covering every page exactly once, in order 4. Outputting in the exact JSON format specified in <output-format> </final-instructions>

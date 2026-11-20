@@ -183,6 +183,18 @@ client.stack_name = "new-stack"
 | `stack_name` | str | No | CloudFormation stack name |
 | `region` | str | No | AWS region (defaults to boto3 default) |
 
+With no `region`, the client uses the Region boto3's default session resolves:
+`AWS_DEFAULT_REGION`, then the `region` of the selected profile, or a Region given
+to `boto3.setup_default_session`. Operations that work out the Region before
+calling AWS (configuration operations that read a stack, discovery,
+`stack.deploy()` including its `from_code` build and the upload of a local
+`custom_config`, `publish.build()`, and `batch.reprocess()` and
+`document.reprocess()`) then fall back to `AWS_REGION`, which boto3 itself
+does not read, and pass the Region to every client they build. No operation falls
+back to a hard-coded Region; one that needs a Region and finds none says so.
+`idp_sdk.resolve_region(region)` returns that answer (explicit Region, then
+boto3's, then `AWS_REGION`, else `None`).
+
 ### Terraform deployments
 
 `stack_name` also accepts the name of a [Terraform deployment](./terraform.md)
@@ -260,8 +272,11 @@ Process a single document (upload and queue for processing).
 - `file_path` (str, required): Path to local file to upload
 - `document_id` (str, optional): Custom document ID (defaults to filename without extension)
 - `stack_name` (str, optional): Stack name override
+- `attributes` (dict, optional, keyword-only): [Document attributes](./document-attributes.md) stored with the document and returned with its results. Invalid attributes raise `IDPConfigurationError` before anything is uploaded
 
 **Returns:** `DocumentUploadResult` with `document_id`, `status`, and `timestamp`
+
+The file is uploaded under its own generated prefix, so `document_id` is `single-doc-<YYYYMMDD-HHMMSS>-<8 hex characters>/<filename>`.
 
 ```python
 result = client.document.process(
@@ -452,13 +467,14 @@ Process multiple documents through the IDP pipeline.
 - `s3_uri` (str, optional): S3 URI (s3://bucket/prefix/)
 - `test_set` (str, optional): Test set identifier
 - `batch_id` (str, optional): Custom batch ID
-- `batch_prefix` (str, optional): Batch ID prefix (default: "sdk-batch")
+- `batch_prefix` (str, optional): Batch ID prefix (default: "sdk-batch"). When `batch_id` is omitted the ID is generated as `<prefix>-<YYYYMMDD-HHMMSS>-<8 hex characters>` (UTC time, then a random suffix), so two batches with the same prefix started in the same second do not share an ID or an S3 prefix. `idp_sdk.generate_timestamped_id(prefix)` produces the same shape.
 - `file_pattern` (str, optional): File pattern for filtering (default: "*.pdf")
 - `recursive` (bool, optional): Recursively process subdirectories (default: True)
 - `number_of_files` (int, optional): Limit number of files to process
 - `config_path` (str, optional): Path to custom configuration file
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to use for processing
 - `context` (str, optional): Context for test set processing
+- `attributes` (dict, optional, keyword-only): [Document attributes](./document-attributes.md) for every document in the batch; a manifest row's own `attributes` override them per key. Refused with `test_set`
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `BatchProcessResult` with `batch_id`, `document_ids`, `queued`, `uploaded`, `failed`, `baselines_uploaded`, `source`, `output_prefix`, and `timestamp`
@@ -570,7 +586,7 @@ Get extracted metadata and fields for all documents in a batch, with pagination 
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list of per-document result dicts), and optional `next_token`
+**Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list of per-document result dicts), and optional `next_token`. A document that carries [document attributes](./document-attributes.md) has an `attributes` key in its result dict; the key is absent otherwise. `get_document_results()` returns the same per-document dict
 
 ```python
 result = client.batch.get_results(batch_id="batch-20250123-123456", limit=20)
@@ -746,6 +762,10 @@ Reprocess existing documents from a specific pipeline step.
 **Note:** Must specify either `document_ids` or `batch_id`
 
 **Returns:** `BatchReprocessResult` with `documents_queued`, `documents_failed`, `failed_documents`, and `step`
+
+Each entry of `failed_documents` has an `object_key` and an `error`. `error` is
+`"Document not found"` only when the tracking table has no record for the key; any
+other failure reading or queueing the document carries that failure's own message.
 
 ```python
 from idp_sdk import RerunStep
@@ -1217,6 +1237,8 @@ Delete an IDP CloudFormation stack.
 
 **Returns:** `StackDeletionResult` with `success`, `status`, `stack_name`, `stack_id`, `error`, and `cleanup_result`
 
+With `force_delete_all`, `cleanup_result` lists what the cleanup deleted (`dynamodb_deleted`, `logs_deleted`, `buckets_deleted`), its `errors`, and `kms_keys_retained`: the ids of the retained KMS keys, which it does not delete (see [The retained KMS key](./idp-cli.md#the-retained-kms-key)).
+
 ```python
 result = client.stack.delete(
     empty_buckets=True,
@@ -1231,9 +1253,11 @@ print(f"Status: {result.status}")
 
 Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments) for the behaviour.
 
-- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None, allow_replace_stateful=False, allow_replace_retained=False)` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one. It applies a saved plan after checking it, and raises `IDPStackError` without applying anything when the plan deletes or replaces a resource that holds data or that CloudFormation would retain (the module's `statefulAddresses` and `retainedAddresses`), unless `allow_replace_stateful=True` (`allow_replace_retained` is the earlier name).
+- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None, allow_replace_stateful=False, allow_replace_retained=False, tags=None, terraform_state="local")` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one. It applies a saved plan after checking it, and raises `IDPStackError` without applying anything when the plan deletes or replaces a resource that holds data or that CloudFormation would retain (the module's `statefulAddresses` and `retainedAddresses`), unless `allow_replace_stateful=True` (`allow_replace_retained` is the earlier name). A parameter not in `parameters` keeps the value the deployment has, read from its label stack (`NoEcho` ones from the directory's `idp-cli-parameters.json`), and one new in the module takes its default; the kept values and the new parameters' defaults are logged at `INFO`, and a warning naming each changed default at `WARNING` when no label stack can be read, on the `idp_sdk.operations.stack` logger.
+- `tags` (`deploy_terraform`) is a dict of tags for every taggable resource, as CloudFormation stack tags are: `main.tf` passes it to the module's `tags` variable, which the module merges into each `awscc` resource, and to the `aws` provider's `default_tags`. It replaces the deployment's tags; `None` keeps the tags the directory's `terraform.tfvars` holds from the previous deploy. `{}` stops passing tags: the `aws` resources lose them, but an `awscc` resource whose template sets no tags is then given `null`, which the provider may treat as keeping the tags it has, so do not rely on `{}` to remove them there. More than 10 tags, or tags for a module whose `idp-terraform.json` has no `tagsVariable`, raise `IDPConfigurationError`.
+- `terraform_state` (`deploy_terraform`) is `"local"` (the default; the state is `terraform.tfstate` in `terraform_dir`, as before the option existed) or `"s3"`: before `init` the SDK creates, or reuses, the S3 bucket `idp-tf-<stack_name>-<account>-<region>` (public access block, versioning, SSE-S3 default encryption, a policy denying non-TLS requests) and the DynamoDB lock table `idp-tf-lock-<stack_name>`, and writes `backend.tf` naming both with `encrypt = true`. Neither is deleted by `delete_terraform`. `IDPConfigurationError` is raised for a bucket of that name owned by another account, for `"s3"` on a directory that already holds a local state (moving it is not supported yet), for `"local"` on a directory whose `backend.tf` the SDK wrote, and for `"s3"` on a directory with a `backend.tf` the SDK did not write. See [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3).
 - `assume_role_arn` (both) is an IAM role the `aws` and `awscc` providers assume: `deploy_terraform` writes it into `main.tf`, and `delete_terraform` rewrites the provider blocks of an idp-cli `main.tf` with it before `init`, keeping the region the deploy recorded there and refusing a client in another region.
-- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`; an entry whose identifier is not a readable name (the API Gateway account setting) carries a `display_name`. Its `service_log_groups` lists the log groups Lambda, CodeBuild and Glue created for the destroyed resources, which the destroy leaves: each with `physical_id` (the group name), `created_for` (the state addresses) and `shared`, and, for Glue's shared group, the `log_streams` that are the deployment's.
+- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`; an entry whose identifier is not a readable name (the API Gateway account setting, the KMS key) carries a `display_name`. Its `service_log_groups` lists the log groups Lambda, CodeBuild and Glue created for the destroyed resources, which the destroy leaves: each with `physical_id` (the group name), `created_for` (the state addresses) and `shared`, and, for Glue's shared group, the `log_streams` that are the deployment's.
 
 Both raise `IDPConfigurationError` when the binary is missing or the inputs are invalid, and `IDPStackError` when a Terraform command fails.
 
@@ -1570,6 +1594,17 @@ For GovCloud, use `region="us-gov-west-1"` with either `govcloud=True` (full Web
 
 Operations for managing IDP configurations.
 
+The operations that read a stack (`download`, `upload`, `list`, `activate`,
+`delete` and the others that take a stack name) set environment variables in
+your process and leave them set: `CONFIGURATION_TABLE_NAME` and
+`CONFIGURATION_BUCKET` name the stack's configuration table and bucket, and
+`AWS_REGION` and `AWS_DEFAULT_REGION` both name the Region the stack was found
+in. The Region is set because a model setting a configuration leaves out
+resolves to that Region's inference profile (see
+[EU Region Model Support](eu-region-model-support.md)), and that lookup reads
+`AWS_REGION` first. If your process works with stacks in more than one Region,
+each operation sets the variables again for its own stack.
+
 ### config.create()
 
 Generate an IDP configuration template.
@@ -1680,7 +1715,14 @@ Upload configuration to a deployed stack.
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 - `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
-**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, `error`, and `warnings`
+
+`warnings` holds the non-fatal findings validation produced for the file, the
+same list `config.validate()` returns in `ConfigValidationResult.warnings`. It is
+filled when validation refuses the upload as well as when the upload succeeds. It
+is empty with `validate=False`, and for a refusal that comes before validation
+runs (a file that does not load, or one marked `managed: true`), because nothing
+was checked. A warning never makes `success` false.
 
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
@@ -2151,7 +2193,7 @@ Discover document classes from a collection of documents using embedding-based c
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
 - `progress_callback` (callable, optional): Callback function for pipeline progress updates
-- `region` (str, optional): AWS region
+- `region` (str, optional): AWS region. Overrides the client's for this call, for both the Bedrock calls and the stack the schemas are saved into
 
 **Returns:** `MultiDocDiscoveryResult` with `status` (SUCCESS/PARTIAL/FAILED), `discovered_classes` (list of `DiscoveredClassResult`), `reflection_report`, `total_documents`, `total_clusters`, `noise_documents`, `config_version`, and `error`
 

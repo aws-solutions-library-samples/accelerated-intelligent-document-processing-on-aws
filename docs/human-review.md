@@ -171,9 +171,16 @@ A document is held for review when all of these are true:
   the class schema marks `required` has no extracted value, while
   `hitl.route_missing_required_fields` is on (the default). Any other field with no
   extracted value raises no confidence alert, so it does not hold a document; see
-  [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields)
+  [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields);
+  or a section's extraction failed without failing the document (for example,
+  Amazon Bedrock's content filter withheld the model's reply), leaving the section
+  with no extracted data. Its review reason reads **Extraction failed**, and its
+  details name the section and what failed; see
+  [Where a failed section shows up](extraction-and-confidence.md#where-a-failed-section-shows-up)
 
-Each alert becomes a **review reason** on the item. A document with no alerts isn't
+Each alert, and each failed section, becomes a **review reason** on the item. In
+legacy HITL mode (the Default queue disabled, or no review table) a failed section
+is marked pending review the same way a section with a confidence alert is. A document with no alerts isn't
 queued, and documents processed by a Test Studio run are never held in a Production
 queue.
 

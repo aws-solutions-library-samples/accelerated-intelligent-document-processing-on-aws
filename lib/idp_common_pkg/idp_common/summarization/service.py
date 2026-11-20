@@ -25,6 +25,7 @@ from idp_common.models import Document, Status
 from idp_common.summarization.markdown_formatter import SummaryMarkdownFormatter
 from idp_common.summarization.models import DocumentSummarizationResult, DocumentSummary
 from idp_common.utils import extract_json_from_text
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -890,6 +891,27 @@ class SummarizationService:
                     f"Summarization failed for {len(section_exceptions)} section(s). "
                     f"Re-raising exception from section {first_failed_section} to fail the workflow."
                 )
+                # The sections that finished, and any reply a failed one had
+                # received, were billed. A transient failure carries that usage
+                # to the handler, which records it before the step is retried
+                # (#2122); a hard one leaves it on the document it marks FAILED.
+                attempt_metering: Dict[str, Any] = {}
+                for section_metering in all_section_metering.values():
+                    attempt_metering = utils.merge_metering_data(
+                        attempt_metering, section_metering
+                    )
+                for section_exception in section_exceptions.values():
+                    attempt_metering = utils.merge_metering_data(
+                        attempt_metering, utils.failure_metering(section_exception)
+                    )
+                reraise_if_transient(
+                    first_exception,
+                    where="summarization",
+                    metering=attempt_metering,
+                )
+                document.metering = utils.merge_metering_data(
+                    document.metering, attempt_metering
+                )
                 raise first_exception
 
             # Merge all section-specific metering data into the document's metering data
@@ -990,6 +1012,12 @@ class SummarizationService:
                 )
 
         except Exception as e:
+            # A section's transient failure (a throttle past the client's retries,
+            # a read timeout, a bare HTTP 5xx) must reach the Lambda as
+            # TransientError, which SummarizationStep retries. Recorded as a FAILED
+            # document instead, the Lambda could only raise an untyped error and
+            # the document failed with no retry.
+            reraise_if_transient(e, where="summarization")
             error_msg = f"Error summarizing document: {str(e)}"
             logger.error(error_msg)
             document = self._update_document_status(

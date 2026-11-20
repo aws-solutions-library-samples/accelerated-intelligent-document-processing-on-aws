@@ -85,7 +85,12 @@ class QueueRef(BaseModel):
 
 
 class ReviewReason(BaseModel):
-    kind: Literal["low_confidence", "blueprint_confidence", "missing_required"]
+    kind: Literal[
+        "low_confidence",
+        "blueprint_confidence",
+        "missing_required",
+        "extraction_failed",
+    ]
     section_id: str
     field: Optional[str] = None
     label: Optional[str] = None
@@ -252,7 +257,12 @@ class RunRef(BaseModel):
 
 
 class StatusReason(BaseModel):
-    kind: Literal["low_confidence", "blueprint_confidence", "missing_required"]
+    kind: Literal[
+        "low_confidence",
+        "blueprint_confidence",
+        "missing_required",
+        "extraction_failed",
+    ]
     section_id: str
     field: Optional[str] = None
     label: Optional[str] = None

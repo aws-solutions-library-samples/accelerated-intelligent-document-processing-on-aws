@@ -558,6 +558,10 @@ deployment_validation:
   # form, kept because the nightly deploy path should validate the role in the
   # environment that is about to use it rather than trusting the offline read.
   rules:
+    # The weekly load-probe schedule runs load_probe alone: no deploy, no Slack
+    # post. See the comment on load_probe.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"
       when: manual
@@ -648,6 +652,11 @@ integration_tests:
   #     no Terraform run happens. It holds the same resource_group as the
   #     CloudFormation nightly, so the two serialise; schedule it to start after
   #     the nightly normally finishes (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
+  #     A Terraform schedule that also carries IDP_TERRAFORM_PARITY=true deploys
+  #     a CloudFormation twin of the same commit beside it and compares the two
+  #     with terraform/tools/parity.py (terraform_parity_requested, honoured on a
+  #     schedule only and refused without IDP_IAC=terraform). Meant for a weekly
+  #     schedule: it adds one CloudFormation deployment to the run.
   #   - the weekly Terraform-migration schedule  → auto, and NOT the primary suite:
   #     the build runs scripts/sdlc/terraform_migration_test.py instead, which
   #     deploys a pinned awslabs/genai-idp-terraform release, migrates it in place
@@ -691,6 +700,10 @@ integration_tests:
   #   - A scheduled failure is triaged by bisecting the merges since the last green
   #     run, not by reading the pipeline's own commit.
   rules:
+    # The weekly load-probe schedule runs load_probe alone: no deploy, no Slack
+    # post. See the comment on load_probe.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: on_success
     # Any MR targeting develop (Draft or not) gets the button. No `changes:`
@@ -1100,6 +1113,61 @@ integration_tests:
       # reads it to decide whether the channel already has this run's result.
       - slack_posted.txt
     expire_in: 1 week
+
+# The weekly load probe: a few dozen sample packets submitted at once to an
+# EXISTING stack (scripts/sdlc/load_probe.py, `make stacktest-load`). It deploys
+# nothing. It runs on ONE trigger only: a scheduled pipeline carrying
+# IDP_RUN_LOAD_PROBE=true. Never on a merge request, never on a push, never on the
+# nightly or any other schedule, and there is no manual button; to run it on demand,
+# press Run on its schedule in Build › Pipeline schedules, or run the make target.
+#
+# The schedule is a GitLab project setting, not something in this file, and it is
+# inactive until somebody creates it. It must carry:
+#   IDP_RUN_LOAD_PROBE=true      the selector (set it on this schedule ONLY: as a
+#                                project or group variable it would reach every
+#                                schedule, and the rules below would then take the
+#                                nightly's deploy off every one of them)
+#   IDP_LOAD_PROBE_STACK=<name>  the existing stack to probe; no default, the job
+#                                refuses without it
+# and may carry IDP_LOAD_PROBE_REGION (default us-east-1),
+# IDP_LOAD_PROBE_DECIDER_ARN (enables the decision-model arm) and
+# IDP_LOAD_PROBE_ARGS (extra driver options, e.g. a different --max-cost-usd).
+#
+# On that schedule deployment_validation, integration_tests, nightly_notification
+# and the nightly story jobs are ruled out, so the pipeline deploys nothing and
+# posts nothing to Slack; a red run is this probe's result alone. The fast_checks
+# jobs still run, as on every scheduled pipeline, and `needs: []` keeps this job
+# from waiting for them. See scripts/sdlc/docs/CI_TEST_COVERAGE.md.
+load_probe:
+  stage: integration_tests
+  needs: []
+  interruptible: false
+  # The driver's own deadline is 45 minutes from its start; this leaves room for
+  # the install and the report without GitLab killing the job first.
+  timeout: 75m
+  # Two probe runs against one stack would share its concurrency and read each
+  # other's throttling as their own.
+  resource_group: load_probe
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: on_success
+    - when: never
+  before_script: *python_setup
+  script:
+    - |
+      if [ -z "${IDP_LOAD_PROBE_STACK:-}" ]; then
+        echo "❌ IDP_LOAD_PROBE_STACK is not set on the schedule: name the existing stack to probe."
+        exit 2
+      fi
+    - export AWS_DEFAULT_REGION="${IDP_LOAD_PROBE_REGION:-us-east-1}"
+    # on-pass: a green run deletes the profiles and documents it created; a red
+    # run keeps them for diagnosis.
+    - make stacktest-load STACK_NAME="$IDP_LOAD_PROBE_STACK" REGION="$AWS_DEFAULT_REGION" LOAD_PROBE_ARGS="--cleanup on-pass --report-dir load-probe ${IDP_LOAD_PROBE_ARGS:-}"
+  artifacts:
+    when: always
+    paths:
+      - load-probe/
+    expire_in: 90 days
 
 srt_security_review:
   stage: fast_checks
@@ -1840,6 +1908,10 @@ nightly_notification:
   # it). allow_failure so a notification problem can never be the thing that
   # reddens a nightly.
   rules:
+    # The weekly load-probe schedule runs load_probe alone: no deploy, no Slack
+    # post. See the comment on load_probe.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: always
       allow_failure: true
@@ -2262,6 +2334,8 @@ ai_ux_test_stories_nightly:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_IAC =~ /^\s*terraform\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_TERRAFORM_MIGRATION =~ /^\s*true\s*$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always

@@ -160,3 +160,44 @@ def test_get_results_by_batch_id_still_works(monkeypatch):
     assert result["count"] == 2
     batch.get_results.assert_called_once()
     batch.get_document_results.assert_not_called()
+
+
+def test_batch_run_ids_from_the_same_second_differ(monkeypatch):
+    """#2113: the content path passes its own id to the SDK and uploads under
+    ``temp/{batch_id}/``, so it must not be timestamp-only. The clock is frozen in
+    the SDK's id helper and in the `datetime` module itself, which a local
+    `from datetime import datetime` in the tool would read."""
+    import datetime as datetime_module
+    import re
+
+    import idp_sdk
+
+    real_datetime = datetime_module.datetime
+    frozen = real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime_module.timezone.utc)
+
+    class _FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz is None else frozen.astimezone(tz)
+
+        @classmethod
+        def utcnow(cls):
+            return frozen.replace(tzinfo=None)
+
+    # The helper's own module globals, reached through the public export.
+    monkeypatch.setitem(
+        idp_sdk.generate_timestamped_id.__globals__, "datetime", _FrozenDatetime
+    )
+    monkeypatch.setattr(datetime_module, "datetime", _FrozenDatetime)
+
+    batch_run = importlib.import_module("tools.batch_run")
+    if hasattr(batch_run, "datetime"):
+        monkeypatch.setattr(batch_run, "datetime", _FrozenDatetime)
+    tool = batch_run.BatchRunTool.__new__(batch_run.BatchRunTool)
+
+    first = tool._generate_batch_id("mcp-content")
+    second = tool._generate_batch_id("mcp-content")
+    assert first != second
+    for batch_id in (first, second):
+        assert re.fullmatch(r"mcp-content-20260102-030405-[0-9a-f]{8}", batch_id)
+    assert tool._generate_batch_id(None).startswith("mcp-batch-20260102-030405-")

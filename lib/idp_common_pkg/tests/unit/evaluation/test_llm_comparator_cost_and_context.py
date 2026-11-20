@@ -534,11 +534,11 @@ def test_cache_dict_key_order_insensitive():
         "Error in LLM evaluation for MyField: throttled",
     ],
 )
-def test_transient_error_is_not_cached_permanently(error_reason):
+def test_an_error_verdict_is_not_cached_permanently(error_reason):
     """Regression pin: EACH of compare_llm's four error-path reason
-    strings must be recognized as transient and skipped from caching.
-    Caching a transient failure would poison the (value1, value2)
-    pair for the warm container's lifetime."""
+    strings must be recognized as an error and skipped from caching.
+    Caching one would poison the (value1, value2) pair for the warm
+    container's lifetime."""
     from idp_common.evaluation.stickler_backend import comparators
 
     comparator = LLMComparator(model="test-model")
@@ -551,7 +551,7 @@ def test_transient_error_is_not_cached_permanently(error_reason):
     with patch.object(comparators, "compare_llm", return_value=(True, 1.0, "match")):
         second = comparator.compare("A", "B")
     assert second == 1.0, (
-        f"transient error with reason={error_reason!r} was cached "
+        f"error verdict with reason={error_reason!r} was cached "
         f"permanently — subsequent successful call returned the stale "
         f"0.0 instead of the fresh 1.0 score"
     )
@@ -568,3 +568,118 @@ def test_cache_key_direct_equality_across_dict_order():
     k1 = _cache_key({"a": 1, "b": 2}, {"c": 3, "d": 4})
     k2 = _cache_key({"b": 2, "a": 1}, {"d": 4, "c": 3})
     assert k1 == k2
+
+
+@pytest.mark.unit
+def test_a_transient_judge_failure_propagates_and_a_deterministic_one_scores_zero():
+    """#2049: a judge call that fails transiently (a throttle past the client's
+    retries, a bare HTTP 5xx, a read timeout) leaves ``evaluate_document`` as
+    ``TransientError``, so EvaluationStep retries the document, and is not cached
+    for the value pair. A deterministic judge error still scores the field 0.0.
+
+    One test, looping the fault kinds, through the real service, Stickler and
+    comparator, with S3 answered from memory and the model call replaced."""
+    from botocore.exceptions import ClientError, ReadTimeoutError
+
+    from idp_common.evaluation.service import EvaluationService
+    from idp_common.models import Document, Section
+    from idp_common.utils.transient_errors import TransientError
+
+    def client_error(code: str, status: int = 400) -> ClientError:
+        return ClientError(
+            {
+                "Error": {"Code": code, "Message": "m"},
+                "ResponseMetadata": {"HTTPStatusCode": status},
+            },
+            "Converse",
+        )
+
+    faults = {
+        "modeled throttle": client_error("ThrottlingException"),
+        "bare HTTP 500": client_error("500", 500),
+        "read timeout": ReadTimeoutError(endpoint_url="https://bedrock.example"),
+        "deterministic": client_error("ValidationException"),
+    }
+    answer = {
+        "response": {
+            "output": {
+                "message": {
+                    "content": [
+                        {"text": '{"match": true, "score": 1.0, "reason": "ok"}'}
+                    ]
+                }
+            }
+        },
+        "metering": {},
+    }
+    config = {
+        "classes": [
+            {**_schema(), "properties": {"Agency": _schema()["properties"]["Agency"]}}
+        ]
+    }
+
+    def document(side: str) -> Document:
+        uri = f"s3://b/{side}.json"
+        return Document(
+            id="d",
+            input_key="d.pdf",
+            output_bucket="b",
+            sections=[
+                Section(
+                    section_id="1",
+                    classification="Invoice",
+                    page_ids=["1"],
+                    extraction_result_uri=uri,
+                )
+            ],
+        )
+
+    values = {
+        "s3://b/actual.json": {"inference_result": {"Agency": "Other Agency"}},
+        "s3://b/expected.json": {"inference_result": {"Agency": "AnyCompany Media"}},
+    }
+    wrong = []
+    for kind, fault in faults.items():
+        service = EvaluationService(region="us-east-1", config=config, max_workers=1)
+        outcome = None
+        with (
+            patch("idp_common.s3.get_json_content", side_effect=values.__getitem__),
+            patch("idp_common.bedrock.invoke_model", side_effect=fault) as call,
+        ):
+            try:
+                result = service.evaluate_document(
+                    document("actual"), document("expected"), store_results=False
+                )
+            except Exception as raised:  # noqa: BLE001 - the outcome under test
+                outcome = raised
+        if not call.called:
+            wrong.append(f"{kind}: the judge was never called")
+        elif kind == "deterministic":
+            scores = (
+                [
+                    a.score
+                    for sr in result.evaluation_result.section_results
+                    for a in sr.attributes
+                ]
+                if outcome is None and result.evaluation_result
+                else None
+            )
+            if scores != [0.0]:
+                wrong.append(
+                    f"{kind}: expected the field scored 0.0, got {outcome or scores!r}"
+                )
+        elif not isinstance(outcome, TransientError) or outcome.__cause__ is not fault:
+            wrong.append(f"{kind}: left evaluate_document as {outcome!r}")
+
+        # The comparator itself: the failed pair must not be cached, so the next
+        # call reaches the judge and gets its real answer.
+        comparator = LLMComparator(model="test-model", attribute_name="Agency")
+        with patch("idp_common.bedrock.invoke_model", side_effect=fault):
+            try:
+                comparator.compare("A", "B")
+            except TransientError:
+                pass
+        with patch("idp_common.bedrock.invoke_model", return_value=answer):
+            if comparator.compare("A", "B") != 1.0:
+                wrong.append(f"{kind}: the failed verdict was cached")
+    assert not wrong, "; ".join(wrong)

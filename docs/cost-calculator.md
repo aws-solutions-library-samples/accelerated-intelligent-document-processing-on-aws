@@ -120,12 +120,35 @@ This real-time cost tracking helps you monitor actual usage patterns and optimiz
 extraction, adds the tokens of every model call it completed to the document's
 metering under its step. The case you will see in the estimate is a failed
 [validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation): it keeps the original result, the document
-continues, and the escalation's calls appear under `ExtractionEscalation`. Two
-cases are not counted. A document whose workflow fails records no cost in the
-reports at all, for any step, because the tracker saves metering only from a
-workflow that succeeded. And when an extraction attempt fails with a transient
-error and Step Functions retries it, the calls of the failed attempt are not
-counted; only the attempt that finishes is.
+continues, and the escalation's calls appear under `ExtractionEscalation`. When an
+extraction attempt fails with a transient error and Step Functions retries it, the
+calls of the failed attempt are not counted; only the attempt that finishes is.
+
+**A classification or summarization attempt that fails transiently records what it
+spent.** The step is retried, so the document keeps its `CLASSIFYING` or `SUMMARIZING`
+status rather than being shown as failed, and the usage of the calls the attempt
+completed is written to the document's tracking record. If the execution then ends
+unsuccessfully, that usage is in what it reports, but only for the **most recent**
+failed attempt: each attempt starts by writing the document it was given, which
+replaces the record's usage, so a step that failed transiently several times reports
+the last failed attempt's calls and not the earlier ones'. At page-level
+classification the pages earlier attempts classified are restored from the page
+cache on every attempt, so they stay counted. If a retry succeeds, the reported
+usage is the succeeding attempt's: at page-level classification that includes the
+pages the failed attempt classified, because the retry reuses them from the page cache,
+but under summarization, split-then-classify or packet granularity the failed
+attempt's calls are not in it.
+
+**A workflow that fails still reports what it spent.** A workflow execution that
+ends `FAILED`, `TIMED_OUT` or `ABORTED` writes its usage to the reporting `metering`
+table like one that succeeds, with `execution_status` saying how it ended, so the
+reports show actual spend including failed attempts. Its usage is what the stages
+that ran had recorded on the document's tracking record: the step that failed, and
+the shards of a section map that finished before another shard failed, are not in
+it, except for the classification and summarization attempts described above. Each execution is reported once, under its `execution_arn`, and reprocessing a
+failed document is a new execution with a record of its own. To see the failed
+attempts on their own, filter on `execution_status`; see
+[Reporting Database](reporting-database.md#metering-table).
 
 **Advanced-mode extraction counts the calls that compact its conversation.** When an
 agentic extraction's conversation grows too large for the model's context window,
@@ -178,17 +201,23 @@ Two consequences follow:
   your saved table holds, even if you never edited that unit, because every save
   stores the whole table. Saving once pins the defaults of that moment for every
   row in the table.
-- Deleting a default row in the editor does not stick. The saved table records no
-  deletions, so the row is back at its default rate once the table is saved and the
-  page is reloaded. To have a default model cost nothing in the reports, set its
-  rates to `0` instead.
+- A default row cannot be deleted. The saved table records no deletions, so a
+  deleted default row would be back at its default rate once the table is saved and
+  the page reloaded; the Pricing page therefore disables **Delete unit** on every
+  row from the default price list and says why. A row removed in the JSON or YAML
+  view, or left out of an imported file, comes back in the same way. To have a
+  default model cost nothing in the reports, set its rates to `0` instead. Rows you
+  added stay deletable, and every row stays editable.
+
+To put one default row back to its default rate, choose **Restore default price**
+on that row; it is available when the row's price differs from the default.
 
 To pick up the current defaults for every row, choose **Restore default (All)** on
 the Pricing page, which discards the saved table, and then re-apply your own
 changes. The button is enabled whenever the table on the page differs from the
 defaults: a price that differs by any amount (the same value in a different
 notation, such as `2.2E-6` and `0.0000022`, does not count), a row the defaults do
-not have, or a default row you have deleted and not yet saved.
+not have, or a default row removed in the JSON or YAML view or by an import and not yet saved.
 
 ### What the estimate cannot express: prices that change with request size
 

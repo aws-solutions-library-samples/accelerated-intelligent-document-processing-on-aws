@@ -746,9 +746,10 @@
       "ratchet": "universe-closure",
       "ratchetEvidence": "patterns/unified/tests/test_workflow_transient_retry.py",
       "issues": [
-        1142
+        1142,
+        2049
       ],
-      "reason": "Each member is deferred rather than exempt in principle, and the deferral is forced by order-sensitivity: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. Both halves have to land per state; none of these handlers swallows, so what is lost meanwhile is the retry rather than the diagnosis. Each member's reason in the dict is specific to its handler -- OCRStep calls a model only on the bedrock backend, SummarizationStep once over the whole document at the end of the pipeline, EvaluationStep only through the LLM-judge comparators, and RecordEvaluationFailure on a deliberately shorter transient tier because it runs on the failure path -- and the gate asserts those reasons are distinct, because length plus a substring would accept identical strings, and that this entry names every member and no state that converts. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
+      "reason": "The one member, RecordEvaluationFailure, runs EvaluationFunction in its record_failure_only branch, which makes no model call and never raises, so a handler wrapper would convert nothing and a TransientError entry would retry nothing; it is in the universe only because the function's Bedrock grant serves the LLM-judge calls of the scoring state that shares it, which converted in #2049, and it keeps its deliberately shorter transient tier because it runs on the failure path. Converting is two halves that land together: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. The member's reason in the dict is specific to it, and the gate asserts reasons stay distinct if a second member is added, because length plus a substring would accept identical strings, and that this entry names every member and no state that converts. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
       "ratchetGap": "The predicate answers 'permitted to invoke a model', not 'does invoke one', so an entry can be justified by a grant its handler never uses. It reads actions out of Action: position rather than out of the block's raw text, which is what stops an ARN's wildcard REGION (arn:<partition>:bedrock:*::foundation-model/*, twelve of them here) being read as a bedrock:* action -- there is no such action in this template, and reading one put a data-automation-only function in the universe. What remains loose is the action pattern itself: any future action whose name begins InvokeModel or Converse would qualify regardless of what it does. Over-inclusion is the safe direction for a closure. The closure is also one-directional by design: a state that is NOT Bedrock-capable may still list TransientError legitimately (PolicyClassificationStep does, for DynamoDB and S3 transients), so nothing here detects a listing that is no longer needed."
     },
     "pyrightconfig.json::exclude": {
@@ -800,7 +801,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "The generated `scope` block: two entries that are not debt to be paid down but decisions that ruff's rules do not describe the files at all -- every .ipynb, and the vendored copy of awslabs/pii-anonymizer. Each names a premise that scripts/check_lint_debt.py evaluates against this tree, per member: the notebook pattern must match nothing but .ipynb and notebooks/_validate_notebooks.py must still be present to check them instead, and the vendored tree must still carry the PROVENANCE.md pinning the upstream commit the re-sync skill diffs against. The per-file lint and format debt this array used to carry now sits in [lint] exclude and [format] exclude, generated from the same baseline. What is NOT pinned is the finding COUNT inside either scope tree, deliberately: a new notebook may add findings without failing anything, and pinning that would red-line every notebook edit.",
+      "reason": "The generated `scope` block: entries that are not debt to be paid down but decisions that ruff's rules do not describe the files at all -- every .ipynb, the vendored copy of awslabs/pii-anonymizer, and the vendored reference validator of the Solution Profile contract (solution-profile/schema/v1/validate_profile.py). Each names a premise that scripts/check_lint_debt.py evaluates against this tree, per member: the notebook pattern must match nothing but .ipynb and notebooks/_validate_notebooks.py must still be present to check them instead, the vendored tree must still carry the PROVENANCE.md pinning the upstream commit the re-sync skill diffs against, and the vendored validator (premise vendored_contract_hash_pinned: vendored, byte-identical, hash-pinned) must match the sha256 that solution-profile/schema/README.md pins for it, which scripts/tests/test_solution_profile.py asserts as well, so any local edit to the copy removes its exemption. The per-file lint and format debt this array used to carry now sits in [lint] exclude and [format] exclude, generated from the same baseline. What is NOT pinned is the finding COUNT inside either scope tree, deliberately: a new notebook may add findings without failing anything, and pinning that would red-line every notebook edit.",
       "memberKind": "path",
       "crossReferences": [
         "ruff.toml::exclude",
@@ -1168,7 +1169,7 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "reason": "Discovered as a JSON registry (the `*_debt.json` glob) because a generated findings baseline is an exemption list by another name: every entry is a finding the gate agrees not to fail on. Three sections of different standing -- `scope` (two decisions that ruff's rules do not describe those files at all, each naming a premise the gate evaluates against this tree), `lintDebt` (per-file, per-rule counts) and `formatDebt` (per-file flags). What keeps the file from being a laundering step is that `--write` REFUSES to grow either list without --allow-new-debt '<reason>', which is recorded in the file; without that refusal the gate would redden on a new unlinted file, say 'do not add this to lintDebt', and --write would add it and turn everything green with the file permanently unlinted.",
+      "reason": "Discovered as a JSON registry (the `*_debt.json` glob) because a generated findings baseline is an exemption list by another name: every entry is a finding the gate agrees not to fail on. Three sections of different standing -- `scope` (decisions that ruff's rules do not describe those files at all, each naming a premise the gate evaluates against this tree), `lintDebt` (per-file, per-rule counts) and `formatDebt` (per-file flags). What keeps the file from being a laundering step is that `--write` REFUSES to grow either list without --allow-new-debt '<reason>', which is recorded in the file; without that refusal the gate would redden on a new unlinted file, say 'do not add this to lintDebt', and --write would add it and turn everything green with the file permanently unlinted.",
       "ratchet": "count-pinned",
       "ratchetEvidence": [
         "scripts/check_lint_debt.py"
@@ -2523,7 +2524,7 @@
     },
     "scripts/tests/test_log_group_encryption.py::CUSTOM_RESOURCE_ONLY_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the KmsKeyId requirement for two log groups",
+      "turnsOff": "the KmsKeyId requirement for the custom-resource-only log groups it lists, each with its own reason beside it",
       "premise": [
         "JUDGEMENT"
       ],
@@ -3335,7 +3336,10 @@
       ],
       "ratchet": "staleness",
       "ratchetEvidence": "scripts/terraform_scan_diff.py",
-      "reason": "Each entry names one check on one resource and says why the Terraform side fails a check the CloudFormation side does not: on the custom-resource bridge the translator adds (which has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service), why the check does not apply to it; on a translated resource, why the two sides differ although the deployed setting is the same. Why JUDGEMENT: whether a scanner rule applies to a generated resource, or whether a difference is checkov's evaluation rather than the translation, is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read. Findings on checks with no CloudFormation counterpart are not here: scripts/terraform_scan_tf_only_baseline.json pins them."
+      "reason": "Each entry names one check on one resource and says why the Terraform side fails a check the CloudFormation side does not: on the custom-resource bridge the translator adds (which has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service), why the check does not apply to it; on a translated resource, why the two sides differ although the deployed setting is the same. Why JUDGEMENT: whether a scanner rule applies to a generated resource, or whether a difference is checkov's evaluation rather than the translation, is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read. Findings on checks with no CloudFormation counterpart are not here: scripts/terraform_scan_tf_only_baseline.json pins them.",
+      "crossReferences": [
+        "terraform/translator/idp_tf/suppressions.py::SUPPRESSION_EQUIVALENTS"
+      ]
     },
     "terraform/tools/parity_baseline.json::parity_baseline.json": {
       "kind": "exemption",
@@ -3555,6 +3559,41 @@
       "ratchet": "staleness",
       "ratchetEvidence": "scripts/sdlc/tests/test_terraform_migration_test.py",
       "reason": "Discovered by name (ACCEPT). The one member is the agent-jobs table's time-to-live rename, which docs/terraform-migration.md (Hazards) tells every migration to accept, because the module's table expires rows on a differently spelled attribute than upstream's. Why JUDGEMENT: whether a refused change is acceptable is the guide's decision about upstream's data, not a property the test can compute; the test's job is to follow the guide exactly, so membership is the guide's prescription. The ratchet is test_the_accepted_changes_are_exactly_the_ones_the_guide_prescribes, which reads the guide and fails both on a stale member the guide no longer names and on a prescription the test does not pass."
+    },
+    "terraform/translator/idp_tf/suppressions.py::SUPPRESSION_EQUIVALENTS": {
+      "kind": "exemption",
+      "memberKind": "a CloudFormation checkov check id, with the Terraform checkov check and resource types it is carried as",
+      "turnsOff": "checkov's Terraform check on the generated module (make terraform-scan-diff, and any consumer's own checkov run) for one check on the blocks of the listed types generated from a CloudFormation resource whose template records a # checkov:skip of the mapped check, with that template's reason. Nothing is skipped for a resource whose template does not record it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "terraform/translator/tests/test_suppressions.py",
+      "issues": [
+        2000
+      ],
+      "crossReferences": [
+        "terraform/translator/idp_tf/suppressions.py::DIFFERING_CHECKS",
+        "scripts/terraform_scan_baseline.json::terraform_scan_baseline.json"
+      ],
+      "reason": "Each member pairs one CloudFormation check with the Terraform check that, in the pinned checkov's own implementations, inspects the same setting and fails in the same cases over what a template can express; the comment above each member cites both implementations and says what each inspects. The suppression itself is not the member's: it is the per-resource # checkov:skip already recorded in the template with its own reason, which the module repeats. Why JUDGEMENT: whether two scanner implementations fail in the same cases is a reading of their code, and checkov is not importable in the offline suite. The ratchet is test_every_checkov_rule_the_tree_suppresses_is_decided_once: every checkov rule a template in the translated tree suppresses must be in this table or in DIFFERING_CHECKS and not both, so a rule in neither is unaccounted for and fails, and a member no template suppresses fails as stale; test_each_carried_rule_reaches_every_matching_block fails a member whose Terraform types receive no block."
+    },
+    "terraform/translator/idp_tf/suppressions.py::DIFFERING_CHECKS": {
+      "kind": "enforced-universe",
+      "memberKind": "a CloudFormation checkov check id a template suppresses whose Terraform twin is not carried",
+      "turnsOff": "nothing in a gate: a member is a rule whose CloudFormation suppression is NOT written into the module, so checkov's Terraform check keeps reporting it there. The member is listed in docs/terraform.md with the reason it is not carried.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "terraform/translator/tests/test_suppressions.py",
+      "issues": [
+        2000
+      ],
+      "crossReferences": [
+        "terraform/translator/idp_tf/suppressions.py::SUPPRESSION_EQUIVALENTS"
+      ],
+      "reason": "Each member names the case in which checkov's Terraform implementation fails and the CloudFormation one passes (CKV_AWS_173 also fails a key with no environment, CKV_AWS_99 requires KMS modes and keys), which the review recorded on the template did not consider, so carrying the skip would hide a finding nobody accepted. Why JUDGEMENT: the difference is a reading of two implementations. Together with SUPPRESSION_EQUIVALENTS it must account for every checkov rule the translated tree suppresses, disjointly, and a member nothing suppresses fails as stale, in test_every_checkov_rule_the_tree_suppresses_is_decided_once."
     }
   }
 }

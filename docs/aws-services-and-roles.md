@@ -246,9 +246,9 @@ The solution creates various IAM roles to run different components of the system
   * `lambda:InvokeFunction` on the stack's resolver functions (by function-name prefix) and the main-stack resolver ARNs in its field → function map
   * `ssm:GetParameter` on the stack's field → function map parameter, read at cold start
 
-* **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
+* **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG` and `ManageApiGatewayAccountSettings` is `true`, the default):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
-  * Registered as the account-level API Gateway CloudWatch role (`AWS::ApiGateway::Account`) to enable REST API stage access logging. This setting is per account per region and is retained on stack deletion so other stacks' logging keeps working.
+  * Registered as the account-level API Gateway CloudWatch role (`AWS::ApiGateway::Account`) to enable REST API stage access logging. This setting is per account per region and is retained on stack deletion so other stacks' logging keeps working. With `ManageApiGatewayAccountSettings=false` neither the role nor the setting is created and the deployment uses the role the Region already has — see [Monitoring](./monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role).
 
 * **Configuration Resolver Role** (API resolver Lambda for configuration CRUD + Z3 RuleJSON generation):
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`
@@ -406,6 +406,11 @@ The solution creates various IAM roles to run different components of the system
   * KMS on the stack CMK
   * See [Reporting SQL Layer](reporting-sql-layer.md) §2.3 for the migration's purpose (backwards-compat upgrade to the `hour`-partitioned metering layout)
 
+* **Customer Managed KMS Key Check Role** (`CustomerManagedKmsKeyCheckFunction`, the `Custom::CustomerManagedKmsKeyCheck` handler that keeps [`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md) a creation-time choice):
+  * `cloudformation:DescribeStacks` on the stack's own stack ARN only, to tell a new stack from an existing one being updated and an update from a rollback
+  * `kms:DescribeKey` on the supplied key's ARN only, and only when a key is supplied
+  * No data-plane access and no other KMS action
+
 * **Control-Plane Lambda cost-telemetry (in-band, all control-plane Lambdas that hit Athena or Bedrock):**
   * `cloudwatch:PutMetricData` scoped to namespace `IDPControlPlane` (already granted via the existing app-metrics grant)
   * The `idp_common.metrics.emit_control_plane_cost_metric` helper emits `IDPControlPlane/{AthenaBytesScanned,BedrockInputTokens,BedrockOutputTokens}` with dims `[Component, FunctionName, Model?]` for the rollup Lambda to aggregate.
@@ -477,7 +482,7 @@ When deploying this solution, consider the following security best practices:
 
 1. **Encryption**:
    * Enable SSE-KMS encryption for all S3 buckets
-   * Use customer-managed CMKs for sensitive data
+   * Use customer-managed CMKs for sensitive data; to use a centrally managed key of your own rather than the one the stack creates, see [Customer Managed KMS Key](./customer-managed-kms-key.md)
    * Enable encryption for DynamoDB tables
 
 2. **Network Security**:

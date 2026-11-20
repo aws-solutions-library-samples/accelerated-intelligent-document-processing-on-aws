@@ -23,7 +23,7 @@ import { abortSuccessMessages } from './abortResultMessages';
 import DeleteTestModal from './DeleteTestModal';
 import AbortTestModal from './AbortTestModal';
 import DateRangeModal from '../common/DateRangeModal';
-import { paginationLabels } from '../common/labels';
+import { usePaginationLabels } from '../common/labels';
 import TestRunnerStatus from './TestRunnerStatus';
 import { TableHeader } from '../common/table';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
@@ -155,6 +155,7 @@ const TestResultsList = ({
 }: TestResultsListProps): React.JSX.Element => {
   const { versions } = useConfigurationVersions();
   const { formatDateTime } = useFormatters();
+  const paginationLabels = usePaginationLabels();
   const [testRuns, setTestRuns] = useState<TestRunItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

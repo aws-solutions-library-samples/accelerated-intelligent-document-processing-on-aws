@@ -1,0 +1,14 @@
+{# Contract: given one section's pages, returns its class. Must ask for "class" only;
+the boundary was already decided.
+Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. #}
+<task-description> Identify the type of the single document whose pages are shown below. The pages all belong to one document; you are not being asked to split anything. </task-description>
+<document-types> {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>
+<few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>
+<classification-instructions> 1. Examine the visual layout: headers, logos, formatting, structure, and visual organization 2. Analyze the textual content: key phrases, terminology, purpose, and information type 3. Identify distinctive features that match the document type descriptions 4. CRITICAL: only use document types explicitly listed in the <document-types> section </classification-instructions>
+<output-format> {
+  "classification_reason": "Specific visual and textual evidence that identifies this document's type",
+  "class": "exact_document_type_from_list"
+} </output-format>
+<<CACHEPOINT>>
+<document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
+<document-image> {DOCUMENT_IMAGE} </document-image>

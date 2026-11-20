@@ -191,6 +191,12 @@ Parameters:
   
   LogLevel:
     Type: String
+
+  ManageApiGatewayAccountSettings:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: Whether this deployment sets the Region's API Gateway CloudWatch logging role (the parent's ManageApiGatewayAccountSettings)
   
   DataRetentionInDays:
     Type: Number
@@ -447,6 +453,13 @@ Conditions:
   # blocks, S3-proxy Web UI routes).
   EnableApiAccessLogs:
     !Or [!Equals [!Ref LogLevel, "DEBUG"], !Equals [!Ref LogLevel, "INFO"]]
+  # The account-level API Gateway CloudWatch role is a per-account, per-Region
+  # singleton, so only one deployment per Region should set it. A deployment with
+  # ManageApiGatewayAccountSettings=false still configures access and execution
+  # logging on its stage, and relies on the role the Region already has.
+  ManageApiGatewayAccount: !And
+    - !Condition EnableApiAccessLogs
+    - !Equals [!Ref ManageApiGatewayAccountSettings, "true"]
 
 Resources:
   AbortWorkflowResolverFunctionLogGroup:
@@ -591,7 +604,7 @@ Resources:
           - id: W92
             reason: "Function does not require reserved concurrency as it scales based on demand"
           - id: W58
-            reason: "DLQ not required for AppSeync Resolver function"
+            reason: "DLQ not required: invoked synchronously by the API dispatcher, which returns errors to the caller"
           - id: W11
             reason: "Role requires * resource access for Marketplace, CloudWatch Metrics and Logs"
     # checkov:skip=CKV_AWS_116: "DLQ not required for analytics processor as it's invoked asynchronously by request handler with error handling and job status tracking in DynamoDB"
@@ -2467,7 +2480,7 @@ Resources:
           - id: W92
             reason: "Function does not require reserved concurrency as it scales based on demand"
           - id: W58
-            reason: "DLQ not required for AppSync resolver function as GraphQL handles retries"
+            reason: "DLQ not required: invoked synchronously by the API dispatcher, which returns errors to the caller"
     # checkov:skip=CKV_AWS_116: "DLQ not required for AppSync resolver function as GraphQL handles retries"
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
@@ -4699,18 +4712,27 @@ Resources:
       RestApiId: !Ref HttpApi
       Description: !Sub "Dispatcher API deployment for ${StackName} (CORS)"
 
-  # DependsOn: the stage rejects AccessLogSetting until the account-level
-  # CloudWatch role is set. The stage itself cannot DependsOn ApiGatewayAccount
-  # (DependsOn cannot name a resource dropped by a false Condition — see the
-  # deployment NB above), so the ordering is chained through this log group,
-  # which shares the condition: Stage -> (GetAtt) -> LogGroup -> Account.
+  # The stage rejects AccessLogSetting until the account-level CloudWatch role is
+  # set, so the account setting must be applied before the stage. The stage
+  # reaches this log group by GetAtt, and this log group reaches the account
+  # setting through the tag below: Stage -> LogGroup -> Account.
+  #
+  # That edge is a conditional !Ref in a tag rather than a DependsOn because
+  # ApiGatewayAccount is absent when ManageApiGatewayAccountSettings is false,
+  # and a DependsOn cannot name a resource dropped by a false Condition (see the
+  # deployment NB above); the !If drops the edge with the resource. With the
+  # parameter false nothing orders anything: the stage relies on the role the
+  # Region already has.
   HttpApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: EnableApiAccessLogs
-    DependsOn: ApiGatewayAccount
     Properties:
       KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: ApiGatewayAccountSetting
+          Value:
+            !If [ManageApiGatewayAccount, !Ref ApiGatewayAccount, "unmanaged"]
 
   # REST API stages (unlike HTTP APIs) reject AccessLogSetting unless the
   # account-level API Gateway CloudWatch role is set ("CloudWatch Logs role ARN
@@ -4720,9 +4742,16 @@ Resources:
   # every writer grants the same managed policy. DeletionPolicy: Retain keeps
   # stack deletion from clearing the account setting out from under other
   # stacks still using it (the role itself is retained for the same reason).
+  #
+  # Last writer wins is not harmless in every respect, though: each writer points
+  # the setting at its OWN role, so the Region's logging then depends on a role
+  # retained from whichever deployment wrote last, and a Terraform deployment
+  # reports the other writers as drift on every plan. Both resources are therefore
+  # gated on ManageApiGatewayAccountSettings, so one deployment per Region can own
+  # the setting and every other one leaves it alone. See docs/monitoring.md.
   ApiGatewayCloudWatchRole:
     Type: AWS::IAM::Role
-    Condition: EnableApiAccessLogs
+    Condition: ManageApiGatewayAccount
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -4744,7 +4773,7 @@ Resources:
 
   ApiGatewayAccount:
     Type: AWS::ApiGateway::Account
-    Condition: EnableApiAccessLogs
+    Condition: ManageApiGatewayAccount
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -4754,15 +4783,19 @@ Resources:
   # Gateway hardcodes: API-Gateway-Execution-Logs_<restApiId>/<stageName>.
   # Pre-declaring it is the only way to get retention + CMK encryption on it —
   # otherwise API Gateway auto-creates it with no retention and no KMS key.
-  # DependsOn ApiGatewayAccount mirrors HttpApiAccessLogGroup's ordering chain.
+  # The ApiGatewayAccountSetting tag mirrors HttpApiAccessLogGroup's ordering
+  # chain, conditional for the same reason.
   HttpApiExecutionLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: EnableApiAccessLogs
-    DependsOn: ApiGatewayAccount
     Properties:
       LogGroupName: !Sub "API-Gateway-Execution-Logs_${HttpApi}/api"
       KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: ApiGatewayAccountSetting
+          Value:
+            !If [ManageApiGatewayAccount, !Ref ApiGatewayAccount, "unmanaged"]
 
   HttpApiStage:
     Type: AWS::ApiGateway::Stage

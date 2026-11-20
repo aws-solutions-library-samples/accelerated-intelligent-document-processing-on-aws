@@ -13,18 +13,25 @@
 // reasons in order.
 import React, { useState } from 'react';
 import { Alert, Badge, Box, Button, Container, Header, Popover, SpaceBetween } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { NEXT_ALERT_LABEL } from '../common/labels';
-import { MISSING_REQUIRED_KIND, reasonText } from './review-api';
+import { EXTRACTION_FAILED_KIND, MISSING_REQUIRED_KIND, reasonText } from './review-api';
 import { useFormatters } from '../../i18n/format';
 
 const messages = defineMessages<{
   sentToReview: { readonly reason: string };
   sentBy: { readonly requestedBy: string };
   sentByWithNote: { readonly requestedBy: string; readonly note: string };
+  extractionFailed: NoMessageValues;
 }>({
+  extractionFailed: {
+    id: 'reviewQueues.taskContext.extractionFailed',
+    defaultMessage: 'Extraction failed for this section, so it has no extracted data to check.',
+    description:
+      'Popover text on an "Extraction failed" review reason: the section was held for review because its extraction did not succeed (for example, a content filter withheld the model reply), not because of a field confidence.',
+  },
   sentToReview: {
     id: 'reviewQueues.taskContext.sentToReview',
     defaultMessage: 'Sent to review: {reason}',
@@ -115,7 +122,14 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
                 <SpaceBetween size="xxs">
                   <Box>Section {reason.sectionId}</Box>
                   {reason.field && <Box>Field: {reason.field}</Box>}
-                  {reason.kind === MISSING_REQUIRED_KIND ? (
+                  {reason.kind === EXTRACTION_FAILED_KIND ? (
+                    <>
+                      <Box>
+                        <FormattedMessage {...messages.extractionFailed} />
+                      </Box>
+                      {reason.label && <Box>{reason.label}</Box>}
+                    </>
+                  ) : reason.kind === MISSING_REQUIRED_KIND ? (
                     <Box>No extracted value; the class schema requires this field.</Box>
                   ) : (
                     <Box>
@@ -125,8 +139,8 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
                 </SpaceBetween>
               }
             >
-              <Button variant="inline-link" ariaLabel={reasonText(reason)} onClick={() => onReasonClick?.(reason)}>
-                <Badge color="severity-medium">{reasonText(reason)}</Badge>
+              <Button variant="inline-link" ariaLabel={reasonText(reason, intl)} onClick={() => onReasonClick?.(reason)}>
+                <Badge color="severity-medium">{reasonText(reason, intl)}</Badge>
               </Button>
             </Popover>
           ))}

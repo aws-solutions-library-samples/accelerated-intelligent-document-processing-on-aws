@@ -158,7 +158,8 @@ def handler(event, context):
                     section, hitl_enabled=hitl_enabled
                 ):
                     logger.info(
-                        f"Section {section.section_id} has {len(section.confidence_threshold_alerts)} confidence threshold alerts - marking for HITL review"
+                        f"Section {section.section_id} has {len(section.confidence_threshold_alerts)} confidence threshold alerts"
+                        " or a failed extraction - marking for HITL review"
                     )
                     hitl_triggered = True
 
@@ -223,7 +224,9 @@ def handler(event, context):
         existing_status = document.hitl_status
         if not legacy_review_finished(existing_status):
             for section in document.sections:
-                if section.confidence_threshold_alerts:
+                # The same trigger as the loop above: confidence alerts, or a
+                # failed extraction that left the section with no fields (#2038).
+                if legacy_section_triggers(section, hitl_enabled=True):
                     hitl_sections_pending.append(section.section_id)
             # Set Review Status on document model
             document.hitl_status = LegacyHitlStatus.PENDING_REVIEW.value

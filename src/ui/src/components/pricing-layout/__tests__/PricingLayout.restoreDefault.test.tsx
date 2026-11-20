@@ -104,11 +104,11 @@ describe('Restore default (All) on the Pricing page', { timeout: PAGE_RENDER_TIM
     expect(smallRate().price).toBeLessThan(1e-5);
   });
 
-  it('tells an administrator that a deleted default unit comes back after a save', () => {
+  it('tells an administrator that a default unit cannot be deleted, and what to do instead', () => {
     // The backend lays the saved table over the defaults per unit (#1886), so a
-    // deletion is not stored; the page says so rather than implying it sticks.
+    // deletion would not be stored; the page offers a zero price and a restore.
     renderWith(copy(DEFAULTS));
-    expect(screen.getByText(/A default unit you delete comes back at its default price after you save and reload/)).toBeTruthy();
+    expect(screen.getByText(/so a default unit cannot be deleted\. To make a default unit cost nothing, set its price to 0/)).toBeTruthy();
   });
 
   it('is disabled when the table equals the defaults', () => {

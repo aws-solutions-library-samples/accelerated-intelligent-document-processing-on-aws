@@ -2656,11 +2656,13 @@ sensitive information stops with the same reason, and its masked reply is used a
 the answer. In the confidence pass a withheld reply for one batch of list rows
 leaves only those rows unscored; the other batches keep their scores. The call that
 was withheld was still billed, and its tokens are counted in the document's
-metering. ⚠️ Because the section has
-no fields and no confidence scores, it raises no confidence alert and no
-missing-required-field reason, so it does **not** send the document to human
-review on its own; find such documents by the section's **Failed** status, and
-expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
+metering. With human review enabled
+(`hitl.enabled: true`), the failed section holds the document for review: under
+review queues it is an **Extraction failed** review reason on that section, and in
+legacy HITL mode the section is marked pending review. The section has no fields and
+no confidence scores, so this reason is the only thing that holds it. With human
+review off the document completes; find such documents by the section's **Failed**
+status, and expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
 handle a block on their own model call the same way: see
 [Classification](./classification.md#pages-classification-could-not-classify) and
 [Summarization Configuration](./configuration.md#summarization-configuration). This applies to extraction run inside the extraction function. A block

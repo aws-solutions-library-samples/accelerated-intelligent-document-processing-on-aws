@@ -156,8 +156,50 @@ def _premise_only_notebooks_and_they_have_their_own_gate(
     )
 
 
+def _premise_vendored_contract_hash_pinned(pattern: str) -> tuple[bool, str]:
+    """A vendored contract file is only exempt while it is the contract's own bytes.
+
+    ``solution-profile/schema/v1/`` holds copies of a contract published elsewhere,
+    and ``solution-profile/schema/README.md`` pins the sha256 of each. A copy we
+    reformatted or edited would no longer be the contract, and "not linted against
+    our style" would stop being a reason, so the pin must exist and must match.
+    """
+    import hashlib
+    import re
+
+    readme = REPO_ROOT / "solution-profile" / "schema" / "README.md"
+    if not readme.is_file():
+        return False, "solution-profile/schema/README.md does not exist"
+    prefix = "solution-profile/schema/"
+    if not pattern.startswith(prefix):
+        return False, f"{pattern} is not under {prefix}"
+    rel = pattern[len(prefix) :]
+    pins = dict(
+        (path, digest)
+        for digest, path in re.findall(
+            r"^([0-9a-f]{64})  (\S+)$", readme.read_text(encoding="utf-8"), re.M
+        )
+    )
+    if rel not in pins:
+        return False, f"solution-profile/schema/README.md pins no digest for {rel}"
+    target = REPO_ROOT / pattern
+    if not target.is_file():
+        return False, f"{pattern} does not exist"
+    actual = hashlib.sha256(target.read_bytes()).hexdigest()
+    if actual != pins[rel]:
+        return (
+            False,
+            f"{pattern} no longer matches its pinned digest, so it is not the vendored copy",
+        )
+    return (
+        True,
+        f"{pattern} matches the sha256 pinned in solution-profile/schema/README.md",
+    )
+
+
 PREMISES: dict[str, Callable[[str], tuple[bool, str]]] = {
     "vendored_with_provenance": _premise_vendored_with_provenance,
+    "vendored_contract_hash_pinned": _premise_vendored_contract_hash_pinned,
     "only_notebooks_and_they_have_their_own_gate": (
         _premise_only_notebooks_and_they_have_their_own_gate
     ),

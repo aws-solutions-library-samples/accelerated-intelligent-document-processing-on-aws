@@ -259,6 +259,36 @@ def terraform_migration_requested(environ: dict | None = None) -> bool:
     return True
 
 
+#: A Terraform schedule that also deploys a CloudFormation twin of the same
+#: commit and compares the two with terraform/tools/parity.py (the same name
+#: codebuild_deployment.py reads in terraform_parity_mode). Reaches the build in
+#: ci_run_options.json as ``terraform_parity``.
+TERRAFORM_PARITY_VARIABLE = "IDP_TERRAFORM_PARITY"
+
+
+def terraform_parity_requested(environ: dict | None = None) -> bool:
+    """Whether this run adds the parity check to a Terraform run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError when the schedule is not a Terraform run
+    (iac_requested): the check compares a Terraform deployment with its
+    CloudFormation twin, and without the Terraform deployment the run would
+    report a comparison that never happened.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_PARITY_VARIABLE, "")).strip().lower() != "true":
+        return False
+    if iac_requested(env) != IAC_TERRAFORM:
+        raise ValueError(
+            f"{TERRAFORM_PARITY_VARIABLE}=true needs {IAC_VARIABLE}=terraform on "
+            "the same schedule: the parity check compares the Terraform deployment "
+            "with a CloudFormation twin."
+        )
+    return True
+
+
 def upload_to_s3(bucket_name):
     """Upload code package to S3 and return version ID"""
     print(f"Uploading to S3 bucket: {bucket_name}")
@@ -607,6 +637,7 @@ def write_ci_run_options(
         "region_run": region_run_requested(env) or "",
         "iac": iac_requested(env),
         "terraform_migration": terraform_migration_requested(env),
+        "terraform_parity": terraform_parity_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -1002,6 +1033,7 @@ def main():
     try:
         iac = iac_requested()
         migration = terraform_migration_requested()
+        parity = terraform_parity_requested()
     except ValueError as e:
         print(f"❌ {e}")
         sys.exit(1)
@@ -1012,6 +1044,11 @@ def main():
         )
     if iac == IAC_TERRAFORM:
         print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
+        if parity:
+            print(
+                "🪞 With the parity check — a CloudFormation twin of the same commit "
+                "is deployed beside it and compared with terraform/tools/parity.py"
+            )
     elif os.environ.get(IAC_VARIABLE, "").strip():
         source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
         print(

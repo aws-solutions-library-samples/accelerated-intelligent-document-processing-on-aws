@@ -50,12 +50,22 @@ def _stamped_paths() -> list[Path]:
     return paths
 
 
+def _recipe_scripts() -> list[Path]:
+    """The repository scripts the ``version`` recipe runs, so they exist in the copy."""
+    text = MAKEFILE.read_text(encoding="utf-8")
+    start = text.index("\nversion:")
+    recipe = text[start : text.index("\n##@ ", start)]
+    return sorted(
+        {Path(p) for p in re.findall(r"\$\(PYTHON\) (scripts/\S+\.py)", recipe)}
+    )
+
+
 def _scratch_tree(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
     shutil.copy2(MAKEFILE, root / "Makefile")
     shutil.copytree(REPO_ROOT / "make", root / "make")
-    for rel in _stamped_paths():
+    for rel in [*_stamped_paths(), *_recipe_scripts()]:
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / rel, root / rel)
     return root

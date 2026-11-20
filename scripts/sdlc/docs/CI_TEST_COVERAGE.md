@@ -24,6 +24,7 @@ its `make` target and the skill that documents how to run it.
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
 | Jobs API (VPC) | `make stacktest-jobsapi VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
 | Tenant isolation (`TenantIsolationMode=Strict`) | `make stacktest-tenancy` · against an existing Strict stack: `make verify-tenant-isolation STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
+| Load probe: a few dozen packets at once against an existing stack (also on its own weekly schedule, while it is active) | `make stacktest-load STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests.md` |
 | List deploy-variant stack-tests | `make stacktest-list` | `.claude/skills/run-stack-tests.md` |
 | Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks.md` |
 | In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade.md` |
@@ -99,7 +100,8 @@ payload-robustness corpus covers that goal directly. See
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
 first one; the two deploy stages are **scheduled plus a manual button** (the nightly runs
 the primary suite, a second nightly schedule runs it against a Terraform deployment,
-and separate weekly schedules run the probes and the other regions), and the
+and separate weekly schedules run the probes and the other regions, and the load
+probe against an existing stack), and the
 advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
 `CHANGELOG.md`. The advisory `ux_nightly` stage comes last, after `notify`, on the
 nightly schedule or on request.
@@ -110,6 +112,7 @@ nightly schedule or on request.
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
+| **integration_tests** (`load_probe`) | The load probe against an existing stack, only on the **weekly load-probe schedule** (`IDP_RUN_LOAD_PROBE=true`); that schedule runs no deploy — see "Weekly load probe" below | Yes (processes documents; deploys nothing) | under an hour, capped by an estimated-cost limit |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
 | **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe or region schedules, nor the nightly Terraform schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
 
@@ -278,6 +281,7 @@ variable, no Terraform run happens.
 |---|---|---|
 | Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
 | Nightly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `NIGHTLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+| A Terraform schedule that also carries `IDP_TERRAFORM_PARITY=true` | `terraform` | the same, plus a CloudFormation twin of the same commit compared with the Terraform deployment (see "Resource parity with a CloudFormation twin" below). Meant for a **weekly** schedule |
 | Any schedule, with `IDP_IAC=terraform` set as a **project or group** CI/CD variable | `terraform`, inherited | every schedule becomes a Terraform run, the nightly included. Set the variable on the Terraform schedule only |
 
 It is the same `integration_tests` job, distinguished by the variable, as the probe
@@ -324,6 +328,117 @@ ignored):
   pre-stack and the deployment's label stack — so the same rule covers both kinds
   of run, and nothing in it depends on which schedule started the sweep. The
   resource group keeps the two runs from overlapping in any case.
+
+**The re-plan after apply.** Straight after the apply and the health check, the run
+plans the deployment again with `terraform plan -detailed-exitcode`
+(`check_terraform_convergence` in `codebuild_deployment.py`), and the plan must be
+empty: a module whose plan never empties would otherwise pass every gate. The result
+is the first row of the primary suite's table, `Step 2b: Terraform re-plan after
+apply is empty`, and the suite still runs after it, so a night that does not
+converge also reports what the steps found. The row is kept when the run is refused
+before the steps for lack of time, beside a failed row for the refusal, and a failure names the re-plan to the failure
+analysis, so it is not read as a failed apply. The plan runs with `-lock=false`: it
+writes no state and its saved plan is never applied, and a plan killed by the
+timeout would otherwise leave the S3 lock file behind and block the run's destroy.
+
+| `plan` exit | Meaning | Run |
+|---|---|---|
+| 0 | the plan is empty | passes the row |
+| 2 | the plan has changes | fails, naming each changed address with its actions and the attribute paths an update touches (at most `TERRAFORM_REPLAN_LISTED_CHANGES`, then a count). The build log never shows a planned value: the saved plan holds every value in clear, so its JSON is read without being echoed and the file is then deleted |
+| 1, or a timeout | the plan did not run | fails as an error, saying that whether the module converges is unknown, with the end of the plan's output |
+
+The plan's own text is kept in `terraform-replan.log` beside the deploy log. It shows
+non-sensitive values as Terraform prints them, and on a failed run it reaches the
+failure analysis and the evidence bundle in the Terraform log tail, the same route
+the apply's output takes.
+No re-plan change is accepted as a known defect: every change fails the run. The
+API Gateway stage's access-log destination used to re-plan after every apply, because
+the translator wrote the log group's ARN in CloudFormation's `:*` form and the stage
+stores it without the suffix (#2006); the translator now writes the bare ARN there. The scheduled run deploys at the default
+`LogLevel` of `WARN`, which leaves the stage's access logs off, so its re-plan does not
+exercise that attribute; the translator's offline tests are what cover it.
+
+**Resource parity with a CloudFormation twin.** A Terraform schedule that also
+carries `IDP_TERRAFORM_PARITY=true` deploys the template the same build published as
+a second, CloudFormation stack, `<stack>-cfn`, with the parameters the Terraform
+deploy passes (`_primary_param_pairs`) and through the same CloudFormation deploy
+attempt the CloudFormation nightly uses. It starts at the same time as the Terraform
+deploy, on a thread of its own. After the Terraform deployment is healthy and its
+re-plan has run, `check_terraform_parity` in `codebuild_deployment.py` compares the
+two with `terraform/tools/parity.py` (`make terraform-parity`) as the run's Terraform
+deploy role, because the build role holds no Cloud Control grant. The verdict is the
+second row of the table, `Step 2c: Terraform deployment matches its CloudFormation
+twin (terraform/tools/parity.py)`, and the suite still runs after it. The twin is
+released for teardown straight after the comparison, so it is deleted while the
+suite runs.
+
+`integration_test_deployment.py` (`terraform_parity_requested`) honours the variable
+on a scheduled pipeline only and **fails the job** when the same schedule is not a
+Terraform run; the build refuses it the same way (`terraform_parity_unsupported_reason`)
+when it is set by hand without `IDP_IAC=terraform`. It reaches the build in
+`ci_run_options.json` as `terraform_parity`. Nothing in the repository turns it on.
+
+What fails the row is the tool's own verdict against
+`terraform/tools/parity_baseline.json`, unchanged:
+
+| Outcome | Row |
+|---|---|
+| no difference beyond what the baseline explains, and every baseline entry explained something | passes; the build log gives the counts, including how many differences the baseline explained and how many resources Cloud Control cannot read (listed by the tool, not compared) |
+| a property difference the baseline does not explain, a resource on one side only, or a baseline entry that explained nothing (stale) | fails, beginning `differs:` with the four counts, then each finding by resource and property path (at most `TERRAFORM_PARITY_LISTED_DIFFERENCES`, then a count) |
+| the twin did not deploy, had not finished `TERRAFORM_PARITY_TWIN_WAIT_SECONDS` after the Terraform deployment, or the comparison raised | fails, beginning `not compared:` with the reason, so it is not read as a difference |
+
+A difference the baseline should explain is fixed by adding one entry to the
+baseline, with its reason, which `scripts/tests/gate_exemptions.json` already
+registers; a real difference is fixed in the translator. ⚠️ The baseline was measured
+on one nested stack of the prototype and the tool has not been run against the full
+stack, so expect the first parity runs to fail on differences nobody has triaged yet.
+
+The findings name a resource and a property path, never a value. The tool's
+per-property text carries both sides' values, and some resources return a secret
+among the properties Cloud Control reads (a Cognito app client's secret), so the
+build log gets the same treatment as the re-plan's planned values.
+
+The twin is torn down on every path: its thread deletes it in a `finally` (straight
+away when its deploy failed), and `main()` joins that thread before the Terraform
+teardown. That order is also needed for correctness: the Terraform teardown switches
+boto3's default session to the deploy role, which the twin's teardown must not run
+under. A twin teardown finding is a teardown finding of the run, prefixed `parity
+twin:`. The join is bounded so it cannot spend the Terraform destroy's time: it waits
+at most what is left of the build's timeout less `TERRAFORM_TEARDOWN_RESERVE_SECONDS`
+(`terraform_parity_join_seconds`; without a readable timeout it waits). Past that, a
+teardown finding says so and the run goes on to the Terraform teardown with the twin's
+thread still deleting it. ⚠️ That one case gives up the ordering above: the twin's
+remaining calls can then run under the deploy role's default session, which holds
+broad grants, so they may succeed as the wrong principal or fail; which has not been
+verified. A failure leaves the twin to the startup stack sweep. So does a build killed outright: the sweep
+groups the twin with the run by its `idp-MMDD-HHMMSS` prefix.
+
+A twin that did not deploy is deleted at once, without the retention a failed
+primary stack gets, so the row names the first concrete failure from its captured
+CloudFormation events (resource, type, status and reason). The comparison's Cloud
+Control and Lambda clients use adaptive retries, so one throttled read does not cost
+the whole comparison.
+
+What it costs, as far as it is known. One more full CloudFormation deployment and
+deletion of the accelerator per parity run, standing from the start of the deploy to
+the end of the comparison plus its deletion, including one more of the account's 25
+GuardDuty Malware Protection plans for that time under the default
+`IDP_INTEGRATION_MALWARE_MODE`. The twin runs no steps, so it makes no suite calls to
+Bedrock, Textract or BDA. On wall clock, the two deploys overlap, so the run waits
+only for whatever the CloudFormation deploy takes beyond the Terraform deploy and its
+re-plan (at most `TERRAFORM_PARITY_TWIN_WAIT_SECONDS`), plus the comparison itself,
+one Cloud Control read per paired resource on each side. The comparison runs before
+the time check that guards the steps, so it is counted against what the steps have
+left. None of those times has been measured on the full stack, so no figure is
+given; the weekly run is the measurement. On a run that fails before the comparison,
+the join can also wait for the twin's deploy to finish before deleting it, up to the
+bound above.
+
+Put the variable on a **weekly** schedule, not on the nightly Terraform schedule, to
+keep the extra deployment off six nights in seven: either a separate weekly
+Terraform schedule carrying `IDP_IAC=terraform` and `IDP_TERRAFORM_PARITY=true`, with
+the nightly Terraform schedule's cron skipping that day, or the variable on the
+nightly schedule if a nightly cost is acceptable.
 
 **Scheduling it after the CloudFormation nightly.** Both runs hold
 `resource_group: integration_deploy`, so whichever reaches `integration_tests`
@@ -480,11 +595,42 @@ A weekly schedule carrying `IDP_RUN_TERRAFORM_MIGRATION=true` runs
 `scripts/sdlc/terraform_migration_test.py` (`make stacktest-terraform-migration`)
 **instead of** the primary suite. The driver deploys the separate
 [`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
-implementation at the tag and commit it pins, seeds it, migrates it in place onto the
+implementation at one of the releases it pins, seeds it, migrates it in place onto the
 Terraform module the build just published with every phase of `idp-cli terraform
 migrate-from-genai-idp-terraform`, verifies, and destroys both deployments. What it
 proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack tiers) and in
 tier J of `.claude/skills/release-validation.md`.
+
+The release rotates. The build passes `--upstream-tag rotate`
+(`TERRAFORM_MIGRATION_UPSTREAM_TAG` in `codebuild_deployment.py`), and the driver takes
+one release of `UPSTREAM_RELEASES` per Monday-to-Sunday week, in list order
+(`rotated_upstream_tag`), so consecutive weekly runs cover every pinned release in turn
+at the cost of one run each. The summary's first lines name the release a run took;
+`make stacktest-terraform-migration UPSTREAM_TAG=<that tag>` reproduces it on any day.
+A release is pinned to the commit and the `sources/` object it resolves to, and belongs
+in the list only if the driver can run it unchanged: the comment above
+`UPSTREAM_RELEASES` says what that requires, and why the releases before the oldest
+entry do not qualify. A resumed or reaped run keeps the release its context recorded
+(`resolve_upstream_tag`) and refuses an explicit tag that differs.
+
+After the old deployment's destroy, `verify-after-old-destroy` also fails if the
+Region's API Gateway CloudWatch role setting was cleared or changed by the destroy, or
+names a role that no longer exists. The setting is one per account and Region, so a
+destroy that resets it stops API Gateway logging for every API there. Upstream's
+deploy points the setting at a role carrying the run's old name, and the migration
+keeps both, so before the sweep deletes that role the driver sets the setting back to
+its value when the run started (`hand_back_api_gateway_role`), unless that role was
+known not to exist, in which case it clears it. If the restore is refused (the run's
+role may pass only roles named `idp*`), the driver clears the setting instead and
+records a finding, failing the run, that names the value to restore. Keeping the
+run's role would not help: the build's IAM clean-up deletes every role under the
+run's permissions boundary after the driver exits. `leftover-check` records a finding, failing the run, when the run
+still leaves the setting naming a role that no longer exists and the Region was not
+already in that state when it started.
+
+`rotated_upstream_tag` reads the UTC date when the driver starts, so a schedule that
+fires just before Monday 00:00 UTC can land either side of the week boundary and repeat
+a release. Keep the schedule clear of that hour.
 
 | Pipeline | `IDP_RUN_TERRAFORM_MIGRATION` | Runs |
 |---|---|---|
@@ -615,8 +761,8 @@ prefix older than the stack sweep's age gate (`IDP_STACK_STALE_AGE_SECONDS`, wel
 above the driver's longest phase, the hour-long time-to-live wait, between two of
 which the mirror is rewritten) and runs the driver's own `--resume --teardown-only`
 in a scratch work directory, as the run's `TFDeployRole`, with the names `run.json`
-records. The driver rebuilds what its teardown reads — the pinned upstream clone
-with the run's tfvars, IAM overrides, backend and provider lock, and the new root
+records. The driver rebuilds what its teardown reads — the upstream clone of the
+release the run's context records, with the run's tfvars, IAM overrides, backend and provider lock, and the new root
 from the mirror — and then tears down exactly as a failed run does, under every
 check it already applies: the names and account must match the stored context, and
 the run must have created something. The `-iam` pre-stack is deleted after a clean
@@ -635,6 +781,100 @@ fails there, is counted, and is retried by the next build. If the state listing
 itself fails, the stack sweep keeps every Terraform-labelled run, and a migration
 run whose new deployment never reached its label stack is not among those, so its
 `-iam` pre-stack can be reaped by name before its teardown has run.
+
+### Weekly load probe: real volume and concurrency against an existing stack
+
+The failures that occur in one call out of a few hundred, only under throttling, or
+only with one model's reply habits are invisible to the unit suites, which use
+fakes, and to the primary suite, which processes a handful of documents at low
+concurrency. The load probe is the tier that can see them. It is
+`scripts/sdlc/load_probe.py`, run by `make stacktest-load STACK_NAME=…` on demand
+and by the GitLab `load_probe` job on a schedule of its own. It is not a merge gate.
+
+**What it does.** Against an **existing** stack (it deploys nothing) it uploads one
+new configuration profile per arm, named `loadprobe-<run id>-<arm>`, never `default`
+and never a name the stack already has. Each arm is a preset from
+`config_library/unified` plus an overlay, with that preset's sample packet:
+
+| Arm | Preset and sample | What the overlay sets |
+|---|---|---|
+| `split-then-classify` | `rvl-cdip-package-sample`, `samples/rvl_cdip_package.pdf` | `classification.strategy: split_then_classify` |
+| `holistic` | `lending-package-sample`, `samples/lending_package.pdf` | `classification.combined.granularity: packet` |
+| `agentic` | `lending-package-sample`, `samples/lending_package.pdf` | `extraction.mode: advanced` |
+| `decision-model` | `lending-package-sample`, `samples/lending_package.pdf` | `extraction.confidence.method: decision_model`; runs only when a decider Lambda ARN is given, and is reported as skipped otherwise |
+
+Every arm also sets the extraction model to a fast model prone to throttling
+(`--fast-model`, default Claude Haiku 4.5), confidence mode `separate`, HITL and
+summarization off and `use_bda: false`, so the probe measures those features rather
+than whatever the stack's default profile enables. The configurations are validated
+offline with `IDPConfig` before anything is uploaded. All arms' documents are then
+submitted back to back, so they reach the queue together and the stack processes
+them at its own `MaxConcurrentWorkflows`, which the report records.
+
+**What it asserts**, failing the run (exit 1) on any of these:
+
+- no document failed for a transient cause. The cause is read from the execution
+  history's last task failure, because the workflow's catch-all `FailState` replaces
+  the error on the execution itself, and judged with
+  `idp_common.utils.transient_errors` plus the Step Functions error names
+  (`States.Timeout`, `Sandbox.Timedout`, `Lambda.*` service errors). A failure whose
+  cause cannot be read, or a Map-run tolerance failure whose child cause is not
+  visible from the parent, is **unclassified** and fails the run too, because it
+  cannot be shown to be non-transient;
+- every document settled before the deadline;
+- in every arm whose configuration asks for confidence, every section that
+  extracted at least one value carries at least one confidence score.
+
+Documents failed for a deterministic cause are listed in the report but do not fail
+the run. **Step-level retries are reported, never asserted**: per state and per
+error name, from the same histories, as a `TREND` line in the job log and in
+`report.json`. Read them across runs; one run's figure is not a verdict. Retries
+inside one Lambda invocation (the Bedrock client's own backoff) and failures inside a
+distributed Map run's child executions are not visible to it.
+
+**Caps.** The defaults are deliberately conservative, and every one is a driver
+option: 8 documents per arm, a hard cap of 40 documents (`--max-documents`), a $25
+cap (`--max-cost-usd`) checked against an **estimate** of pages times $0.10 a page
+(`--cost-per-page-usd`), and a 45-minute deadline (`--deadline-minutes`). The
+estimate is made before anything is created, and the run is refused with exit 2 when
+it is over either cap. ⚠️ The cost cap is not a meter: the per-page figure is an
+unmeasured, pessimistic guess, and nothing stops a run once its documents are
+submitted. With the decision-model arm off, the default plan is 24 documents, 176
+pages and an estimate of $17.60.
+
+**When it runs.** The `load_probe` job's rules admit exactly one trigger: a
+scheduled pipeline carrying `IDP_RUN_LOAD_PROBE=true`. It never runs on a merge
+request, a push, the nightly or any other schedule, and it has no manual button. On
+that schedule `deployment_validation`, `integration_tests`, `nightly_notification`
+and the two nightly story jobs are ruled out, so the pipeline deploys nothing and
+posts nothing to Slack, and a red run is the probe's own result. The `fast_checks`
+jobs still run on it, as on every scheduled pipeline; the probe job has `needs: []`
+and does not wait for them. It holds its own size-1 `load_probe` resource group, not
+`integration_deploy`, because it deploys nothing; two probe runs against one stack
+would share its concurrency. `scripts/sdlc/tests/test_load_probe.py` asserts the
+rules, including that every other job a schedule admits refuses this one first.
+
+**Creating the schedule** is a step in the GitLab project's settings, outside this
+repository, and until somebody takes it nothing runs. In **Build › Pipeline
+schedules › New schedule**: target branch `develop`, a weekly cron at an hour when
+the target stack is otherwise idle, and these variables:
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `IDP_RUN_LOAD_PROBE` | yes, `true` | the selector. Set it on this schedule **only**: as a project or group variable it reaches every schedule, and the rules above would then take the nightly's deploy off all of them |
+| `IDP_LOAD_PROBE_STACK` | yes | the existing stack to probe. There is no default; the job exits 2 without it. Use a stack nothing else writes to during the run, not the UX review stack, which is never written to |
+| `IDP_LOAD_PROBE_REGION` | no, default `us-east-1` | the stack's region |
+| `IDP_LOAD_PROBE_DECIDER_ARN` | no | a `GENAIIDP-` decision-model Lambda ARN; enables the `decision-model` arm |
+| `IDP_LOAD_PROBE_ARGS` | no | extra driver options, for example `--max-cost-usd 15 --docs-per-arm 6` |
+
+The job runs on the runner fleet's own credentials, like `integration_tests`, and
+prints the caller identity before it starts. It passes `--cleanup on-pass`: a green
+run deletes the profiles and documents it created, and a red run keeps them for
+diagnosis. Its report is the job artifact `load-probe/<run id>/report.json`, kept
+for 90 days. To run it on demand inside a pipeline, press **Run** on that schedule;
+outside one, `make stacktest-load STACK_NAME=… DRY_RUN=1` shows the plan and
+validates the configurations without touching AWS, and the same command without
+`DRY_RUN` runs it (`LOAD_PROBE_ARGS="…"` passes driver options).
 
 ### Why fast_checks is eight jobs
 
@@ -690,7 +930,7 @@ down, but it is a real trade.
 the way to check is to read the suites rather than the `script:` line.**
 `package_tests` was first written without Node, on the reasoning that pytest does
 not need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyright
-**live** — the probe that confirms `pyrightconfig.json`'s five `extraPaths` really
+**live** — the probe that confirms `pyrightconfig.json`'s `extraPaths` really
 resolve the first-party packages instead of merely looking right — so a suite whose
 name says nothing about types reaches an npm package. The fix is to give the job
 the tool, not to let the probe skip when it is missing, which is the whole reason

@@ -53,6 +53,8 @@ def test_generated_module_carries_the_parameter_map_and_retained_list(
     meta = json.loads((out / "idp-terraform.json").read_text())
     assert meta["parameters"]["AdminEmail"]["variable"] == "admin_email"
     assert meta["parameters"]["AdminEmail"]["required"] is True
+    # idp-cli passes --tags only to a module that names its tags input.
+    assert meta["tagsVariable"] == "tags"
     assert any(a.startswith("aws_s3_bucket.") for a in meta["retainedAddresses"])
     versions = (out / "versions.tf").read_text()
     assert "AWSCC_VERSION" not in versions
@@ -329,16 +331,21 @@ def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
     `terraform validate` reports)."""
     bridges = sorted(standard_module.rglob("bridge.tf"))
     assert len(bridges) > 1, bridges
-    root_key = "awscc_kms_key.customer_managed_encryption_key.arn"
+    # The deployment key: the supplied CustomerManagedKmsKeyArn, else the key
+    # the stack creates (#2016).
+    root_key = (
+        "(local.c_use_supplied_kms_key ? var.customer_managed_kms_key_arn : "
+        "one(awscc_kms_key.customer_managed_encryption_key[*].arn))"
+    )
     for bridge in bridges:
         text = bridge.read_text()
         where = bridge.relative_to(standard_module)
-        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S+)$", text, re.M)
+        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
         assert kms, f"{where}: the bridge log group is not encrypted"
         target = re.search(r"^\s*target_bucket\s*=\s*(\S+)$", text, re.M)
         assert target, f"{where}: the bridge bucket has no access logging"
         # The bridge bucket takes the same key as the bridge log group.
-        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S+)$", text, re.M)
+        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
         assert bucket_key, f"{where}: the bridge bucket is not encrypted with a key"
         assert bucket_key.group(1) == kms.group(1), where
         if bridge.parent == standard_module:
@@ -504,3 +511,183 @@ def test_only_account_wide_names_carry_the_region(standard_module):
                     others.append(f"{module.name}:{kind}.{label}")
     assert roles, "no generated role names found"
     assert not others, others[:10]
+
+
+# ------------------------------------------------------------- template Rules
+def _template_rules() -> tuple[dict, dict]:
+    from idp_tf.cli import load_template
+
+    t = load_template(REPO / "template.yaml")
+    return t["Parameters"], t["Rules"]
+
+
+def test_every_template_rule_becomes_a_plan_time_refusal(standard_module):
+    """Each of template.yaml's Rules is one terraform_data whose preconditions
+    carry its assertions' descriptions, one each, in order."""
+    from idp_tf import hcl
+
+    _, rules = _template_rules()
+    assert rules
+    text = (standard_module / "rules.tf").read_text()
+    blocks = re.findall(
+        r'^resource "terraform_data" "(cfn_rule_\w+)" \{\n(.*?)\n\}\n',
+        text,
+        re.M | re.S,
+    )
+    assert [name for name, _ in blocks] == ["cfn_rule_" + hcl.snake(r) for r in rules]
+    for (_, body), spec in zip(blocks, rules.values(), strict=True):
+        messages = re.findall(r"error_message = (.*)", body)
+        assert messages == [
+            hcl.string(a["AssertDescription"]) for a in spec["Assertions"]
+        ]
+
+
+def test_the_nested_vpc_condition_input_is_known_at_plan(standard_module):
+    """DeployInVPCRequiresParams refuses an empty VpcId when DeployInVPC holds,
+    so the stacks whose conditions only ask whether VpcId is empty are given a
+    known stand-in and a VPC created in the same apply can be planned."""
+    main_tf = (standard_module / "main.tf").read_text()
+    for name in ("patternstack", "multidocdiscoverystack"):
+        start = main_tf.index(f'module "{name}" {{')
+        block = main_tf[start : main_tf.index("\n}\n", start)]
+        assert 'vpc_id__cond = (local.c_deploy_in_vpc ? "present" : "")' in block
+        assert 'vpc_id = (local.c_deploy_in_vpc ? var.vpc_id : "")' in block
+
+
+def _rule_cases(params: dict, rules: dict) -> list[tuple[str, dict, set]]:
+    """(label, parameter values, descriptions CloudFormation would refuse with)
+    for the defaults, every rule active and satisfied, and each assertion
+    violated with the rest of its rule satisfied. The refusals come from
+    CloudFormation's semantics evaluated here, not from the translator."""
+
+    def value(env, node):
+        if isinstance(node, str):
+            return node
+        return env.get(node["Ref"], str(params[node["Ref"]].get("Default", "")))
+
+    def holds(env, node):
+        ((fn, arg),) = node.items()
+        if fn == "Fn::Equals":
+            return value(env, arg[0]) == value(env, arg[1])
+        assert fn == "Fn::Not", f"extend this evaluator for {fn}"
+        return not holds(env, arg[0])
+
+    def assign(node, env, want=True):
+        ((fn, arg),) = node.items()
+        if fn == "Fn::Not":
+            return assign(arg[0], env, not want)
+        ref, lit = (arg[0], arg[1]) if isinstance(arg[1], str) else (arg[1], arg[0])
+        p = ref["Ref"]
+        allowed = params[p].get("AllowedValues")
+        if want:
+            env[p] = lit
+        else:
+            env[p] = next(a for a in allowed if a != lit) if allowed else f"x-{p}"
+
+    def refused(env):
+        return {
+            a["AssertDescription"]
+            for spec in rules.values()
+            if "RuleCondition" not in spec or holds(env, spec["RuleCondition"])
+            for a in spec["Assertions"]
+            if not holds(env, a["Assert"])
+        }
+
+    valid: dict = {}
+    for spec in rules.values():
+        if "RuleCondition" in spec:
+            assign(spec["RuleCondition"], valid)
+        for a in spec["Assertions"]:
+            assign(a["Assert"], valid)
+    cases = [("defaults", {}), ("every rule active and satisfied", dict(valid))]
+    for name, spec in rules.items():
+        for i, a in enumerate(spec["Assertions"]):
+            env = dict(valid)
+            assign(a["Assert"], env, want=False)
+            cases.append((f"{name}[{i}]", env))
+    return [(label, env, refused(env)) for label, env in cases]
+
+
+def test_each_rule_refuses_its_combination_at_plan_when_terraform_is_cached(
+    standard_module, tmp_path
+):
+    """Plans the generated root variables and rules with each case of
+    ``_rule_cases`` and compares the refusals with CloudFormation's. Skipped
+    without the binary cache ``make terraform-check`` leaves."""
+    from idp_tf.translate import variable_name
+
+    cached = _cached_terraform()
+    if cached is None:
+        pytest.skip(
+            "no cached terraform binary and providers; run `make terraform-check`"
+        )
+    exe, _ = cached
+    for name in ("variables.tf", "rules.tf"):
+        (tmp_path / name).write_text((standard_module / name).read_text())
+    env = {**os.environ, "TF_IN_AUTOMATION": "1", "CHECKPOINT_DISABLE": "1"}
+    env.pop("TF_CLI_ARGS", None)
+    subprocess.run(  # nosec B603 - fixed argv, no shell
+        [str(exe), "init", "-backend=false", "-input=false", "-no-color"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=True,
+    )
+    params, rules = _template_rules()
+    cases = _rule_cases(params, rules)
+    assert sum(1 for _, _, want in cases if want) == sum(
+        len(s["Assertions"]) for s in rules.values()
+    )
+    wrong = []
+    for label, values, want in cases:
+        argv = [str(exe), "plan", "-input=false", "-no-color", "-json"]
+        values = {"AdminEmail": "a@example.com", **values}
+        argv += ["-var", "stack_name=idp"]
+        for p, v in values.items():
+            argv += ["-var", f"{variable_name(p)}={v}"]
+        run = subprocess.run(  # nosec B603 - fixed argv, no shell
+            argv, cwd=tmp_path, env=env, capture_output=True, text=True, check=False
+        )
+        got, other = set(), []
+        for line in run.stdout.splitlines():
+            msg = json.loads(line)
+            diag = msg.get("diagnostic", {})
+            if msg.get("type") != "diagnostic" or diag["severity"] != "error":
+                continue
+            if diag["summary"] == "Resource precondition failed":
+                got.add(diag["detail"])
+            else:
+                other.append(diag["summary"])
+        if got != want or other or (run.returncode == 0) != (not want):
+            wrong.append((label, run.returncode, sorted(got), sorted(want), other))
+    assert not wrong, wrong
+
+
+@pytest.mark.parametrize("variant", [v for t, v in TEMPLATE_VARIANTS])
+def test_only_the_stage_destination_drops_the_log_group_arn_suffix(variant, tmp_path):
+    """#2006: in every published variant, an API Gateway stage's access-log
+    destination names the log group's ARN as the provider reads it back, without
+    CloudFormation's ``:*``, and every other use of a log group's ARN keeps the
+    suffix (an IAM statement on a log group's streams needs it)."""
+    root = _translate(tmp_path / "m", variant)
+    arn_use = re.compile(r"aws_cloudwatch_log_group\.[a-z0-9_]+(\[\*\])?\.arn")
+    bare, suffixed = [], 0
+    for module in _modules(root):
+        for line in _module_text(module).splitlines():
+            if not arn_use.search(line):
+                continue
+            if re.search(r"\.arn\)?\}:\*", line):
+                suffixed += 1
+            else:
+                bare.append(line.strip())
+    stages = [
+        line.strip()
+        for module in _modules(root)
+        for block in re.split(r"\n(?=resource )", _module_text(module))
+        if block.startswith('resource "awscc_apigateway_stage"')
+        for line in block.splitlines()
+        if "destination_arn" in line
+    ]
+    assert all(not s.endswith(':*"') for s in stages), stages
+    assert bare == [s for s in stages if arn_use.search(s)], bare
+    assert suffixed > 0
