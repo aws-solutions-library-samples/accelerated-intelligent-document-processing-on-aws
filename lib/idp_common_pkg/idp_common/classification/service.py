@@ -7463,6 +7463,13 @@ class ClassificationService:
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
+                        # A reply withheld by stop reason was billed; its usage
+                        # rides on the exception (empty for any other error).
+                        metering.update(
+                            utils.merge_metering_data(
+                                metering, utils.failure_metering(e)
+                            )
+                        )
         transient.raise_first(metering)
 
         if not verdicts:

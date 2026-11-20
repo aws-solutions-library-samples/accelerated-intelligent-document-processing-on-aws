@@ -316,6 +316,30 @@ def test_the_trace_shapes_are_the_service_model_s():
             True,
             id="blocked-input",
         ),
+        pytest.param(
+            {
+                "guardrail": {
+                    "outputAssessments": {
+                        "gr-1": [
+                            {
+                                "contentPolicy": {
+                                    "filters": [
+                                        {
+                                            "type": "VIOLENCE",
+                                            "confidence": "LOW",
+                                            "action": "BLOCKED",
+                                            "detected": False,
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            False,
+            id="blocked-not-detected",
+        ),
     ],
 )
 def test_a_guardrail_stop_is_withheld_only_when_it_blocked(trace, withheld):
@@ -445,6 +469,57 @@ def _split_then_classify(bedrock, reason, content) -> Document:
     )
     with patch("idp_common.s3.get_text_content", side_effect=_page_text):
         return service.classify_document(_pages(3))
+
+
+@pytest.mark.parametrize("reason", _REASONS)
+def test_a_withheld_splitting_call_is_metered(bedrock, reason):
+    """Page-granularity split-then-classify: the per-page splitting call for page
+    2 is withheld. The page fails the document as any failed splitting call does,
+    and the billed call is still in the metering."""
+    service = ClassificationService(
+        region="us-west-2",
+        config={
+            "classes": _classes("invoice", "receipt"),
+            "classification": {
+                "model": "us.amazon.nova-lite-v1:0",
+                "system_prompt": "classify",
+                "task_prompt": "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}",
+                "granularity": "page",
+                "strategy": "split_then_classify",
+                "confidence": {"mode": "off"},
+                "modality": {"text": True, "images": False},
+                "segmentation": {
+                    "page": {
+                        "system_prompt": "splitting page system",
+                        "task_prompt": "SPLIT {DOCUMENT_TEXT}",
+                    }
+                },
+                "labeling": {
+                    "system_prompt": "label system",
+                    "task_prompt": "LABEL {CLASS_NAMES_AND_DESCRIPTIONS}\n"
+                    "{DOCUMENT_TEXT}",
+                },
+            },
+        },
+    )
+
+    def route(_system: str, text: str) -> str:
+        if text.startswith("LABEL"):
+            return '{"class": "invoice"}'
+        return '{"document_boundary": "start"}'
+
+    bedrock(
+        route,
+        withhold=(
+            lambda text: not text.startswith("LABEL") and "PAGE-2 " in text,
+            reason,
+            [],
+        ),
+    )
+    with patch("idp_common.s3.get_text_content", side_effect=_page_text):
+        result = service.classify_document(_pages(3))
+    assert any("Splitting call failed for page 2" in e for e in result.errors)
+    _all_billed(bedrock, result.metering)
 
 
 @pytest.mark.parametrize(("reason", "content"), _REPLIES)
@@ -953,3 +1028,28 @@ def test_one_withheld_confidence_batch_leaves_only_its_rows_unscored(reason):
     # Every call was billed, the withheld batch and its recovery attempts too.
     assert _input_tokens(out["metering"]) == 10 * len(service.calls)
     assert len(service.calls) > 3, "the recovery rung re-offered the withheld rows"
+
+
+def test_a_withheld_escalation_recovery_call_is_metered():
+    """With escalation on, the escalation rung re-offers the withheld batch's rows
+    to the escalation model; that call is withheld too and is still metered."""
+    from idp_common.assessment.batching import assess_results_batched
+
+    service = _BatchedService("content_filtered")
+    rows = [{"amount": str(i)} for i in range(9)]
+    out = assess_results_batched(
+        service,
+        class_label="statement",
+        extraction_results={"account": "A", "txs": rows},
+        document_text="t",
+        page_images=[],
+        batch_size=3,
+        escalation_enabled=True,
+        escalation_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        confidence_model_id="us.amazon.nova-lite-v1:0",
+    )
+    scored = [
+        row.get("amount", {}).get("confidence") for row in out["assessment"]["txs"]
+    ]
+    assert scored[:3] == [0.9] * 3 and scored[6:] == [0.9] * 3
+    assert _input_tokens(out["metering"]) == 10 * len(service.calls)

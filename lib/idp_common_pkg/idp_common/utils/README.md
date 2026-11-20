@@ -301,8 +301,8 @@ and its escalation call, assessment and summarization call it after their model
 call; agentic extraction raises it when its last regeneration round is withheld
 too. `BedrockClient` itself does not, because document chat shows a guardrail's
 message to the user as the intended reply. Every block branch that catches it merges
-`utils.failure_metering(e)`, so the billed call is metered: the classification page
-and segment-labelling branches, the summarization stub, and the Assessment Lambda's
+`utils.failure_metering(e)`, so the billed call is metered: the classification page,
+splitting-call and segment-labelling branches, the summarization stub, and the Assessment Lambda's
 deterministic-failure branch. In `assessment.batching`, a withheld list batch is
 caught in `_assess_chunk` and becomes per-row placeholders
 (`_UNASSESSED_CONTENT_FILTER_REASON`), and the recovery rungs use a call that scores
