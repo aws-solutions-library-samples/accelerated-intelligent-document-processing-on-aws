@@ -167,6 +167,42 @@ UPSTREAM_COMMIT = UPSTREAM_RELEASES[-1].commit
 #: What the scheduled CI run passes. A resumed run keeps the release it recorded.
 ROTATE_UPSTREAM_TAG = "rotate"
 UPSTREAM_EXAMPLE = "examples/unified-processor"
+#: Which old deployment the run migrates. ``base`` is the example with every
+#: data-owning feature on and MCP off, which is what the command handles by
+#: itself. ``mcp`` also turns on upstream's MCP integration, and ``mcp-datasets``
+#: that and both Test Studio datasets. Each puts an ``aws_cloudformation_stack`` in
+#: the old state that ``plan`` refuses, and the run then performs the manual
+#: procedure in docs/terraform-migration.md ("Old deployments with a private
+#: network, MCP or test datasets") before ``plan`` (phase ``pre-plan-features``).
+#: ``mcp-datasets`` cannot pass at the pinned releases: upstream packages its
+#: dataset deployers without their dependencies (``cfnresponse``, read from
+#: modules/processing-environment-api/test-studio.tf), so their custom resources
+#: never answer and both stacks stay CREATE_IN_PROGRESS past Terraform's 30-minute
+#: timeout, which is how its one run (v0.6.9-tf.0) failed at upstream-deploy.
+BASE_VARIANT = "base"
+MCP_VARIANT = "mcp"
+MCP_DATASETS_VARIANT = "mcp-datasets"
+VARIANTS = (BASE_VARIANT, MCP_VARIANT, MCP_DATASETS_VARIANT)
+MCP_VARIANTS = (MCP_VARIANT, MCP_DATASETS_VARIANT)
+#: The override file that turns the two datasets on (datasets_override).
+DATASETS_OVERRIDE_FILE = "zz_idp_ci_datasets_override.tf"
+#: The upstream module call in every upstream example.
+UPSTREAM_MODULE_CALL = "module.genai_idp_accelerator"
+#: What the guide's MCP and test-dataset procedures destroy before ``plan``.
+FEATURE_DESTROY_TARGETS = (
+    f"{UPSTREAM_MODULE_CALL}.module.mcp_integration[0]",
+    f"{UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    ".aws_cloudformation_stack.w2_dataset[0]",
+    f"{UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    ".aws_cloudformation_stack.fcc_dataset[0]",
+)
+#: The two datasets: test-set id (the tracking-table key ``testset#<id>``) and
+#: the test-set bucket prefix, the same in upstream's deployers and this
+#: repository's (src/lambda/{w2,fcc}_dataset_deployer/index.py).
+DATASETS = (("fake-w2", "fake-w2/"), ("realkie-fcc-verified", "realkie-fcc-verified/"))
+#: The OAuth resource server upstream's MCP integration puts in the pool, which
+#: the module creates too: Cognito refuses a second one with the same identifier.
+MCP_RESOURCE_SERVER = "idp-mcp-connector"
 #: Upstream ships no provider lock file, so its `>=` constraints would resolve to
 #: whatever the registry has on the day. This is the lock the passing run
 #: resolved, copied into the example before `init` so every run uses the same
@@ -292,6 +328,7 @@ PHASES = (
     "upstream-deploy",
     "seed",
     "old-ttl-off",
+    "pre-plan-features",
     "migrate-plan",
     "migrate-check-retention",
     "migrate-freeze",
@@ -547,9 +584,13 @@ def make_password(rng: Optional[secrets.SystemRandom] = None) -> str:
     return "".join(chars)
 
 
-def upstream_tfvars(old_name: str, run_id: str, region: str) -> str:
+def upstream_tfvars(
+    old_name: str, run_id: str, region: str, variant: str = BASE_VARIANT
+) -> str:
     """The upstream example's ``terraform.tfvars``: every feature that owns data
-    the migration has to keep is on, so each kept resource kind exists to check."""
+    the migration has to keep is on, so each kept resource kind exists to check.
+    The ``mcp-datasets`` variant turns MCP on as well (the test datasets are not an
+    input of the example; see :func:`datasets_override`)."""
     return (
         f'region      = "{region}"\n'
         f'prefix      = "{old_name}"\n'
@@ -562,12 +603,105 @@ def upstream_tfvars(old_name: str, run_id: str, region: str) -> str:
         "enable_test_studio          = true\n"
         "enable_agent_companion_chat = true\n"
         "enable_agent_analytics      = true\n"
-        "enable_mcp                  = false\n"
+        f"enable_mcp                  = {'true' if variant in MCP_VARIANTS else 'false'}\n"
         "enable_finetuning           = false\n\n"
         "rbac   = { enabled = true }\n"
         "web_ui = { enabled = true }\n\n"
         f'tags = {{ Project = "terraform-migration-test", Run = "{run_id}" }}\n'
     )
+
+
+def _block_end(text: str, open_brace: int) -> int:
+    """The index just past the ``}`` closing the ``{`` at ``open_brace``, skipping
+    braces inside strings and ``#`` or ``//`` comments. ValueError when unclosed."""
+    depth, i, n = 0, open_brace, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c == "#" or text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ValueError("unclosed block")
+
+
+def datasets_override(main_tf: str) -> str:
+    """An override file for the upstream example that turns on both Test Studio
+    datasets. The example passes the upstream module a literal ``api = { ... }``
+    without the two flags, and Terraform's override files replace a module
+    argument whole, so the override restates the example's own ``api`` expression,
+    read from its ``main.tf``, with the flags added. Upstream's files stay as the
+    pinned commit has them. ValueError when the example's layout has changed."""
+    call = re.search(r'^module\s+"genai_idp_accelerator"\s*\{', main_tf, re.MULTILINE)
+    if not call:
+        raise ValueError('no module "genai_idp_accelerator" block')
+    body = main_tf[call.end() - 1 : _block_end(main_tf, call.end() - 1)]
+    api = re.search(r"^(\s*)api\s*=\s*\{", body, re.MULTILINE)
+    if not api:
+        raise ValueError("the module call has no literal api = { ... } argument")
+    end = _block_end(body, api.end() - 1)
+    expression = body[api.end() - 1 : end]
+    if re.search(r"\benable_(w2|fcc)_dataset\b", expression):
+        raise ValueError("the example already sets a dataset flag")
+    indent = api.group(1).lstrip("\n")
+    flags = (
+        f"{indent}  enable_w2_dataset  = true\n{indent}  enable_fcc_dataset = true\n"
+    )
+    expression = expression[:-1].rstrip() + "\n" + flags + indent + "}"
+    return (
+        "# Written by scripts/sdlc/terraform_migration_test.py (variant\n"
+        f"# {MCP_DATASETS_VARIANT}): the example's api argument with both Test Studio\n"
+        "# datasets on.\n"
+        'module "genai_idp_accelerator" {\n'
+        f"{indent}api = {expression}\n"
+        "}\n"
+    )
+
+
+def feature_destroy_problems(plan: Dict[str, Any]) -> List[str]:
+    """Each change in the targeted destroy of the MCP integration and the dataset
+    stacks that the guide's procedure does not allow: anything but a delete, and a
+    delete of anything but a resource of a type the migration command recreates
+    anyway, one of the dataset or gateway stacks, or the MCP integration's own
+    resource server. An empty plan is a problem too: the procedure would then have
+    destroyed nothing."""
+    # The command's own list, so this check cannot drift from what `plan` recreates.
+    from idp_sdk._core.terraform_migrate import RECREATE_SAFE_TYPES  # noqa: TID251
+
+    mcp_module = FEATURE_DESTROY_TARGETS[0] + "."
+    problems: List[str] = []
+    deleted = 0
+    for rc in plan.get("resource_changes", []):
+        actions = (rc.get("change") or {}).get("actions", [])
+        if actions == ["no-op"] or rc.get("mode") == "data":
+            continue
+        address, tf_type = rc.get("address", ""), rc.get("type", "")
+        if actions != ["delete"]:
+            problems.append(f"{address}: {'/'.join(actions)}, not a delete")
+            continue
+        deleted += 1
+        if tf_type in RECREATE_SAFE_TYPES:
+            continue
+        if tf_type == "aws_cloudformation_stack" and (
+            address in FEATURE_DESTROY_TARGETS or address.startswith(mcp_module)
+        ):
+            continue
+        if tf_type == "aws_cognito_resource_server" and address.startswith(mcp_module):
+            continue
+        problems.append(f"{address}: deletes a {tf_type}")
+    if not deleted:
+        problems.append("the targeted destroy deletes nothing")
+    return problems
 
 
 def state_instances(state: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -923,10 +1057,14 @@ def stored_name_problems(
     old_name: str,
     new_name: str,
     upstream_iam_path: Optional[str] = None,
+    variant: str = BASE_VARIANT,
 ) -> List[str]:
     """Each run name given on the command line that differs from the one the work
     directory's run recorded. The upstream IAM path counts as a name: a resumed
-    run under another path would plan every upstream role for replacement."""
+    run under another path would plan every upstream role for replacement. So does
+    the variant: a resumed run of another variant would apply a different old
+    configuration over the one deployed. A run recorded before variants existed
+    was the base one."""
     problems = []
     for key, given in (("oldName", old_name), ("newName", new_name)):
         stored = ctx.get(key)
@@ -938,6 +1076,12 @@ def stored_name_problems(
         problems.append(
             f"the upstream IAM path is {upstream_iam_path!r} here but "
             f"{ctx['upstreamIamPath']!r} in this work directory's run"
+        )
+    stored_variant = ctx.get("variant", BASE_VARIANT) if "oldName" in ctx else variant
+    if stored_variant != variant:
+        problems.append(
+            f"the variant is {variant!r} here but {stored_variant!r} in this work "
+            "directory's run"
         )
     return problems
 
@@ -1068,6 +1212,8 @@ class Settings:
     #: ``s3://<bucket>/<prefix>/`` (see parse_state_mirror), or None for a run
     #: whose states stay in its work directory.
     state_mirror: Optional[str] = None
+    #: One of VARIANTS: which old deployment the run migrates.
+    variant: str = BASE_VARIANT
 
 
 def first_party_pythonpath() -> str:
@@ -1449,7 +1595,11 @@ class Run:
         credentials are for another account than it ran in."""
         problems = validate_names(self.s.old_name, self.s.new_name)
         problems += stored_name_problems(
-            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+            self.ctx,
+            self.s.old_name,
+            self.s.new_name,
+            self.s.upstream_iam_path,
+            self.s.variant,
         )
         account = self.boto("sts").get_caller_identity()["Account"]
         if self.ctx.get("account") and self.ctx["account"] != account:
@@ -1469,6 +1619,13 @@ class Run:
         problems = self.identity_problems()
         if problems:
             raise PhaseFailed("; ".join(problems))
+        if self.s.variant in MCP_VARIANTS and not shutil.which("pip3"):
+            # Upstream builds its AgentCore gateway manager with `pip3 install` in a
+            # local-exec, whatever build.lambda_local says.
+            raise PhaseFailed(
+                "the mcp-datasets variant needs pip3 on PATH: upstream's MCP "
+                "integration builds its gateway manager with it"
+            )
         ident = {"Account": self._account}
         self.ctx["account"] = ident["Account"]
         if self.s.expected_account and ident["Account"] != self.s.expected_account:
@@ -1588,8 +1745,18 @@ class Run:
         """Write what the upstream example's root needs beside upstream's own
         files: the tfvars, the IAM overrides, the backend and the provider lock.
         The same for the deploy and for a teardown in a rebuilt work directory."""
-        tfvars = upstream_tfvars(self.s.old_name, self.ctx["runId"], self.s.region)
+        tfvars = upstream_tfvars(
+            self.s.old_name, self.ctx["runId"], self.s.region, self.s.variant
+        )
         (self.old_dir / "terraform.tfvars").write_text(tfvars)
+        if self.s.variant == MCP_DATASETS_VARIANT:
+            try:
+                override = datasets_override((self.old_dir / "main.tf").read_text())
+            except ValueError as e:
+                raise PhaseFailed(
+                    f"cannot turn the test datasets on in the upstream example: {e}"
+                ) from e
+            (self.old_dir / DATASETS_OVERRIDE_FILE).write_text(override)
         if self.s.state_mirror:
             self.write_backend(self.old_dir, OLD_BACKEND_FILE, "old")
         lock = self.old_dir / ".terraform.lock.hcl"
@@ -2004,6 +2171,252 @@ class Run:
 
     # Migration phases -------------------------------------------------------------------
 
+    # The guide's manual procedure for MCP and the test datasets --------------------
+
+    def dataset_snapshot(self, bucket: str, table: str) -> Dict[str, Any]:
+        """Each dataset's tracking-table record and every object under its prefix,
+        with the time it was written, so that a re-download (identical content,
+        hence an identical ETag) still shows."""
+        ddb, s3 = self.boto("dynamodb"), self.boto("s3")
+        out: Dict[str, Any] = {}
+        for test_set, prefix in DATASETS:
+            item = ddb.get_item(
+                TableName=table,
+                Key={"PK": {"S": f"testset#{test_set}"}, "SK": {"S": "metadata"}},
+                ConsistentRead=True,
+            ).get("Item")
+            objects: Dict[str, List[str]] = {}
+            for page in s3.get_paginator("list_objects_v2").paginate(
+                Bucket=bucket, Prefix=prefix
+            ):
+                for o in page.get("Contents", []):
+                    objects[o["Key"]] = [o["ETag"], o["LastModified"].isoformat()]
+            out[test_set] = {"record": item, "objects": objects}
+        return out
+
+    def dataset_problems(self, snap: Dict[str, Any]) -> List[str]:
+        """Why a dataset snapshot shows nothing to keep."""
+        problems = []
+        for test_set, _prefix in DATASETS:
+            record = snap[test_set]["record"]
+            if not record:
+                problems.append(f"no testset#{test_set} record")
+            elif (record.get("status") or {}).get("S") == "FAILED":
+                problems.append(f"testset#{test_set} is FAILED")
+            if not snap[test_set]["objects"]:
+                problems.append(f"no {test_set} objects")
+        return problems
+
+    def phase_pre_plan_features(self) -> str:
+        """The guide's MCP and test-dataset procedures: one targeted destroy of the
+        MCP integration and both dataset stacks in the old directory, checked as the
+        guide says to check it, then checks that it removed the gateway and the
+        resource server and left every dataset record and file as it was."""
+        if self.s.variant not in MCP_VARIANTS:
+            return f"nothing to do for the {self.s.variant} variant"
+        with_datasets = self.s.variant == MCP_DATASETS_VARIANT
+        targets = (
+            FEATURE_DESTROY_TARGETS if with_datasets else FEATURE_DESTROY_TARGETS[:1]
+        )
+        insts = state_instances(self.old_state())
+        stacks = {
+            i["address"]: i["attributes"]
+            for i in insts
+            if i["type"] == "aws_cloudformation_stack"
+        }
+        gateway_stack = f"{FEATURE_DESTROY_TARGETS[0]}.aws_cloudformation_stack.agentcore_gateway[0]"
+        wanted = {gateway_stack, *targets[1:]}
+        if set(stacks) != wanted:
+            raise PhaseFailed(
+                "the old state's CloudFormation stacks are not the ones the variant "
+                f"deploys: missing {sorted(wanted - set(stacks))}, "
+                f"unexpected {sorted(set(stacks) - wanted)}"
+            )
+        gateway_id = (stacks[gateway_stack].get("outputs") or {}).get("GatewayId")
+        if not gateway_id:
+            raise PhaseFailed(f"{gateway_stack} records no GatewayId output")
+        pool_id = self.ctx["old"]["user_pool_id"]
+        cognito = self.boto("cognito-idp")
+        cognito.describe_resource_server(
+            UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER
+        )
+
+        before: Dict[str, Any] = {}
+        if with_datasets:
+            bucket, table = self.dataset_location(insts)
+            before = self.dataset_snapshot(bucket, table)
+            empty = self.dataset_problems(before)
+            if empty:
+                raise PhaseFailed(
+                    "the old deployment's datasets did not deploy, so the variant "
+                    "would prove nothing about keeping them: " + "; ".join(empty)
+                )
+            write_private(
+                self.work / "datasets-before.json", json.dumps(before, default=str)
+            )
+            self.ctx["datasets"] = {"bucket": bucket, "table": table}
+
+        plan_file = "features-destroy.tfplan"
+        self.terraform(
+            self.old_dir,
+            "plan",
+            "-destroy",
+            "-input=false",
+            f"-out={plan_file}",
+            *(f"-target={t}" for t in targets),
+            log="old-features-destroy.log",
+        )
+        plan = json.loads(
+            self.terraform_capture(self.old_dir, "show", "-json", plan_file)
+        )
+        destroyed = sorted(
+            rc["address"]
+            for rc in plan.get("resource_changes", [])
+            if (rc.get("change") or {}).get("actions") == ["delete"]
+        )
+        self.ctx["featureDestroy"] = destroyed
+        self.save()
+        problems = feature_destroy_problems(plan)
+        if problems:
+            (self.old_dir / plan_file).unlink(missing_ok=True)
+            raise PhaseFailed(
+                "the targeted destroy goes beyond what the guide allows: "
+                + "; ".join(problems)
+            )
+        self.terraform(
+            self.old_dir,
+            "apply",
+            "-input=false",
+            plan_file,
+            log="old-features-destroy.log",
+        )
+        (self.old_dir / plan_file).unlink(missing_ok=True)
+
+        findings: List[str] = []
+        left = sorted(
+            i["address"]
+            for i in state_instances(self.old_state())
+            if i["type"] == "aws_cloudformation_stack"
+        )
+        if left:
+            findings.append(f"the old state still holds stacks {left}")
+        cf = self.boto("cloudformation")
+        for address, attrs in stacks.items():
+            try:
+                status = cf.describe_stacks(StackName=attrs["id"])["Stacks"][0][
+                    "StackStatus"
+                ]
+            except Exception:  # noqa: BLE001 - gone
+                status = "DELETE_COMPLETE"
+            if status != "DELETE_COMPLETE":
+                findings.append(f"stack {attrs.get('name')} is {status}")
+        try:
+            self.boto("bedrock-agentcore-control").get_gateway(
+                gatewayIdentifier=gateway_id
+            )
+            findings.append(f"the old AgentCore gateway {gateway_id} still exists")
+        except Exception as e:  # noqa: BLE001 - expected: not found
+            if "ResourceNotFound" not in type(e).__name__ + str(e):
+                findings.append(f"cannot read the old gateway {gateway_id}: {e}")
+        try:
+            cognito.describe_resource_server(
+                UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER
+            )
+            findings.append(
+                f"the resource server {MCP_RESOURCE_SERVER} is still in the pool"
+            )
+        except cognito.exceptions.ResourceNotFoundException:
+            pass
+        after = self.dataset_snapshot(bucket, table) if with_datasets else {}
+        for test_set in after:
+            if after[test_set] != before[test_set]:
+                findings.append(
+                    f"dataset {test_set} changed: record "
+                    f"{'same' if after[test_set]['record'] == before[test_set]['record'] else 'differs'}, "
+                    f"{len(before[test_set]['objects'])} objects before, "
+                    f"{len(after[test_set]['objects'])} after"
+                )
+        if findings:
+            raise PhaseFailed("; ".join(findings))
+        counts = {t: len(before[t]["objects"]) for t in before}
+        return (
+            f"destroyed {len(destroyed)} resources (the stacks, the gateway and the "
+            "resource server are gone)"
+            + (f"; datasets unchanged: {counts} objects" if with_datasets else "")
+        )
+
+    def dataset_location(self, insts: List[Dict[str, Any]]) -> Tuple[str, str]:
+        """The test-set bucket and tracking table the old deployment's W-2 deployer
+        was given. Upstream's Terraform names the bucket ``TEST_SET_BUCKET``
+        (``test_studio_env_base`` in test-studio.tf); its deployers' own code reads
+        ``TESTSET_BUCKET``, the name upstream's SAM template uses, so either is
+        accepted."""
+        deployer = next(
+            (
+                i
+                for i in insts
+                if i["type"] == "aws_lambda_function"
+                and i["name"] == "w2_dataset_deployer"
+            ),
+            None,
+        )
+        if deployer is None:
+            raise PhaseFailed("the old state has no w2_dataset_deployer function")
+        env = (deployer["attributes"].get("environment") or [{}])[0].get(
+            "variables"
+        ) or {}
+        bucket = env.get("TEST_SET_BUCKET") or env.get("TESTSET_BUCKET")
+        table = env.get("TRACKING_TABLE")
+        if not bucket or not table:
+            raise PhaseFailed(
+                "the w2_dataset_deployer function's environment names no test-set "
+                f"bucket or tracking table (it has {sorted(env)})"
+            )
+        return bucket, table
+
+    def verify_features(self, findings: List[str]) -> str:
+        """For the mcp-datasets variant: the new deployment has its own gateway,
+        and every dataset record and file is as it was before the targeted destroy
+        (none rewritten, so the new deployment's deployers did not download them
+        again)."""
+        if self.s.variant not in MCP_VARIANTS:
+            return ""
+        name = f"{self.s.new_name}-analytics-gateway"
+        control = self.boto("bedrock-agentcore-control")
+        gateways = [
+            g
+            for page in control.get_paginator("list_gateways").paginate()
+            for g in page.get("items", [])
+            if g.get("name") == name
+        ]
+        if len(gateways) != 1:
+            findings.append(f"{len(gateways)} AgentCore gateways named {name}, not 1")
+        if self.s.variant != MCP_DATASETS_VARIANT:
+            return f"; new gateway {name}"
+        before = json.loads((self.work / "datasets-before.json").read_text())
+        loc = self.ctx["datasets"]
+        after = json.loads(
+            json.dumps(self.dataset_snapshot(loc["bucket"], loc["table"]), default=str)
+        )
+        for test_set, _prefix in DATASETS:
+            b, a = before[test_set], after[test_set]
+            missing = [k for k in b["objects"] if k not in a["objects"]]
+            rewritten = [
+                k
+                for k in b["objects"]
+                if k in a["objects"] and a["objects"][k] != b["objects"][k]
+            ]
+            if missing or rewritten:
+                findings.append(
+                    f"dataset {test_set}: {len(missing)} objects missing, "
+                    f"{len(rewritten)} rewritten"
+                )
+            if a["record"] is None:
+                findings.append(f"the testset#{test_set} record is gone")
+            elif a["record"].get("datasetVersion") != b["record"].get("datasetVersion"):
+                findings.append(f"the testset#{test_set} record's version changed")
+        return f"; new gateway {name}; datasets kept without a re-download"
+
     def phase_migrate_plan(self) -> str:
         old_state_file = self.work / "old.tfstate"
         write_private(
@@ -2024,14 +2437,18 @@ class Run:
         ]
         if self.s.assume_role_arn:
             args += ["--terraform-assume-role-arn", self.s.assume_role_arn]
+        parameters = []
         if self.s.upstream_permissions_boundary_arn:
             # The new deployment's roles need the run's boundary too: the deploy
             # role creates a role only when it carries that boundary, and the
             # module attaches PermissionsBoundaryArn to every role it creates.
-            args += [
-                "--parameters",
-                f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}",
-            ]
+            parameters.append(
+                f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}"
+            )
+        if self.s.variant in MCP_VARIANTS:
+            parameters.append("EnableMCP=true")
+        if parameters:
+            args += ["--parameters", ",".join(parameters)]
         if self.s.state_mirror:
             # Before the command's own `init`, so the new state is in the bucket
             # from its first write.
@@ -2418,12 +2835,14 @@ class Run:
             "oldRuns": len(old_runs),
         }
 
+        features = self.verify_features(findings)
         if findings:
             raise PhaseFailed("; ".join(findings))
         added = sum(c["added"] for c in report["buckets"].values())
         return (
             f"snapshot preserved ({added} objects added since); both users sign in with old passwords and keep "
             f"their scope; config edit kept; new document {statuses[key]} by the new deployment only"
+            + features
         )
 
     def _executions_since(
@@ -2944,7 +3363,11 @@ class Run:
 
     def execute(self) -> int:
         stored = stored_name_problems(
-            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+            self.ctx,
+            self.s.old_name,
+            self.s.new_name,
+            self.s.upstream_iam_path,
+            self.s.variant,
         )
         if stored:
             # Refuse before touching the context: overwriting its names would let a
@@ -2961,6 +3384,7 @@ class Run:
             oldName=self.s.old_name,
             newName=self.s.new_name,
             upstreamIamPath=self.s.upstream_iam_path,
+            variant=self.s.variant,
             region=self.s.region,
             moduleUrl=self.s.module_url,
         )
@@ -3160,6 +3584,21 @@ class Sweeper:
                 out.append(name)
         return out
 
+    def _gateways(self) -> List[Tuple[str, str]]:
+        """AgentCore gateways (id, name) under the run's names: upstream's MCP
+        integration names its gateway ``<prefix>-api-analytics-gateway`` and the
+        module ``<stack>-analytics-gateway``. Only the mcp-datasets variant creates
+        any, so the base variant does not need the service to be reachable."""
+        if self.owner.s.variant not in MCP_VARIANTS:
+            return []
+        control = self.owner.boto("bedrock-agentcore-control")
+        return sorted(
+            (g["gatewayId"], g["name"])
+            for page in control.get_paginator("list_gateways").paginate()
+            for g in page.get("items", [])
+            if self.owned(g.get("name", ""), "gateways")
+        )
+
     def inventory(self) -> List[str]:
         return (
             [f"stack {n}" for n in self._stacks()]
@@ -3170,6 +3609,7 @@ class Sweeper:
             + [f"role {n}" for n in self._roles()]
             + [f"kms key {k}" for k in self._keys()]
             + [f"bda project {a}" for a in self._bda()]
+            + [f"agentcore gateway {i} ({n})" for i, n in self._gateways()]
         )
 
     def sweep(self) -> Tuple[List[str], List[str]]:
@@ -3225,6 +3665,13 @@ class Sweeper:
                 f"bda project {arn}",
                 lambda a=arn: bda.delete_data_automation_project(projectArn=a),
             )
+        for gateway_id, name in self._gateways():
+            attempt(
+                f"agentcore gateway {gateway_id} ({name})",
+                lambda g=gateway_id: delete_gateway(
+                    self.owner.boto("bedrock-agentcore-control"), g
+                ),
+            )
         for key in self._keys():
             attempt(
                 f"kms key {key} (scheduled)",
@@ -3235,6 +3682,27 @@ class Sweeper:
                 f"role {role}", lambda r=role: delete_role(self.owner.boto("iam"), r)
             )
         return deleted, errors
+
+
+def delete_gateway(control, gateway_id: str, timeout: int = 300) -> None:
+    """Delete an AgentCore gateway: its targets first, which the service requires."""
+    for page in control.get_paginator("list_gateway_targets").paginate(
+        gatewayIdentifier=gateway_id
+    ):
+        for target in page.get("items", []):
+            control.delete_gateway_target(
+                gatewayIdentifier=gateway_id, targetId=target["targetId"]
+            )
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            control.delete_gateway(gatewayIdentifier=gateway_id)
+            return
+        except control.exceptions.ValidationException:
+            # Targets still deleting.
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(10)
 
 
 def empty_and_delete_bucket(s3, bucket: str) -> None:
@@ -3370,6 +3838,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
     )
     p.add_argument("--min-role-headroom", type=int, default=400)
     p.add_argument(
+        "--variant",
+        choices=VARIANTS,
+        default=BASE_VARIANT,
+        help=f"{MCP_VARIANT!r} also deploys upstream's MCP integration, and "
+        f"{MCP_DATASETS_VARIANT!r} that and both Test Studio datasets; either runs the "
+        "guide's manual procedure for them before plan",
+    )
+    p.add_argument(
         "--accept-change",
         action="append",
         default=[],
@@ -3434,6 +3910,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         upstream_iam_path=a.upstream_iam_path,
         upstream_permissions_boundary_arn=a.upstream_permissions_boundary_arn,
         state_mirror=a.state_mirror,
+        variant=a.variant,
     )
 
 
