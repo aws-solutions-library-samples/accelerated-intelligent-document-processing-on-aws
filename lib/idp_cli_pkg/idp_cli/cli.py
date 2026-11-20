@@ -734,7 +734,9 @@ def _delete_terraform(
         console.print(f"Deployment: [cyan]{stack_name}[/cyan]")
         console.print(f"Region: {region}")
         console.print(
-            "Every bucket that will be destroyed is emptied first, then `destroy` runs."
+            "Every bucket that will be destroyed is emptied first, except the "
+            "custom-resource bridge buckets, which `destroy` empties after the "
+            "custom resources are deleted; then `destroy` runs."
         )
         console.print("[bold red]This action cannot be undone.[/bold red]")
         console.print("━" * 60)
