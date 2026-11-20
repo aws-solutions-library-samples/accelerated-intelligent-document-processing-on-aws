@@ -25,8 +25,10 @@ A conversational agent:
    than starting from scratch.
 3. **Authors an extraction schema** and shows you the fields in readable form for
    review; you refine it in chat until it's right.
-4. **Creates and activates a configuration profile**, so you can upload a document
-   and start processing immediately — no trip to the Configuration page required.
+4. **Creates a configuration profile and makes it active**, so you can upload a
+   document and start processing immediately — no trip to the Configuration page
+   required. When the stack already has a profile in use, it asks before making
+   its own one active.
    It also chooses how files are split into documents and whether each document
    is summarized, from what you've told it.
 
@@ -129,10 +131,11 @@ ends the conversation.
    Documents** in the side navigation and it's processed with your new
    configuration.
 
-Quick Start never writes into `default` or into a stack-managed profile (a preset
-the stack deployed, which a stack update replaces), and that includes its processing
-options. It adds a class to another
-existing profile only when you name that profile and ask it to.
+The agent's own writes, processing options included, refuse `default` and
+stack-managed profiles (presets the stack deployed, which a stack update replaces).
+Documents you attach never reach an existing profile, because the panel always sends
+them to the new one it named. The agent adds a class to another existing profile
+only when you name that profile and ask it to.
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see
