@@ -149,8 +149,7 @@ DIFFER_CAPTION = " Cost axes differ by dataset."
 PAGES = REPO / "docs" / "benchmark-guidance"
 #: Generated regions of a page. Each question's details are collapsed under its answer.
 REGIONS = ("FAQ",)
-PRESETS = "index.md#how-we-run-a-benchmark"
-RECOMMEND = "index.md#what-we-recommend"
+PRESETS = "index.md#baseline-setup"
 #: The heading the unmeasured questions of a page are listed under, at the FAQ's end.
 PLANNED = "Planned"
 DATASETS_PAGE = "datasets.md"
@@ -1913,8 +1912,8 @@ def reference_setup(ab: dict[str, Any]) -> str:
     ablation changes one setting from, or else the recommended setup."""
     on_index = ab["page"] == "index"
     if ab.get("baseline"):
-        return f"[baseline setup]({'#how-we-run-a-benchmark' if on_index else PRESETS})"
-    return f"[recommended setup]({'#what-we-recommend' if on_index else RECOMMEND})"
+        return f"[baseline setup]({'#baseline-setup' if on_index else PRESETS})"
+    return "reference configuration"
 
 
 def reference_note(ab: dict[str, Any]) -> str:
@@ -1958,7 +1957,7 @@ def render_ablation(
 ) -> Rendered:
     datasets: dict[str, Any] = reg["datasets"]
     metrics: dict[str, Any] = reg["metrics"]
-    presets = PRESETS if ab["page"] != "index" else "#how-we-run-a-benchmark"
+    presets = PRESETS if ab["page"] != "index" else "#baseline-setup"
     cells: dict[str, Cell] = dict((results or {}).get("cells", {}))
     usage = (results or {}).get("usage") or {}
     models = (results or {}).get("models") or {}

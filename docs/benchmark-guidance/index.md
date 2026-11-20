@@ -9,120 +9,116 @@ SPDX-License-Identifier: MIT-0
 
 # How We Benchmark Configurations
 
-- When is agentic extraction worth it?
-- Does holistic classification beat page-by-page classification?
-- Does OCR make a difference?
-- Which extraction model should I use?
-- Can I route review by confidence?
-- What is the cheapest configuration that keeps accuracy?
-
-We answer these questions with benchmark datasets, one page per problem set:
-[Digitization](digitization.md), [Splitting and Section Classification](splitting-and-classification.md),
+A benchmark measures what one configuration choice does to accuracy, cost and time, on
+documents whose correct answers are known. We run every benchmark in
+[Test Studio](../test-studio.md), the same tool you can run on your own documents, and
+publish the results by problem set: [Digitization](digitization.md),
+[Splitting and Section Classification](splitting-and-classification.md),
 [Key Information Extraction](extraction.md), [Confidence Assessment](confidence-assessment.md)
 and [Token Use and Cost](token-use.md).
 
-## What we recommend
+## Benchmark process
 
-These are good places to start. Test each one on your own documents.
+1. **A test set with ground truth.** A test set is a group of documents with their correct
+   answers: every field's value and, for packets, every section's pages and document class.
+   Every stack loads several public test sets
+   ([Pre-Deployed Test Sets](../test-studio.md#pre-deployed-test-sets)), and
+   [Benchmark Datasets](datasets.md) lists the ones these pages use. To build your own, see
+   [Creating Test Sets](../test-studio.md#creating-test-sets) and
+   [Draft labeling](../test-studio.md#draft-labeling-unlabeled-documents--ground-truth).
+2. **One change from a baseline.** Each benchmark starts from the [baseline setup](#baseline-setup)
+   and changes one setting, so the setting accounts for the difference. Each value of the
+   setting is its own configuration
+   ([Configuration Profiles and Revisions](../test-studio.md#configuration-profiles-and-revisions)).
+3. **Repeated runs.** We [run the test set](../test-studio.md#running-tests) three times for
+   each value, on one stack and one release. Each table states its runs and documents.
+4. **Scoring.** Test Studio scores each document against its ground truth with the
+   open-source [Stickler](https://github.com/awslabs/stickler) library, field by field, with
+   each field's comparison method. See
+   [Bulk Aggregation with Stickler](../test-studio.md#bulk-aggregation-with-stickler),
+   [Field-Level Metrics](../test-studio.md#field-level-metrics),
+   [Graded Packet Metrics](../test-studio.md#graded-packet-metrics-run-level) for splitting
+   and [Confidence Calibration Metrics](../test-studio.md#confidence-calibration-metrics) for
+   confidence.
+5. **Cost and time.** Cost comes from each document's metered tokens and requests, priced at
+   on-demand us-east-1 rates from [config_library/pricing.yaml](../../config_library/pricing.yaml).
+   Time is the median per document.
+6. **Comparison.** Each table reports the mean over the runs with two standard errors. A
+   difference counts as measurable only when it exceeds twice the combined standard error.
+   Each result names its release, month and region, and the results file behind it.
 
-| Decision | Start with | Why |
-|---|---|---|
-| Splitting packets into documents | Holistic classification with Claude Haiku 5.5, reading text only | [88% of sections exactly right, against 75% with page images, for a tenth of the cost](splitting-and-classification.md#do-i-need-page-images-in-the-classification-prompt); [no approach under $200 got measurably more right](splitting-and-classification.md#which-approach-should-i-use) |
-| Pages per holistic call on long packets, if classification reads page images | 10, instead of the default 20 | [On 30-to-60-page packets: the most sections right, for 60% less](splitting-and-classification.md#how-long-a-packet-can-holistic-classification-handle) |
-| Extraction model | Claude Haiku 5.5 | [No model got measurably higher weighted accuracy, and it cost the least](extraction.md#which-extraction-model-should-i-use) |
-| Single-pass or agentic extraction | Single-pass for most documents; consider agentic, with Claude Haiku 5.5 and table parsing off, for exceptionally long or complex extractions, such as invoices with many line items | [On RealKIE invoices with more than about 100 line items, single-pass got almost none right](extraction.md#when-is-agentic-extraction-worth-it); [table parsing cost more and scored no better](extraction.md#does-deterministic-table-parsing-help-agentic-extraction) |
-| What the extraction model reads | Page images and OCR text | [Without page images, W-2 forms with every field right fell from 82% to 2%](extraction.md#what-is-the-impact-of-document-modality) |
-| Reasoning effort (Claude Sonnet 5.5) | Low | [Medium and high scored no better, and high cost more](extraction.md#does-more-reasoning-effort-improve-extraction) |
-| Scoring model, if people review by confidence | Claude Haiku 5.5, with escalation off | [Caught as many errors as Claude Sonnet 5.5 for a fifth of the cost](confidence-assessment.md#which-scoring-model-should-i-use) |
-| Confidence, if nobody reviews by it | Off | [Same accuracy, 13% to 28% cheaper](confidence-assessment.md#separate-scoring-pass-or-integrated-into-extraction) |
-| Decision model ([Strands Decider 2B](https://huggingface.co/StrandsAgents/strands-decider-2B-qwen3.5-v1-2610), Qwen3.5, on AWS Lambda) | For section classification, worth testing if you give each class a one-line description of what its pages look like and send the first two page images; not yet for scoring confidence | [With one-line descriptions it gave the right class to 95% of correctly split sections, against 98% for Claude Haiku 5.5, for the same cost; with the preset's descriptions, 77%](splitting-and-classification.md#can-a-decision-model-classify-the-sections); [as a confidence scorer it did worse than Claude Haiku 5.5 and cost more](confidence-assessment.md#can-a-decision-model-score-confidence) |
-| Schema enforcement | Structured output once it is released ([#1785](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1785)), or off; not the forced tool | [The forced tool lowered W-2 accuracy](extraction.md#does-schema-enforcement-improve-accuracy-or-cost) |
-| OCR | Amazon Textract, Layout only, at 300 DPI | [Scored best on W-2s and as well on invoices, for the lowest cost](digitization.md#which-textract-features-do-i-need) ([DG-01](digitization.md#does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-04](digitization.md#what-resolution-should-pages-be-rendered-at)) |
-| Lowest cost | Claude Haiku 5.5 extraction, Textract Layout only, confidence off | [$21 against $135 per 1,000 invoices for the default, at the same weighted accuracy; scoring confidence with Claude Haiku 5.5 brings it to $28](token-use.md#what-is-the-cheapest-configuration-that-keeps-accuracy) |
+## Baseline setup
 
-The recommended setup as configuration overrides, on top of the preset closest to your documents:
+Most benchmarks start from the same configuration: Amazon Textract with Layout only;
+holistic classification reading the page text and images; single-pass extraction; and
+confidence scored in a separate pass, all with Claude Haiku 5.5 and no escalation.
+Benchmarks run on a pre-release build with structured output also use it for extraction. A
+few
+benchmarks, such as `EX-01` and `TU-04`, start from each dataset's own
+[preset](../../config_library/unified/README.md) instead, and say so.
 
-```yaml
-ocr:
-  backend: textract
-  features: [{name: LAYOUT}]
-classification:
-  strategy: combined
-  combined:
-    granularity: packet          # holistic
-    llm:
-      model: us.anthropic.claude-haiku-5-5
-      modality: {text: true, images: false}
-extraction:
-  model: us.anthropic.claude-haiku-5-5
-  mode: simple                   # single-pass; consider advanced (agentic) for very long extractions
-  schema_enforcement: {mode: structured_output}   # not in a release yet; leave out until it is
-  confidence:                    # or mode: off if nobody reviews by confidence
-    mode: separate
-    model: us.anthropic.claude-haiku-5-5
-    escalation_enabled: false
-```
+## Supported conclusions
 
-## How we run a benchmark
+A benchmark shows:
 
-Most benchmarks start from a *baseline setup*, change one setting, and run the same
-documents with each value of that setting. The baseline is the recommended setup above
-with one difference: its classification reads page images as well as text, because
-text only came out ahead after the baseline was set (SC-02). A few, such as
-`EX-01` and `TU-04`, start from each dataset's own configuration preset instead, and say
-so. Each benchmark has an ID and a results table; one we haven't run yet is listed under
-*Planned* on its page.
+- how one setting changes accuracy, cost and time on its dataset, with every other setting
+  held fixed;
+- whether that change is larger than the variation between repeated runs;
+- what an accuracy gain costs, as the cost per error prevented
+  ([Marginal Cost of Error](marginal-cost-of-error.md));
+- a configuration to start your own testing from.
 
-[Benchmark Datasets](datasets.md) lists each dataset with its preset and its Test Studio
-test set.
+## Limits
 
-Defaults differ from preset to preset. To configure your own stack, start from the
-[preset](../../config_library/unified/README.md) closest to your documents.
-
-## Why you can trust the results
-
-- **Compare within a question.** Each question runs its own documents at its own time, so
-  the same setup can differ by a few dollars per 1,000, or a point of accuracy, from one
-  question to the next.
-- **Known answers.** Every dataset has ground truth, generated exactly for synthetic
-  documents or checked by people for public ones. See
-  [Benchmark Datasets](../idp-fundamentals/benchmark-datasets.md).
-- **One change at a time,** on one stack, so the setting explains the difference.
-- **Same documents, repeated.** We run every value on the same documents at least three
-  times and report the spread. The spread is run to run: it shows how much a result moves
-  when the same documents are processed again, not how much it would move on other
-  documents.
-- **Real differences only.** We name a winner only when the difference exceeds twice its
-  standard error.
-- **Pinned to a release.** Each table names the release, month and region, and the results
-  file behind it.
-- **Tokens, not prices.** Tokens stay the same when prices change. Multiply by current
-  prices to estimate cost.
-- **Repeatable in your account.** Most datasets come with every stack as Test Studio test
-  sets.
+- **Your documents.** A result holds for its dataset. Confirm any choice on a test set of
+  your own documents; see
+  [Measure with ground truth](../idp-fundamentals/index.md#4-measure-with-ground-truth).
+- **Other documents of the same kind.** Most standard errors measure how much a result moves
+  when the same documents run again, not how much it would move on different documents.
+- **Comparisons across benchmarks.** Each benchmark runs its own documents at its own time,
+  so the same configuration can differ by a few dollars per 1,000 documents, or a point of
+  accuracy, between two benchmarks. Compare values within one benchmark.
+- **Combined changes.** Changing one setting at a time does not show how two changes
+  interact.
+- **The whole process.** No dataset we use covers every problem set at once. We measure
+  splitting and extraction separately, not how a split error changes the extracted values.
+- **Every cost.** Some costs are floors. Claude Haiku 5.5 bills a prompt over 100,000 tokens
+  at a higher long-context rate, which we can't price for agentic extraction's calls, and a
+  retried AWS Lambda attempt is billed without being metered.
+- **Coverage.** The benchmarks cover Pipeline mode, not BDA mode. Most extraction results
+  come from [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified)
+  invoices, real documents with checked ground truth but one kind of document. Handwritten
+  forms and packets with field ground truth are not covered yet.
+- **Later models and releases.** A result holds for the release and models it names.
 
 ## Terms
 
-- **Weighted accuracy:** the share of fields right, weighted by each field's importance, scored with the open-source Stickler library against ground truth.
-- **Line-item score:** the share of a list's rows extracted right: matched rows over the larger of the true and returned row counts.
-- **Sections exactly right:** the share of documents in a packet split at the right pages and given the right class.
-- **AUROC:** how well confidence separates right values from wrong ones; 50% is a coin flip, 100% is perfect.
-- **ECARB (error capture at review budget):** if people review the 30% of values with the lowest confidence, how many times as many wrong values they find as a random 30% review would. 1× is no better than random; at 30% the most possible is about 3.3×. See Stickler's [Error Capture at Review Budget](https://awslabs.github.io/stickler/Advanced/confidence-metrics/#error-capture-at-review-budget).
-- **Errors caught reviewing 30% of values:** the same review, as the share of wrong values found.
-- **Cost per error prevented:** the extra cost per 1,000 documents divided by the errors it removes, against the cheapest option. See [Marginal Cost of Error](marginal-cost-of-error.md).
-- **Baseline setup:** what most benchmarks change one setting from; see [How we run a benchmark](#how-we-run-a-benchmark).
+- **Weighted accuracy:** the share of fields right, weighted by each field's importance,
+  scored with Stickler against ground truth. See Stickler's
+  [Weighted Overall Score](https://awslabs.github.io/stickler/Guides/Evaluation/bulk-evaluation/#weighted-overall-score).
+- **Line-item score:** the share of a list's rows extracted right: matched rows over the
+  larger of the true and returned row counts. See Stickler's
+  [List Score](https://awslabs.github.io/stickler/Advanced/hungarian-matching/#step-4-list-score).
+- **Sections exactly right:** the share of documents in a packet split at the right pages
+  and given the right class. See Stickler's
+  [Classical Metrics](https://awslabs.github.io/stickler/Guides/Document_Packet_Splitting/#classical-metrics).
+- **Grouping score:** a packet score from 0 to 1 for how pages are grouped and ordered, so a
+  nearly right section still earns credit. See Stickler's
+  [Packet Score](https://awslabs.github.io/stickler/Guides/Document_Packet_Splitting/#proposed-metrics-packet-score).
+- **AUROC:** how well confidence separates right values from wrong ones; 50% is a coin flip,
+  100% is perfect. See Stickler's [AUROC Calculation](https://awslabs.github.io/stickler/Advanced/confidence-metrics/#auroc-calculation).
+- **ECARB (error capture at review budget):** if people review the 30% of values with the
+  lowest confidence, how many times as many wrong values they find as a random 30% review
+  would. 1× is no better than random; at 30% the most possible is about 3.3×. See Stickler's
+  [Error Capture at Review Budget](https://awslabs.github.io/stickler/Advanced/confidence-metrics/#error-capture-at-review-budget).
+- **Errors caught reviewing 30% of values:** the same review, as the share of wrong values
+  found. See [Error Capture at Review Budget](https://awslabs.github.io/stickler/Advanced/confidence-metrics/#error-capture-at-review-budget).
+- **Cost per error prevented:** the extra cost per 1,000 documents divided by the errors it
+  removes, against the cheapest option. See [Marginal Cost of Error](marginal-cost-of-error.md).
+- **Baseline setup:** the configuration most benchmarks change one setting from; see
+  [Baseline setup](#baseline-setup).
 
-## What the results don't cover
-
-- **Your documents.** Confirm a choice on your own test set; see
-  [Measure with ground truth](../idp-fundamentals/index.md#4-measure-with-ground-truth).
-- **BDA mode.** These benchmarks cover Pipeline mode.
-- **Some costs are floors.** Costs come from each document's own metering. Claude Haiku 5.5 bills a prompt over 100,000 tokens at a higher long-context rate; we price that wherever a call's size can be worked out from the metering, but not for agentic extraction's calls, and a Lambda attempt that failed and was retried is billed without being metered.
-- **Other kinds of documents.** Most extraction results come from [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified), real invoices with checked ground truth. We rely on it because it is accurate and representative of real layouts, but it is one kind of document.
-- **Datasets we haven't built yet:** packets with field ground truth, and handwritten
-  forms.
-
-## Questions for every problem set
+## Benchmark status
 
 <!-- BEGIN GENERATED FAQ -->
 

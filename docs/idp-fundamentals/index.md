@@ -15,7 +15,8 @@ line item, ready to query and to load into the systems you already run.
 
 Every IDP system does this job in five steps, which these pages call **problem sets**. Each
 page explains one problem set in terms that apply to any IDP system, shows how to measure it,
-reports what we measured, and ends with how to do it in this accelerator.
+and ends with how to configure it in this accelerator. What we measured is in
+[Benchmarks by Problem Set](../benchmark-guidance/index.md).
 
 ## The five problem sets
 
@@ -37,17 +38,11 @@ flowchart LR
 | [Confidence assessment](confidence-assessment.md) | Which results can I trust without checking? | A confidence score for every result |
 | [Rule validation](rule-validation.md) | Does the document meet my business rules? | A verdict per rule, with its evidence |
 
-Results with low confidence go to a person for review before they reach the database, and
-the accelerator reports every rule each document fails.
+## Building a document processing pipeline for your use case
 
-Each step works from the output of the step before it. When results are wrong, fix the
-earliest step that is wrong first. Better extraction cannot recover a misread page or a
-document given the wrong document class.
-
-## From setup to a pipeline you trust
-
-You have a working pipeline as soon as you have told it what to look for. Everything after
-that is improvement, done at your own pace, and agents can do much of the work for you.
+The IDP Accelerator gets you a working pipeline quickly with its quick start tools,
+[Quick Start](../quick-start.md) and [Discovery](../discovery.md). Optimizing it is how you
+measure its accuracy and get the best performance from it.
 
 ### 1. Define your document classes and fields
 
@@ -68,8 +63,9 @@ With your document classes and fields saved, the pipeline is live: documents go 
 ### 2. Run your documents and look at the results
 
 Process a batch of real documents and open the results. Each record shows the extracted
-values next to the page they came from, so you can check them at a glance. The accelerator sends
-results with low confidence to review and reports every rule a document fails.
+values next to the page they came from, so you can check them at a glance. You can send
+results to a person for review, for example those with low confidence, and the accelerator
+reports every rule a document fails.
 
 Most early fixes are wording fixes. If a field keeps coming back wrong, make its
 description more precise: say where the value appears, what it is not, and the format you
@@ -84,7 +80,11 @@ settings on its own, within a cost budget you set, and keeps the ones that score
 
 Which problem set to work on depends on your documents. Files that hold several documents
 depend on splitting. Long statements depend on extracting every row. Automated decisions
-depend on confidence and rules. Start with the earliest step that is getting things wrong.
+depend on confidence and rules.
+
+Each step works from the output of the step before it, so fix the earliest step that is
+getting things wrong first. Better extraction cannot recover a misread page, or a document
+given the wrong document class.
 
 ### 4. Measure with ground truth
 
@@ -128,19 +128,32 @@ how much the field counts toward the overall score:
 Stickler scores splitting too: whether each page received the right document class and
 landed in the right section. One run reports both. See [Evaluation](../evaluation.md) for every option.
 
+### 5. Test configurations yourself
+
+Tweak your document class and field definitions, change the models, and change how
+extraction works, such as single-pass or agentic. Then score each change against your test
+set in [Test Studio](../test-studio.md). Testing configurations on your own documents is the
+best way to get the most from the pipeline for your use case.
+[Benchmarks by Problem Set](../benchmark-guidance/index.md) gives a good place to start for
+each choice.
+
 Keep your test set after you go live. Re-run it whenever you change the configuration or
 upgrade, and you will see a regression in your scores before you see it in your data. Run
 the same comparison twice before you act on a difference of a few points, because model
 output varies slightly from run to run.
 
-## What our benchmarks measure, and how to run them yourself
+## Accelerator-provided benchmarks
 
-Each problem-set page reports results from this repository's
-[benchmark suite](../benchmarking/index.md). The suite runs public and synthetic datasets
-through a deployed stack under many configurations and scores every run. The results show
-what each option buys, so you can start your own testing from a configuration that already
-works. [Benchmarks by Problem Set](../benchmark-guidance/index.md) has the latest results and
-what we recommend.
+We benchmark the accelerator on community-published datasets and on synthetic data. The
+[benchmark suite](../benchmarking/index.md) runs them through a deployed stack under many
+configurations and scores every run. Each dataset covers one or a few of the problem sets;
+none we have found covers the whole process end to end. For example, we measure how well the
+accelerator splits documents and how well it extracts fields, but not yet how a split error
+changes the extracted values.
+
+We publish what we conclude from these results and from our experience in
+[Benchmarks by Problem Set](../benchmark-guidance/index.md), with what we recommend.
+[Benchmark Datasets](benchmark-datasets.md) describes each dataset and what it covers.
 
 | Problem set | Benchmarked |
 |---|---|
@@ -150,14 +163,9 @@ what we recommend.
 | Confidence assessment | Yes |
 | Rule validation | Not yet |
 
-**Each benchmark measures one problem set,** so you can trace each result to a single choice.
-The coverage has gaps. For example, no benchmark yet combines packet splitting with
-extraction, so we measure how well the accelerator splits documents and how well it extracts
-fields, but not yet how a split error changes the extracted values. Each page states its dataset, the
-release and date of the run, and the sample size, so you can judge how closely it matches
-your documents. [Benchmark Datasets](benchmark-datasets.md) describes each dataset and what
-it covers.
+Each result states its dataset, the release and date of the run, and the sample size, so you
+can judge how closely it matches your documents.
 
-**You can run the same benchmarks.** Every stack loads most of these datasets into Test
+**You can replicate our benchmarks.** Every stack loads most of these datasets into Test
 Studio as test sets, each with a matching configuration. Repeat our comparisons in your own
 account, then run them on your own test set.

@@ -7,68 +7,96 @@ SPDX-License-Identifier: MIT-0
 
 # Key Information Extraction
 
-## What extraction does: turn each section into a database record
+## Overview
 
-Extraction is the step that fills your database. For every section, it reads the pages and
-returns the values of the fields you defined for the section's document class. The result is
-a **record**: one value per field, in the structure your schema describes.
-
-Two kinds of field make up a record:
-
-- A **field** holds one value, such as an invoice's gross total or a statement's account
-  number.
-- A **list field** holds **rows**, one per item, such as the line items on an invoice or the
-  transactions on a bank statement. Each row has its own fields, such as date, description and
-  amount.
-
-A record's fields usually become one row in a table for the document class, and each list
-field becomes a second table with one row per item. In the example below, extraction turns a
-two-page invoice and a 17-page bank statement into two records:
+You define a **schema** for each document class: the fields you need, what each one means,
+and its type. For every section, extraction reads the pages and returns a **record**: JSON in
+exactly the structure the schema describes, ready to insert into a database.
 
 ```mermaid
 flowchart LR
-    I["Invoice<br/>section, 2 pages"] -- extraction --> RI["Invoice record<br/>Agency, Advertiser<br/>Gross total, Net amount due<br/>Line items: 6 rows"]
-    S["Bank statement<br/>section, 17 pages"] -- extraction --> RS["Statement record<br/>Account number<br/>Statement period<br/>Transactions: 800 rows"]
-    RI --> D1[("invoices table<br/>line_items table")]
-    RS --> D2[("statements table<br/>transactions table")]
+    S["Schema"] --> X["Extraction"]
+    D["Document"] --> X
+    X --> J["Structured output<br/>(JSON)"]
     classDef file fill:#f1f5f9,stroke:#475569,color:#0f172a,stroke-width:2px
     classDef app fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px
-    classDef stubA fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
-    classDef bank fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px
-    class I,RI app
-    class S,RS bank
-    class D1,D2 stubA
+    classDef out fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    class S app
+    class D file
+    class X file
+    class J out
 ```
 
-The invoice has a handful of fields and a short list. The statement has two fields and a list
-of 800 rows. Both are ordinary documents, and the accelerator offers two ways to extract
-them, one suited to each.
+The schema is JSON Schema. Here is a trimmed version of the Invoice class in the
+`realkie-fcc-verified` preset:
 
-## How the accelerator extracts the fields of a section
+```yaml
+classes:
+  - x-aws-idp-document-type: Invoice
+    description: Invoice document
+    type: object
+    properties:
+      Advertiser:
+        type: string
+        description: The name of the advertiser
+      GrossTotal:
+        type: number
+        description: The gross total amount. Output null if not shown.
+      LineItems:
+        type: array
+        description: List of line item details on the invoice; each item has several possible elements
+        items:
+          type: object
+          properties:
+            LineItemDescription:
+              type: string
+              description: Description of the line item. Output null if not shown.
+            LineItemRate:
+              type: number
+              description: Rate for the line item. Output null if not shown.
+```
 
-A language model, the **extraction model** (`extraction.model`), does the reading. You
-choose how the model works through the section with
-*Extraction mode* (`extraction.mode`): *Simple — single-pass* (the default) or *Advanced —
-sharded, for large documents*.
+For one invoice, extraction returns:
 
-### What the extraction model reads
+```json
+{
+  "Advertiser": "Acme Auto Group",
+  "GrossTotal": 4250.0,
+  "LineItems": [
+    {"LineItemDescription": "Evening news, 30-second spot", "LineItemRate": 850.0},
+    {"LineItemDescription": "Morning show, 15-second spot", "LineItemRate": 425.0}
+  ]
+}
+```
 
-In both modes the extraction model receives four things:
+Each description is the instruction the model follows for that field, and each type decides
+what comes back: `GrossTotal` is a number, not the text "$4,250.00". A field such as
+`Advertiser` holds one value. A **list field** such as `LineItems` holds **rows**, one per
+item, each with its own fields. In a database, the single values fit one row in a table for
+the document class, and each list field a second table with one row per item.
 
-- **The section's text** from OCR, every page in order.
-- **The page images,** so the model can see layout, check boxes and handwriting, and check the
-  OCR text against the page.
-- **The fields of the document class, with their descriptions.** The accelerator sends each
-  field's name, type and description to the model. The model treats each description as
-  its instruction for that field, so the description is where you say where a value appears
-  and what format you want.
-- **Few-shot examples,** if you added any for the document class.
+## Extraction modes
 
-### Single-pass extraction (Simple): one request writes the whole record
+The **extraction model** (`extraction.model`) reads each section and writes its record.
+*Extraction mode* (`extraction.mode`) decides how. *Simple* sends the whole section in one
+request. *Advanced* splits the section into shards and runs an agent on each one.
 
-In Simple mode the accelerator sends everything above to the extraction model in one request.
-The model reads the whole section and writes the complete record as JSON: every field, and
-every row of every list field.
+### Model inputs
+
+In both modes, the extraction model receives:
+
+- the section's OCR text, every page in order;
+- the page images, which show layout, check boxes and handwriting;
+- each field's name, type and description from your schema;
+- your few-shot examples for the document class, if you added any.
+
+The model follows each field's description as its instruction for that field. Use the
+description to say where the value appears and what format you want.
+
+### Single-pass extraction
+
+*Simple* is the default. The accelerator sends the whole section in one request, and the
+model writes the whole record as JSON, including every row of every list.
 
 ```mermaid
 flowchart LR
@@ -85,55 +113,40 @@ flowchart LR
     class R bank
 ```
 
-A single-pass is the simplest route, and the one that reads the fewest tokens, for a section
-with a bounded number of fields. Three properties follow from the single request:
+This has two limits:
 
-- **The model writes every row itself,** so the request's output grows with the length of
-  the list.
-- **The whole section has to fit in one request.** The accelerator estimates the request size
-  before it sends it, and stops with an explanation (`ExtractionInputTooLarge`) when the
-  section is larger than the extraction model's input window.
-- **A request with more than 20 page images** has each image reduced to at most 2,000 pixels
-  on a side with Claude models, which set that limit themselves; see
-  [Claude's vision limits](https://platform.claude.com/docs/en/build-with-claude/vision#request-limits).
+- **The section must fit in the model's input window.** The accelerator checks the size
+  before it sends the request, and stops with `ExtractionInputTooLarge` if it doesn't fit.
+- **The model writes every row.** A long list needs a long response, and a list too long for
+  one response comes back short.
+
+With Claude models, a request with more than 20 page images has each image scaled to at most
+2,000 pixels on a side; see
+[Claude's vision limits](https://platform.claude.com/docs/en/build-with-claude/vision#request-limits).
 
 See [Simple (non-agentic) extraction](../extraction-and-confidence.md#simple-non-agentic-extraction).
 
-### Agentic extraction (Advanced): an agent works through the section in shards
+### Agentic extraction
 
-In Advanced mode an **agent** does the extraction: the extraction model runs in a loop, calling
-tools the accelerator gives it, until the record is complete and valid. Four mechanisms do
-most of the work on a long statement.
+*Advanced* runs an **agent**: the extraction model in a loop, calling tools, until the record
+is complete and passes your schema.
 
-**1. Shards.** The accelerator splits the section's pages into **shards**: runs of
-consecutive pages, up to five pages each by default
-(`extraction.agentic.max_pages_per_shard`). Each shard gets its own agent, and the agents run
-at the same time. Every shard after the first also receives the column headings from the
-first page, so each agent knows what the columns mean. By default the accelerator makes at most 10 shards
-(`extraction.agentic.max_concurrent_batches`), so it divides a section of more than 50 pages
-into 10 shards of similar text length. Each shard runs as its own AWS Lambda invocation under AWS Step Functions
-(`extraction.agentic.runtime: step_functions`), so no single function's time limit applies
-to a long section, and a retry repeats only the shards that did not finish.
-
-**2. The table tool.** Before the agents start, the accelerator parses the tables in the OCR
-text, which Amazon Textract writes as Markdown when its `TABLES` feature is on (the shipped
-default). The agent then maps the table's columns to your row fields (`parse_table`, then
-`map_table_to_schema`), and a third tool (`finalize_table_extraction`) assembles the rows in
-code. The model chooses the mapping and never has to write each row out. When the tables
-parse, the accelerator leaves the page images out of the agent's prompt
-(`extraction.agentic.table_parsing.lazy_images`), and the agent can still open any page with its `view_image`
-tool. The table tool is *Table Parsing Tool* (`extraction.agentic.table_parsing.enabled`), on
-in the shipped configuration.
-
-**3. A schema check at every step.** The agent hands its record to an extraction tool whose
-input is your schema. The tool checks types, allowed values, patterns and list sizes, and
-returns any error to the agent, which corrects the record with targeted edits
-(`apply_json_patches`) instead of starting again. For a record too large to write in one
-call, the agent builds it in a scratch buffer, up to 100 rows per edit, and promotes the
-buffer to the record when it is complete.
-
-**4. A merge.** When every shard finishes, the accelerator joins the shards' list rows in page
-order and takes each single-value field from the first shard that found it.
+1. **Shards.** The accelerator splits the section into shards of up to 5 consecutive pages
+   (`extraction.agentic.max_pages_per_shard`), with at most 10 shards
+   (`extraction.agentic.max_concurrent_batches`). A section of more than 50 pages gets 10
+   shards of similar length. Each shard gets its own agent, and all of them run at once, each
+   in its own AWS Lambda invocation under AWS Step Functions, so one function's time limit
+   doesn't cap a long section. Every shard after the first also gets the column headings from
+   the first page.
+2. **Table tool.** When Amazon Textract's `TABLES` feature is on, the OCR text holds each
+   table as Markdown. The agent maps the table's columns to your row fields, and code builds
+   the rows, so the model never writes them out. This is *Table Parsing Tool*
+   (`extraction.agentic.table_parsing.enabled`), on by default.
+3. **Schema checks.** Each time the agent submits the record, a tool checks it against your
+   schema (types, allowed values, patterns and list sizes) and returns the errors. The agent
+   fixes them with targeted edits.
+4. **Merge.** The accelerator joins the shards' rows in page order, and takes each
+   single-value field from the first shard that found it.
 
 ```mermaid
 flowchart LR
@@ -163,86 +176,56 @@ flowchart LR
     class R file
 ```
 
-One more check runs in Advanced mode without any setting: when the OCR text holds a Markdown
-table of more than 30 rows and every list field comes back empty, the accelerator sends the agent back
-for another try, naming the field and the row count. The agent also scores confidence inside
-each shard, so confidence scales with the shards; see
-[Confidence Assessment](confidence-assessment.md).
+If the OCR text holds a Markdown table of more than 30 rows and every list field comes back
+empty, the accelerator sends the agent back to try again. The agent also scores confidence
+inside each shard; see [Confidence Assessment](confidence-assessment.md).
 
 See [Advanced (agentic) extraction](../extraction-and-confidence.md#advanced-agentic-extraction),
 [Deterministic table parsing](../extraction-and-confidence.md#deterministic-table-parsing) and
 [sharding](../extraction-and-confidence.md#scalable-extraction-for-large-documents-sharding).
 
-### What the accelerator checks after either mode
+### Checks after extraction
 
-Every record passes through the same checks before the accelerator stores it:
+Every record then goes through three checks:
 
-- **Value coercion** (*Value Coercion*, `extraction.coercion`) repairs values that do not
-  match their declared type, with no model call: `"$1,234.00"` in a `number` field becomes
-  `1234.0`, and `"03/15/2024"` in a date field becomes `"2024-03-15"`. Coercion refuses to
-  guess at an ambiguous value such as `01/02/2024`, and records every change. In Simple mode
-  this step runs on the returned record; in Advanced mode the extraction tool's schema check
-  converts types as values arrive.
-- **Schema validation** (*Schema Validation & Escalation*, `extraction.validation`) checks the
-  record against the full schema, including formats such as dates and email addresses, and
-  records any violation on the section. Validation is on by default.
-- **Completeness checks** compare each list with what the section's OCR text shows and raise a
-  processing issue when rows appear to be missing.
-  [Short lists and other extraction mistakes](#short-lists-and-other-extraction-mistakes-which-configuration-makes-which)
-  describes them.
+- **Value coercion** (*Value Coercion*, `extraction.coercion`) fixes values that don't match
+  their type, without a model call. `"$1,234.00"` in a `number` field becomes `1234.0`, and
+  `"03/15/2024"` in a date field becomes `"2024-03-15"`. It leaves an ambiguous value such as
+  `01/02/2024` alone, and records every change it makes.
+- **Schema validation** (*Schema Validation & Escalation*, `extraction.validation`, on by
+  default) checks the record against the full schema, including formats such as dates and
+  email addresses, and records each violation on the section.
+- **Completeness checks** compare each list with the tables in the OCR text, and raise a
+  processing issue when fewer than half the rows came back. See
+  [Common mistakes](#common-mistakes).
 
-When one section holds several records of the same document class, such as three pay stubs
-on consecutive pages, *Records per section* (`x-aws-idp-multi-instance`) tells extraction to
-return a list of records instead of one. See
+### Several records in one section
+
+When a section holds several documents of the same class, such as three pay stubs in a row,
+turn on *Records per section* (`x-aws-idp-multi-instance`) for the class, and extraction
+returns a list of records instead of one. See
 [Output Correctness](../extraction-and-confidence.md#2b-output-correctness-coercion-validation--multi-instance-sections).
 
-### How the two modes compare
+### Mode comparison
 
 | | Single-pass (*Simple*) | Agentic (*Advanced*) |
 |---|---|---|
 | Config value | `extraction.mode: simple` (default) | `extraction.mode: advanced` |
 | Model requests per section | One | Several per shard, shards in parallel |
-| Who writes the list rows | The model, every row | The table tool, in code, when the OCR has Markdown tables |
+| Who writes the list rows | The model, every row | Code, from the OCR's Markdown tables, when the table tool is on |
 | Section size | Must fit in one request | Split into shards |
-| Schema checks | After the model answers | At every tool call, then after the merge |
-| Extraction models | Every supported model | Models that use tools reliably, such as Claude Haiku 5.5 and Claude Sonnet 5.5 |
+| Schema checks | After the model answers | At every submission, then after the merge |
+| Extraction models | Every supported model | Models with tool use, such as Claude Haiku 5.5 and Claude Sonnet 5.5 |
 
 *Extraction mode* applies to every document class in a
-[configuration profile](../configuration-profiles.md). To process short forms in one mode and
-long statements in the other, give each its own profile and route each kind of document to it
-with a [prefix mapping](../configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands).
+[configuration profile](../configuration-profiles.md). To use both modes, give each kind of
+document its own profile, and route it there with a
+[prefix mapping](../configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands).
 
-## The configuration to start with
+For the configuration we recommend, and the measurements behind it, see
+[Key information extraction benchmarks](../benchmark-guidance/extraction.md).
 
-**Start with Claude Haiku 5.5 and single-pass extraction** (`extraction.model:
-us.anthropic.claude-haiku-5-5`, and *Simple*, the default mode). One request reads the whole
-section and returns the record. See
-[Which extraction model should I use?](../benchmark-guidance/extraction.md#which-extraction-model-should-i-use)
-
-**Agentic extraction (*Advanced*) may do better on exceptionally long or complex
-extractions,** such as invoices or receipts with many line items. A single pass writes every
-row in one response, so a very long list can come back short or not fit in one request. Use
-agentic extraction with Claude Haiku 5.5, and leave deterministic table parsing off
-(`extraction.agentic.table_parsing.enabled: false`; the shipped configuration turns it on).
-See [When is agentic extraction worth it?](../benchmark-guidance/extraction.md#when-is-agentic-extraction-worth-it)
-and [Does deterministic table parsing help agentic extraction?](../benchmark-guidance/extraction.md#does-deterministic-table-parsing-help-agentic-extraction)
-
-**Send the page images with the OCR text,** as the default prompts do. See
-[What is the impact of document modality?](../benchmark-guidance/extraction.md#what-is-the-impact-of-document-modality)
-
-**Keep reasoning effort low** (`extraction.reasoning_effort: low`, the default). See
-[Does more reasoning effort improve extraction?](../benchmark-guidance/extraction.md#does-more-reasoning-effort-improve-extraction)
-
-**For schema enforcement, use structured output once it is released
-([#1785](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1785)),
-not the forced tool.** Leave `extraction.forced_tool.enabled` off, its default. See
-[Does schema enforcement improve accuracy or cost?](../benchmark-guidance/extraction.md#does-schema-enforcement-improve-accuracy-or-cost)
-
-**For long tables, add Amazon Textract's `TABLES` feature** (`ocr.features`). The row-count
-checks read the Markdown tables it writes; with `LAYOUT` alone, Textract writes a table as
-lines of text. See [Digitization](digitization.md#the-configuration-to-start-with).
-
-## How many tokens extraction uses, and what drives the count
+## Token use
 
 Four things decide how many tokens extraction uses:
 
@@ -251,9 +234,9 @@ Four things decide how many tokens extraction uses:
   assembles the rows in code.
 - **How often the model rereads its instructions.** A single-pass reads each page once. An
   agent sends its prompt again on every turn of its loop, and every shard repeats the
-  instructions and the schema, so agentic extraction reads more input tokens.
-  Amazon Bedrock serves most of the repeated part from the prompt cache, which it bills at a
-  reduced rate.
+  instructions and the schema, so agentic extraction reads more input tokens. For models
+  that support prompt caching, the accelerator marks the repeated part for Amazon Bedrock's
+  prompt cache, which bills it at a reduced rate.
 - **Page images.** Each image adds input tokens, and how many depends on the extraction model
   and the image size.
 - **The extraction model.** Models count tokens differently, especially for images, and models
@@ -262,7 +245,7 @@ Four things decide how many tokens extraction uses:
 See [When is agentic extraction worth it?](../benchmark-guidance/extraction.md#when-is-agentic-extraction-worth-it)
 for what each mode costs.
 
-## How to measure extraction on your own documents
+## Measuring accuracy
 
 Ground truth for this step is the correct value of every field and every row in a sample of
 your documents. Two numbers describe a list field, and a third describes the record as a
@@ -286,25 +269,25 @@ extracted row with its closest row in the ground truth. See
 the accelerator drafts the ground truth for you, and
 [Weighted Score Calculation](../evaluation.md#weighted-score-calculation) for the formula.
 
-## Short lists and other extraction mistakes: which configuration makes which
+Build a test set of real documents with their correct values, run
+it in [Test Studio](../test-studio.md) once in each extraction mode, and compare completeness
+and field accuracy.
 
-Once you measure completeness and accuracy, look at what kind of mistake you see. Some
-mistakes belong to one extraction mode and some to both, and the accelerator reports most of
-them as a
-**processing issue** on the section, which you see in the document list's *Processing Issues*
-column and on the *Processing Report* tab.
+## Common mistakes
+
+The accelerator reports each of these mistakes as a **processing issue** on the section,
+shown in the document list's *Processing Issues* column and on the *Processing Report* tab.
 
 | Configuration | Typical mistake | How the accelerator reports it | What to change |
 |---|---|---|---|
-| **Single-pass** on a long list | Returns the first rows of the list and reports `COMPLETED` | `extraction_rows_below_ocr_estimate` (warning) | Use agentic extraction |
-| **Single-pass** on a section too large for one request | Stops before extracting | The document fails with `ExtractionInputTooLarge`, naming the request size and the remedy | Use agentic extraction |
+| **Single-pass** on a long list | Returns the first rows of the list and reports `COMPLETED` | `extraction_rows_below_ocr_estimate` (warning) | Try agentic extraction, which splits the section into shards |
+| **Single-pass** on a section too large for one request | Stops before extracting | The document fails with `ExtractionInputTooLarge`, naming the request size and the remedy | Use agentic extraction, which splits the section into shards |
 | **Single-pass or agentic** on a section that holds several records of one class | Returns the first record only | `extraction_multi_instance_suspected`, when *Multi-instance Section Detection* is on | Set *Records per section* to *Several — wrap my single-record class* |
 | **Single-pass or agentic** with a value in the wrong format | Stores the value as the model wrote it | `extraction_validation_failed` (warning) | Declare the format on the field, and say it in the description |
 
-**A short list is the mistake to watch for on long documents.** A single pass that stops
-early returns the first rows of the list and finishes with `COMPLETED`. It also runs faster
-and writes fewer tokens than a complete run, so neither the document status nor the run time
-shows the loss. The accelerator's row-count check does: it compares the rows extracted with
+**A short list is easy to miss.** A single pass that stops early returns the first rows of
+the list and finishes with `COMPLETED`. It also runs faster and writes fewer tokens than a
+complete run, so neither the document status nor the run time shows the loss. The accelerator's row-count check does: it compares the rows extracted with
 the rows in the section's OCR tables of the same width, and raises
 `extraction_rows_below_ocr_estimate` when fewer than half came back.
 
@@ -333,155 +316,16 @@ Three settings change what happens to a short list:
 See [Detecting a truncated list](../extraction-and-confidence.md#detecting-a-truncated-list) for
 every completeness signal.
 
-## Benchmark results: completeness, accuracy and tokens by extraction mode
+## Improving accuracy
 
-*Measured on release 0.6.14 with Claude Sonnet 5 and Claude Sonnet 4.6. For current
-recommendations, see [Key Information Extraction Benchmarks](../benchmark-guidance/extraction.md).*
-
-### Long lists: synthetic bank statements
-
-**Dataset:** [synthetic bank statements](benchmark-datasets.md#synthetic-bank-statements) with
-exact ground truth for every row: a three-column transaction list from 100 rows on 3 pages to
-3,200 rows on 66 pages. **Run:** release 0.6.14, November 2026, extraction model Claude
-Sonnet 5 (the default), Amazon Textract with `TABLES`, confidence in a separate pass.
-
-| Statement | Runs per mode | Single-pass: runs with every row | Agentic: runs with every row | Single-pass: median time | Agentic: median time |
-|---|---|---|---|---|---|
-| 100 rows, 3 pages | 6 | 6 of 6 | 6 of 6 | 69 s | 65 s |
-| 400 rows, 9 pages | 11 | 11 of 11 | 11 of 11 | 262 s | 139 s |
-| 800 rows, 17 pages | 6 | 4 of 6; the other 2 returned 43 rows, both flagged | **6 of 6** | 954 s ¹ | 147 s |
-| 3,200 rows, 66 pages | 2 | Not sent: too large for one request | **2 of 2** | — | 433 s |
-
-¹ The four complete runs. Times are for the whole document, from upload to result, including
-OCR, classification and confidence assessment.
-
-Accuracy over compared cells was 1.000 in every run in the table: every row that came back had
-the right date and amount. Sources:
-`benchmarks/results/v0.6.14/cost__extraction-model-sonnet5/`, `coresynth__extraction-model-sonnet5/`,
-`astravalue/` and `astracap/` (cells `core-tt-simple-sep`, `core-tt-adv-sep`,
-`sonnet5-simple-sep` and `sonnet5-adv-sep`).
-
-What this shows:
-
-- **Agentic extraction returned every row at every size,** up to 3,200 rows on 66 pages, in
-  under eight minutes.
-- **From 400 rows, agentic extraction finished in about half the time of a single-pass,**
-  because its shards run in parallel while a single-pass writes every row in one response.
-- **Up to 400 rows on 9 pages, both modes returned every row in every run.** The single-pass
-  read fewer tokens there.
-- **Wrong values were not the issue on long lists. Missing rows were,** which is why
-  completeness is the number to follow.
-
-On the 800-row statement, the two single-pass runs that returned part of the list returned
-its first 43 rows and finished with `COMPLETED`, faster and with far fewer tokens than the
-complete runs. Across every release 0.6.14 benchmark cell that ran Claude Sonnet 5 in a
-single-pass on that statement with table-rendering OCR, 9 of 16 runs returned part of the
-list, and the accelerator raised `extraction_rows_below_ocr_estimate` on all 9. Source:
-`processing_issue_codes` in `benchmarks/results/v0.6.14/coresynth__extraction-model-sonnet5/`
-and `astravalue/`.
-
-With Claude Sonnet 4.6 (one run per size, `benchmarks/results/v0.6.14/scaling/`), a single
-pass returned every row up to 1,600 rows on 33 pages, taking about 17 and 18 minutes at
-1,200 and 1,600 rows, and the 3,200-row statement was too large for one request. Agentic extraction
-returned every row at every size, in at most about 6 minutes. How long a list a single-pass completes
-depends on the extraction model.
-
-### Invoices: RealKIE-FCC-Verified
-
-**Dataset:** [RealKIE-FCC-Verified](benchmark-datasets.md#realkie-fcc-verified), 20 real
-broadcast-advertising invoices (81 pages) with header fields and a short list of line items.
-**Run:** release 0.6.14, November 2026, extraction model Claude Sonnet 4.6 (the benchmark's
-control), scored by Stickler as weighted accuracy, one run per configuration. Differences are
-paired by document: each configuration's score on a document minus the single-pass's score on
-the same document, averaged over the 20 documents.
-
-| Configuration | Weighted accuracy | Difference from single-pass (SE) | Documents better / worse | Extraction tokens per page, input / output |
-|---|---|---|---|---|
-| **Single-pass** (baseline) | 0.798 | — | — | 3,666 / 524 |
-| Agentic | 0.774 | −0.025 (0.022) | 2 / 5 | 34,992 / 1,489 |
-| Single-pass, each file one section | 0.836 | +0.038 (0.024) | 5 / 3 | 3,066 / 360 |
-
-SE is the standard error of the mean paired difference. Source:
-`benchmarks/results/v0.6.14/core/summary.json`, `doc == "realkie"`, cells
-`core-tt-simple-sep`, `core-tt-adv-sep` and `split-disabled`.
-
-What this shows:
-
-- **A single-pass is the right default for invoices.** Agentic extraction read about 9.5
-  times the input tokens per page, and its score was within about one standard error of the
-  single-pass's, slightly lower.
-- **Telling the accelerator that each file holds one invoice helped the most.** With section
-  splitting set to *One section*, the single-pass scored 0.038 higher (SE 0.024) and used
-  fewer tokens. See
-  [Splitting and Section Classification](splitting-and-classification.md#the-configuration-to-start-with).
-
-**How far this carries:** the statements are synthetic, clean and regular, with most sizes
-run 6 to 11 times; the largest ran twice. RealKIE is 20 documents of one document class, run
-once per configuration on the control model rather than the default, so treat differences
-under about two standard errors as unresolved. Confirm the choice on your own documents.
-
-### Extraction tokens by mode
-
-Extraction tokens on synthetic bank statements with Claude Sonnet 5 (release 0.6.14, November
-2026; mean over the runs shown):
-
-| Statement | Runs per mode | Mode | Input per document | Output per document | Input per page | Output per page |
-|---|---|---|---|---|---|---|
-| 100 rows, 3 pages | 6 | Single-pass | 20,221 | 4,900 | 6,740 | 1,633 |
-| | | Agentic | 82,691 | 4,075 | 27,564 | 1,358 |
-| 400 rows, 9 pages | 11 | Single-pass | 60,000 | 19,315 | 6,667 | 2,146 |
-| | | Agentic | 215,171 | 15,597 | 23,908 | 1,733 |
-| 800 rows, 17 pages | 6 | Single-pass ¹ | 112,977 | 38,556 | 6,646 | 2,268 |
-| | | Agentic | 431,289 | 31,100 | 25,370 | 1,829 |
-| 3,200 rows, 66 pages | 2 | Single-pass ² | 0 | 0 | — | — |
-| | | Agentic | 1,405,276 | 123,564 | 21,292 | 1,872 |
-
-¹ The four runs that returned every row. The two runs that returned part of the list wrote
-2,277 output tokens each; see [Long lists](#long-lists-synthetic-bank-statements).
-
-² The statement was too large for one request, so the accelerator stopped before sending it
-and spent no extraction tokens.
-
-Extraction tokens on real invoices with Claude Sonnet 4.6, the benchmark's control model (20
-documents, 81 pages, release 0.6.14):
-
-| Configuration | Input / output per document | Input / output per page |
-|---|---|---|
-| Single-pass | 14,849 / 2,121 | 3,666 / 524 |
-| Agentic | 141,719 / 6,031 | 34,992 / 1,489 |
-
-Input tokens include tokens read from and written to the prompt cache. The figures cover the
-extraction phase only; classification and confidence assessment use tokens of their own. Sources:
-`benchmarks/results/v0.6.14/{cost__extraction-model-sonnet5,coresynth__extraction-model-sonnet5,astravalue,astracap}/summary.json`
-for the statements and `benchmarks/results/v0.6.14/core/summary.json` for the invoices, field
-`tokens_by_phase.Extraction`.
-
-What this shows:
-
-- **On long statements, agentic extraction read 3.6 to 4.1 times the input tokens of a
-  single-pass and wrote about a fifth fewer output tokens.** Between 65% and 78% of the
-  agentic input came from the prompt cache.
-- **On invoices, agentic extraction read about 9.5 times the input tokens and wrote 2.8
-  times the output,** with 85% of the input from the prompt cache. An invoice's short list
-  gives the table tool little to save, while the agent loop still repeats its prompt.
-- **Input tokens per page stayed roughly level as statements grew,** in both modes, so a
-  statement's extraction input scales with its page count and its output with its row count.
-
-The same pattern holds with Claude Sonnet 4.6, one run per size: about 3,100 input tokens per
-page in a single-pass (100 to 1,600 rows) and 17,300 to 21,600 in agentic mode (100 to
-3,200 rows). Source: `benchmarks/results/v0.6.14/scaling/summary.json`.
-
-## Improving accuracy once your pipeline is running
-
-When your test set shows fields with wrong or missing values, these changes help most, roughly
-in this order.
+When your test set shows fields with wrong or missing values, try these changes, and score
+each one against your test set.
 
 **Write each field description as an instruction.** The extraction model reads the
 description as its instruction for the field. Say where the value appears, what it is not,
 and the format you want: "Invoice date: the date the invoice was issued, not the due date or
 the order date, as YYYY-MM-DD." Edit descriptions in the
-[Document Schema Builder](../web-ui.md#document-schema-builder) under *Description*. Most
-early fixes are wording fixes, and they cost nothing.
+[Document Schema Builder](../web-ui.md#document-schema-builder) under *Description*.
 
 **Declare types and formats in the schema.** Give amounts the type `number` and dates
 *Format (JSON Schema)* `date`, and use *Pattern (regex)* or *Enum (Allowed Values)* for codes.
@@ -494,14 +338,14 @@ set `extraction.coercion.date_order` to your documents' convention. See
 
 **Add a few-shot example for a hard document class.** A few-shot example is a sample document
 with its correct values, which the accelerator adds to the extraction prompt for that
-document class. One or two examples often settle a field the model keeps misreading. Add them
+document class. Use one for the fields the model keeps getting wrong. Add them
 under *Few-Shot Examples* in the schema builder, with the expected values in *Extraction
 Prompt (x-aws-idp-attributes-prompt)*. See [Few-Shot Examples](../few-shot-examples.md).
 
 **Use a different extraction model for one document class.** *Extraction Model Override
 (Optional)* (`x-aws-idp-extraction-model`) sets the extraction model for one document class
-and leaves the rest on `extraction.model`. Use a stronger model for a difficult class, or a
-smaller one for a simple class at high volume. See
+and leaves the rest on `extraction.model`, so you can test another model on one class
+without changing the others. See
 [Per-class extraction model override](../extraction-and-confidence.md#per-class-extraction-model-override).
 
 **Tell the accelerator which pages a field comes from.** Some packets leave out optional pages,
@@ -517,61 +361,14 @@ set *Records per section* to *Several — wrap my single-record class*
 (`x-aws-idp-multi-instance: true`). The accelerator then returns a list of records,
 `instances`, each with its own confidence. Migrate the ground truth of your test sets to the
 new shape in the same change. To find the sections that need it, turn on *Multi-instance
-Section Detection* (`extraction.multi_instance_detection.enabled`) for a while. See
+Section Detection* (`extraction.multi_instance_detection.enabled`). See
 [Multi-instance sections](../extraction-and-confidence.md#multi-instance-sections-x-aws-idp-multi-instance).
 
 **Let an agent do the tuning.** The [Auto Optimizer](../extensions/auto-optimizer.md) tries
 changes to descriptions, prompts, models and settings against your test set, within a cost
 budget you set, and keeps the ones that score better.
 
-## Run the benchmarks yourself
-
-**On your own documents.** Build a test set of real documents with their correct values, run
-it in [Test Studio](../test-studio.md) once in each extraction mode, and compare completeness
-and field accuracy. Every stack includes the RealKIE test set, so you can repeat the invoice
-comparison above in your own account.
-
-**The benchmark suite.**
-
-```bash
-python3 benchmarks/harness/gen_corpus.py          # synthetic statements with exact ground truth
-M=benchmarks/harness/make_configs.py
-R="python3 benchmarks/harness/run_matrix.py --stack <STACK>"
-
-# Long lists, default extraction model (Claude Sonnet 5)
-for s in cost coresynth; do
-  python3 $M --suite $s --class bank_statement --set extraction_model=sonnet5
-  $R --suite $s --set extraction_model=sonnet5
-done
-for s in astravalue astracap scaling; do
-  python3 $M --suite $s --class bank_statement; $R --suite $s
-done
-
-# RealKIE invoices and the configuration grid (control model)
-for c in bank_statement realkie ocr_bench; do python3 $M --suite core --class $c; done
-$R --suite core
-```
-
-Recompute figures from the committed results:
-
-```bash
-# Rows returned and processing issues for each single-pass run on the 800-row statement
-jq -c '[.rows[] | select(.doc=="large_narrow.pdf" and .cell=="sonnet5-simple-sep")
-        | {repeat, rows_extracted, processing_issue_codes}]' \
-  benchmarks/results/v0.6.14/astravalue/summary.json
-
-# Mean extraction input tokens, agentic, 400-row statement (prompt-cache tokens included)
-jq '[.rows[] | select(.doc=="med_narrow.pdf" and .cell=="core-tt-adv-sep")
-     | .tokens_by_phase.Extraction
-     | .inputTokens + .cacheReadInputTokens + .cacheWriteInputTokens] | add/length' \
-  benchmarks/results/v0.6.14/cost__extraction-model-sonnet5/summary.json
-```
-
-See the [benchmark suite](../benchmarking/index.md) for setup and scoring, and
-[Configuration guidance](../benchmarking/config-guidance.md#3-scaling-limits-by-document-size)
-for how each mode behaves as documents grow.
-
-## Where to configure extraction in the accelerator
+## Configuration reference
 
 - **Choose the extraction mode:** [Choosing a configuration](../extraction-and-confidence.md#0-choosing-a-configuration-start-here)
   and [Simple vs Advanced](../extraction-and-confidence.md#extraction-mode-simple-vs-advanced)

@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 # Digitization (OCR)
 
-## What digitization does for your database
+## Overview
 
 Before any model can find a field on a page, something has to read the page. Digitization
 turns each page of each file into **page text**: the words on the page, in reading order,
@@ -66,7 +66,7 @@ flowchart LR
 you choose, and passes the result and the page image to every later step. Your choice is
 which reader to use and how to prepare the pages for it.
 
-## How the accelerator reads each page
+## Page reading
 
 Digitization runs in three steps for every file: the accelerator renders each page as an
 image, a reader turns the image into page text, and the accelerator stores both for the
@@ -96,7 +96,7 @@ flowchart LR
     class O,L bank
 ```
 
-### Step 1: the accelerator renders every page as an image
+### Step 1: page images
 
 The accelerator renders each page of a PDF at **300 DPI** by default, which keeps small print,
 box numbers and hand-filled values legible. A US Letter page becomes a 2550 × 3300 pixel
@@ -119,7 +119,7 @@ Two settings change how the accelerator prepares each page:
   stored page image stays as it was. See
   [Image Preprocessing Configuration](../pattern-2.md#image-preprocessing-configuration).
 
-### Step 2: a reader turns each page image into page text
+### Step 2: page text
 
 The accelerator sends each page to the reader you choose, one call per page, with up to 20
 pages in flight at once (`ocr.max_workers`). In the editor the choice is **OCR backend**
@@ -179,7 +179,7 @@ What each reader returns:
 For the full comparison, see the
 [cross-backend matrix](../../lib/idp_common_pkg/idp_common/ocr/README.md#cross-backend-matrix).
 
-### Step 3: what the later steps receive
+### Step 3: output
 
 For every page, the accelerator stores the page image, the page text, a compact table of
 each line with its confidence, and the positions of every line and word. Each later step
@@ -204,7 +204,7 @@ Classification and extraction can each send a smaller copy of the page image to 
 model, through their own image settings. The stored image at full resolution stays
 untouched.
 
-### How the choices combine
+### Configurations
 
 | Configuration | OCR backend | Settings | Returns positions and confidence |
 |---|---|---|---|
@@ -219,38 +219,10 @@ These settings apply in pipeline mode. In BDA mode (`use_bda: true`), Bedrock Da
 reads the pages as part of its own processing, and the editor hides the *OCR* section. See
 [Pattern 1](../pattern-1.md).
 
-## The configuration to start with
+For the configuration we recommend, and the measurements behind it, see
+[Digitization benchmarks](../benchmark-guidance/digitization.md).
 
-**Start with Amazon Textract, `LAYOUT` only, at 300 DPI.** In **Textract features**
-(`ocr.features`), replace the default `TABLES`, `LAYOUT` and `SIGNATURES` with `LAYOUT`.
-Textract returns positions and confidence for every word, so the scoring model can use the
-reader's confidence and the Web UI can draw a box around every extracted value. Textract
-charges each page by the features you select, and `LAYOUT` alone costs less than `TABLES`
-(see [Amazon Textract pricing](https://aws.amazon.com/textract/pricing/)). See
-[Which Textract features do I need?](../benchmark-guidance/digitization.md#which-textract-features-do-i-need)
-and [Does the OCR reader make a difference to extraction accuracy?](../benchmark-guidance/digitization.md#does-the-ocr-reader-make-a-difference-to-extraction-accuracy)
-
-**Add `TABLES` if you use agentic extraction on long tables.** With `TABLES`, the
-accelerator writes each table as a Markdown table, and agentic extraction's table tool and
-the row-count checks read those tables. With `LAYOUT` alone, Textract returns a table as
-lines of text with tab-separated cells, which neither can read. See
-[Short lists and other extraction mistakes](extraction.md#short-lists-and-other-extraction-mistakes-which-configuration-makes-which).
-
-**Test another reader if Textract does not cover your documents.** Textract reads a fixed
-set of languages; see
-[OCR backend language support](../languages.md#ocr-backend-considerations-for-language-support).
-For other languages, heavy handwriting or unusual layouts, compare a vision-language model
-and a specialized OCR model with Textract on your own test set. If confidence scores and
-bounding boxes matter to you, prefer a reader that returns them: Bedrock Data Automation or
-the Mistral OCR hook.
-
-**Keep the resolution at 300 DPI.** Each model scales an image down to its own size limit
-before counting tokens, so a lower resolution saves few tokens in later steps. Below about 200 DPI,
-Textract drops small and faint characters from its output. See
-[What resolution should pages be rendered at?](../benchmark-guidance/digitization.md#what-resolution-should-pages-be-rendered-at)
-and [Do not lower resolution to save tokens](../ocr-image-sizing-guide.md#do-not-lower-resolution-to-save-tokens).
-
-## How many tokens digitization uses, and how the reader changes the tokens of later steps
+## Token use
 
 **Textract and Bedrock Data Automation do not use tokens.** Each makes one call per page.
 Textract charges per page by the features you select. Bedrock Data Automation charges one
@@ -278,7 +250,7 @@ page text the reader wrote:
 
 See [What is the cheapest configuration that keeps accuracy?](../benchmark-guidance/token-use.md#what-is-the-cheapest-configuration-that-keeps-accuracy)
 
-## How to measure digitization on your own documents
+## Measuring accuracy
 
 Few teams have a correct transcription of their own pages, and you do not need one. Measure
 a reader in two stages.
@@ -316,7 +288,13 @@ See [Evaluation](../evaluation.md#field-weighting-for-business-criticality) for 
 weights fields, and [Measure with ground truth](index.md#4-measure-with-ground-truth) to
 build the test set.
 
-## Missing values, broken tables and rewritten characters: which reader makes which mistake
+Build a test set of real files with their correct field values,
+run it in [Test Studio](../test-studio.md) once per reader, and compare extraction accuracy
+file by file. The
+[Auto Optimizer](../extensions/auto-optimizer.md) can run comparisons of pipeline
+configurations against your test set for you.
+
+## Common mistakes
 
 Once you know which wrong values the reader caused, look at how the page text is wrong.
 Each reader, and each setting, tends to make its own kind of mistake:
@@ -330,111 +308,9 @@ Each reader, and each setting, tends to make its own kind of mistake:
 | **Any reader, on photos** | Characters misread in shadows or faint areas | A phone photo of a receipt with a dark corner | Turn on *Preprocessing* (the Bedrock Data Automation backend does its own image processing and skips it) |
 | **Textract with `SIGNATURES`** | A stray mark is reported as a signature | A smudge in an empty signature box | Remove `SIGNATURES` if no field asks about signatures. See [The SIGNATURES feature](../configuration.md#the-signatures-feature) |
 
-## Benchmark results: extraction accuracy by reader
+## Improving accuracy
 
-*Measured on release 0.6.14 with Claude Sonnet 4.6, Amazon Nova 2 Lite and Amazon Nova Lite.
-For current recommendations, see [Digitization (OCR) Benchmarks](../benchmark-guidance/digitization.md).*
-
-The benchmark measures readers by their effect on extraction: only the reader changes, and
-every other setting stays the same. The benchmark has no valid measurement of the Bedrock
-Data Automation backend yet.
-
-**Run:** release 0.6.14, November 2026, us-west-2, one run per file. Extraction model Claude
-Sonnet 4.6 (the benchmark's fixed control; the shipped default is Claude Sonnet 5),
-classification model Amazon Nova 2 Lite, scoring model Amazon Nova Lite. The Textract
-baseline used `TABLES` and `LAYOUT`. The vision-language model was Amazon Nova 2 Lite, with
-a task prompt that asks for tables as Markdown pipe tables.
-
-### Real invoices and bank checks
-
-| Reader | Real invoices: accuracy | Bank checks: accuracy |
-|---|---|---|
-| Textract, tables (**baseline**) | 0.798 | 0.995 |
-| Textract, layout only | −1.7 points (SE 1.3; 1 file better, 6 worse) | +0.3 points (SE 0.1; 7 better, 0 worse) |
-| Vision-language model | −1.6 points (SE 2.2; 5 better, 6 worse) | −2.0 points (SE 0.9; 3 better, 11 worse) |
-
-**Datasets:** [RealKIE-FCC-Verified](benchmark-datasets.md#realkie-fcc-verified), 20 invoices
-(81 pages), and the [OmniAI-OCR-Benchmark](benchmark-datasets.md#omniai-ocr-benchmark) slice,
-20 single-page bank-check images. Stickler scores weighted accuracy, and each difference
-compares the same file under the reader and under the baseline. Source:
-`benchmarks/results/v0.6.14/core/summary.json`, cells `core-tt-simple-sep`,
-`core-tl-simple-sep` and `core-llm-simple-sep`, documents `realkie` and `ocr_bench`.
-
-### Synthetic bank statements with exact ground truth
-
-| Reader | Rows returned | Cells correct |
-|---|---|---|
-| Textract, tables (**baseline**) | 2,205 of 2,205 | 4,410 of 4,410 |
-| Textract, layout only | 2,205 of 2,205 | 4,410 of 4,410 |
-| Vision-language model | 2,205 of 2,205 | 4,343 of 4,410 (0.985) |
-
-**Dataset:** seven [synthetic bank statements](benchmark-datasets.md#synthetic-bank-statements)
-of 1 to 17 pages and 5 to 800 transaction rows (52 pages in all). The scorer checks each
-row's date and amount. Same run and source, documents `tiny_form` to `longdesc_100`.
-
-What this shows:
-
-- **Textract with tables is a strong default for printed business documents.** No other
-  reader was more accurate on real invoices or synthetic statements.
-- **Layout only matched the default.** On invoices the difference was within the noise, and
-  on checks layout only scored 0.3 points higher. For documents without tables, layout only
-  is the configuration to try first.
-- **The vision-language model returned every row, and changed a few values.** On the
-  statements it got 67 of 4,410 cells wrong, the only reader that got any wrong, and it
-  changed the width of 126 of the 2,205 row IDs, for example by doubling a leading zero. On the checks it scored 2 points lower
-  than Textract. On invoices the difference was within the noise.
-
-**How far this carries:** 20 invoices, 20 checks and 7 synthetic statements, one run each,
-with one extraction model. All three datasets are printed and fairly clean. For handwriting,
-phone photos, faxes and languages other than English, run the same comparison on your own
-pages.
-
-### Tokens per page by reader
-
-OCR tokens per page with Amazon Nova 2 Lite, the default vision-language model (release
-0.6.14, November 2026):
-
-| Documents | Pages measured | Input tokens per page | Output tokens per page |
-|---|---|---|---|
-| Bank checks | 20 | 329 | 229 |
-| Real invoices | 81 | 329 | 1,666 |
-| Synthetic bank statements of 1 to 17 pages | 52 | 329 | 198 to 3,203, by file |
-
-Source: `benchmarks/results/v0.6.14/core/summary.json`, cell `core-llm-simple-sep`,
-`tokens_by_phase.OCR`.
-
-Tokens per page for the whole pipeline on the same 20 real invoices (81 pages), by reader:
-
-| Phase | Textract, tables (default) | Textract, layout only | Vision-language model |
-|---|---|---|---|
-| OCR, input | — | — | 329 |
-| OCR, output | — | — | 1,666 |
-| Classification, input | 2,391 | 2,124 | 3,086 |
-| Extraction, input | 3,666 | 3,320 | 4,389 |
-| Confidence assessment, input | 10,484 | 10,414 | 6,176 |
-| **All phases, input** | **16,542** | **15,858** | **13,981** |
-| **All phases, output** | **1,413** | **1,408** | **3,192** |
-
-Input tokens include prompt-cache reads and writes. The classification model was Amazon Nova
-2 Lite, the extraction model Claude Sonnet 4.6, and the scoring model Amazon Nova Lite.
-Source: `benchmarks/results/v0.6.14/core/summary.json`, cells `core-tt-simple-sep`,
-`core-tl-simple-sep` and `core-llm-simple-sep`, document `realkie`.
-
-What this shows:
-
-- **The vision-language model wrote longer page text than Textract on these invoices,** so
-  classification and extraction read about 20–30% more input tokens per page.
-- **The scoring model read about 40% fewer input tokens per page with the vision-language
-  model,** because that reader has no line-by-line confidence to add to the scoring model's
-  prompt. The same drop means the scoring model judged each value without the reader's
-  confidence.
-- **Layout only cut input tokens slightly** in every phase, because the page text carried
-  no table markup.
-
-## Improving digitization once your pipeline is running
-
-When your test set shows wrong values that the reader caused, these changes help most,
-roughly in this order.
+When your test set shows wrong values that the reader caused, try these changes, and score each one against your test set.
 
 **Look at the page text before you change anything.** On any processed document, open
 [View Page Text](../web-ui.md#view-page-text) for the page that holds a wrong value. The OCR
@@ -442,22 +318,23 @@ lines view shows each line with its confidence, and draws its box on the page im
 reader returns positions. If the value is right in the page text, the cause is in
 classification or extraction, not in digitization.
 
-**Keep the resolution at 300 DPI, and scan at 300 DPI.** A value that is missing from the
-page text entirely is usually a resolution problem. The accelerator renders PDFs at 300 DPI,
-but an image file keeps the resolution it was scanned or photographed at. See
+**Check the resolution when a value is missing from the page text.** The accelerator renders
+PDFs at 300 DPI, but an image file keeps the resolution it was scanned or photographed at. See
 [When to change the defaults](../ocr-image-sizing-guide.md#when-to-change-the-defaults).
 
 **Add `TABLES` when tables come back wrong.** If rows run together or cells land in the
-wrong column, add `TABLES` in **Textract features**. See
+wrong column, add `TABLES` in **Textract features**. Agentic extraction's table tool and the
+row-count checks read the Markdown tables `TABLES` produces; with `LAYOUT` alone they have
+no tables to read. See
 [Textract features](../configuration.md#textract-features--the-tables-costaccuracy-trade-off).
 
 **Turn on preprocessing for photos and poor scans.** *Preprocessing* cleans up shadows,
 uneven lighting and low contrast before the reader sees the page. See
 [OCR image processing](../pattern-2.md#ocr-image-processing-features).
 
-**Keep the page image in the extraction prompt.** The default extraction prompts send the
-page image with the page text, so the extraction model can correct a misread character
-against the image and read checkboxes the text does not show. If you write your own
+**Send the page image to the extraction model.** The default extraction prompts send the
+page image with the page text, so the extraction model can check a misread character
+against the image and see checkboxes the text does not show. If you write your own
 extraction prompt, keep the `{DOCUMENT_IMAGE}` placeholder in it. See
 [What is the impact of document modality?](../benchmark-guidance/extraction.md#what-is-the-impact-of-document-modality)
 
@@ -469,50 +346,7 @@ and ask the model to copy numbers and IDs character for character.
 [Edit Page Text](../web-ui.md#edit-page-text) and choose **Save and Reprocess**. The
 accelerator saves the text and extracts the sections on that page again.
 
-## Run the benchmarks yourself
-
-**On your own documents.** Build a test set of real files with their correct field values,
-run it in [Test Studio](../test-studio.md) once per reader, and compare extraction accuracy
-file by file. Every stack includes the RealKIE-FCC-Verified and OmniAI-OCR-Benchmark test
-sets, so you can repeat the comparison above in your own account. The
-[Auto Optimizer](../extensions/auto-optimizer.md) can run comparisons of pipeline
-configurations against your test set for you.
-
-**The benchmark suite.** The `core` suite runs every reader cell on the synthetic statements
-and the two public test sets:
-
-```bash
-source .venv/bin/activate && export PYTHONPATH=$PWD/lib/idp_common_pkg
-python3 benchmarks/harness/gen_corpus.py          # synthetic statements
-for c in bank_statement realkie ocr_bench; do
-  python3 benchmarks/harness/make_configs.py --suite core --class $c
-done
-python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite core
-python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> \
-  --out benchmarks/results/<release>/core
-```
-
-Recompute the invoice accuracy for each reader from the committed results:
-
-```bash
-jq '[.rows[] | select(.doc=="realkie" and (.cell|IN("core-tt-simple-sep","core-tl-simple-sep","core-llm-simple-sep")))]
-    | group_by(.cell) | map({cell: .[0].cell, files: length, weighted_accuracy: (map(.weighted_accuracy)|add/length)})' \
-  benchmarks/results/v0.6.14/core/summary.json
-```
-
-And the vision-language model's OCR tokens per page on the invoices:
-
-```bash
-jq '[.rows[] | select(.cell=="core-llm-simple-sep" and .doc=="realkie")]
-    | (map(.page_count)|add) as $p
-    | {pages: $p, input_per_page: ((map(.tokens_by_phase.OCR.inputTokens)|add)/$p),
-       output_per_page: ((map(.tokens_by_phase.OCR.outputTokens)|add)/$p)}' \
-  benchmarks/results/v0.6.14/core/summary.json
-```
-
-See the [benchmark suite](../benchmarking/index.md) for setup and scoring.
-
-## Where to configure digitization in the accelerator
+## Configuration reference
 
 - **Choose a reader and its features:**
   [OCR Backend Configuration](../configuration.md#ocr-backend-configuration-pipeline-mode),

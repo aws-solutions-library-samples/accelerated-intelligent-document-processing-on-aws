@@ -21,7 +21,7 @@ Two things matter more than any setting.
 the values your database needs, keep values that belong together (a line item's date, rate
 and description) in one list, say what each field is and isn't ("the issue date, not the due
 date"), and give the format you want. See
-[Improving accuracy](../idp-fundamentals/extraction.md#improving-accuracy-once-your-pipeline-is-running).
+[Improving accuracy](../idp-fundamentals/extraction.md#improving-accuracy).
 
 **Your annotations.** A wrong annotation counts as an extraction error, and in our experience
 annotation errors are more than half of what Test Studio reports. Check each reported error
@@ -83,7 +83,7 @@ Single-pass scored as well as agentic or better up to 100 line items, and cost a
 | | |
 |---|---|
 | **Changes** | Extraction mode |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Everything else** | As each dataset's [preset](index.md#baseline-setup) sets it |
 | **Datasets** | [RealKIE-FCC-Verified, all 75 invoices](datasets.md#realkie-fcc-verified-all-75-invoices) |
 | **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: varies (the setting under test) · Scoring: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 74–75 documents × 3 runs; a document that failed in a run is left out of that run |
@@ -180,7 +180,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 | | |
 |---|---|
 | **Changes** | Extraction model |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: varies (the setting under test) · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -200,7 +200,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 | Fake-W2 | OpenAI GPT-6 Astra | 1 ± 0 | 0.83 ± 0.03 | 4,594 ± 1.1 | **15,372 ± 68** | $96.9 ± $0.04 | 30 ± 0.5 | no measurable gain |
 | Fake-W2 | xAI Grok 4.6 | 1 ± 0 | 0.75 ± 0.06 | 5,704 ± 16 | 16,565 ± 316 | $22.0 ± $0.16 | 543 ± 184 | no measurable gain |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -224,7 +224,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 | | |
 |---|---|
 | **Changes** | `extraction.reasoning_effort`, on Claude Sonnet 5.5 (Claude Haiku 5.5 takes no effort setting) |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Sonnet 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -238,7 +238,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 | Fake-W2 | Medium | 1 ± 0 | 0.8 ± 0 | 6,256 ± 8.92 | 17,019 ± 32 | $19.9 ± $0.08 | 27 ± 0.28 | — |
 | Fake-W2 | High | 1 ± 0 | 0.8 ± 0 | 6,715 ± 62 | 17,522 ± 326 | $24.9 ± $0.71 | 30 ± 0.67 | — |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -260,7 +260,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 | | |
 |---|---|
 | **Changes** | What the extraction model reads: the page image, the OCR text, or both |
-| **Everything else** | OCR text from Amazon Bedrock Data Automation standard output; single-pass extraction on Claude Haiku 5.5; the rest as in the [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | OCR text from Amazon Bedrock Data Automation standard output; single-pass extraction on Claude Haiku 5.5; the rest as in the [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields); [OmniAI-OCR-Benchmark, bank checks (20)](datasets.md#omniai-ocr-benchmark-bank-checks-20) |
 | **Models** | OCR: bda · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. Classification by dataset: OmniAI, bank checks — Claude Haiku 5.5, holistic. |
 | **Runs** | 3 per document, per value; N: RealKIE — 20 documents × 3 runs; Fake-W2 — 20 documents × 3 runs; OmniAI, bank checks — 19–20 documents × 3 runs; a document that failed in a run is left out of that run |
@@ -279,7 +279,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 
 Failed documents per run: OmniAI, bank checks — OCR text only: 0, 0, 1.
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -301,7 +301,7 @@ Failed documents per run: OmniAI, bank checks — OCR text only: 0, 0, 1.
 | | |
 |---|---|
 | **Changes** | Deterministic table parsing (`extraction.agentic.table_parsing.enabled`): a tool that turns Textract's tables into rows by code, instead of the model retyping them |
-| **Everything else** | Agentic extraction on Claude Haiku 5.5, with Textract reading tables and layout (the parser reads Textract's tables); the rest as in the [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | Agentic extraction on Claude Haiku 5.5, with Textract reading tables and layout (the parser reads Textract's tables); the rest as in the [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified, long invoices (19 invoices, 8 to 33 pages)](datasets.md#realkie-fcc-verified-long-invoices-19-invoices-8-to-33-pages) |
 | **Models** | OCR: Amazon Textract (Tables, Layout) · Extraction: Claude Haiku 5.5, agentic · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 18 documents × 3 runs; a document that failed in a run is left out of that run |
@@ -315,7 +315,7 @@ Failed documents per run: OmniAI, bank checks — OCR text only: 0, 0, 1.
 
 Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -337,7 +337,7 @@ Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 | | |
 |---|---|
 | **Changes** | `extraction.validation.enabled` and `extraction.coercion.enabled` together: validation checks the extracted values against the schema, and coercion repairs values of the wrong type or format ("$1,234.00" in a number field) by code; off leaves the model's output exactly as returned |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: varies (the setting under test) · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -370,7 +370,7 @@ Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 | Validation and coercion on | $24.1 ± $0.32 | $87.8 ± $1.35 | $153 ± $1.26 | $26.8 ± $0.60 |
 | Validation and coercion off | **$22.9 ± $0.18** | $87.8 ± $0.19 | $149 ± $0.80 | $24.8 ± $0.15 |
 
-*The [baseline setup](index.md#how-we-run-a-benchmark) is *Validation and coercion on* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
+*The [baseline setup](index.md#baseline-setup) is *Validation and coercion on* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -396,7 +396,7 @@ Differences in the table are run-to-run noise.
 | | |
 |---|---|
 | **Changes** | `extraction.validation.fail_action`, escalating to Claude Sonnet 5.5 (`reject` only flags the section, so it cannot change a value) |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: varies (the setting under test) · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N: RealKIE — 20 documents × 3 runs; Fake-W2 — 20 documents × 1–2 runs |
@@ -408,7 +408,7 @@ Differences in the table are run-to-run noise.
 | Fake-W2 | **Warn (recommended)** | 1 ± 0 | 0.82 ± 0.05 | **7,423 ± 0.85** | 18,494 ± 109 | **$7.41 ± $0.06** | 43 ± 8.99 | — |
 | Fake-W2 | Escalate to Claude Sonnet 5.5 | 1 ± 0 | — | 7,481 ± 0 | **18,362 ± 0** | $7.59 | **34 ± 0** | — |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -432,7 +432,7 @@ Structured output scored the same as the schema in the prompt on RealKIE invoice
 | | |
 |---|---|
 | **Changes** | Schema enforcement (`extraction.schema_enforcement.mode`) |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: varies (the setting under test) · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -485,7 +485,7 @@ Structured output scored the same as the schema in the prompt on RealKIE invoice
 | Forced tool | $7.42 ± $0.04 | — | $8.80 ± $0.02 |
 | Structured output | $7.51 ± $0.05 | $20.0 ± $0.05 | — |
 
-*The [baseline setup](index.md#how-we-run-a-benchmark) is *Structured output* with *Claude Haiku 5.5*.*
+*The [baseline setup](index.md#baseline-setup) is *Structured output* with *Claude Haiku 5.5*.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 

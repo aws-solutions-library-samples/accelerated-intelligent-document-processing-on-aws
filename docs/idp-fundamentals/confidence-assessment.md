@@ -7,23 +7,24 @@ SPDX-License-Identifier: MIT-0
 
 # Confidence Assessment
 
-## What confidence assessment does for your database
+## Overview
 
-Extraction turns each section of a file into a record: one value for each field of its
-document class. Most of those values are right. Confidence assessment tells you which ones
-to check before they reach your database.
+Extraction produces a record for each section: one value for each field of its document
+class. Most values are right, and checking every one by hand undoes the point of
+automation. Confidence-guided review sends people only the values most likely to be wrong,
+so it removes the most errors for the least review effort.
 
-Confidence assessment gives every extracted value a **confidence score** between 0 and 1:
-how likely the value is to be right. You set a **threshold** for each field. A value that
-scores below its field's threshold raises a **confidence alert**. With human review turned
-on, the accelerator holds the document in a **review queue**, with each alert as a reason,
-and a person checks those values before the document finishes. Every other document goes
-straight to your database.
+Confidence assessment gives every extracted value a **confidence score** between 0 and 1,
+an estimate of how likely the value is to be right. Each field has a **threshold**. A value
+that scores below its field's threshold raises a **confidence alert**, and a document with an
+alert can be sent to human review, where a person checks the flagged values. A confidence
+alert is one reason to send a document to review; a document with no reason for review
+completes without one.
 
-In the example below, the extraction model has read a pay stub. Two values score above
-their thresholds. The net pay scores 0.62 against a threshold of 0.95, which you set high
-because payroll depends on it. The accelerator holds the pay stub for review, and the
-reviewer sees "Net pay" as the reason.
+In the example below, a pay stub has three extracted values. Two score above their
+thresholds. Net pay scores 0.62 against a threshold of 0.95, set high because payroll
+depends on it, so it raises an alert, and the pay stub goes to review with "Net pay" as the
+reason.
 
 ```mermaid
 flowchart LR
@@ -33,8 +34,8 @@ flowchart LR
     F1 -- "at or above" --> OK(["No alert"])
     F2 -- "at or above" --> OK
     F3 -- "below" --> AL(["Confidence alert"])
-    AL --> Q["Review queue<br/>reason: Net pay"]
-    Q -- "reviewer corrects" --> DB[("Database")]
+    AL --> Q["Human review<br/>reason: Net pay"]
+    Q -- "reviewer corrects" --> DB["Final record<br/>(JSON)"]
     OK -. "when no field<br/>raises an alert" .-> DB
 
     classDef file fill:#f1f5f9,stroke:#475569,color:#0f172a,stroke-width:2px
@@ -49,16 +50,18 @@ flowchart LR
     class DB stubA
 ```
 
-The accelerator also scores the **document class** of each section, so you can see which
-sections the classification model was unsure of. Alongside the scores, it reports checks
-that need no score at all: a value that breaks the format your schema requires, a list
-that came back shorter than the page shows, and a business rule that failed.
+The accelerator also scores the **document class** of each section, which shows where
+classification was uncertain. Some problems need no score: a value that breaks the format
+the schema requires, a list shorter than the OCR tables show, or a failed business rule. The
+accelerator reports these as checks alongside the scores.
 
-## How the accelerator assigns confidence to each field
+## Scoring
 
-A language model assigns the scores. This page calls it the **scoring model**. You make
-two choices: where the scores come from, and which scoring model reads the record. The
-accelerator then compares each score with its field's threshold.
+The accelerator invokes a **scoring model** to score each extracted value; today the scoring
+model is a language model. It runs either inside the extraction call or as its own step after
+extraction. The accelerator compares each score with its field's threshold, and a value below
+its threshold raises a confidence alert. A configuration profile can use confidence alerts as
+one of the triggers that send a document to human review.
 
 ```mermaid
 flowchart LR
@@ -67,9 +70,8 @@ flowchart LR
     D["Field descriptions"] --> S
     S --> C["A score for every value<br/>0.0 to 1.0"]
     C --> T{"Every value at or above<br/>its field's threshold?"}
-    T -- yes --> DB[("Database")]
-    T -- no --> Q["Review queue"]
-    Q -- "reviewer corrects" --> DB
+    T -- yes --> DB["Final record<br/>(JSON)"]
+    T -- no --> Q["Confidence alert<br/>(a review trigger)"]
 
     classDef file fill:#f1f5f9,stroke:#475569,color:#0f172a,stroke-width:2px
     classDef app fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px
@@ -83,7 +85,7 @@ flowchart LR
     class DB stubA
 ```
 
-### Choice 1: score in a separate pass, inside the extraction call, or not at all
+### Choice 1: scoring mode
 
 In the configuration editor this choice is **Confidence scoring mode**
 (`extraction.confidence.mode`).
@@ -101,12 +103,12 @@ few guesses for each field with a probability for each, and the accelerator keep
 top guess as the value and its probability as the score. The editor shows this mode as
 *Integrated — same call as extraction*. For a document class that has a list field, the
 accelerator scores Simple-mode sections in a separate pass anyway, because one response
-cannot reliably hold a long list and a score for every cell of it.
+does not have to hold both a long list and a score for every cell of it.
 
 **Off.** No scores. The editor shows this mode as *Off — no confidence*. Without scores,
 no field raises a confidence alert.
 
-### Choice 2: which scoring model reads the record
+### Choice 2: scoring model
 
 In the separate pass, the **Confidence model** setting (`extraction.confidence.model`)
 names the scoring model. In integrated mode, the extraction model scores its own values and
@@ -120,7 +122,7 @@ wrong ones, more than how accurate its scores are on average. See
 the scoring model could not score, with a stronger model (`escalation_model`). See
 [Large-list batching](../extraction-and-confidence.md#large-list-batching-list_batch_size).
 
-### What the scoring model reads
+### Model inputs
 
 The default confidence prompt gives the scoring model four things for each section:
 
@@ -137,7 +139,7 @@ These are the `{EXTRACTION_RESULTS}`, `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`,
 score from text only, remove `{DOCUMENT_IMAGE}` from the prompt. See
 [Prompt placeholders](../extraction-and-confidence.md#prompt-placeholders).
 
-### A score for every field, including every row of a list
+### Field and row scores
 
 The scoring model returns one score per value: each field, each field inside a group, and
 each cell of each row of a list. For any score below 0.9, the model also writes a short
@@ -150,7 +152,7 @@ score. The **List batch size** setting (`extraction.confidence.list_batch_size`,
 model's output limit requires it.
 See [Large-list batching](../extraction-and-confidence.md#large-list-batching-list_batch_size).
 
-### Thresholds decide which fields need a person
+### Thresholds
 
 The accelerator compares each value with its field's threshold. A value that scores **below** the
 threshold raises a confidence alert; a value at or above it does not.
@@ -172,25 +174,19 @@ The Web UI colors each value against its threshold: green at or above, red below
 document list counts each document's **Confidence Alerts**, and the Sections panel shows
 the **Low Confidence Fields** of each section.
 
-### How a document reaches review and a review queue
+### Review routing
 
-Turn on review with **Enabled** in the **Human-in-the-Loop (HITL) Review (Optional)**
-section (`hitl.enabled`). The accelerator then holds a document in the **Default** review
-queue when any of its sections has:
-
-- a value below its field's threshold; or
-- a required field with no value, while **Review missing required fields**
-  (`hitl.route_missing_required_fields`) is on, as it is by default.
-
-Each alert becomes a **review reason** on the queue item, sorted worst first. A reviewer
-claims the item, corrects the values, and chooses **Process Changes**. The accelerator
-then finishes the document with the corrected values. A document with no alerts is never
-queued. Queues have no threshold of their own: the field thresholds decide. Admins manage
-the queues in **Review Studio › Review Management**. See
+Confidence alerts are one trigger for human review. With review turned on in the profile
+(**Enabled** in **Human-in-the-Loop (HITL) Review (Optional)**, `hitl.enabled`), a document
+goes to review when a section has a value below its field's threshold, or a required field
+with no value while **Review missing required fields** (`hitl.route_missing_required_fields`)
+is on. Each alert becomes a **review reason**. A reviewer corrects the values, and the
+accelerator finishes the document with the corrected values. Other triggers can also send a
+document to review; see
 [How a document reaches a queue](../review-queues.md#how-a-document-reaches-a-queue) and
 [Human Review](../human-review.md#1-automatic-triggering).
 
-### Checks that need no score: schema validation, row counts and rules
+### Checks without scores
 
 The accelerator runs three kinds of deterministic check next to confidence, and reports
 each failure on the document as a **processing issue**:
@@ -208,7 +204,7 @@ Processing issues appear in the document list's **Processing Issues** column and
 document's Processing Report. Processing issues do not by themselves send a document to a review
 queue: confidence alerts and missing required fields do that.
 
-### Confidence in the document class of each section
+### Class confidence
 
 The classification model also scores the document class it assigns. No second model call
 runs: the classification model returns the score in the same response as the document
@@ -229,36 +225,10 @@ class score has no threshold and does not send a document to review. In BDA mode
 matched blueprint whose confidence is below `hitl.confidence_threshold` does. See
 [Classification Confidence](../classification.md#classification-confidence).
 
-## The configuration to start with
+For the configuration we recommend, and the measurements behind it, see
+[Confidence assessment benchmarks](../benchmark-guidance/confidence-assessment.md).
 
-**If people review values by confidence, start with a separate pass scored by Claude Haiku
-5.5, with escalation off,** and turn on human review. Changing the scoring model does not
-change the extracted values. See
-[Which scoring model should I use?](../benchmark-guidance/confidence-assessment.md#which-scoring-model-should-i-use)
-
-```yaml
-extraction:
-  confidence:
-    mode: separate
-    model: us.anthropic.claude-haiku-5-5
-    escalation_enabled: false
-```
-
-**If nobody reviews by confidence, turn it off** (*Off — no confidence*,
-`extraction.confidence.mode: off`). The extracted values stay the same, and no scoring pass
-runs. See
-[Separate scoring pass or integrated into extraction?](../benchmark-guidance/confidence-assessment.md#separate-scoring-pass-or-integrated-into-extraction)
-
-**Set thresholds per field.** Start with the default of 0.8, and raise the threshold on
-the fields your business depends on, such as amounts, account numbers and dates. Mark
-those fields **required** as well, so an empty value goes to review too.
-
-**Keep Top-K class confidence on.** Top-K is the default, and adds only the ranked
-candidates to each answer. If you rely on class scores to decide which sections a person
-checks, first check on your test set that they separate right document classes from wrong
-ones.
-
-## How many tokens confidence assessment uses, and what drives the count
+## Token use
 
 The separate pass is one more model call per section, and for a long list, one call per
 batch of rows. Five things decide how many tokens the pass uses:
@@ -289,7 +259,7 @@ for what confidence costs.
 **Class confidence** adds tokens to every classification call: *Top-K* adds the ranked
 candidates to each answer.
 
-## How to measure confidence on your own documents
+## Measuring accuracy
 
 Measure confidence on the same ground truth you use for extraction. For each scored value
 you then know two things: its score, and whether it was right. A score can do two jobs,
@@ -328,7 +298,12 @@ of the high-scoring ones. When the scores do not discriminate, the estimate repo
 
 To build the ground truth, see [Measure with ground truth](index.md#4-measure-with-ground-truth).
 
-## When confidence misleads: which scoring model makes which mistake
+Run your test set in [Test Studio](../test-studio.md) with
+confidence on, and read AUROC, ECE and ECARB@30 for each field. Then change the
+**Confidence model** and run the same test set again. The extracted values stay the same,
+so any change in the numbers comes from the scoring model.
+
+## Common mistakes
 
 Once you measure AUROC and the alert rate, the mistakes fall into a few patterns, each with
 a change that fixes it:
@@ -337,177 +312,18 @@ a change that fixes it:
 |---|---|---|
 | Almost no alerts, low AUROC, and the review-effort estimate reads **Unreliable** | The scoring model gives nearly every value the same high score | Choose Claude Haiku 5.5 as the scoring model |
 | More alerts than your reviewers can handle | A threshold is high for a scoring model that spreads its scores out | Lower the threshold on fields with many alerts and few errors, and keep it high on critical fields |
-| Wrong values with high scores | The scoring model is sure of a misread value, often on a poor scan where the page text agrees with the wrong value | Review the random audit sample of high-scoring documents, and add a schema pattern or a rule for the field |
+| Wrong values with high scores | The scoring model is sure of a misread value, as on a poor scan where the page text agrees with the wrong value | Review the random audit sample of high-scoring documents, and add a schema pattern or a rule for the field |
 | A value missing from the record, with no alert | An empty field has no value to score | Mark the field **required**, so an empty value goes to review |
 | Rows missing from a list, with no alert | A row that never came back has no score | Watch the row-count processing issues, or set `extraction.row_shortfall_action: fail`. Advanced extraction returns long lists more completely |
 | No field is ever flagged | `hitl.confidence_threshold` is 0, and the fields have no threshold of their own | Set a global threshold, such as 0.8 |
 | Most pages show the same class score, wrong pages included | The classification model gives most pages one score | Test another classification model on your test set |
 
-## Benchmark results: how well each scoring model separates right from wrong
+## Improving accuracy
 
-*Measured on releases 0.6.7 to 0.6.14 with Claude Sonnet 4.6, Claude Sonnet 5, Claude Haiku
-4.5, Amazon Nova Lite and Amazon Nova 2 Lite. For current recommendations, see
-[Confidence Assessment Benchmarks](../benchmark-guidance/confidence-assessment.md).*
+When your measurements show alerts in the wrong places, try these changes, and score each one against your test set.
 
-### Field confidence when extraction makes mistakes
-
-**Dataset:** [synthetic bank statements](benchmark-datasets.md#synthetic-bank-statements),
-seven files (52 pages), with the exact value of every date and amount. **Run:** release
-0.6.14, November 2026, extraction by Claude Sonnet 4.6, Simple extraction with a separate
-confidence pass. Extraction made errors in one configuration only, the one with OCR by a
-Bedrock language model instead of Amazon Textract. That configuration scored 4,410 dates and
-amounts per scoring model. Each scoring model ran with its own extraction run, so the number
-of wrong values differs slightly.
-
-| Scoring model | Wrong values | AUROC | ECE | Score bands used | Values below 0.8 | Wrong values below 0.8 |
-|---|---|---|---|---|---|---|
-| Amazon Nova Lite (default) | 37 | 0.50 | 0.008 | 1 of 10 | 0 | 0 of 37 |
-| Amazon Nova 2 Lite | 41 | 0.50 | 0.009 | 1 of 10 | 0 | 0 of 41 |
-| **Claude Sonnet 5** | 39 | **0.96** | 0.039 | 6 of 10 | 60 | **35 of 39** |
-
-Source: `benchmarks/results/v0.6.14/coresynth__confidence-model-*/summary.json`,
-configuration `core-llm-simple-sep`.
-
-What this shows:
-
-- **With Claude Sonnet 5 as the scoring model, a threshold of 0.8 sent 60 of 4,410 values
-  to review, and those 60 held 35 of the 39 errors.** Claude Sonnet 5 scored those 35 wrong
-  values 0.3 or lower.
-- **Amazon Nova Lite and Amazon Nova 2 Lite gave every value a score of 0.9 or higher,** and
-  Amazon Nova Lite scored all 37 wrong values 1.0. A threshold on their scores cannot find
-  the errors.
-- **All three scoring models were well calibrated.** Calibration error was below 0.04 for
-  each, so each one's average score is a fair report of overall accuracy.
-
-### Field confidence on a larger sample of values
-
-**Dataset:** the same seven synthetic bank statements, under 16 configurations that use
-a separate confidence pass, one run per file: 112 runs per scoring model. **Run:** release 0.6.8, September 2026, extraction by
-Claude Sonnet 4.6; only the scoring model changed.
-
-| Scoring model | Values scored | Wrong values | AUROC | ECE | Score bands used |
-|---|---|---|---|---|---|
-| Amazon Nova Lite (default) | 70,320 | 55 | 0.42 | 0.004 | 1 of 10 |
-| Amazon Nova 2 Lite | 70,242 | 64 | 0.47 | 0.001 | 1 of 10 |
-| **Claude Sonnet 5** | 70,242 | 66 | **0.86** | 0.024 | 6 of 10 |
-
-Sources: `benchmarks/results/v0.6.8/coresynth__confidence-model-nova-2-lite/summary.json`,
-`benchmarks/results/v0.6.8/coresynth__confidence-model-sonnet5/summary.json` and, for
-Amazon Nova Lite, `benchmarks/results/v0.6.8/coresynth__classification-model-sonnet5/summary.json`.
-See the [Confidence Calibration study](../benchmarking/studies/confidence-calibration.md)
-for the method.
-
-The 0.6.8 results agree with the 0.6.14 results: only Claude Sonnet 5 ranked the wrong
-values low.
-
-### How often each scoring model raises an alert
-
-**Dataset and run:** as in the first table, across all 16 configurations that use a
-separate confidence pass, 112 runs and about 106,600 scores per scoring model (release
-0.6.14, November 2026).
-
-| Scoring model | Scores below 0.9 | Share of scores |
-|---|---|---|
-| Amazon Nova Lite (default) | 0 | 0.0% |
-| Amazon Nova 2 Lite | 2 | 0.0% |
-| Claude Sonnet 5 | 562 | 0.5% |
-
-Source: `benchmarks/results/v0.6.14/coresynth__confidence-model-*/summary.json`, fields
-`n_conf_leaves` and `pct_conf_below_0.9`.
-
-Claude Sonnet 5 raised alerts on about one value in 200, which is review a team can keep
-up with. The default scoring model raised none.
-
-### Document-class confidence on multi-document packets
-
-**Dataset:** [DocSplit-Poly-Seq](benchmark-datasets.md#docsplit-poly-seq), 20 public files
-(298 pages, 13 document classes). **Run:** release 0.6.7, September 2026, page-by-page
-classification, *Top-K* class confidence with 3 candidates, one run per classification
-model.
-
-| Classification model | Page accuracy | Average score, right pages | Average score, wrong pages | AUROC | Pages flagged | Wrong pages flagged |
-|---|---|---|---|---|---|---|
-| Amazon Nova 2 Lite (default) | 0.846 | 0.947 | 0.903 | 0.70 | 25 of 298, below 0.90 | 20 of 46 |
-| **Claude Haiku 4.5** | 0.852 | 0.948 | 0.741 | **0.93** | 34 of 298, below 0.85 | **32 of 44** |
-
-Sources: `benchmarks/results/v0.6.7/clsconf/summary.json` and `escalation.json` (AUROC
-computed from the score histograms in `escalation.json`). See the
-[Classification Confidence study](../benchmarking/studies/classification-confidence.md).
-
-What this shows:
-
-- **Both models assigned the right document class equally often.** The difference is in
-  the scores.
-- **Claude Haiku 4.5 found 73% of its wrong pages by flagging 11% of pages,** and 94% of
-  the pages it flagged were wrong.
-- **Amazon Nova 2 Lite gave 269 of 298 pages a score of 0.95,** including 23 of its 46
-  wrong pages, so no threshold separates those wrong pages from the right ones.
-
-Release 0.6.14 (November 2026) repeated the Amazon Nova 2 Lite run on the same files
-(286 pages scored): page accuracy 0.818, average score 0.947 on right pages and 0.914 on
-wrong pages. Source: `benchmarks/results/v0.6.14/clsvariants/summary.json`, key
-`nova2lite-page-both`.
-
-**How far this carries:** the field results come from synthetic statements with clean
-tables, where extraction made few errors: 37 to 66 wrong values per scoring model, so the
-AUROC figures are estimates on small samples. The class results come from one run of 20
-files. Real documents with poor scans produce more errors, and the ranking can differ.
-Measure on your own test set before you set thresholds.
-
-### Confidence tokens per page
-
-Confidence tokens per page, on seven synthetic bank statements (52 pages, 5 to 800 rows
-each), extraction by Claude Sonnet 4.6, OCR by Amazon Textract (release 0.6.14, November
-2026):
-
-| Scoring model | Simple extraction: input tokens per page | Simple: output tokens per page | Advanced extraction: input tokens per page | Advanced: output tokens per page |
-|---|---|---|---|---|
-| Amazon Nova Lite (default) | 367,180 | 2,876 | 36,022 | 2,853 |
-| Amazon Nova 2 Lite | 66,487 | 3,927 | 6,045 | 3,490 |
-| Claude Sonnet 5 | 161,811 | 4,574 | 43,325 | 3,735 |
-
-Input tokens include the page text and images the accelerator serves from the prompt
-cache, which Amazon Bedrock bills at a reduced rate. Source:
-`benchmarks/results/v0.6.14/coresynth__confidence-model-*/summary.json`, configurations
-`core-tt-simple-sep` and `core-tt-adv-sep`, phase `Assessment`.
-
-What this shows:
-
-- **Long lists drive the count.** On the one-page statement with 5 rows, the default
-  scoring model read 3,243 input tokens in total. On the 17-page statement with 800 rows in
-  Simple mode, every batch reread all 17 pages.
-- **Advanced extraction scored the same values with about a tenth of the input tokens** of
-  Simple extraction with the default scoring model, because each batch reads one shard
-  instead of the whole section.
-- **Claude Sonnet 5 wrote more output tokens per page** than Amazon Nova Lite, 4,574
-  against 2,876 in Simple mode, and its tokens cost more each.
-
-For comparison, the Simple-mode extraction calls in the same runs read 3,336 input tokens
-per page. On the one-page statement, the scoring call and the extraction call read about the
-same number of input tokens.
-
-### Class confidence tokens per page
-
-Class confidence tokens per page, on 20 public packets (298 pages) with page-by-page
-classification (release 0.6.7, September 2026):
-
-| Classification model | Class confidence | Input tokens per page | Output tokens per page |
-|---|---|---|---|
-| Amazon Nova 2 Lite (default) | *Off* | 1,738 | 154 |
-| Amazon Nova 2 Lite (default) | *Top-K* (default) | 1,966 | 199 |
-| Claude Haiku 4.5 | *Off* | 3,169 | 268 |
-| Claude Haiku 4.5 | *Top-K* | 3,416 | 353 |
-
-Source: `benchmarks/results/v0.6.7/clsconf/summary.json` and `summary_off_control.json`.
-
-## Improving confidence once your pipeline is running
-
-When your measurements show alerts in the wrong places, these changes help most, roughly in
-this order.
-
-**Choose Claude Haiku 5.5 as the scoring model when people review by confidence.** The
-change affects only the scores. The extracted values stay the same, so you can compare
-scoring models on the same test set. See
+**Compare scoring models on your test set.** Changing the scoring model changes only the
+scores. The extracted values stay the same, so the comparison isolates the scoring model. See
 [Which scoring model should I use?](../benchmark-guidance/confidence-assessment.md#which-scoring-model-should-i-use)
 
 **Set thresholds field by field from your own numbers.** Look at each field's AUROC and
@@ -542,40 +358,7 @@ refine its review-effort estimate. See
 tries changes to prompts, models and settings against your test set and keeps the ones that
 score better.
 
-## Run the confidence benchmarks yourself
-
-**On your own documents.** Run your test set in [Test Studio](../test-studio.md) with
-confidence on, and read AUROC, ECE and ECARB@30 for each field. Then change the
-**Confidence model** and run the same test set again. The extracted values stay the same,
-so any change in the numbers comes from the scoring model.
-
-**The benchmark suite.**
-
-```bash
-# Field confidence: the same synthetic statements, once per scoring model
-M=benchmarks/harness/make_configs.py
-for m in nova_lite nova_2_lite sonnet5; do
-  python3 $M --suite coresynth --class bank_statement --set confidence_model=$m
-  python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite coresynth --set confidence_model=$m
-done
-
-# Class confidence on DocSplit (the test set comes with the stack)
-python3 benchmarks/harness/run_classification_bench.py --stack <STACK> --testset docsplit \
-  --n 20 --models nova2lite,haiku45 --mode topk
-```
-
-Recompute a row from the committed results:
-
-```bash
-jq '.cell_stats."core-llm-simple-sep".calibration | {observations, correct, auroc_unbinned, ece_mean_conf, bin_coverage}' \
-  benchmarks/results/v0.6.14/coresynth__confidence-model-sonnet5/summary.json
-```
-
-The [Confidence Calibration study](../benchmarking/studies/confidence-calibration.md)
-shows how to recompute calibration and AUROC for a whole grid offline. See the
-[benchmark suite](../benchmarking/index.md) for setup and scoring.
-
-## Where to configure confidence in the accelerator
+## Configuration reference
 
 - **Confidence scoring mode, confidence model and list batch size:**
   [Confidence Assessment](../extraction-and-confidence.md#3-confidence-assessment),

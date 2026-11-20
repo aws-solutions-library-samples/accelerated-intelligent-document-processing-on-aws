@@ -18,7 +18,7 @@ most likely to be wrong instead of every value.
 **Your definitions.** The scoring model reads each field's description when it judges a
 value. Say what a right value looks like. Mark the fields you can't do without as required:
 an empty required field goes to review even though it has no score. See
-[Improving confidence](../idp-fundamentals/confidence-assessment.md#improving-confidence-once-your-pipeline-is-running).
+[Improving confidence](../idp-fundamentals/confidence-assessment.md#improving-accuracy).
 
 **Data quality.** Poor scans cause more extraction mistakes, and catching those mistakes is
 the job confidence does. We measure it on [ConfBench](../extensions/confbench-testset.md),
@@ -73,7 +73,7 @@ Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a
 | | |
 |---|---|
 | **Changes** | Scoring model |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: varies (the setting under test). |
 | **Runs** | 3 per document, per value; N = 20 documents × 2–3 runs |
@@ -85,7 +85,7 @@ Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a
 | RealKIE | **Claude Haiku 5.5 (baseline)** | 0.84 ± 0.07 | 2.4× ± 0.4× | 0.71 ± 0.11 | 0.17 ± 0.01 | 9,751 ± 496 | 16,521 ± 496 | $24.4 ± $1.81 |
 | RealKIE | Claude Sonnet 5.5 | 0.89 ± 0.01 | 2.3× ± 0.1× | 0.69 ± 0.03 | 0.17 ± 0.02 | 9,010 ± 505 | 15,774 ± 491 | $119 ± $4.22 |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -109,7 +109,7 @@ Integrated scoring lowered W-2 accuracy from 1.00 to 0.96 to save $0.81 per 1,00
 | | |
 |---|---|
 | **Changes** | Confidence mode |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: varies (the setting under test). |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -123,7 +123,7 @@ Integrated scoring lowered W-2 accuracy from 1.00 to 0.96 to save $0.81 per 1,00
 | Fake-W2 | Integrated | 0.96 ± 0.01 | 0.9 ± 0.02 | 3.2× ± 0.2× | 9,782 ± 352 | — | 9,782 ± 352 | $6.61 ± $0.22 | 23 ± 2.91 | no measurable gain |
 | Fake-W2 | Off | 1 ± 0 | — | — | 7,453 ± 21 | — | **7,453 ± 21** | **$5.37 ± $0.01** | **17 ± 0.41** | — |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -147,7 +147,7 @@ The decision model is the Strands Decider 2B (StrandsAgents/strands-decider-2B-q
 | | |
 |---|---|
 | **Changes** | Who scores each extracted value: an LLM or a decision model (one yes/no question per value) |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: varies (the setting under test). |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -158,7 +158,7 @@ The decision model is the Strands Decider 2B (StrandsAgents/strands-decider-2B-q
 | RealKIE | LLM · Claude Sonnet 5.5 | **0.9 ± 0.01** | **3.0× ± 0.0×** | **0.91 ± 0.01** | 0.05 ± 0.02 | **12,305 ± 2,129** | 19,272 ± 2,305 | $130 ± $8.39 | **52 ± 17** |
 | RealKIE | Decision model · page images | 0.68 ± 0.11 | 2.0× ± 0.5× | 0.6 ± 0.14 | 0.3 ± 0.02 | — | **7,064 ± 64** | $104 ± $10.2 | 114 ± 29 |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 

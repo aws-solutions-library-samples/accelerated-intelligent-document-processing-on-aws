@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 # Splitting and Section Classification
 
-## What section detection and classification do
+## Overview
 
 Stacks of documents rarely arrive one document per file. A loan package holds an
 application, pay stubs, bank statements and an ID. A claim holds a claim form, invoices and
@@ -69,13 +69,13 @@ Extraction then reads each section with the fields of its document class: the lo
 application fields from pages 1–2, the pay stub fields from page 3, the pay stub fields again
 from page 4, and the bank statement fields from pages 5–7.
 
-## How the accelerator detects and classifies sections
+## Section detection and classification
 
 A language model does both jobs. You make three choices about how it works: how much of the
 file the model reads at once, whether detection and classification happen in one model call
 or two, and whether the model reads the page text, the page images, or both.
 
-### Choice 1: read the file page by page, or all at once
+### Choice 1: granularity
 
 **Page by page.** The model reads one page per call and assigns that page a document class.
 The accelerator then groups consecutive pages into sections, starting a new section where the
@@ -134,7 +134,7 @@ flowchart LR
 
 In the configuration editor this choice is **granularity**: *page* or *packet*.
 
-### Choice 2: detect and classify in one call, or in two
+### Choice 2: strategy
 
 **One call.** The same model call that finds the sections also assigns their document
 classes. This is the default, shown in the editor as *Split and classify together (one
@@ -145,69 +145,31 @@ document classes. A second call then classifies each section, reading its first 
 is *Split first, then classify each section*. Separating the jobs lets the first call focus
 on boundaries, and the classification call sees a whole section rather than one page.
 
-### Choice 3: what the model reads
+### Choice 3: model inputs
 
 The model can read each page's **text** (from OCR), its **image**, or **both**. The text
-carries the words; the image carries layout, letterheads, logos and checkboxes, which are often
-the clearest signs that a new document has started. The default classification prompts send
+carries the words; the image carries layout, letterheads, logos and checkboxes, which can show
+that a new document has started. The default classification prompts send
 both. In the editor these are **Send page text** and **Send page images**.
 
-### How the choices combine
+### Configurations
+
+![Four ways to find the documents in a packet and classify each one: page by page, holistic, split then an LLM classifies each section, and split then a decision model classifies each section](../../images/benchmark-guidance/figures/splitting-approaches.svg)
 
 | Configuration | Granularity | Strategy | Model reads |
 |---|---|---|---|
 | Holistic, one call, with images | *packet* | *Split and classify together* | Text and images |
 | Page by page, one call per page (default) | *page* | *Split and classify together* | Text and images |
 | Detect sections first, then classify | *page* or *packet* | *Split first, then classify each section* | Text and images |
+| Detect sections first, then a decision model classifies | *page* or *packet* | *Split first, then classify each section*, with the method set to *decision model* | Images of each section's first pages |
 | Holistic, text only (fewest tokens) | *packet* | *Split and classify together* | Text |
 
 For every setting, see
 [How the classification settings are organized](../classification.md#how-the-classification-settings-are-organised).
+For the configuration we recommend, and the measurements behind it, see
+[Splitting and Classification benchmarks](../benchmark-guidance/splitting-and-classification.md).
 
-## The configuration to start with
-
-**Start with holistic classification, with Claude Haiku 5.5 reading the page text only.**
-Set granularity to *packet*, keep *Split and classify together (one call)*, choose Claude
-Haiku 5.5 as the model, and turn off **Send page images**. The model sees the whole file at
-once, which is what it needs to place section boundaries. See
-[Which approach should I use?](../benchmark-guidance/splitting-and-classification.md#which-approach-should-i-use)
-and [Do I need page images in the classification prompt?](../benchmark-guidance/splitting-and-classification.md#do-i-need-page-images-in-the-classification-prompt)
-
-```yaml
-classification:
-  strategy: combined
-  combined:
-    granularity: packet
-    llm:
-      model: us.anthropic.claude-haiku-5-5
-      modality: {text: true, images: false}
-```
-
-**If classification reads page images, use a 10-page window on long packets**
-(`classification.combined.packet.window_pages`; default 20). Each window is one call, and a
-smaller window keeps each call's prompt shorter. See
-[How long a packet can holistic classification handle?](../benchmark-guidance/splitting-and-classification.md#how-long-a-packet-can-holistic-classification-handle)
-
-**On long or complex packets, test the alternatives on your own files.** Past its window, a
-holistic call no longer sees the whole file at once. Compare holistic classification with
-*Split first, then classify each section* and with page-by-page classification. See
-[Do long packets change which approach to use?](../benchmark-guidance/splitting-and-classification.md#do-long-packets-change-which-approach-to-use)
-
-**A decision model is worth testing for section classification.** With *Split first, then
-classify each section*, a small decision model on AWS Lambda, such as the
-[Strands Decider 2B](https://huggingface.co/StrandsAgents/strands-decider-2B-qwen3.5-v1-2610),
-can classify each section: set `section_classification.method` to `decision_model` and point
-`decision_model.endpoint` at the function (see
-[The split-then-classify strategy](../classification.md#the-split-then-classify-strategy)).
-Give each class a one-line description of what its pages look like, and send the first two
-page images (`pages: first_k`, `k: 2`). See
-[Can a decision model classify the sections?](../benchmark-guidance/splitting-and-classification.md#can-a-decision-model-classify-the-sections)
-
-**If every file holds exactly one document, skip section detection.** Set section splitting
-to *One section*. The accelerator keeps all of a file's pages in one section and gives it the
-document class that most of its pages receive.
-
-## How many tokens classification uses, and what drives the count
+## Token use
 
 Classification runs on every page of every file. Four things decide how many tokens it uses:
 
@@ -227,7 +189,7 @@ Reading text only leaves out the image tokens. Add page images only if your test
 they place more section boundaries right on your files. See
 [What each setting costs](../classification.md#what-each-setting-costs).
 
-## How to measure section detection and classification on your own files
+## Measuring accuracy
 
 Ground truth for this step is the page range and document class of every section in each
 file. Four numbers show how well section detection and classification are working:
@@ -249,7 +211,11 @@ counts a section as correct only when its page range and its document class are 
 See [Document split classification metrics](../evaluation.md#document-split-classification-metrics).
 To build the ground truth, see [Measure with ground truth](index.md#4-measure-with-ground-truth).
 
-## Over-splits and merges: which configuration makes which mistake
+Build a test set of real files with their correct sections, run it in
+[Test Studio](../test-studio.md) once per configuration, and compare page accuracy and section
+accuracy.
+
+## Common mistakes
 
 Once you measure boundary accuracy, look at how the wrong page ranges are wrong. Page-by-page and
 holistic classification tend to make opposite mistakes:
@@ -264,106 +230,23 @@ splitting to *One section* when each file holds one document. If it shows mostly
 same-class documents, such as a run of pay stubs, try page-by-page classification. See
 [Page versus packet granularity](../classification.md#page-versus-packet-granularity-opposite-failure-modes).
 
-## Benchmark results: accuracy and tokens by configuration
+## Improving accuracy
 
-*Measured on releases 0.6.9 and 0.6.14 with Amazon Nova 2 Lite. For current recommendations,
-see [Splitting and Section Classification Benchmarks](../benchmark-guidance/splitting-and-classification.md).*
+When your test set shows sections with the wrong pages or the wrong document class, try these
+changes, and score each one against your test set.
 
-### Files that hold many documents
-
-**Dataset:** [DocSplit-Poly-Seq](benchmark-datasets.md#docsplit-poly-seq), 20 public files
-(298 pages, 13 document classes, 5–20 pages per file, so every file fits in one holistic
-call). **Run:** release 0.6.14, November 2026, classification model Amazon Nova 2 Lite (the
-default), one run per configuration.
-
-| Configuration | Page accuracy | Boundary accuracy | Label accuracy | Input tokens per page |
-|---|---|---|---|---|
-| Page by page, text and images (default) | 0.818 | 0.553 | 0.915 | 2,633 |
-| Page by page, text only | 0.797 | 0.518 | 0.864 | 2,394 |
-| **Holistic, text and images** | 0.720 | **0.659** | 0.893 | 1,080 |
-| Holistic, text only | 0.735 | 0.644 | 0.845 | 844 |
-| Holistic, images only | 0.836 | 0.578 | 0.846 | 368 |
-| Detect sections first (page by page), then classify | 0.797 | **0.694** | **0.949** | 2,647 |
-| Detect sections first (holistic), then classify | 0.732 | 0.656 | 0.848 | 1,717 |
-
-Source: `benchmarks/results/v0.6.14/clsvariants/summary.json`.
-
-What this shows:
-
-- **Section detection is the harder job.** Every configuration gave most correctly bounded
-  sections the right document class (label accuracy 0.85–0.95), while boundary accuracy
-  ranged from 0.52 to 0.69. Improving boundaries is where the gains are.
-- **Holistic classification found more boundaries, with fewer tokens.** Against the default,
-  holistic classification with text and images raised boundary accuracy by 0.20 (SE 0.09,
-  19 files) and used 59% fewer input tokens per page. The previous release measured +0.35 for
-  the same comparison.
-- **It gave fewer individual pages the right document class** (page accuracy −0.07, SE 0.07).
-  Extraction depends on whole sections, so boundary and label accuracy are the numbers to
-  follow.
-- **Detecting sections first, then classifying, scored highest on both boundary and label
-  accuracy** in this run. It is the main alternative to test on complex packets.
-
-### Classification tokens per page
-
-Classification tokens per page, on the same 20 packets with Amazon Nova 2 Lite (release
-0.6.14, November 2026):
-
-| Configuration | Input tokens per page | Output tokens per page |
-|---|---|---|
-| Page by page, text and images (default) | 2,633 | 217 |
-| Page by page, text only | 2,394 | 234 |
-| Holistic, text and images | 1,080 | 40 |
-| Holistic, text only | 844 | 41 |
-
-Input tokens include the instructions the accelerator serves from the prompt cache, which
-Amazon Bedrock bills at a reduced rate. Source:
-`benchmarks/results/v0.6.14/clsvariants/summary.json`.
-
-What this shows:
-
-- **Holistic classification used about 60% fewer input tokens and 80% fewer output tokens
-  per page** than page-by-page classification, because it sends the instructions once per
-  file and answers once.
-- **Page images added about 240 input tokens per page** with the default model, in either
-  mode.
-
-### Files that hold one or two documents
-
-**Dataset:** synthetic bank statements with exact ground truth. **Run:** release 0.6.14, page
-by page (the default), five runs per file, unless noted.
-
-| File | Sections detected |
-|---|---|
-| Two statements in one file | **Two sections, in 5 of 5 runs** |
-| One 3-page statement, with or without "Page k of n" | **One section, in 5 of 5 runs** |
-| One 3-page statement with its header repeated on every page | Three sections, in 5 of 5 runs (release 0.6.9). Holistic classification, or section splitting set to *One section*, keeps it as one |
-
-On single statements, every classification model we compared produced the right number of
-sections in at least 132 of 133 runs, so the default classification model is enough there.
-
-Sources: `benchmarks/results/v0.6.14/boundary/`, `benchmarks/results/v0.6.9/boundaryab/` and
-`benchmarks/results/v0.6.14/coresynth__classification-model-*/`.
-
-**How far this carries:** 20 files, one run per configuration, with one classification
-model, and the gap between configurations has varied between releases. Confirm the choice on
-your own files.
-
-## Improving accuracy once your pipeline is running
-
-When your test set shows sections with the wrong pages or the wrong document class, these
-changes help most, roughly in this order.
-
-**Write a description for each document class that separates it from its closest
-neighbor.** The classification model picks a document class by comparing each section with
-the description of every document class in your configuration. Name the features that tell
+**Get your document class definitions right first; nothing else matters as much.** Every
+kind of document you receive needs a class, and each class needs a description that separates
+it from its closest neighbor. The classification model picks a document class by comparing
+each section with the description of every document class in your configuration. Name the features that tell
 two classes apart: "Quote: shows a 'valid until' date and has no payment terms" separates a
 quote from an invoice, and "Quote: a price quote" does not. See
 [class descriptions](../classification.md#class-descriptions).
 
 **Add few-shot examples for document classes that look alike.** A few-shot example is a
 sample page with its correct document class, which the accelerator adds to the
-classification prompt. One or two examples for each pair of document classes that the model
-confuses, such as invoice and quote, usually stop the confusion. See
+classification prompt. Add them for each pair of document classes the model confuses, such
+as invoice and quote. See
 [Few-Shot Examples](../few-shot-examples.md).
 
 **Separate documents of the same class on consecutive pages,** such as three pay stubs. If
@@ -375,7 +258,8 @@ starts a new section at cues inside the pages such as "Page 1 of 2" or a new pay
 any document class in your configuration, the accelerator labels the page `unclassified`
 instead of assigning the closest class. Extraction skips the section that holds the page, and
 the accelerator records a processing issue on that section, which you see on the document's
-Sections panel. A recurring unclassified page usually means a document class is missing. See
+Sections panel. If the same kind of page keeps coming back unclassified, add a document
+class for it. See
 [Pages Classification Could Not Classify](../classification.md#pages-classification-could-not-classify).
 
 **Exclude pages that carry no data.** Instruction pages and legal boilerplate repeat on every
@@ -384,37 +268,7 @@ copy of a form. Define a document class for them and mark it excluded
 extraction, confidence assessment and rule validation skip them. See
 [Excluding Static Pages](../classification.md#excluding-static-pages-eg-instructions-legal-boilerplate).
 
-## Run the benchmarks yourself
-
-**On your own files.** Build a test set of real files with their correct sections, run it in
-[Test Studio](../test-studio.md) once per configuration, and compare page accuracy and section
-accuracy. Every stack includes the DocSplit test set, so you can repeat the comparison above
-in your own account.
-
-**The benchmark suite.**
-
-```bash
-# DocSplit configurations (the test set comes with the stack)
-python3 benchmarks/harness/run_classification_bench.py --stack <STACK> --testset docsplit \
-  --n 20 --models nova2lite --mode topk \
-  --variants page-both,page-text,packet-both,packet-text,packet-images,split-then-classify-packet,split-then-classify-page
-
-# Synthetic one- and two-document files
-python3 benchmarks/harness/gen_corpus.py --only small_narrow,twodocs_2x20,paginated_3pg,repeathdr_3pg
-python3 benchmarks/harness/make_configs.py --suite boundary --class bank_statement
-python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite boundary
-```
-
-Recompute a row from the committed results:
-
-```bash
-jq '."nova2lite-packet-both" | {class_accuracy, boundary_accuracy, label_accuracy, classification_input_tokens_per_page}' \
-  benchmarks/results/v0.6.14/clsvariants/summary.json
-```
-
-See the [benchmark suite](../benchmarking/index.md) for setup and scoring.
-
-## Where to configure this in the accelerator
+## Configuration reference
 
 - **Granularity, strategy and what the model reads:** [Classification](../classification.md),
   including [choosing granularity, modality and strategy](../classification.md#choosing-granularity-modality-and-strategy)
@@ -424,7 +278,7 @@ See the [benchmark suite](../benchmarking/index.md) for setup and scoring.
   [Discovery](../discovery.md#multi-section-package-discovery).
 - **Score how sure the model is of each document class:**
   [classification confidence](../configuration.md#classification-confidence-classificationcombinedllmconfidence),
-  and [Confidence Assessment](confidence-assessment.md#document-class-confidence-on-multi-document-packets) for what we
+  and [Confidence Assessment](../benchmark-guidance/confidence-assessment.md) for what we
   measured.
 - **Fix a document's sections by hand:**
   [re-grouping pages](../web-ui.md#re-grouping-a-processed-documents-pages) in the Web UI.

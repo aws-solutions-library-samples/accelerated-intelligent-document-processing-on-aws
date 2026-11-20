@@ -182,7 +182,7 @@ In the two split rows the model named in the column finds the section boundaries
 | | |
 |---|---|
 | **Changes** | How the packet is split and who classifies each section, by model |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [DocSplit-Poly-Seq (100 packets)](datasets.md#docsplit-poly-seq-100-packets); [DocSplit same-class runs (60 packets)](datasets.md#docsplit-same-class-runs-60-packets) |
 | **Models** | OCR: Amazon Textract (Layout) · Classification: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N: DocSplit — 90–100 packets × 3 runs; up to 10 packets failed in a run and are left out of it; Same-class runs — 59–60 packets × 3 runs; a packet that failed in a run is left out of that run |
@@ -333,7 +333,7 @@ In the two split rows the model named in the column finds the section boundaries
 
 Failed packets per run: DocSplit — Holistic · Claude Haiku 5.5: 1, 0, 1; DocSplit — Split, then an LLM classifies each section · Amazon Nova 2 Lite: 1, 1, 0; DocSplit — Split, then an LLM classifies each section · Claude Haiku 5.5: 8, 10, 0; DocSplit — Split, then a decision model classifies each section · Amazon Nova 2 Lite: 0, 1, 0; Same-class runs — Holistic · Claude Sonnet 5.5: 0, 1, 1; Same-class runs — Split, then a decision model classifies each section · Claude Haiku 5.5: 0, 1, 0.
 
-*The [baseline setup](index.md#how-we-run-a-benchmark) is *Holistic* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
+*The [baseline setup](index.md#baseline-setup) is *Holistic* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 
@@ -349,7 +349,7 @@ apart from its closest neighbor. For classes that still get confused, add a few-
 A small decision model is more sensitive to this wording than an LLM: give it one line per
 class about what the page looks like, such as "a typed formal letter with a salutation
 (Dear ...) and a signature" ([SC-12](#can-a-decision-model-classify-the-sections)).
-See [Improving accuracy](../idp-fundamentals/splitting-and-classification.md#improving-accuracy-once-your-pipeline-is-running).
+See [Improving accuracy](../idp-fundamentals/splitting-and-classification.md#improving-accuracy).
 
 **Data quality.** Long files, documents of the same class back to back, and pages that match
 no class are the hard cases. Poor scans hide the headers and page numbers the model uses to
@@ -426,7 +426,7 @@ Full definitions: [Document Split Classification Metrics](../evaluation.md#docum
 | | |
 |---|---|
 | **Changes** | Granularity and strategy, by classification model |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
 | **Models** | OCR: Amazon Textract (Layout) · Classification: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 14–20 packets × 3 runs; up to 6 packets failed in a run and are left out of it |
@@ -487,7 +487,7 @@ Full definitions: [Document Split Classification Metrics](../evaluation.md#docum
 
 Failed packets per run: Page by page · Amazon Nova 2 Lite: 1, 0, 0; Page by page · Claude Haiku 5.5: 0, 2, 2; Page by page · Claude Sonnet 5.5: 0, 0, 2; Holistic · Claude Sonnet 5.5: 0, 0, 1; Two steps: split page by page, then classify · Amazon Nova 2 Lite: 1, 0, 0; Two steps: split page by page, then classify · Claude Haiku 5.5: 2, 5, 6; Two steps: split page by page, then classify · Claude Sonnet 5.5: 0, 0, 2; Two steps: split holistically, then classify · Amazon Nova 2 Lite: 0, 0, 1; Two steps: split holistically, then classify · Claude Haiku 5.5: 0, 0, 3.
 
-*The [baseline setup](index.md#how-we-run-a-benchmark) is *Holistic* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
+*The [baseline setup](index.md#baseline-setup) is *Holistic* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 
@@ -518,7 +518,7 @@ Failed packets per run: Page by page · Amazon Nova 2 Lite: 1, 0, 0; Page by pag
 | | |
 |---|---|
 | **Changes** | What the classification model reads |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [DocSplit-Poly-Seq (100 packets)](datasets.md#docsplit-poly-seq-100-packets) |
 | **Models** | OCR: Amazon Textract (Layout) · Classification: Claude Haiku 5.5, holistic · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 99–100 packets × 3 runs; a packet that failed in a run is left out of that run |
@@ -531,7 +531,7 @@ Failed packets per run: Page by page · Amazon Nova 2 Lite: 1, 0, 0; Page by pag
 
 Failed packets per run: Text and images (baseline): 1, 0, 1.
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 
@@ -565,7 +565,7 @@ Holistic classification with Claude Haiku 5.5 reading text and page images; a pa
 | | |
 |---|---|
 | **Changes** | Pages per holistic call (`window_pages`), on 30-to-60-page packets |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [DocSplit long packets (40 packets, 30 to 60 pages)](datasets.md#docsplit-long-packets-40-packets-30-to-60-pages) |
 | **Models** | OCR: Amazon Textract (Layout) · Classification: Claude Haiku 5.5, holistic · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 38–40 packets × 3 runs; up to 2 packets failed in a run and are left out of it |
@@ -579,7 +579,7 @@ Holistic classification with Claude Haiku 5.5 reading text and page images; a pa
 
 Failed packets per run: 20 pages (default): 2, 0, 0.
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 
@@ -615,7 +615,7 @@ Short descriptions replace each class's preset description with one line about w
 | | |
 |---|---|
 | **Changes** | Which model classifies each section after Claude Haiku 5.5 detects the sections, and the class descriptions it reads |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [DocSplit-Poly-Seq (100 packets)](datasets.md#docsplit-poly-seq-100-packets) |
 | **Models** | OCR: Amazon Textract (Layout) · Classification: Claude Haiku 5.5 finds the sections (holistic), then Claude Haiku 5.5 classifies them · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 90–100 packets × 2–3 runs; up to 10 packets failed in a run and are left out of it |
@@ -631,7 +631,7 @@ Short descriptions replace each class's preset description with one line about w
 
 Failed packets per run: LLM · Claude Haiku 5.5: 8, 10; LLM · Claude Haiku 5.5 · short descriptions: 9, 0, 0; Decision model · first page image: 0, 3, 2; Decision model · first page image · short descriptions: 2, 1, 0; Decision model · first 2 page images · short descriptions: 0, 1, 0; Decision model · first page image and text · short descriptions: 8, 10, 8.
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 
@@ -659,7 +659,7 @@ The 5-to-20-page results are the same runs as SC-13. A holistic call reads at mo
 | | |
 |---|---|
 | **Changes** | How the packet is split and classified, on packets of 5 to 20 pages and of 30 to 60 pages |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [DocSplit-Poly-Seq (100 packets)](datasets.md#docsplit-poly-seq-100-packets); [DocSplit long packets (40 packets, 30 to 60 pages)](datasets.md#docsplit-long-packets-40-packets-30-to-60-pages) |
 | **Models** | OCR: Amazon Textract (Layout) · Classification: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N: DocSplit — 90–100 packets × 3 runs; up to 10 packets failed in a run and are left out of it; Long packets — 38–40 packets × 3 runs; up to 2 packets failed in a run and are left out of it |
@@ -675,7 +675,7 @@ The 5-to-20-page results are the same runs as SC-13. A holistic call reads at mo
 
 Failed packets per run: DocSplit — Holistic · Claude Haiku 5.5: 1, 0, 1; DocSplit — Split, then an LLM classifies each section · Claude Haiku 5.5: 8, 10, 0; Long packets — Holistic · Claude Haiku 5.5: 2, 0, 0.
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 

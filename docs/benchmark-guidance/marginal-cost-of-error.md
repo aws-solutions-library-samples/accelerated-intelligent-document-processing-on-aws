@@ -69,7 +69,7 @@ accuracies directly.
 
 - **It needs a real accuracy gain.** A gain inside the noise makes the denominator tiny and
   the MCoE large and meaningless. That is why the charts say "no measurable gain" instead.
-  See [Why you can trust the results](index.md#why-you-can-trust-the-results).
+  See [Benchmark process](index.md#benchmark-process).
 - **The costs are on-demand Bedrock and Textract prices only**, for the one region and on the
   date each chart shows, from
   [config_library/pricing.yaml](../../config_library/pricing.yaml). They leave out the other
@@ -129,7 +129,7 @@ Our benchmarks give you MCoE. PER and wPER are yours to calculate once you know 
 costs you.
 
 1. Build a test set with ground truth from your own documents. See
-   [How to measure extraction on your own documents](../idp-fundamentals/extraction.md#how-to-measure-extraction-on-your-own-documents).
+   [How to measure extraction on your own documents](../idp-fundamentals/extraction.md#measuring-accuracy).
 2. Run it in [Test Studio](../test-studio.md) with each configuration you are considering.
    Each run reports its cost and accuracy.
 3. Calculate MCoE for each pair of runs, then PER or wPER with your cost of an error.

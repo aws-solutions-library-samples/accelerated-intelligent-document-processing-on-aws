@@ -68,7 +68,7 @@ On W-2 forms it cost $5 per 1,000 against $32 for the default, and scored higher
 | | |
 |---|---|
 | **Changes** | Configuration |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Everything else** | As each dataset's [preset](index.md#baseline-setup) sets it |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
 | **Models** | OCR: varies (the setting under test) · Extraction: varies (the setting under test) · Scoring: varies (the setting under test). |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -82,7 +82,7 @@ On W-2 forms it cost $5 per 1,000 against $32 for the default, and scored higher
 | Fake-W2 | Claude Haiku 5.5, Layout only, confidence off | 1 ± 0 | 0.8 ± 0.06 | **7,406 ± 30** | **$5.34 ± $0.02** | **17 ± 0.36** | — |
 | Fake-W2 | **Claude Haiku 5.5, Layout only, Claude Haiku 5.5 scoring (recommended)** | 1 ± 0 | 0.8 ± 0 | 18,289 ± 305 | $7.80 ± $0.23 | 30 ± 0.53 | no measurable gain |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the [recommended setup](index.md#what-we-recommend).*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the reference configuration.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 

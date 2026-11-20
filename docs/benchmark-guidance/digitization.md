@@ -23,7 +23,7 @@ value is wrong, open [View Page Text](../web-ui.md#view-page-text) first. If the
 right in the page text, the fix is in your classification or extraction definitions.
 
 **Data quality.** Scan at 300 DPI, and turn on preprocessing for photos and poor scans. See
-[Improving digitization](../idp-fundamentals/digitization.md#improving-digitization-once-your-pipeline-is-running).
+[Improving digitization](../idp-fundamentals/digitization.md#improving-accuracy).
 
 **Settings.**
 
@@ -68,7 +68,7 @@ On OmniAI bank checks, Textract with Layout only got every field right on 47% of
 | | |
 |---|---|
 | **Changes** | OCR reader |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [OmniAI-OCR-Benchmark, bank checks (20)](datasets.md#omniai-ocr-benchmark-bank-checks-20) |
 | **Models** | OCR: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. Classification by dataset: OmniAI, bank checks — Claude Haiku 5.5, holistic. |
 | **Runs** | 3 per document, per value; N: RealKIE — 20 documents × 3 runs; OmniAI, bank checks — 17–20 documents × 3 runs; up to 3 documents failed in a run and are left out of it |
@@ -84,7 +84,7 @@ On OmniAI bank checks, Textract with Layout only got every field right on 47% of
 
 Failed documents per run: OmniAI, bank checks — Textract, layout only (recommended): 0, 2, 1; OmniAI, bank checks — Textract, tables and layout: 0, 0, 3; OmniAI, bank checks — Amazon Nova 2 Lite vision: 0, 1, 1.
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -106,7 +106,7 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 | | |
 |---|---|
 | **Changes** | `ocr.image.dpi` |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
 | **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -117,7 +117,7 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 | RealKIE | 200 DPI | 0.81 ± 0.07 | 16,941 ± 360 | $26.0 ± $0.11 | no measurable gain |
 | RealKIE | 150 DPI | 0.77 ± 0.08 | **12,126 ± 166** | $23.8 ± $0.01 | no measurable gain |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -139,7 +139,7 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 | | |
 |---|---|
 | **Changes** | `ocr.features` |
-| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Everything else** | The [baseline setup](index.md#baseline-setup) |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
 | **Models** | OCR: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
@@ -155,7 +155,7 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 | Fake-W2 | Tables only | 0.93 ± 0.02 | 0.37 ± 0.15 | — | 18,895 ± 429 | $18.5 ± $0.06 | no measurable gain |
 | Fake-W2 | Tables, layout, signatures, forms | 0.97 ± 0.01 | 0.57 ± 0.03 | — | 18,696 ± 59 | $68.5 ± $0.03 | no measurable gain |
 
-*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#baseline-setup) uses.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 

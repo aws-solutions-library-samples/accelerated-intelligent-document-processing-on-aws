@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 # Rule Validation
 
-## What rule validation does for your database
+## Overview
 
 Extraction puts the values from your documents into a record. Rule validation answers the
 question your team asks next: does this file meet our rules? Does the loan file meet
@@ -16,7 +16,7 @@ criteria? Does the invoice match its purchase order?
 
 Rule validation checks each file against your business rules and returns a **verdict** for
 every rule: a short answer such as *Pass*, *Fail* or *Information Not Found*, with the
-reasoning and the page numbers it relied on. The verdicts go into your database next to the
+reasoning and the page numbers it relied on. The verdicts come back as JSON next to the
 extracted record. Files that pass every rule can go straight through, and your reviewers see
 only the exceptions, with the reason already written down.
 
@@ -60,7 +60,7 @@ flowchart TB
 The accelerator writes the verdicts; you decide what happens to a file that fails a rule.
 The last two arrows show one common choice.
 
-## How the accelerator validates a file against your rules
+## Validation
 
 Rule validation runs after extraction, once for every file, in three steps:
 
@@ -102,7 +102,7 @@ policy_classes:
         description: "Did the borrower sign the loan application?"
 ```
 
-### Which policy classes apply to a file
+### Policy class selection
 
 When you keep one policy class, the accelerator applies it to every file. When you keep
 several, each policy class needs a pattern that says which files it covers. The
@@ -112,7 +112,7 @@ accelerator matches the patterns, without a model call, against the file name
 policy classes that match. A file that matches no policy class gets a short note in place of
 verdicts. See [No-Policy-Match Behavior](../rule-validation.md#no-policy-match-behavior).
 
-### How the accelerator gathers the facts each rule needs
+### Fact gathering
 
 The **fact extraction model** reads two sources for each section of the file:
 
@@ -131,7 +131,7 @@ Sections whose document class you mark as excluded (`x-aws-idp-exclude-from-proc
 such as instruction pages, get no fact extraction call. See
 [Skipping Rule Validation for Excluded Classes](../rule-validation.md#skipping-rule-validation-for-excluded-classes).
 
-### Two engines: a language model for judgment, the Z3 solver for exact rules
+### Engines
 
 Consolidation decides each rule with one of two engines. You choose the engine per rule in
 the Policy Schema tab with **Validation Engine** (`x-aws-idp-validation-engine`).
@@ -181,7 +181,7 @@ When a model call fails for a temporary reason, such as throttling, the accelera
 the step. The accelerator never answers *Information Not Found* because a model was busy. See
 [A transient fault is never answered with a verdict](../rule-validation.md#a-transient-fault-is-never-answered-with-a-verdict).
 
-### Where people review the results
+### Review
 
 Rule validation runs after human review of the extracted values. When a file's confidence
 sends it to a review queue, the accelerator holds rule validation until a reviewer finishes
@@ -196,7 +196,7 @@ pipeline hook. The [Health Insurance Review sample](../extensions/sample-health-
 uses one to mark each claim *Clean claim*, *Review required* or *Insufficient documentation*
 from its verdicts.
 
-### Drafting rules from a policy document with Policy Discovery
+### Policy Discovery
 
 You do not have to write rules by hand. [Policy Discovery](../policy-discovery.md) reads a
 policy document, such as an underwriting guide or a payer's prior-authorization policy, and
@@ -219,7 +219,7 @@ Regex. When the profile holds more than one policy class, add a regex to each, s
 accelerator knows which files each one covers. See
 [Required: Add a Document Matching Regex](../policy-discovery.md#required-add-a-document-matching-regex).
 
-## The configuration to start with
+## Getting started
 
 **Start from the `rule-validation` preset, or turn on rule validation in your own profile.**
 The preset holds a complete prior-authorization example with sample files. In any profile,
@@ -239,20 +239,18 @@ your configuration fields such as *Monthly income* and *Application date*. The f
 extraction model reads the extracted fields alongside the page text, and you can measure
 those fields against ground truth like any other field.
 
-**Keep the default engine, models and options, and move exact rules to Z3.** Leave rules
-that need judgment on the language-model engine, with the default models and the three
-default recommendation options. Switch rules that are pure arithmetic or comparisons to
-*Symbolic (Z3)*, and declare a value that can hold a fraction, such as a ratio or an amount,
-as `Real`.
+**Use the language-model engine for rules that need judgment, and Z3 for exact rules.**
+Switch rules that are pure arithmetic or comparisons to *Symbolic (Z3)*, and declare a value
+that can hold a fraction, such as a ratio or an amount, as `Real`.
 
 **Give each policy class a Document Name Regex as soon as you have more than one.** Without
 one, the accelerator cannot tell which policy classes apply, and it validates none of them.
 
-## How many tokens rule validation uses, and what drives the count
+## Token use
 
 The accelerator records rule validation tokens on every file it processes, so you can
 measure them on your own files (see
-[the next section](#how-to-measure-rule-validation-on-your-own-files)).
+[the next section](#measuring-accuracy)).
 
 What drives the count:
 
@@ -276,7 +274,7 @@ The surest way to use fewer tokens is to run fewer rules on each file: give each
 a regex so that only the policy classes that apply run, remove rules that duplicate each
 other, and exclude sections that carry no facts.
 
-## How to measure rule validation on your own files
+## Measuring accuracy
 
 Measure the facts and the verdicts separately, so that a wrong verdict traces back to a
 wrong fact or to an unclear rule.
@@ -311,7 +309,7 @@ likely to go wrong on the next file.
 [reporting database](../reporting-database.md#metering-table) show them. Count prompt-cache
 reads as input tokens when you add them up.
 
-## Wrong passes, wrong fails and missing facts: what causes each, and what to change
+## Common mistakes
 
 Once you have measured, sort the disagreements by where they start.
 
@@ -323,23 +321,11 @@ Once you have measured, sort the disagreements by where they start.
 | ***Information Not Found* when the evidence is there** | The fact is on a page with poor OCR, or the rule names it differently from the document | Check the page text, use the document's own words in the rule, or add the fact as an extraction field |
 | ***Information Not Found* on a Z3 rule** | A required value is missing from the facts, or the model read a value such as 30.9 for a parameter declared `Int` | Declare fractional values as `Real`, and check that the facts hold every parameter. See [A numeric reading must be exact in its declared type](../rule-validation-z3.md#a-numeric-reading-must-be-exact-in-its-declared-type) |
 | **Two rules contradict each other** | Two policy classes hold the same rule in different words | Keep one copy |
-| **No verdicts at all** | No policy class matched the file, often because the profile gained a second policy class without a regex | Add a Document Name Regex or Page Content Regex to every policy class |
+| **No verdicts at all** | No policy class matched the file, as when the profile gained a second policy class without a regex | Add a Document Name Regex or Page Content Regex to every policy class |
 
-## Benchmark results: rule validation is not yet benchmarked
+## Improving accuracy
 
-We have not benchmarked rule validation. The benchmark suite has no rule validation
-dataset, and we have not found a public dataset that pairs real documents with expert rule
-verdicts. You can measure the facts behind your rules today, as extraction: see
-[Key Information Extraction](extraction.md) for what we measured there. We track the planned
-rule validation measurements in
-[issue #1842](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1842).
-Until those measurements exist, the expert comparison above is the way to judge rule
-validation on your files.
-
-## Improving rule verdicts once your pipeline is running
-
-When your comparison shows verdicts that disagree with your expert, these changes help most,
-roughly in this order.
+When your comparison shows verdicts that disagree with your expert, try these changes, and score each one against your test set.
 
 **Rewrite the rules that disagree most.** Put one criterion in each rule, state the
 threshold, and define any term your industry uses loosely. Use the words your documents use:
@@ -365,7 +351,7 @@ policy, try the agentic mode with its reviewer.
 classes of pages that carry no facts as excluded. Fewer irrelevant calls mean fewer tokens and
 fewer chances for a stray fact to sway a verdict.
 
-## Where to configure rule validation in the accelerator
+## Configuration reference
 
 - **Turn it on and set the models, chunking and recommendation options:**
   [Rule Validation](../rule-validation.md), including its
