@@ -1066,14 +1066,16 @@ def test_no_new_job_is_added_for_it(config):
     """The Terraform run is the integration_tests job on its own schedule, as the
     probe and region runs are; a second deploy job would race the first for the
     same resource group on the same schedule and break nightly_notification's
-    reading of which job ran."""
+    reading of which job ran. The one other deploy job is load_probe, which runs
+    only on the load-probe schedule, where integration_tests is ruled out
+    (test_load_probe.py pins both sets of rules)."""
     deploy_jobs = [
         name
         for name, job in config.items()
         if isinstance(job, dict)
         and "integration_test_deployment.py" in _script_text(job)
     ]
-    assert deploy_jobs == ["integration_tests"]
+    assert deploy_jobs == ["integration_tests", "load_probe"]
 
 
 # ---------------------------------------------------------------------------
