@@ -2105,10 +2105,10 @@ def delete_documents_cmd(
           --document-ids "batch-123/doc1.pdf,batch-123/doc2.pdf"
 
       # Delete all documents in a batch
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60
 
       # Delete only failed documents in a batch
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123 --status-filter FAILED
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60 --status-filter FAILED
 
       # Delete documents matching a wildcard pattern
       idp-cli delete-documents --stack-name my-stack --pattern "batch-123/*.pdf"
@@ -2117,7 +2117,7 @@ def delete_documents_cmd(
       idp-cli delete-documents --stack-name my-stack --pattern "*invoice*" --status-filter FAILED
 
       # Dry run to see what would be deleted
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123 --dry-run
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60 --dry-run
 
       # Force delete without confirmation
       idp-cli delete-documents --stack-name my-stack --document-ids "batch-123/doc1.pdf" --force
@@ -2707,7 +2707,7 @@ def reprocess(
       idp-cli reprocess \\
           --stack-name my-stack \\
           --step extraction \\
-          --batch-id cli-batch-20251015-143000 \\
+          --batch-id cli-batch-20251015-143000-7f3a9c1e \\
           --monitor
     """
     # Call the shared implementation directly. `rerun_inference` is the
@@ -3401,7 +3401,7 @@ def download_results(
     Examples:
 
       # Download all results for a batch
-      idp-cli download-results --stack-name my-stack --batch-id cli-batch-20251015-143000 --output-dir ./results/
+      idp-cli download-results --stack-name my-stack --batch-id cli-batch-20251015-143000-7f3a9c1e --output-dir ./results/
 
       # Download only extraction results (sections)
       idp-cli download-results --stack-name my-stack --batch-id <id> --output-dir ./results/ --file-types sections
@@ -8113,7 +8113,6 @@ def test_compare(
         --test-run-ids "run1,run2,run3" --output-dir ./comparisons
     """
     import csv
-    from datetime import datetime, timezone
 
     region = _region_or_exit(region)
 
@@ -8155,20 +8154,24 @@ def test_compare(
         # Save to files if output-dir specified
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            # One id for both files, unique even when two comparisons are saved
+            # to the same directory within one second.
+            from idp_sdk import generate_timestamped_id
+
+            comparison_id = generate_timestamped_id("comparison")
 
             # Save JSON (reconstruct result dict for compatibility)
             result_data = {
                 "metrics": metrics,
                 "configs": configs,
             }
-            json_file = os.path.join(output_dir, f"comparison-{timestamp}.json")
+            json_file = os.path.join(output_dir, f"{comparison_id}.json")
             with open(json_file, "w") as f:
                 json.dump(result_data, f, indent=2, default=str)
             console.print(f"[green]✓ Comparison JSON saved to: {json_file}[/green]")
 
             # Save CSV (metrics only)
-            csv_file = os.path.join(output_dir, f"comparison-{timestamp}.csv")
+            csv_file = os.path.join(output_dir, f"{comparison_id}.csv")
             with open(csv_file, "w", newline="") as f:
                 writer = csv.writer(f)
 
