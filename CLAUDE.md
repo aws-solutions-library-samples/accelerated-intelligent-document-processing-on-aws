@@ -1095,7 +1095,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
 
 - React-based interface using Cloudscape Design System
 - Vite build system
-- Node.js 22.15+ and npm required
+- Node.js 26+ and npm required
 - Authentication via AWS Amplify v6 and Cognito
 - Document status via REST polling of the tracking table (`src/ui/src/hooks/use-polling.ts`); chat tokens stream from a Lambda Function URL
 - Location: `src/ui/`
@@ -1662,7 +1662,7 @@ than as a local error, and the evidence is in the CodeBuild build log. Check:
 ### UI Build Issues
 
 Check:
-- Node.js version >= 22.15.0
+- Node.js version >= 26.0.0
 - Run `npm ci` in `src/ui/` to install dependencies
 - Check `src/ui/.checksum` if builds are being skipped unexpectedly
 

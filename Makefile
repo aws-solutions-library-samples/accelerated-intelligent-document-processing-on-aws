@@ -221,7 +221,7 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
 	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 
-setup-node: ## Install src/ui and docs-site npm dependencies from their lockfiles, plus basedpyright (needs Node 22.15+; fails on any error)
+setup-node: ## Install src/ui and docs-site npm dependencies from their lockfiles, plus basedpyright (needs Node 26+; fails on any error)
 	@scripts/setup_node.sh required
 
 ##@ Code Quality

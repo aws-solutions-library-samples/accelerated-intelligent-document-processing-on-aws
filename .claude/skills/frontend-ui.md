@@ -8,7 +8,7 @@
 - **API**: API Gateway REST API — `POST /op/<field>` behind a Cognito User Pools authorizer — reached through a GraphQL-shaped client shim (`src/api/client-shim.ts` → `src/api/rest-client.ts`). Operation documents and TypeScript types are still generated from `schema.graphql` via `codegen.config.mjs`. AppSync has been removed.
 - **Router**: react-router-dom v6 (HashRouter)
 - **State**: React Context + `immer` (NO Redux)
-- **Node**: `>=22.15.0`, npm `>=10.0.0`
+- **Node**: `>=26.0.0`, npm `>=10.0.0`
 - **Module**: ESM (`"type": "module"`)
 - **Test**: Vitest + jsdom
 

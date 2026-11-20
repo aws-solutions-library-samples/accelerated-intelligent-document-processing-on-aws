@@ -33,7 +33,7 @@ auto | required) ;;
 esac
 
 REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd) || exit 1
-MIN_NODE=22.15.0
+MIN_NODE=26.0.0
 
 if [ -t 1 ]; then
 	YELLOW='\033[1;33m' RED='\033[0;31m' GREEN='\033[0;32m' NC='\033[0m'

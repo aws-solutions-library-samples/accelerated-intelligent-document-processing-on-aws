@@ -1447,8 +1447,8 @@ treats that file as diagnostics only.
   persona's password is not scoped (see **CI variables** below). The exception is
   `ux_test_build`'s `.node_setup`, the anchor every job that builds the UI shares,
   which runs with the job's environment: it unpacks the Node.js release from
-  nodejs.org, which nothing checks against a digest, and has that release's npm
-  upgrade itself. What guards against a hostile package in `ai_ux_test` is
+  nodejs.org, which nothing checks against a digest, and uses the npm that
+  release bundles. What guards against a hostile package in `ai_ux_test` is
   that each download is checked before it is used: `install.sh` checks the Chrome
   for Testing zip and the Node tarball against the sha256 it records for each
   architecture, installs the Python packages with `pip --require-hashes` from the
