@@ -23,7 +23,7 @@
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
     "files": 234,
-    "findings": 6034
+    "findings": 6030
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -188,7 +188,7 @@
     "src/ui/src/components/model-config-limits-layout/ModelConfigLimitsLayout.tsx": 94,
     "src/ui/src/components/pages-panel/PageTextEditorModal.tsx": 43,
     "src/ui/src/components/pages-panel/PagesPanel.tsx": 15,
-    "src/ui/src/components/pricing-layout/PricingLayout.tsx": 78,
+    "src/ui/src/components/pricing-layout/PricingLayout.tsx": 77,
     "src/ui/src/components/pricing-layout/tools-panel.tsx": 9,
     "src/ui/src/components/review-queues/AssignModal.tsx": 10,
     "src/ui/src/components/review-queues/MyQueuesPage.tsx": 13,
@@ -214,11 +214,11 @@
     "src/ui/src/components/step-function-flow/StepDetails.tsx": 25,
     "src/ui/src/components/step-function-flow/StepFunctionFlowViewer.tsx": 30,
     "src/ui/src/components/test-studio/AbortTestModal.tsx": 8,
-    "src/ui/src/components/test-studio/AddDocumentsModals.tsx": 41,
+    "src/ui/src/components/test-studio/AddDocumentsModals.tsx": 40,
     "src/ui/src/components/test-studio/AddProcessedDocumentsModal.tsx": 33,
     "src/ui/src/components/test-studio/AnnotationWorkspace.tsx": 105,
     "src/ui/src/components/test-studio/ClassificationErrorsPanel.tsx": 19,
-    "src/ui/src/components/test-studio/CreateTestSetWizard.tsx": 92,
+    "src/ui/src/components/test-studio/CreateTestSetWizard.tsx": 91,
     "src/ui/src/components/test-studio/DeleteTestModal.tsx": 5,
     "src/ui/src/components/test-studio/GenerateDraftLabelsModal.tsx": 35,
     "src/ui/src/components/test-studio/GenerateSyntheticDataModal.tsx": 4,
@@ -233,7 +233,7 @@
     "src/ui/src/components/test-studio/TestRunner.tsx": 37,
     "src/ui/src/components/test-studio/TestRunnerStatus.tsx": 3,
     "src/ui/src/components/test-studio/TestSetDetail.tsx": 121,
-    "src/ui/src/components/test-studio/TestSets.tsx": 72,
+    "src/ui/src/components/test-studio/TestSets.tsx": 71,
     "src/ui/src/components/test-studio/TestStudioHeader.tsx": 2,
     "src/ui/src/components/test-studio/TestStudioLayout.tsx": 2,
     "src/ui/src/components/test-studio/abortResultMessages.ts": 2,
