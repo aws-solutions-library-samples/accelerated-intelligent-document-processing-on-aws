@@ -77,6 +77,20 @@ def out(monkeypatch):
     return buffer
 
 
+@pytest.fixture
+def err(monkeypatch):
+    """Pin this module's stderr console the same way, to a separate buffer.
+
+    A search prints its progress lines here, never on stdout, because the CLI's
+    `status --batch-id --format json` puts its payload on stdout (#2199).
+    """
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        mod, "err_console", Console(file=buffer, width=200, force_terminal=False)
+    )
+    return buffer
+
+
 def flat(rendered: str) -> str:
     """Collapse runs of whitespace, so an assertion survives Rich's line wrapping.
 
@@ -259,7 +273,7 @@ class TestSearch:
     """`search_by_pk_and_status` scans the real table through moto."""
 
     def test_the_scan_matches_on_a_pk_substring_and_an_exact_status(
-        self, monkeypatch, out, api_calls
+        self, monkeypatch, out, err, api_calls
     ):
         """Both halves of the filter have to bite, and the assertion proves each does.
 
@@ -301,13 +315,14 @@ class TestSearch:
         }
         assert "ExclusiveStartKey" not in call.params
 
-        rendered = out.getvalue()
+        assert out.getvalue() == ""
+        rendered = err.getvalue()
         assert "Searching tracking table for PK containing 'batch#42'" in rendered
         assert "ObjectStatus='COMPLETED'" in rendered
         assert "Found 1 matching documents" in rendered
 
     def test_a_search_that_matches_nothing_succeeds_with_a_count_of_zero(
-        self, monkeypatch, out
+        self, monkeypatch, out, err
     ):
         with mock_aws():
             searcher, _ = build_searcher(monkeypatch)
@@ -322,9 +337,10 @@ class TestSearch:
             "pk": "absent",
             "object_status": "COMPLETED",
         }
-        assert "Found 0 matching documents" in out.getvalue()
+        assert "Found 0 matching documents" in err.getvalue()
+        assert out.getvalue() == ""
 
-    def test_the_scan_loop_returns_every_page(self, monkeypatch, out, api_calls):
+    def test_the_scan_loop_returns_every_page(self, monkeypatch, out, err, api_calls):
         """Seed past DynamoDB's 1 MB page budget so the loop genuinely runs twice.
 
         Each item carries ~60 KB of padding, so twenty of them cannot be returned in
@@ -362,10 +378,11 @@ class TestSearch:
         assert sorted(i["ObjectKey"]["S"] for i in result["items"]) == [
             f"page-{index:02d}.pdf" for index in range(20)
         ]
-        assert "Found 20 matching documents" in out.getvalue()
+        assert "Found 20 matching documents" in err.getvalue()
+        assert out.getvalue() == ""
 
     def test_the_last_evaluated_key_is_fed_back_as_the_exclusive_start_key(
-        self, monkeypatch, out
+        self, monkeypatch, out, err
     ):
         """Drive the two pages explicitly, so the wiring is pinned without moto.
 
@@ -399,10 +416,11 @@ class TestSearch:
             "first.pdf",
             "second.pdf",
         ]
-        assert "Found 2 matching documents" in out.getvalue()
+        assert "Found 2 matching documents" in err.getvalue()
+        assert out.getvalue() == ""
 
     def test_a_missing_documents_table_refuses_without_scanning(
-        self, monkeypatch, out, api_calls
+        self, monkeypatch, out, err, api_calls
     ):
         """The refusal has to happen before any API call, not as a failed scan.
 
@@ -420,19 +438,21 @@ class TestSearch:
             "error": "DocumentsTable not found in stack resources",
         }
         assert api_calls.of("Scan") == []
-        assert out.getvalue() == ""
+        assert out.getvalue() == "" and err.getvalue() == ""
 
-    def test_an_empty_documents_table_name_refuses_the_same_way(self, monkeypatch, out):
+    def test_an_empty_documents_table_name_refuses_the_same_way(
+        self, monkeypatch, out, err
+    ):
         with mock_aws():
             searcher, _ = build_searcher(monkeypatch, table_name="")
             result = searcher.search_by_pk_and_status("batch#1", "COMPLETED")
 
         assert result["success"] is False
         assert result["error"] == "DocumentsTable not found in stack resources"
-        assert out.getvalue() == ""
+        assert out.getvalue() == "" and err.getvalue() == ""
 
     def test_a_failing_scan_is_reported_rather_than_raised(
-        self, monkeypatch, out, api_calls
+        self, monkeypatch, out, err, api_calls
     ):
         """A table that does not exist is the realistic shape of this failure.
 
@@ -450,8 +470,9 @@ class TestSearch:
         assert set(result) == {"success", "error"}
         assert len(api_calls.of("Scan")) == 1
         # The progress line is printed before the scan is attempted.
-        assert "Searching tracking table" in out.getvalue()
-        assert "Found" not in out.getvalue()
+        assert "Searching tracking table" in err.getvalue()
+        assert "Found" not in err.getvalue()
+        assert out.getvalue() == ""
 
     def test_search_and_statistics_compose_end_to_end(self, monkeypatch, out):
         """One pass through the module as the CLI uses it: scan, then summarise."""

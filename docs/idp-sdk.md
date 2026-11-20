@@ -617,6 +617,8 @@ Get confidence scores and quality metrics for all documents in a batch, with pag
 
 **Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list with per-document confidence attributes), and optional `next_token`
 
+Each entry in `documents` carries `document_id`, `attributes` and `status`. `status` is the document's progress bucket read from the tracking table, the same one `batch.get_status()` reports it under: `COMPLETED`, `HITL_IN_PROGRESS`, `RUNNING`, `QUEUED` or `FAILED`. That holds also when no assessment file exists for the document yet, in which case `attributes` is empty; a document whose tracking record has not been written yet reads `QUEUED` until `NOT_FOUND_GRACE_SECONDS` (60 seconds by default, set by `IDP_NOT_FOUND_GRACE_SECONDS`) have passed since the batch was submitted, and `FAILED` after that. The status lookup does not raise when the tracking query fails: it reports the document as `QUEUED`. A row reads `ERROR` when reading the document's assessment data fails for any reason other than the file being absent.
+
 ```python
 result = client.batch.get_confidence(batch_id="batch-20250123-123456", limit=20)
 
@@ -702,7 +704,7 @@ Permanently delete documents and their associated data from InputBucket, OutputB
   `batch-1/a.pdf` and **not** `batch-10/b.pdf`. Use `pattern` for substring or
   wildcard selection.
 - `pattern` (str, optional): Wildcard pattern to match document keys (e.g., `"batch-123/*.pdf"`, `"*invoice*"`)
-- `status_filter` (str, optional): Only select documents whose current status is exactly this value (e.g., "FAILED", "COMPLETED")
+- `status_filter` (str, optional): Only select documents whose current status is exactly this value (e.g., "FAILED", "COMPLETED"). It must be one of `idp_common.models.DOCUMENT_STATUS_VALUES`, the same set `idp-cli delete-documents --status-filter` offers. A document still being processed carries the name of its current step, such as `OCR` or `EXTRACTING`; there is no `PROCESSING` status, and any value outside the set, including `PROCESSING`, raises `IDPConfigurationError` before anything is read
 - `stack_name` (str, optional): Stack name override
 - `dry_run` (bool, optional): If True, simulate deletion without actually deleting (default: False)
 - `continue_on_error` (bool, optional): Continue deleting if one document fails (default: True)
