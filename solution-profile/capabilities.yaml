@@ -586,6 +586,29 @@ capabilities:
       - capability:idp-cli
       - extension:downstream-integration
 
+  - id: fit-check
+    title: Fit check on sample documents
+    description: >-
+      idp-cli fit-check runs a folder of sample documents through an existing stack
+      and writes fit-report.json and fit-report.md: per document its class, each
+      field's presence and confidence, the solution-profile limitations the run
+      observed, latency and an estimated cost, and a summary per class. Without a
+      configuration profile it generates a new one with Discovery, or with Quick
+      Start from a description, and never changes the active profile. With ground
+      truth it adds the evaluation step's accuracy; without it, the report states
+      that confidence is not accuracy. --cleanup deletes the uploaded documents,
+      their results and the generated profile.
+    evidence:
+      - docs/fit-check.md
+      - lib/idp_sdk/idp_sdk/operations/fit_check.py
+      - lib/idp_sdk/idp_sdk/_core/fit_check/fit-report.schema.json
+    related:
+      - capability:discovery
+      - capability:quick-start
+      - capability:evaluation
+      - capability:cost-reporting
+      - capability:idp-cli
+
   - id: reporting-database
     title: Reporting database for analytics over results and costs
     description: >-
@@ -680,6 +703,7 @@ capabilities:
       repository does not document.
     evidence:
       - lib/idp_common_pkg/idp_common/ocr/service.py
+      - lib/idp_common_pkg/idp_common/ocr/file_types.py
       - lib/idp_common_pkg/idp_common/ocr/document_converter.py
       - src/ui/src/components/common/constants.ts
       - lib/idp_common_pkg/pyproject.toml
@@ -700,6 +724,7 @@ capabilities:
       - format:webp
     related:
       - limitation:legacy-office-formats
+      - limitation:unsupported-file-format
       - question:file-formats
 
   - id: bedrock-model-choice

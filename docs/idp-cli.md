@@ -36,6 +36,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [publish](#publish)
   - [delete](#delete)
   - [bootstrap](#bootstrap)
+  - [fit-check](#fit-check)
   - [process](#process--run-inference)
   - [reprocess](#reprocess--rerun-inference)
   - [status](#status)
@@ -1081,6 +1082,22 @@ requires the Test Set Generator extension (deployed stack) or
 `pip install -e "lib/idp_common_pkg[synthesis]"` (local); without it, the config is still
 created and you can upload your own documents to build a test set. See the
 [Quick Start guide](./quick-start.md) for the full workflow.
+
+---
+
+### `fit-check`
+
+Run a folder of sample documents through a deployed stack and write a structured
+fit report (`fit-report.json` and `fit-report.md`): per document its class, each
+field's presence and confidence, the solution-profile limitations the run observed,
+latency and an estimated cost. Without `--config-profile` it generates a **new**
+configuration profile with Discovery (or Quick Start from `--description`) and never
+changes the active one. See [Fit Check](./fit-check.md) for every option, the report
+fields, and what is uploaded, kept and removed by `--cleanup`.
+
+```bash
+idp-cli fit-check --stack-name my-idp-stack --samples ./samples-to-check/ --cleanup
+```
 
 ---
 
