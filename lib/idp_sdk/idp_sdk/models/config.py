@@ -294,6 +294,41 @@ class ConfigDeleteResult(BaseModel):
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
 
+class ConfigBootstrapResult(BaseModel):
+    """Result of authoring a document class from a prompt into a new profile.
+
+    The fields are ``idp_common.synthesis.bootstrap.BootstrapResult``'s, which the
+    operation returns unchanged.
+    """
+
+    success: bool = Field(description="Whether the profile was written")
+    config_profile: Optional[str] = Field(
+        default=None, description="The configuration profile the class was saved to"
+    )
+    class_schema: Optional[Dict[str, Any]] = Field(
+        default=None, description="The authored document-class JSON Schema"
+    )
+    resolution_tier: str = Field(
+        default="none",
+        description="catalog_adapt (adapted a catalog class), pure_llm, or failed",
+    )
+    catalog_match: Optional[str] = Field(
+        default=None, description="The catalog class the schema was adapted from"
+    )
+    test_set_id: Optional[str] = Field(
+        default=None, description="Synthetic test set registered, if any"
+    )
+    docs_generated: int = Field(default=0, description="Synthetic documents made")
+    generator_available: bool = Field(
+        default=False, description="Whether the document generator was available"
+    )
+    messages: List[str] = Field(default_factory=list, description="Progress lines")
+    error: Optional[str] = Field(
+        default=None,
+        description="Failure, or a non-fatal note when success is true",
+    )
+
+
 class ConfigSyncBdaResult(BaseModel):
     """Result of BDA blueprint synchronization."""
 
