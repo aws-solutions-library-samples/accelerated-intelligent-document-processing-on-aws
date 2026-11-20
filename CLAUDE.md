@@ -125,9 +125,9 @@ skips the file you are fixing. Never hand-edit either array. `--write` **refuses
 grow** either list, naming the paths, unless given `--allow-new-debt "<reason>"`,
 which records the reason in the baseline; without that refusal `--write` would
 launder a brand-new finding into a permanent exclusion. `--summary` prints the
-current split. Two `extend-exclude` entries are scope decisions rather than debt —
-the vendored `pii-anonymizer` tree and `**/*.ipynb` — and each carries a premise
-the gate evaluates against the tree.
+current split. Some `extend-exclude` entries are scope decisions rather than debt —
+the vendored `pii-anonymizer` tree, `**/*.ipynb` and the vendored solution-profile
+contract validator — and each carries a premise the gate evaluates against the tree.
 
 The **formatting** debt is deliberately unpaid: `ruff format` over that whole list
 is a mechanical, conflict-generating sweep that belongs in its own change.

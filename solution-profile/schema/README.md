@@ -13,6 +13,7 @@ copied in again whole.
 | What | The Solution Profile contract, version 1: its README, JSON Schema and reference validator |
 | Vendored | 2026-11-20, unchanged |
 | Maintained | Outside this repository, by the contract's owners. Only they change it; this repository takes a new version by copying the files in again |
+| Upstream | None published as of 2026-11-20: the files were supplied by the contract's owners, so the digests below pin that these copies are unchanged here, not that they match a public source. The schema's `$id` is a placeholder domain and does not resolve |
 | Integrity | The sha256 of each file is pinned below and checked by `scripts/tests/test_solution_profile.py` |
 
 ## Files

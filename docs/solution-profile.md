@@ -52,8 +52,10 @@ cat solution-profile/build.json
 The tarball has one top-level directory, `solution-profile/`. `build.json` records the
 profile `id`, `version`, release `tag`, release `commit` and `schema_version`, and the
 same tag and commit are stamped into `solution-profile/solution-profile.yaml` under
-`source`. The build is deterministic, so the same commit always produces the same
-bytes and the published digest can be reproduced from a checkout of the tag.
+`source`. The archive is deterministic: the same commit always produces the same tar
+stream. The gzip layer adds no timestamp or file name, so with the same Python and
+zlib build the compressed bytes, and so the published digest, reproduce from a
+checkout of the tag; a different zlib can compress the same stream differently.
 
 To check the profile against its contract, validate it with `--repo-root` pointing at
 a checkout of the release tag. Its evidence paths are relative to that checkout, and

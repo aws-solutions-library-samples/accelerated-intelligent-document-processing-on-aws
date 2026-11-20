@@ -11,7 +11,10 @@ the profile files, the skills and ``build.json``; the vendored contract under
 ``source.tag`` and ``source.commit`` are stamped into the BUILT manifest only. The
 checked-in manifest never carries them, because a commit cannot name its own hash.
 
-The build is deterministic: the same commit and tag always produce the same bytes.
+The tar stream is deterministic: the same commit and tag always produce the same
+uncompressed archive. The gzip header carries no mtime or file name, so the
+compressed bytes also match for the same Python and zlib build; a different zlib can
+compress the same stream differently.
 Entries are sorted, every entry has mtime 0, uid and gid 0, empty owner names and a
 fixed mode, the archive is plain USTAR (so no PAX header can carry a timestamp), and
 the gzip header has mtime 0 and no file name. ``build.json`` holds no time either.
