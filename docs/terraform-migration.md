@@ -636,10 +636,15 @@ state rather than assuming them.
 
 How much of each procedure has been exercised is stated in its own section, under
 "What has been tested". **None of the three has been run end to end against a live
-old deployment.** The live test has a variant for MCP and the datasets
-(`make stacktest-terraform-migration VARIANT=mcp-datasets`), but its only run so far
-stopped at the upstream deploy, because upstream's dataset stacks did not complete.
-Rehearse in a non-production account first.
+old deployment.** The live test has a variant for MCP
+(`make stacktest-terraform-migration VARIANT=mcp`), which has not been run yet, and one
+for MCP and both datasets (`VARIANT=mcp-datasets`), whose only run stopped at the
+upstream deploy because upstream's dataset stacks did not complete (see
+[Test datasets](#test-datasets)). Rehearse in a non-production account first.
+
+The stack names below start with upstream's name prefix, which is the `prefix` you
+gave upstream followed by a random suffix (`<prefix>-<suffix>-api-...`); read the exact
+names from the `name` attribute of each `aws_cloudformation_stack` in the saved state.
 
 ### Private network (VPC)
 
@@ -797,6 +802,9 @@ affected.
    listed must be under `module.mcp_integration[0]`, or be a function, role, policy,
    log group, permission or API Gateway resource (types `plan` recreates anyway). If
    it lists a bucket, a table, the user pool, a user, a group or the KMS key, stop.
+   Queues and other resources the migration recreates are allowed by the same rule,
+   but destroying one now, while the old deployment still runs, could drop work in
+   flight; upstream's MCP integration has none among its dependents.
 
 2. Apply exactly that plan, then save the state again:
 
@@ -806,9 +814,23 @@ affected.
    cd ..
    ```
 
-   If the stack's delete fails (`DELETE_FAILED` on the stack), the gateway manager
-   function could not delete the gateway; its CloudWatch log names the error. Do not
-   remove the stack from the state to get past it: the stack would then be left with
+   **Then check that the gateway is gone.** Upstream's gateway manager answers the
+   delete with success even when deleting the gateway failed (it logs the error and
+   reports success), so the stack reaching `DELETE_COMPLETE` does not show that the
+   gateway was deleted. The gateway is named `<prefix>-<suffix>-api-analytics-gateway`:
+
+   ```bash
+   aws bedrock-agentcore-control list-gateways --region us-west-2 \
+       --query "items[?name=='<prefix>-<suffix>-api-analytics-gateway']"
+   ```
+
+   If it is still listed, delete its targets and then the gateway
+   (`delete-gateway-target`, then `delete-gateway`). It does not collide with the new
+   deployment's gateway, which is named after the new stack, but nothing would manage
+   it.
+
+   The stack itself ends in `DELETE_FAILED` only when the function never answered.
+   Do not remove the stack from the state to get past that: it would then be left with
    a custom resource whose function the old destroy deletes.
 
 3. Run [`plan`](#1-plan) with `--parameters "EnableMCP=true"` (together with any other
@@ -827,7 +849,8 @@ Measured: Cognito refuses a second resource server with the identifier
 `idp-mcp-connector` in a pool that already has one (on a throwaway pool), which is why
 the old one must go. Upstream `v0.6.9-tf.0` with `enable_mcp = true` deploys its
 gateway stack, and destroying that stack completes (`DELETE_COMPLETE`), in a live
-deployment made by `make stacktest-terraform-migration VARIANT=mcp-datasets`. Checked
+deployment made by `make stacktest-terraform-migration VARIANT=mcp-datasets`; that
+status does not show the gateway itself was deleted, for the reason given in step 2. Checked
 without AWS: with the stack and the resource server removed from the old state, `plan`
 has no refusal left for them. Not measured: the targeted destroy on its own, the
 migration that follows it, and MCP clients working against the new deployment's
@@ -889,17 +912,28 @@ upstream `v0.6.9-tf.0` with both datasets on, neither stack completed: CloudForm
 reported that it never received a response from either custom resource, both stacks
 stayed in `CREATE_IN_PROGRESS` until Terraform's 30-minute timeout failed the apply,
 and destroying them later failed in the same way (`DELETE_FAILED`, no response). The
-cause was not established. Check each stack's status first:
+logs were gone before they were read, so the cause is inferred from upstream's code at
+the pinned releases rather than measured: Terraform packages each deployer from its
+source directory alone, without the packages its `requirements.txt` lists
+(`cfnresponse` among them), so the handler cannot import and never answers; and the
+function's environment names the bucket `TEST_SET_BUCKET` while the deployer reads
+`TESTSET_BUCKET`. If that is right, an upstream deployment with the datasets on never
+has a dataset stack in `CREATE_COMPLETE`, and never wrote any dataset data. Check each
+stack's status first:
 
 ```bash
 aws cloudformation describe-stacks --region us-west-2 \
     --stack-name <prefix>-api-w2-dataset --query 'Stacks[0].StackStatus'
 ```
 
-A stack in `CREATE_COMPLETE` is handled by the steps above. For one in any failed
-state, the targeted destroy will hang in the same way, so delete the stack while
-keeping its custom resource, which only tells CloudFormation to stop waiting, and then
-remove it from the old state:
+A stack in `CREATE_COMPLETE` is handled by the steps above. Any other stack's custom
+resource will not answer a delete either, so the targeted destroy would hang. Wait
+until the stack is no longer `..._IN_PROGRESS` (CloudFormation gives up on a custom
+resource after about an hour), then delete it with `aws cloudformation delete-stack`.
+Only if that ends in `DELETE_FAILED`, delete it again while keeping its custom
+resource, which only tells CloudFormation to stop waiting (CloudFormation accepts
+`--retain-resources` only for a stack in `DELETE_FAILED`). Then remove it from the old
+state:
 
 ```bash
 aws cloudformation delete-stack --region us-west-2 \

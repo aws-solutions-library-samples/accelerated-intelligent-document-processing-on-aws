@@ -169,17 +169,21 @@ ROTATE_UPSTREAM_TAG = "rotate"
 UPSTREAM_EXAMPLE = "examples/unified-processor"
 #: Which old deployment the run migrates. ``base`` is the example with every
 #: data-owning feature on and MCP off, which is what the command handles by
-#: itself. ``mcp-datasets`` also turns on upstream's MCP integration and both Test
-#: Studio datasets, each of which puts an ``aws_cloudformation_stack`` in the old
-#: state that ``plan`` refuses; the run then performs the manual procedure in
-#: docs/terraform-migration.md ("Old deployments with a private network, MCP or
-#: test datasets") before ``plan`` (phase ``pre-plan-features``). Its one run so
-#: far (upstream v0.6.9-tf.0) failed at upstream-deploy: neither dataset stack's
-#: custom resource answered CloudFormation, so both stayed CREATE_IN_PROGRESS past
-#: Terraform's 30-minute timeout. The variant does not pass until that is resolved.
+#: itself. ``mcp`` also turns on upstream's MCP integration, and ``mcp-datasets``
+#: that and both Test Studio datasets. Each puts an ``aws_cloudformation_stack`` in
+#: the old state that ``plan`` refuses, and the run then performs the manual
+#: procedure in docs/terraform-migration.md ("Old deployments with a private
+#: network, MCP or test datasets") before ``plan`` (phase ``pre-plan-features``).
+#: ``mcp-datasets`` cannot pass at the pinned releases: upstream packages its
+#: dataset deployers without their dependencies (``cfnresponse``, read from
+#: modules/processing-environment-api/test-studio.tf), so their custom resources
+#: never answer and both stacks stay CREATE_IN_PROGRESS past Terraform's 30-minute
+#: timeout, which is how its one run (v0.6.9-tf.0) failed at upstream-deploy.
 BASE_VARIANT = "base"
+MCP_VARIANT = "mcp"
 MCP_DATASETS_VARIANT = "mcp-datasets"
-VARIANTS = (BASE_VARIANT, MCP_DATASETS_VARIANT)
+VARIANTS = (BASE_VARIANT, MCP_VARIANT, MCP_DATASETS_VARIANT)
+MCP_VARIANTS = (MCP_VARIANT, MCP_DATASETS_VARIANT)
 #: The override file that turns the two datasets on (datasets_override).
 DATASETS_OVERRIDE_FILE = "zz_idp_ci_datasets_override.tf"
 #: The upstream module call in every upstream example.
@@ -599,7 +603,7 @@ def upstream_tfvars(
         "enable_test_studio          = true\n"
         "enable_agent_companion_chat = true\n"
         "enable_agent_analytics      = true\n"
-        f"enable_mcp                  = {'true' if variant == MCP_DATASETS_VARIANT else 'false'}\n"
+        f"enable_mcp                  = {'true' if variant in MCP_VARIANTS else 'false'}\n"
         "enable_finetuning           = false\n\n"
         "rbac   = { enabled = true }\n"
         "web_ui = { enabled = true }\n\n"
@@ -1615,7 +1619,7 @@ class Run:
         problems = self.identity_problems()
         if problems:
             raise PhaseFailed("; ".join(problems))
-        if self.s.variant == MCP_DATASETS_VARIANT and not shutil.which("pip3"):
+        if self.s.variant in MCP_VARIANTS and not shutil.which("pip3"):
             # Upstream builds its AgentCore gateway manager with `pip3 install` in a
             # local-exec, whatever build.lambda_local says.
             raise PhaseFailed(
@@ -2208,8 +2212,12 @@ class Run:
         MCP integration and both dataset stacks in the old directory, checked as the
         guide says to check it, then checks that it removed the gateway and the
         resource server and left every dataset record and file as it was."""
-        if self.s.variant != MCP_DATASETS_VARIANT:
+        if self.s.variant not in MCP_VARIANTS:
             return f"nothing to do for the {self.s.variant} variant"
+        with_datasets = self.s.variant == MCP_DATASETS_VARIANT
+        targets = (
+            FEATURE_DESTROY_TARGETS if with_datasets else FEATURE_DESTROY_TARGETS[:1]
+        )
         insts = state_instances(self.old_state())
         stacks = {
             i["address"]: i["attributes"]
@@ -2217,26 +2225,13 @@ class Run:
             if i["type"] == "aws_cloudformation_stack"
         }
         gateway_stack = f"{FEATURE_DESTROY_TARGETS[0]}.aws_cloudformation_stack.agentcore_gateway[0]"
-        wanted = {gateway_stack, *FEATURE_DESTROY_TARGETS[1:]}
+        wanted = {gateway_stack, *targets[1:]}
         if set(stacks) != wanted:
             raise PhaseFailed(
-                "the old state's CloudFormation stacks are not the three the variant "
+                "the old state's CloudFormation stacks are not the ones the variant "
                 f"deploys: missing {sorted(wanted - set(stacks))}, "
                 f"unexpected {sorted(set(stacks) - wanted)}"
             )
-        deployer = next(
-            (
-                i
-                for i in insts
-                if i["type"] == "aws_lambda_function"
-                and i["name"] == "w2_dataset_deployer"
-            ),
-            None,
-        )
-        if deployer is None:
-            raise PhaseFailed("the old state has no w2_dataset_deployer function")
-        env = deployer["attributes"]["environment"][0]["variables"]
-        bucket, table = env["TESTSET_BUCKET"], env["TRACKING_TABLE"]
         gateway_id = (stacks[gateway_stack].get("outputs") or {}).get("GatewayId")
         if not gateway_id:
             raise PhaseFailed(f"{gateway_stack} records no GatewayId output")
@@ -2246,17 +2241,20 @@ class Run:
             UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER
         )
 
-        before = self.dataset_snapshot(bucket, table)
-        empty = self.dataset_problems(before)
-        if empty:
-            raise PhaseFailed(
-                "the old deployment's datasets did not deploy, so the variant would "
-                "prove nothing about keeping them: " + "; ".join(empty)
+        before: Dict[str, Any] = {}
+        if with_datasets:
+            bucket, table = self.dataset_location(insts)
+            before = self.dataset_snapshot(bucket, table)
+            empty = self.dataset_problems(before)
+            if empty:
+                raise PhaseFailed(
+                    "the old deployment's datasets did not deploy, so the variant "
+                    "would prove nothing about keeping them: " + "; ".join(empty)
+                )
+            write_private(
+                self.work / "datasets-before.json", json.dumps(before, default=str)
             )
-        write_private(
-            self.work / "datasets-before.json", json.dumps(before, default=str)
-        )
-        self.ctx["datasets"] = {"bucket": bucket, "table": table}
+            self.ctx["datasets"] = {"bucket": bucket, "table": table}
 
         plan_file = "features-destroy.tfplan"
         self.terraform(
@@ -2265,7 +2263,7 @@ class Run:
             "-destroy",
             "-input=false",
             f"-out={plan_file}",
-            *(f"-target={t}" for t in FEATURE_DESTROY_TARGETS),
+            *(f"-target={t}" for t in targets),
             log="old-features-destroy.log",
         )
         plan = json.loads(
@@ -2329,8 +2327,8 @@ class Run:
             )
         except cognito.exceptions.ResourceNotFoundException:
             pass
-        after = self.dataset_snapshot(bucket, table)
-        for test_set, _prefix in DATASETS:
+        after = self.dataset_snapshot(bucket, table) if with_datasets else {}
+        for test_set in after:
             if after[test_set] != before[test_set]:
                 findings.append(
                     f"dataset {test_set} changed: record "
@@ -2340,18 +2338,48 @@ class Run:
                 )
         if findings:
             raise PhaseFailed("; ".join(findings))
-        counts = {t: len(before[t]["objects"]) for t, _ in DATASETS}
+        counts = {t: len(before[t]["objects"]) for t in before}
         return (
-            f"destroyed {len(destroyed)} resources (gateway, resource server and both "
-            f"dataset stacks gone); datasets unchanged: {counts} objects"
+            f"destroyed {len(destroyed)} resources (the stacks, the gateway and the "
+            "resource server are gone)"
+            + (f"; datasets unchanged: {counts} objects" if with_datasets else "")
         )
+
+    def dataset_location(self, insts: List[Dict[str, Any]]) -> Tuple[str, str]:
+        """The test-set bucket and tracking table the old deployment's W-2 deployer
+        was given. Upstream's Terraform names the bucket ``TEST_SET_BUCKET``
+        (``test_studio_env_base`` in test-studio.tf); its deployers' own code reads
+        ``TESTSET_BUCKET``, the name upstream's SAM template uses, so either is
+        accepted."""
+        deployer = next(
+            (
+                i
+                for i in insts
+                if i["type"] == "aws_lambda_function"
+                and i["name"] == "w2_dataset_deployer"
+            ),
+            None,
+        )
+        if deployer is None:
+            raise PhaseFailed("the old state has no w2_dataset_deployer function")
+        env = (deployer["attributes"].get("environment") or [{}])[0].get(
+            "variables"
+        ) or {}
+        bucket = env.get("TEST_SET_BUCKET") or env.get("TESTSET_BUCKET")
+        table = env.get("TRACKING_TABLE")
+        if not bucket or not table:
+            raise PhaseFailed(
+                "the w2_dataset_deployer function's environment names no test-set "
+                f"bucket or tracking table (it has {sorted(env)})"
+            )
+        return bucket, table
 
     def verify_features(self, findings: List[str]) -> str:
         """For the mcp-datasets variant: the new deployment has its own gateway,
         and every dataset record and file is as it was before the targeted destroy
         (none rewritten, so the new deployment's deployers did not download them
         again)."""
-        if self.s.variant != MCP_DATASETS_VARIANT:
+        if self.s.variant not in MCP_VARIANTS:
             return ""
         name = f"{self.s.new_name}-analytics-gateway"
         control = self.boto("bedrock-agentcore-control")
@@ -2363,6 +2391,8 @@ class Run:
         ]
         if len(gateways) != 1:
             findings.append(f"{len(gateways)} AgentCore gateways named {name}, not 1")
+        if self.s.variant != MCP_DATASETS_VARIANT:
+            return f"; new gateway {name}"
         before = json.loads((self.work / "datasets-before.json").read_text())
         loc = self.ctx["datasets"]
         after = json.loads(
@@ -2415,7 +2445,7 @@ class Run:
             parameters.append(
                 f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}"
             )
-        if self.s.variant == MCP_DATASETS_VARIANT:
+        if self.s.variant in MCP_VARIANTS:
             parameters.append("EnableMCP=true")
         if parameters:
             args += ["--parameters", ",".join(parameters)]
@@ -3559,7 +3589,7 @@ class Sweeper:
         integration names its gateway ``<prefix>-api-analytics-gateway`` and the
         module ``<stack>-analytics-gateway``. Only the mcp-datasets variant creates
         any, so the base variant does not need the service to be reachable."""
-        if self.owner.s.variant != MCP_DATASETS_VARIANT:
+        if self.owner.s.variant not in MCP_VARIANTS:
             return []
         control = self.owner.boto("bedrock-agentcore-control")
         return sorted(
@@ -3811,9 +3841,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         "--variant",
         choices=VARIANTS,
         default=BASE_VARIANT,
-        help=f"{MCP_DATASETS_VARIANT!r} also deploys upstream's MCP integration and "
-        "both Test Studio datasets, and runs the guide's manual procedure for them "
-        "before plan",
+        help=f"{MCP_VARIANT!r} also deploys upstream's MCP integration, and "
+        f"{MCP_DATASETS_VARIANT!r} that and both Test Studio datasets; either runs the "
+        "guide's manual procedure for them before plan",
     )
     p.add_argument(
         "--accept-change",

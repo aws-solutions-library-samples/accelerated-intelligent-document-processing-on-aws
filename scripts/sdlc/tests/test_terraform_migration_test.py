@@ -2738,3 +2738,276 @@ def test_a_gateway_delete_retries_while_its_targets_go_and_then_gives_up(monkeyp
     assert control.calls == 3
     with pytest.raises(_Control.exceptions.ValidationException):
         tmt.delete_gateway(_Control(busy=10**6), "g", timeout=0)
+
+
+# -- the variant's phase bodies -------------------------------------------------
+
+_GATEWAY_STACK = f"{_MCP}.aws_cloudformation_stack.agentcore_gateway[0]"
+
+
+def _feature_state(with_datasets=False, env=None):
+    def resource(module, rtype, name, attrs):
+        return {
+            "mode": "managed",
+            "module": module,
+            "type": rtype,
+            "name": name,
+            "instances": [{"index_key": 0, "attributes": attrs}],
+        }
+
+    api = f"{tmt.UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    resources = [
+        resource(
+            _MCP,
+            "aws_cloudformation_stack",
+            "agentcore_gateway",
+            {"id": "arn:gw-stack", "name": "gw", "outputs": {"GatewayId": "gw-1"}},
+        )
+    ]
+    if with_datasets:
+        for name in ("w2_dataset", "fcc_dataset"):
+            resource_ = resource(
+                api,
+                "aws_cloudformation_stack",
+                name,
+                {"id": f"arn:{name}", "name": name},
+            )
+            resources.append(resource_)
+        resources.append(
+            resource(
+                api,
+                "aws_lambda_function",
+                "w2_dataset_deployer",
+                {
+                    "environment": [
+                        {
+                            "variables": env
+                            or {"TEST_SET_BUCKET": "tsb", "TRACKING_TABLE": "tt"}
+                        }
+                    ]
+                },
+            )
+        )
+    return {"resources": resources}
+
+
+class _NotFound(Exception):
+    pass
+
+
+class _FeatureClients:
+    """Cognito, CloudFormation and AgentCore, as the phase reads them."""
+
+    class exceptions:
+        ResourceNotFoundException = _NotFound
+
+    def __init__(self, gateway_left=False, server_left=False, gateways=1):
+        self.gateway_left, self.server_left = gateway_left, server_left
+        self.server_reads, self.gateways = 0, gateways
+
+    def __call__(self, service):
+        return self
+
+    def describe_resource_server(self, UserPoolId, Identifier):
+        self.server_reads += 1
+        if self.server_reads > 1 and not self.server_left:
+            raise _NotFound(Identifier)
+        return {}
+
+    def describe_stacks(self, StackName):
+        raise RuntimeError("Stack does not exist")
+
+    def get_gateway(self, gatewayIdentifier):
+        if not self.gateway_left:
+            raise _NotFound("ResourceNotFoundException")
+        return {}
+
+    def get_paginator(self, name):
+        items = [{"name": "gitfnew2-analytics-gateway"}] * self.gateways
+        return _Pages("items", items)
+
+
+def _feature_run(tmp_path, monkeypatch, plan, variant="mcp", clients=None, **kw):
+    run = tmt.Run(_settings(tmp_path, variant=variant))
+    run.ctx["old"] = {"user_pool_id": "pool-1"}
+    states = [_feature_state(variant == "mcp-datasets", **kw), {"resources": []}]
+    calls = []
+    monkeypatch.setattr(run, "old_state", lambda: states[0] if not calls else states[1])
+    monkeypatch.setattr(run, "terraform", lambda d, *args, log: calls.append(args[0]))
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: json.dumps(plan))
+    monkeypatch.setattr(run, "boto", clients or _FeatureClients())
+    return run, calls
+
+
+_CLEAN = {"resource_changes": [_rc(_GATEWAY_STACK, "aws_cloudformation_stack")]}
+
+
+def test_the_mcp_procedure_applies_a_clean_targeted_destroy(tmp_path, monkeypatch):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN)
+    assert "gateway" in run.phase_pre_plan_features()
+    assert calls == ["plan", "apply"]
+
+
+def test_a_targeted_destroy_beyond_the_guide_is_never_applied(tmp_path, monkeypatch):
+    plan = {
+        "resource_changes": _CLEAN["resource_changes"]
+        + [_rc("module.x.aws_s3_bucket.input", "aws_s3_bucket")]
+    }
+    run, calls = _feature_run(tmp_path, monkeypatch, plan)
+    with pytest.raises(tmt.PhaseFailed, match="beyond what the guide allows"):
+        run.phase_pre_plan_features()
+    assert calls == ["plan"]
+
+
+@pytest.mark.parametrize(
+    "clients, finding",
+    [
+        (_FeatureClients(gateway_left=True), "gateway gw-1 still exists"),
+        (_FeatureClients(server_left=True), "still in the pool"),
+    ],
+)
+def test_what_the_destroy_left_behind_is_a_finding(
+    tmp_path, monkeypatch, clients, finding
+):
+    run, _ = _feature_run(tmp_path, monkeypatch, _CLEAN, clients=clients)
+    with pytest.raises(tmt.PhaseFailed, match=finding):
+        run.phase_pre_plan_features()
+
+
+def test_an_old_state_without_the_variants_stacks_is_refused(tmp_path, monkeypatch):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN, variant="mcp-datasets")
+    monkeypatch.setattr(run, "old_state", lambda: _feature_state(False))
+    with pytest.raises(tmt.PhaseFailed, match="not the ones the variant"):
+        run.phase_pre_plan_features()
+    assert calls == []
+
+
+def _snapshot(record=True, objects=True, version="1.0", lm="t0"):
+    return {
+        t: {
+            "record": {"datasetVersion": version} if record else None,
+            "objects": {f"{p}input/a.png": ["e", lm]} if objects else {},
+        }
+        for t, p in tmt.DATASETS
+    }
+
+
+def test_datasets_that_never_deployed_stop_the_procedure_before_any_destroy(
+    tmp_path, monkeypatch
+):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN, variant="mcp-datasets")
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: _snapshot(objects=False))
+    with pytest.raises(tmt.PhaseFailed, match="did not deploy"):
+        run.phase_pre_plan_features()
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"TEST_SET_BUCKET": "tsb", "TRACKING_TABLE": "tt"},
+        {"TESTSET_BUCKET": "tsb", "TRACKING_TABLE": "tt"},
+    ],
+)
+def test_the_dataset_location_is_read_under_either_bucket_name(tmp_path, env):
+    run = tmt.Run(_settings(tmp_path))
+    insts = tmt.state_instances(_feature_state(True, env=env))
+    assert run.dataset_location(insts) == ("tsb", "tt")
+    with pytest.raises(tmt.PhaseFailed, match="names no test-set bucket"):
+        run.dataset_location(tmt.state_instances(_feature_state(True, env={"X": "y"})))
+
+
+@pytest.mark.parametrize("gateways, ok", [(1, True), (0, False), (2, False)])
+def test_verify_wants_exactly_one_new_gateway(tmp_path, monkeypatch, gateways, ok):
+    run = tmt.Run(_settings(tmp_path, variant="mcp"))
+    monkeypatch.setattr(run, "boto", _FeatureClients(gateways=gateways))
+    findings = []
+    run.verify_features(findings)
+    assert (findings == []) is ok
+
+
+@pytest.mark.parametrize(
+    "after, finding",
+    [
+        (_snapshot(), None),
+        (_snapshot(lm="t1"), "1 rewritten"),
+        (_snapshot(objects=False), "1 objects missing"),
+        (_snapshot(version="2.0"), "version changed"),
+        (_snapshot(record=False), "record is gone"),
+    ],
+)
+def test_verify_wants_the_datasets_kept_without_a_download(
+    tmp_path, monkeypatch, after, finding
+):
+    run = tmt.Run(_settings(tmp_path, variant="mcp-datasets"))
+    monkeypatch.setattr(run, "boto", _FeatureClients())
+    (tmp_path / "datasets-before.json").write_text(json.dumps(_snapshot()))
+    run.ctx["datasets"] = {"bucket": "tsb", "table": "tt"}
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: after)
+    findings = []
+    run.verify_features(findings)
+    if finding is None:
+        assert findings == []
+    else:
+        assert any(finding in f for f in findings), findings
+
+
+def test_verify_calls_the_variants_checks():
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(tmt.Run.phase_verify)))
+    called = {
+        n.func.attr
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    assert "verify_features" in called
+
+
+@pytest.mark.parametrize("variant, written", [("mcp", False), ("mcp-datasets", True)])
+def test_only_the_datasets_variant_writes_the_override(tmp_path, variant, written):
+    run = tmt.Run(_settings(tmp_path, variant=variant))
+    run.old_dir.mkdir(parents=True)
+    (run.old_dir / "main.tf").write_text(_EXAMPLE_MAIN)
+    run.prepare_old_root()
+    override = run.old_dir / tmt.DATASETS_OVERRIDE_FILE
+    assert override.exists() is written
+    if written:
+        assert "enable_w2_dataset  = true" in override.read_text()
+    assert ("enable_mcp                  = true") in (
+        run.old_dir / "terraform.tfvars"
+    ).read_text()
+
+
+def test_the_destroy_targets_only_what_the_variant_deployed(tmp_path, monkeypatch):
+    seen = []
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN)
+
+    def terraform(d, *args, log):
+        calls.append(args[0])
+        seen.append(args)
+
+    monkeypatch.setattr(run, "terraform", terraform)
+    run.phase_pre_plan_features()
+    assert [a for a in seen[0] if a.startswith("-target=")] == [f"-target={_MCP}"]
+
+
+def test_a_dataset_changed_by_the_destroy_is_a_finding(tmp_path, monkeypatch):
+    plan = {
+        "resource_changes": [
+            _rc(_GATEWAY_STACK, "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[2], "aws_cloudformation_stack"),
+        ]
+    }
+    run, _ = _feature_run(tmp_path, monkeypatch, plan, variant="mcp-datasets")
+    snaps = [_snapshot(), _snapshot(objects=False)]
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: snaps.pop(0))
+    with pytest.raises(tmt.PhaseFailed, match="dataset fake-w2 changed"):
+        run.phase_pre_plan_features()
+    # Unchanged datasets pass.
+    run, _ = _feature_run(tmp_path / "b", monkeypatch, plan, variant="mcp-datasets")
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: _snapshot())
+    assert "datasets unchanged" in run.phase_pre_plan_features()
