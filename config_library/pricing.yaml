@@ -1716,6 +1716,42 @@ pricing:
         price: "0.0015"
 
   # ---------------------------------------------------------------------------
+  # Cohere Embed v4 (Bedrock) — embeddings section labelling and multi-document
+  # discovery's embedding default
+  # ---------------------------------------------------------------------------
+  # One row per Region-default profile idp_common.regional_models resolves
+  # EMBEDDING_MODEL_ID to: us. (default), eu. (EU Regions), global. (Canada).
+  # The calls emit `requests`, `inputTokens` and `totalTokens`; the first and last
+  # are declared non-chargeable for bedrock in metering_units, so only
+  # inputTokens carries a rate. An image is billed as input tokens by its pixel
+  # count (about 196 pixels per token), which Bedrock reports in the same count,
+  # so text and image calls are priced at the one rate.
+  #
+  # Rate: $0.12 per million input tokens, the InputTokenCount usage type in the
+  # AWS Price List offer file AmazonBedrockFoundationModels for us-east-1
+  # (version 20261119133017, published 2026-11-19). The same file also lists a
+  # second Embed v4 usage type (USE1_Cohere_Embed_V4-Units, $0.00000002 per unit
+  # of "Embeddings", described as InputTokenCount; $0.02 per million if a unit is
+  # a token) whose relation to these calls it does not state. The higher
+  # rate is shipped so a cost report does not understate spend; the bill may be
+  # lower. The eu. and global. rows carry the us-east-1 rate: their own Region
+  # rates were not read. Override any of the three in the Pricing editor.
+  - name: bedrock/us.cohere.embed-v4:0
+    units:
+      - name: inputTokens
+        price: "1.2E-7"
+
+  - name: bedrock/eu.cohere.embed-v4:0
+    units:
+      - name: inputTokens
+        price: "1.2E-7"
+
+  - name: bedrock/global.cohere.embed-v4:0
+    units:
+      - name: inputTokens
+        price: "1.2E-7"
+
+  # ---------------------------------------------------------------------------
   # Decision models on Lambda (System One API) — see docs/decision-models.md
   # ---------------------------------------------------------------------------
   # Keys are `decision_model/<function-name>`, matching the metering key
