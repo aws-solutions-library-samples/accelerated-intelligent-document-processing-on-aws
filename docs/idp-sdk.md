@@ -759,6 +759,10 @@ Reprocess existing documents from a specific pipeline step.
 
 **Returns:** `BatchReprocessResult` with `documents_queued`, `documents_failed`, `failed_documents`, and `step`
 
+Each entry of `failed_documents` has an `object_key` and an `error`. `error` is
+`"Document not found"` only when the tracking table has no record for the key; any
+other failure reading or queueing the document carries that failure's own message.
+
 ```python
 from idp_sdk import RerunStep
 
