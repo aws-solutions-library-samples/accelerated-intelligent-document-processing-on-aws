@@ -12,8 +12,9 @@ this module proves it can go red. Each cross-check is exercised two ways:
   fails if the universe derivation stops seeing the kind of change it exists for;
 * against the real profile, which must pass as it stands.
 
-The vendored contract is pinned by hash, which is the ratchet behind its lint and
-type-check scope exclusions: the exclusions are only honest while the copy is the
+The vendored contract is pinned by hash, which is the ratchet behind the vendored
+validator's ruff scope exclusion (there is no type-check exclusion: basedpyright reads
+it and reports nothing). The exclusion is only honest while the copy is the
 contract's own bytes.
 """
 
@@ -111,7 +112,7 @@ def test_the_vendored_contract_is_byte_identical_to_its_pinned_digests():
         actual = hashlib.sha256((PROFILE / "schema" / rel).read_bytes()).hexdigest()
         assert actual == digest, (
             f"solution-profile/schema/{rel} differs from the vendored contract. It must stay "
-            f"byte-identical: its lint and type-check exclusions rest on that. Re-copy it from "
+            f"byte-identical: its ruff scope exclusion rests on that. Re-copy it from "
             f"the contract, or update the digest only when the contract itself changed."
         )
 
