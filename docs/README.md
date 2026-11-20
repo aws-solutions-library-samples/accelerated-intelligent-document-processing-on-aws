@@ -97,6 +97,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 ### Extensions
 
 - [Auto Optimizer (Beta)](./extensions/auto-optimizer.md) - Agentic optimization of a document processing configuration
+- [Decision Model: Strands Decider](./extensions/decision-model-decider.md) - Builds and deploys a decision model for section classification and extraction confidence
 - [Test Set - ConfBench](./extensions/confbench-testset.md) - Deploys the ConfBench benchmark into Test Studio on demand
 - [Test Set Generator](./extensions/idp-data-generator.md) - Generates labeled synthetic document test sets
 - [IDP Monitor](./extensions/idp-monitor.md) - AI-assisted operations dashboard over the reporting data

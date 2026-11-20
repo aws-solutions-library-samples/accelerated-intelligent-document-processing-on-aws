@@ -260,6 +260,12 @@ OUTSIDE_CMK_TEMPLATES: dict[str, tuple[str, set[str]]] = {
         "Fn::ImportValue of the main stack's key ARN, not a parameter",
         set(),
     ),
+    "feature-platform/decision-model-decider/template.yaml": (
+        "installable feature stack; all 4 log groups (the decider function, its "
+        "image build and the two custom resources) encrypted via Fn::ImportValue "
+        "of the main stack's key ARN, not a parameter",
+        set(),
+    ),
     "feature-platform/seller-entitlement-service/template.yaml": (
         "installable feature stack; all 3 log groups encrypted with its own "
         "LogEncryptionKey, and retention comes from LogRetentionInDays",

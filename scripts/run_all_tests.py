@@ -124,6 +124,8 @@ RUN_ROOTS = [
     "feature-platform/feature-template/feature-api/tests",
     "feature-platform/idp-data-generator/feature-api/tests",
     "feature-platform/idp-data-generator/docker_build_lambda/tests",
+    "feature-platform/decision-model-decider/image-build/tests",
+    "feature-platform/decision-model-decider/ui-deployer/tests",
     "feature-platform/pii-anonymizer/feature-api/tests",
     "feature-platform/pii-anonymizer/hook/tests",
     "feature-platform/pii-anonymizer/ui-deployer/tests",
