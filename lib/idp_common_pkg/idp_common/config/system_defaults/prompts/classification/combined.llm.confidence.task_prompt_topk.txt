@@ -1,0 +1,8 @@
+{# Appended to the page task prompt when confidence.mode is topk. Must ask for a "candidates"
+array of {"class", "probability"}, most likely first; {TOP_K_CANDIDATES} is the count. #}
+<class-confidence> Your JSON object MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for this page, most likely first, each with the probability that it is the correct type.
+"candidates": [
+  {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
+  {"class": "<next most likely type>", "probability": <number between 0.0 and 1.0>}
+]
+Rules: 1. Every "class" value must be one of the types listed in <document-types>. 2. The first candidate must be the same type you report in "class". 3. The probabilities must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type". 4. Distribute the probability honestly. If a second type is genuinely plausible for this page, give it real probability mass instead of assigning close to 1.0 to the first — a page that is hard to classify should not look certain. </class-confidence>

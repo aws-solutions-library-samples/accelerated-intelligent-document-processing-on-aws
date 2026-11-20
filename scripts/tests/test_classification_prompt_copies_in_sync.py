@@ -28,6 +28,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from idp_common.config.merge_utils import load_system_defaults_file
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS = (
     REPO_ROOT
@@ -89,7 +91,7 @@ def _canonical_rules() -> str:
     <boundary-detection-rules> below"), so the opening tag is found by searching
     backwards from the closing one.
     """
-    prompt = _page_prompt(yaml.safe_load(DEFAULTS.read_text())["classification"])
+    prompt = _page_prompt(load_system_defaults_file(DEFAULTS.name)["classification"])
     close = "</boundary-detection-rules>"
     end = prompt.index(close)
     start = prompt.rindex("<boundary-detection-rules>", 0, end)
@@ -187,7 +189,13 @@ def _configs_doing_page_level_splitting():
         if path.suffix not in (".yaml", ".yml") or str(rel) in EXEMPT:
             continue
         try:
-            loaded = yaml.safe_load(path.read_text())
+            # The defaults hold `{_file: ...}` references where the prompts are
+            # (#1652), so read them the way the defaults loader does.
+            loaded = (
+                load_system_defaults_file(DEFAULTS.name)
+                if path == DEFAULTS
+                else yaml.safe_load(path.read_text())
+            )
         except yaml.YAMLError:
             continue  # not our concern; other tests cover parse validity
         if not isinstance(loaded, dict):
