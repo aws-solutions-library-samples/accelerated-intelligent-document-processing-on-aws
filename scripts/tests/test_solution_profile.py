@@ -167,6 +167,40 @@ def test_stamp_manifest_version_rewrites_only_the_version_line(tmp_path):
 
 
 @pytest.mark.unit
+def test_make_version_refuses_a_version_without_a_contract_form_before_writing(
+    tmp_path,
+):
+    """`1.0` is valid PEP 440 but has no X.Y.Z contract form. The refusal must come
+    before the recipe stamps anything, or the tree is left half-bumped."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "tests"))
+    import test_make_version_lockfile as bump
+
+    root = bump._scratch_tree(tmp_path)
+    before = {rel: (root / rel).read_bytes() for rel in bump._stamped_paths()}
+    result = subprocess.run(  # noqa: S603
+        ["make", "version", "V=1.0", f"PYTHON={sys.executable}"],  # noqa: S607
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "cannot carry this version" in result.stdout + result.stderr
+    assert "Updating version" not in result.stdout
+    assert {rel: (root / rel).read_bytes() for rel in bump._stamped_paths()} == before
+
+
+@pytest.mark.unit
+def test_stamp_version_reports_a_bad_version_without_a_traceback(tmp_path, capsys):
+    manifest = tmp_path / "solution-profile.yaml"
+    shutil.copyfile(PROFILE / "solution-profile.yaml", manifest)
+    before = manifest.read_bytes()
+    assert check.main(["--profile-dir", str(tmp_path), "--stamp-version", "1.0"]) == 1
+    assert "ERROR: could not stamp" in capsys.readouterr().out
+    assert manifest.read_bytes() == before
+
+
+@pytest.mark.unit
 def test_a_final_version_applies_the_release_rules_and_says_what_to_do(
     tmp_path, capsys
 ):

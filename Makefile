@@ -1842,6 +1842,10 @@ endif
 		 echo -e "$(YELLOW)Valid examples: 0.5.3, 1.0.0, 0.6.0.dev1, 1.0.0a1, 1.0.0rc1, 1.0.0.post1$(NC)" && \
 		 echo -e "$(YELLOW)Invalid examples: 0.5.3.wip5, 1.0-beta, v1.0.0$(NC)" && \
 		 exit 1)
+	@# Before anything is written: the solution profile needs a contract form of the
+	@# version (X.Y.Z with an optional suffix), and a refusal after the files below
+	@# were stamped would leave the tree half-bumped.
+	@$(PYTHON) scripts/check_solution_profile.py --check-version $(V)
 	@echo "Updating version to $(V)..."
 	@echo "$(V)" > VERSION
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_cli_pkg/pyproject.toml && rm -f lib/idp_cli_pkg/pyproject.toml.bak

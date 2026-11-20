@@ -584,6 +584,11 @@ def main(argv: list[str] | None = None) -> int:
         "--contract-only", action="store_true", help="run the validator only"
     )
     parser.add_argument(
+        "--check-version",
+        metavar="PEP440",
+        help="exit non-zero unless this version has a contract form; writes nothing (make version runs it first)",
+    )
+    parser.add_argument(
         "--stamp-version",
         metavar="PEP440",
         help="write this version, in contract form, into the manifest and exit (used by `make version`)",
@@ -592,10 +597,24 @@ def main(argv: list[str] | None = None) -> int:
     repo_root: Path = args.repo_root.resolve()
     profile_dir: Path = (args.profile_dir or repo_root / PROFILE_DIR).resolve()
 
+    if args.check_version:
+        try:
+            print(f"solution profile version: {contract_version(args.check_version)}")
+        except ValueError as exc:
+            print(
+                f"ERROR: the solution profile cannot carry this version: {exc}. Use X.Y.Z with an optional suffix, e.g. 0.6.16 or 0.6.16.dev1."
+            )
+            return 1
+        return 0
+
     if args.stamp_version:
-        changed = stamp_manifest_version(
-            profile_dir / "solution-profile.yaml", args.stamp_version
-        )
+        try:
+            changed = stamp_manifest_version(
+                profile_dir / "solution-profile.yaml", args.stamp_version
+            )
+        except ValueError as exc:
+            print(f"ERROR: could not stamp the solution profile version: {exc}")
+            return 1
         print(
             f"solution-profile.yaml: version {contract_version(args.stamp_version)}{'' if changed else ' (unchanged)'}"
         )
