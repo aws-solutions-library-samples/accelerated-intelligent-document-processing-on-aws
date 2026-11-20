@@ -536,6 +536,52 @@ invites invented ones, and a single candidate is a verbalized confidence with
 extra syntax — the calibration benefit comes precisely from having to rank
 alternatives.
 
+#### The output-format example names the key, and a reply without one is reported
+
+The `<class-confidence>` block asks for the key in prose, but every shipped task
+prompt also carries a JSON example in `<output-format>` and ends by asking for
+"the exact JSON format specified in <output-format>". A model that follows the
+example literally leaves out a key the example does not show. Claude Sonnet 5.5
+did exactly that at packet granularity: its segments came back with
+`ordinal_start_page`, `ordinal_end_page`, `type` and `reason` and nothing else,
+so every section was stored unscored (GitHub #2039).
+
+So `compose_class_confidence_prompt` also calls
+`add_confidence_key_to_output_format`, which adds the mode's key
+(`CONFIDENCE_KEY_EXAMPLES`: `candidates` for `topk`, `confidence` for
+`verbalized`) to the example: inside the `segments` item for a packet call, and in
+the top-level object otherwise. It rewrites a block only when it equals the
+shipped one for that call, whitespace aside. That covers the shipped prompt, and any
+preset or custom prompt that kept the shipped block (`ocr-benchmark` is one such
+preset). A block that differs in any other way is left as written
+(`rvl-cdip-with-few-shot-examples` has one). `off` and the splitting call get nothing. Because
+`validate_config` judges `classification_task_prompt_as_sent`, it reads the same
+text the service sends.
+
+When a reply still gives no usable confidence although the call asked for one,
+the parse site records it, with the class that reply gave:
+`metadata["confidence_missing"]` on a page result, and
+`Segment.unscored_reply_pages` (page id to class) on a packet or
+section-classification segment. Across packet windows an overlapping page takes
+the earliest window's answer, as the merge does. After sections exist,
+`_record_missing_confidence_issue` records **one**
+`classification_confidence_missing` warning per document. It lists a section only
+when it holds a page a reply left unscored **with the section's own class**, and
+none of its unscored pages was reported with a different class. Each call site
+passes every page's reported class for that second test. So a section that a
+`sectionSplitting: disabled` relabel would leave unscored anyway is not blamed
+on the model. The issue is attached to the first listed section,
+because a document-level issue has no text anywhere a user reads. Because it names
+sections across the whole document, it bounds itself: the message and `root_cause` name at most
+`_MAX_SECTIONS_NAMED` sections and pages, and `details` holds at most
+`_MAX_IDS_IN_DETAILS` ids per list beside `section_count` and `page_count`.
+
+Not reported, because the section is unscored by design: a document-name-regex class, a fallback class, a decision-model label that did not escalate to the LLM, a reply with no class, a page relabelled with its section's class under `sectionSplitting: disabled`, and the one section a `maxPagesForClassification` sample is extrapolated to.
+The sample's issue is dropped when `_apply_limited_classification_to_all_pages`
+carries the sample's issues over. A prompt that carries its own
+`<class-confidence>` block keeps its `<output-format>` unchanged, because the
+operator's block may ask for a different key.
+
 Ranked candidates land on `Page.classification_candidates`, persist as
 `ClassCandidates` (a list of `{Class, Probability}` maps), and are exposed as
 `Page.ClassCandidates` on the API and in the UI popover.
