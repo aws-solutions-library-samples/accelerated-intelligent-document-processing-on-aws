@@ -87,10 +87,11 @@ describe('the profile a Quick Start conversation saves into', () => {
     expect(activatesWithoutAsking(versions, target)).toBe(activates);
   });
 
-  it('is decided when Discovery finishes, from a refreshed list that loaded without error', () => {
+  it('is decided when Discovery finishes, from a list read then, and never from a failed read', () => {
     const layout = readFileSync(join(__dirname, '..', 'AgentChatLayout.tsx'), 'utf-8');
-    expect(layout).toMatch(/const version = discoveryTargetRef\.current;\s*void fetchVersions\(\);/);
-    expect(layout).toMatch(/latest\.loaded && !latest\.error && activatesWithoutAsking\(latest\.versions, result\.configVersion\)/);
+    expect(layout).toMatch(
+      /void fetchVersions\(\)\.then\(\(current\) => \{\s*if \(!current \|\| !activatesWithoutAsking\(current, result\.configVersion\)\) \{\s*send\(false\);/,
+    );
   });
 
   it('tells the agent it is active only once the activation has succeeded', () => {
