@@ -210,29 +210,33 @@ The document processing status is represented by the `Status` enum:
 ```python
 class Status(Enum):
     """Document processing status."""
-    MALWARE_SCANNING = "MALWARE_SCANNING"                   # Held at the ingest gate awaiting a GuardDuty verdict
-    QUEUED = "QUEUED"                                       # Initial state
-    RUNNING = "RUNNING"                                     # Workflow started
-    PREPROCESSING = "PREPROCESSING"                         # Preprocessing hook running (e.g. PII redaction)
-    OCR = "OCR"                                             # OCR processing
-    CLASSIFYING = "CLASSIFYING"                             # Document classification
-    EXTRACTING = "EXTRACTING"                               # Information extraction
-    ASSESSING = "ASSESSING"                                 # Confidence assessment
-    POSTPROCESSING = "POSTPROCESSING"                       # Post-processing
-    HITL_IN_PROGRESS = "HITL_IN_PROGRESS"                   # Human review in progress
-    SUMMARIZING = "SUMMARIZING"                             # Document summarization
-    RULE_VALIDATION = "RULE_VALIDATION"                     # Rule validation
+    PENDING_UPLOAD = "PENDING_UPLOAD"  # Jobs API: a job before its files arrive (never a document status)
+    IN_PROGRESS = "IN_PROGRESS"  # Jobs API: a job file being processed (never a document status)
+    MALWARE_SCANNING = "MALWARE_SCANNING"  # Held at the ingest gate awaiting a GuardDuty verdict
+    QUEUED = "QUEUED"  # Initial state
+    RUNNING = "RUNNING"  # Workflow started
+    PREPROCESSING = "PREPROCESSING"  # Preprocessing hook running (e.g. PII redaction)
+    OCR = "OCR"  # OCR processing
+    CLASSIFYING = "CLASSIFYING"  # Document classification
+    EXTRACTING = "EXTRACTING"  # Information extraction
+    ASSESSING = "ASSESSING"  # Confidence assessment
+    POSTPROCESSING = "POSTPROCESSING"  # Post-processing
+    HITL_IN_PROGRESS = "HITL_IN_PROGRESS"  # Human review in progress
+    SUMMARIZING = "SUMMARIZING"  # Document summarization
+    RULE_VALIDATION_POLICY_CLASSIFICATION = "RULE_VALIDATION_POLICY_CLASSIFICATION"  # Policy classification for rule validation
+    RULE_VALIDATION = "RULE_VALIDATION"  # Rule validation
     RULE_VALIDATION_ORCHESTRATOR = "RULE_VALIDATION_ORCHESTRATOR"  # Rule consolidation
-    EVALUATING = "EVALUATING"                               # Evaluation
-    COMPLETED = "COMPLETED"                                 # All processing completed
-    FAILED = "FAILED"                                       # Processing failed
-    ABORTED = "ABORTED"                                     # User cancelled
-    REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"             # Original superseded by its redacted copy
-    QUARANTINED = "QUARANTINED"                             # Malware found at the ingest gate; never processed
-    MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"             # No malware verdict obtainable; refused (fail-closed)
+    EVALUATING = "EVALUATING"  # Evaluation
+    COMPLETED = "COMPLETED"  # All processing completed
+    FAILED = "FAILED"  # Processing failed
+    ABORTED = "ABORTED"  # User cancelled
+    REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"  # Original superseded by its redacted copy
+    REJECTED = "REJECTED"  # Human reviewer rejected the document (terminal, not success)
+    QUARANTINED = "QUARANTINED"  # Malware found at the ingest gate; never processed
+    MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"  # No malware verdict obtainable; refused (fail-closed)
 ```
 
-`PENDING_UPLOAD` and `IN_PROGRESS` are also members, but they are Jobs API
+`PENDING_UPLOAD` and `IN_PROGRESS` are members, but they are Jobs API
 statuses (a job's and a job file's) and no document tracking record stores them in
 `ObjectStatus`. `JOB_LEVEL_STATUSES` names those two, and `DOCUMENT_STATUS_VALUES`
 is every other member's value, in enum order: the statuses a document can be
@@ -741,6 +745,11 @@ So:
   `batch_id=record.get("id")` where the id is absent — and the empty string is refused
   because neither reading of it ("everything", "nothing") is what a caller meant. Use
   `pattern="*"` to select every document.
+- A `status_filter` that is not in `DOCUMENT_STATUS_VALUES` raises `ValueError`
+  before any scan is issued. No document record carries any other value (there is no
+  `PROCESSING`, and `PENDING_UPLOAD` is a Jobs API status), so the scan would select
+  nothing and the delete would report success. The SDK makes the same check first and
+  raises its own `IDPConfigurationError`.
 - A scan failure propagates. Nothing is caught, and that is per exception class rather
   than an omission: every shape DynamoDB declares for `Scan` is an operational fault
   (three throttles, a missing table, a server error, all `ClientError`), the client-side

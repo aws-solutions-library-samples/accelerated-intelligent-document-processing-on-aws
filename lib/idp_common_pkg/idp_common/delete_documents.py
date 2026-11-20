@@ -1094,8 +1094,23 @@ def _scan_all_document_keys(
 
     Returns:
         List of DynamoDB items with PK starting with 'doc#'
+
+    Raises:
+        ValueError: ``status_filter`` is not a status a document record can carry.
+            The scan would match nothing, and an empty selection reads as
+            "nothing to delete" rather than as a wrong argument.
     """
     from boto3.dynamodb.conditions import Attr
+
+    from idp_common.models import DOCUMENT_STATUS_VALUES
+
+    if status_filter and status_filter not in DOCUMENT_STATUS_VALUES:
+        raise ValueError(
+            f"Unknown status_filter {status_filter!r}: a document's status is one "
+            f"of {', '.join(DOCUMENT_STATUS_VALUES)}. A document still being "
+            "processed carries the name of its current step (e.g. OCR, "
+            "EXTRACTING), not PROCESSING"
+        )
 
     items: List[Dict[str, Any]] = []
     filter_expr = Attr("PK").begins_with("doc#")
