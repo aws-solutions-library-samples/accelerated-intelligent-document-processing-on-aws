@@ -525,21 +525,23 @@ class FitCheckOperation:
                 bucket = resources.get(bucket_key)
                 if bucket:
                     listed = s3.list_objects_v2(Bucket=bucket, Prefix=f"{batch_id}/")
-                    remaining[bucket_key] = listed.get("KeyCount", 0)
+                    remaining[f"{bucket_key} objects"] = listed.get("KeyCount", 0)
             if input_bucket:
-                remaining["InputBucket versions"] = _count_versions(
+                remaining["InputBucket object versions"] = _count_versions(
                     s3, input_bucket, f"{batch_id}/"
                 )
             if metadata_prefix and output_bucket:
                 listed = s3.list_objects_v2(
                     Bucket=output_bucket, Prefix=metadata_prefix
                 )
-                remaining["OutputBucket batch record"] = listed.get("KeyCount", 0)
+                remaining["OutputBucket batch record objects"] = listed.get(
+                    "KeyCount", 0
+                )
         summary["objects_remaining"] = remaining
         if profile:
             summary["profile_remaining"] = profile in self._profile_names(name)
         read_back = ", ".join(
-            f"{k} objects under the batch prefix: {v}" for k, v in remaining.items()
+            f"{k} under the batch prefix: {v}" for k, v in remaining.items()
         )
         if profile:
             read_back += (

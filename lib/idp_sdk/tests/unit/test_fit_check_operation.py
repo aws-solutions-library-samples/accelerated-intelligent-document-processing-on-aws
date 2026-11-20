@@ -226,10 +226,10 @@ def test_cleanup_deletes_each_uploaded_key_and_reads_back(tmp_path, monkeypatch)
     )
     assert summary["documents_deleted"] == 2
     assert summary["objects_remaining"] == {
-        "InputBucket": 0,
-        "OutputBucket": 0,
-        "OutputBucket batch record": 0,
-        "InputBucket versions": 0,
+        "InputBucket objects": 0,
+        "OutputBucket objects": 0,
+        "OutputBucket batch record objects": 0,
+        "InputBucket object versions": 0,
     }
     s3.get_paginator.assert_called_with("list_object_versions")
     assert summary["profile_remaining"] is False and "error" not in summary
