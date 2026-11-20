@@ -159,8 +159,17 @@ def test_every_template_variant_is_translated_and_validated(
         checked.append((str(binary), variant))
         return tc.Result(binary, variant, ok=True)
 
+    formatted: list[tuple[str, str]] = []
+
+    def fake_fmt(binary, exe, label, directory):
+        formatted.append((str(binary), label))
+        return True
+
     monkeypatch.setattr(tc, "translate", fake_translate)
     monkeypatch.setattr(tc, "check_one", fake_check)
+    monkeypatch.setattr(tc, "cli_samples", lambda manifest, out: None)
+    monkeypatch.setattr(tc, "install", lambda *_: tmp_path / "tool")
+    monkeypatch.setattr(tc, "fmt_check", fake_fmt)
     monkeypatch.setattr(tc, "current_platform", lambda: "linux_amd64")
     args = tc.argparse.Namespace(
         binaries="terraform@1.7.5 tofu@1.7.10",
@@ -172,9 +181,15 @@ def test_every_template_variant_is_translated_and_validated(
     assert {v for _, v in variants} >= {None, "headless", "govcloud"}
     assert translated == variants
     labels = [tc.variant_label(t, v) for t, v in variants]
-    assert checked == [
-        (b, label) for b in ("terraform@1.7.5", "tofu@1.7.10") for label in labels
-    ]
+    binaries = ("terraform@1.7.5", "tofu@1.7.10")
+    assert checked == [(b, label) for b in binaries for label in labels]
+    # Every binary checks the layout of every variant and every idp-cli root file.
+    targets = labels + [f"idp-cli {name}" for name in tc.CLI_SAMPLE_DIRS]
+    assert formatted == [(b, label) for b in binaries for label in targets]
+
+    # A file any binary would rewrite fails the gate.
+    monkeypatch.setattr(tc, "fmt_check", lambda b, e, label, d: "tofu" not in str(b))
+    assert tc.run(args) == 1
 
 
 @pytest.mark.unit
@@ -378,3 +393,76 @@ def test_every_locked_binary_covers_every_locked_platform() -> None:
         assert set(entry) == set(tc.LOCKED_PLATFORMS), spec
         for digest in entry.values():
             assert re.fullmatch(r"[0-9a-f]{64}", digest), (spec, digest)
+
+
+def _stub_fmt(tmp_path: Path, rc: int) -> Path:
+    """A ``terraform`` that records its argv and exits ``rc`` for ``fmt``."""
+    exe = tmp_path / "stub-fmt"
+    exe.write_text(f'#!/bin/sh\necho "$@" > "{tmp_path}/argv"\nexit {rc}\n')
+    exe.chmod(0o755)
+    return exe
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("rc", "clean"), [(0, True), (3, False), (2, False)])
+def test_fmt_check_passes_only_when_the_binary_would_change_nothing(
+    tmp_path, rc, clean
+) -> None:
+    target = tmp_path / "module"
+    target.mkdir()
+    (target / "main.tf").write_text("")
+    exe = _stub_fmt(tmp_path, rc)
+    assert tc.fmt_check(tc.Binary("terraform", "9.9.9"), exe, "m", target) is clean
+    argv = (tmp_path / "argv").read_text().split()
+    assert argv[0] == "fmt" and {"-check", "-recursive", "-diff"} <= set(argv)
+
+
+@pytest.mark.unit
+def test_fmt_check_refuses_a_directory_it_would_read_nothing_in(tmp_path) -> None:
+    """``fmt`` exits 0 over a directory with no HCL in it; that is not a pass."""
+    target = tmp_path / "empty"
+    target.mkdir()
+    (target / "README.md").write_text("x = 1\n")
+    exe = _stub_fmt(tmp_path, 0)
+    with pytest.raises(tc.GateError, match="no .tf or .tfvars"):
+        tc.fmt_check(tc.Binary("terraform", "9.9.9"), exe, "empty", target)
+
+
+@pytest.mark.unit
+def test_the_idp_cli_root_file_samples_are_rendered(tmp_path) -> None:
+    """The renderer the gate formats runs against the SDK's own functions, and
+    writes every root file ``idp-cli`` can write."""
+    manifest = tmp_path / "idp-terraform.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "parameters": {
+                    "AdminEmail": {"variable": "admin_email", "type": "String"},
+                    "MaxConcurrentWorkflows": {
+                        "variable": "max_concurrent_workflows",
+                        "type": "Number",
+                    },
+                    "Subnets": {"variable": "subnets", "type": "CommaDelimitedList"},
+                    "Secret": {
+                        "variable": "secret",
+                        "type": "String",
+                        "sensitive": True,
+                    },
+                }
+            }
+        )
+    )
+    out = tmp_path / "samples"
+    tc.write_cli_samples(manifest, out)
+    written = {str(p.relative_to(out)) for p in out.rglob("*") if p.is_file()}
+    assert written == {
+        "root-minimal/main.tf",
+        "root-minimal/terraform.tfvars",
+        "root-full/main.tf",
+        "root-full/terraform.tfvars",
+        "root-full/backend.tf",
+        "migration/adopt.tf",
+    }
+    assert {d.name for d in out.iterdir()} == set(tc.CLI_SAMPLE_DIRS)
+    full = (out / "root-full" / "terraform.tfvars").read_text()
+    assert "max_concurrent_workflows" in full and "secret" in full

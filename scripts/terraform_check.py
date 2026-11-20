@@ -23,6 +23,16 @@ steps:
 3. Copy each variant's module into a fresh directory per binary and run
    ``init -backend=false`` then ``validate -json``. Errors fail the gate;
    warnings are counted and printed but do not.
+4. Run ``fmt -check -recursive -diff`` with each binary over every variant's
+   module and over a sample of each root file ``idp-cli deploy --terraform``
+   writes (``main.tf`` with and without an assumed role and tags,
+   ``terraform.tfvars`` for every variable the standard module declares,
+   ``backend.tf``, and the migration's ``adopt.tf``). A file the binary would
+   rewrite fails the gate, so a user who vendors the module or commits the root
+   directory into a repository that gates on ``terraform fmt`` is not handed a
+   red check. The translator lays its output out in Python
+   (``terraform/translator/idp_tf/hclfmt.py``), so translation needs no
+   binary; this step is the authority that layout is checked against.
 
 What it does NOT prove, stated so a green run is not over-read: nothing is
 planned or deployed, so no AWS-side validation (IAM policy grammar, a property
@@ -471,6 +481,161 @@ def check_one(
     return result
 
 
+CLI_SAMPLE_DIRS = ("root-minimal", "root-full", "migration")
+
+
+def write_cli_samples(manifest_path: Path, out: Path) -> None:
+    """Write the root files ``idp-cli`` renders into ``out``, one directory each.
+
+    Rendered by the SDK functions ``idp-cli`` itself calls, from the parameters
+    of a translated module's ``idp-terraform.json``, so a new parameter (and so a
+    longer variable name to align against) is covered without an edit here. Run
+    in a subprocess with this checkout's ``lib/*`` roots first on ``PYTHONPATH``
+    (see :func:`cli_samples`), which is why the imports are local.
+    """
+    # By module name: these are the private functions `idp-cli` itself calls,
+    # and the public client has no entry point that renders a root file alone.
+    deploy = importlib.import_module("idp_sdk._core.terraform_deploy")
+    migrate = importlib.import_module("idp_sdk._core.terraform_migrate")
+
+    for module in (deploy, migrate):
+        if REPO_ROOT not in Path(module.__file__).resolve().parents:
+            raise GateError(f"{module.__name__} imported from {module.__file__}")
+    manifest = json.loads(manifest_path.read_text())
+    specs = deploy.variable_specs(manifest)
+    sample = {"Number": "1", "CommaDelimitedList": "a,b", "List<String>": "a,b"}
+    values: dict = {"stack_name": "idp-sample"}
+    for spec in manifest["parameters"].values():
+        cfn_type = str(spec.get("type", "String"))
+        values[spec["variable"]] = deploy._convert(
+            spec["variable"],
+            cfn_type,
+            sample.get(cfn_type, "a,b" if "List" in cfn_type else "x"),
+        )
+    url = "https://example.com/idp-terraform-0.0.0.zip"
+    tags = {"team": "idp", "cost-center": "1234"}
+    minimal = {"stack_name": values["stack_name"]}
+    sensitive = next((n for n, s in specs.items() if s.get("sensitive")), None)
+    if sensitive:
+        minimal[sensitive] = values[sensitive]
+    files = {
+        "root-minimal": {
+            "main.tf": deploy.render_main_tf("us-east-1", url, minimal, specs),
+            "terraform.tfvars": deploy.render_tfvars(minimal),
+        },
+        "root-full": {
+            "main.tf": deploy.render_main_tf(
+                "us-east-1",
+                url,
+                values,
+                specs,
+                "arn:aws:iam::111122223333:role/idp-deployer",
+                tags=tags,
+            ),
+            "terraform.tfvars": deploy.render_tfvars(
+                {**values, deploy.TAGS_VARIABLE: tags}
+            ),
+            "backend.tf": deploy.render_backend_tf(
+                {
+                    "bucket": "idp-sample-state",
+                    "key": "idp-sample/terraform.tfstate",
+                    "region": "us-east-1",
+                    "dynamodb_table": "idp-sample-lock",
+                }
+            ),
+        },
+        "migration": {
+            migrate.ADOPT_FILE: migrate.render_adopt_tf(
+                migrate.MigrationPlan(
+                    resources=[
+                        migrate.PlannedResource(
+                            old_address=f"aws_s3_bucket.{name}",
+                            old_type="aws_s3_bucket",
+                            kind="bucket",
+                            verdict="adopt",
+                            evidence="sample",
+                            note="",
+                            new_address=f"module.idp.aws_s3_bucket.{name}",
+                            import_id=f"idp-sample-{name}",
+                        )
+                        for name in ("input", "output_long_name")
+                    ],
+                    parameters={},
+                    warnings=[],
+                    pool_id=None,
+                    admin_username=None,
+                    tracking_table=None,
+                    configuration_table=None,
+                    upload_rules=[],
+                    adopted_buckets=[],
+                )
+            )
+        },
+    }
+    for directory, rendered in files.items():
+        (out / directory).mkdir(parents=True)
+        for name, text in rendered.items():
+            (out / directory / name).write_text(text)
+
+
+def cli_samples(manifest_path: Path, out: Path) -> None:
+    result = subprocess.run(  # nosec B603 - fixed argv, no shell
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--write-cli-samples",
+            str(manifest_path),
+            str(out),
+        ],
+        env=first_party_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        raise GateError(
+            f"rendering the idp-cli root files failed (exit {result.returncode})"
+        )
+    written = sorted(p.relative_to(out) for p in out.rglob("*") if p.is_file())
+    print(f"  rendered idp-cli root files: {', '.join(map(str, written))}")
+
+
+def fmt_check(binary: Binary, exe: Path, label: str, directory: Path) -> bool:
+    """``fmt -check -recursive -diff`` over ``directory``; True when nothing would change.
+
+    ``fmt`` exits 0 over a directory holding nothing it reads, so an empty target
+    (a translation or a render that wrote nowhere) is refused rather than passed.
+    """
+    if not any(directory.rglob("*.tf")) and not any(directory.rglob("*.tfvars")):
+        raise GateError(f"fmt -check: {label} holds no .tf or .tfvars file")
+    env = {
+        **os.environ,
+        "TF_IN_AUTOMATION": "1",
+        "TF_INPUT": "0",
+        "CHECKPOINT_DISABLE": "1",
+    }
+    env.pop("TF_CLI_ARGS", None)
+    env.pop("TF_CLI_ARGS_fmt", None)
+    result = subprocess.run(  # nosec B603 - fixed argv, no shell
+        [str(exe), "fmt", "-check", "-recursive", "-diff", "-no-color", "."],
+        cwd=directory,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    if result.returncode == 0:
+        print(f"  {binary} fmt -check: {label} ok")
+        return True
+    sys.stdout.write(result.stdout)
+    sys.stdout.write(result.stderr)
+    print(f"  {binary} fmt -check: {label} FAILED (exit {result.returncode})")
+    return False
+
+
 def gate_providers(overrides: list[str]) -> dict[str, str]:
     """Exact provider pins: the lock file's, ``awscc`` from the vendored schema.
 
@@ -504,6 +669,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"  variants: {', '.join(variant_label(t, v) for t, v in variants)}")
 
     results: list[Result] = []
+    fmt_failed: list[str] = []
     with tempfile.TemporaryDirectory(prefix="idp-terraform-check-") as tmp:
         modules: list[tuple[str, Path]] = []
         for template, variant in variants:
@@ -513,11 +679,21 @@ def run(args: argparse.Namespace) -> int:
             translate(module, template, variant)
             print(f"  translated {label} in {time.monotonic() - started:.1f}s")
             modules.append((label, module))
+        samples = Path(tmp) / "idp-cli-root-files"
+        cli_samples(modules[0][1] / "idp-terraform.json", samples)
+        fmt_targets = modules + [
+            (f"idp-cli {name}", samples / name) for name in CLI_SAMPLE_DIRS
+        ]
         for binary in binaries:
             for label, module in modules:
                 results.append(
                     check_one(binary, module, Path(tmp), cache, plat, providers, label)
                 )
+            exe = install(binary, cache, plat)
+            print(f"\n== {binary}: fmt -check")
+            for label, directory in fmt_targets:
+                if not fmt_check(binary, exe, label, directory):
+                    fmt_failed.append(f"{binary} fmt on {label}")
 
     print(
         "\nbinary             variant                     install   init  validate"
@@ -529,13 +705,13 @@ def run(args: argparse.Namespace) -> int:
             f"{r.init_s:5.1f}s {r.validate_s:8.1f}s {r.errors:7d} {r.warnings:9d}  "
             f"{'ok' if r.ok else 'FAILED'}"
         )
-    failed = [f"{r.binary} on {r.variant}" for r in results if not r.ok]
+    failed = [f"{r.binary} on {r.variant}" for r in results if not r.ok] + fmt_failed
     if failed:
         print(f"\nterraform-check FAILED for {', '.join(failed)}")
         return 1
     print(
         "\nterraform-check: every binary initialised and validated every variant's "
-        "module"
+        "module, and found it and every idp-cli root file fmt-clean"
     )
     return 0
 
@@ -565,8 +741,17 @@ def main(argv: list[str] | None = None) -> int:
         help="record published checksums for these binaries in the lock file, "
         "then exit",
     )
+    parser.add_argument(
+        "--write-cli-samples",
+        nargs=2,
+        metavar=("MANIFEST", "OUT"),
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
     try:
+        if args.write_cli_samples:
+            write_cli_samples(*map(Path, args.write_cli_samples))
+            return 0
         if args.update_lock:
             return update_lock(args.update_lock)
         return run(args)
