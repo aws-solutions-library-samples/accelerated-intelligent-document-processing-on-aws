@@ -61,7 +61,7 @@ All rules for a policy document are grouped into a single **policy class** — a
 - **🔄 Traditional & Agentic Modes**: Single-shot LLM call or multi-turn Strands agent with reviewer feedback loop
 - **📚 Append-Only Persistence**: Re-uploading or uploading a second policy document appends a new policy class — earlier policies are never overwritten
 - **🔖 Unique Class Naming**: Class names are derived from the source filename with a hex suffix (e.g., `NCCI_Medicare_Policy_839f3946`) so multiple uploads remain distinguishable
-- **🗂 Policy Groups**: Uploads that name the same optional **policy group** — the chapters of one manual, say — add their rules to **one** policy class, so one regex matches the whole policy. See [Policy Groups](#policy-groups)
+- **🗂 Policy Groups**: Uploads that name the same optional **policy group** — the chapters of one manual, say — add their rules to **one** policy class, so one regex matches the whole policy. A later upload can replace the group's rules (an amended manual) or supersede rules you choose (a rider). See [Policy Groups](#policy-groups) and [Superseding rules in a group](#superseding-rules-in-a-group)
 - **🏷 Discriminated Jobs**: Policy discovery jobs are tagged with `jobType: 'rules'` so the UI can surface them distinctly from classes discovery jobs
 - **🔗 Deep-Link to Configuration**: Finishing a job renders a "View in Configuration" link that navigates to the Policy Schema tab and auto-selects the newly extracted class
 
@@ -297,7 +297,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 1. Navigate to the **Discovery** page
 2. Select the **Policy Discovery** tab (the third tab, after Single Document and Multiple Documents)
 3. Select a **Configuration Profile** to save the extracted rules to
-4. Optionally enter a **Policy group** (see [Policy Groups](#policy-groups))
+4. Optionally enter a **Policy group** (see [Policy Groups](#policy-groups)). If the profile already holds that group, choose how this upload changes it: **Add to group**, **Replace this group's rules**, or **Supersede chosen rules** (see [Superseding rules in a group](#superseding-rules-in-a-group))
 5. Upload a policy PDF
 6. Click **"Start Discovery"**
 7. Monitor progress in the Discovery Jobs table below
@@ -322,26 +322,51 @@ A policy too large for one extraction has to be uploaded in parts, usually by ch
 - All rule categories the model returns for a grouped upload go into the group's one class.
 - An upload with no group behaves exactly as before: it creates its own class, named from the filename with a random suffix.
 
-**Re-uploading into a group appends; it never replaces.** A later upload adds rules and does not supersede, merge or delete any rule already in the group. If an uploaded rule has a name the class already holds, it is added beside the earlier one under a suffixed name (`limit_on_units` → `limit_on_units_2`), and the job's status message lists every such rename. Both copies are then evaluated on every document. So re-uploading the same chapter doubles its rules, and an amendment that restates a rule adds a second rule rather than replacing the first. Remove the copy you do not want in **Configuration → Policy Schema**. Letting a later upload — an amended manual or a rider — replace rules in its group is planned as a separate change.
+**By default, re-uploading into a group appends.** With **Add to group** (the default, and what the API does when `policyGroupMode` is omitted) a later upload adds rules and does not supersede, merge or delete any rule already in the group. If an uploaded rule has a name the class already holds, it is added beside the earlier one under a suffixed name (`limit_on_units` → `limit_on_units_2`), and the job's status message lists every such rename. Both copies are then evaluated on every document. So re-uploading the same chapter doubles its rules, and an amendment uploaded with Add restates a rule as a second rule rather than replacing the first. To have the later upload win, upload it with one of the two superseding choices below.
 
 Group names are 1 to 64 characters, start with a letter or digit, and contain only letters, digits, spaces, underscores, hyphens and dots. A name outside that is refused when you submit the upload, and the API refuses a `policyGroup` on a classes discovery.
 
-**A group cannot be combined with Save mode "Replace existing schema".** Replace removes every policy class in the profile — the group's class and every other one — before discovery runs, so a grouped upload under Replace would lose the earlier uploads it was meant to join. The form disables Start Discovery for that combination and the API refuses it (`saveMode: "replace"` with a `policyGroup`). To rebuild a group from scratch, delete its class in **Configuration → Policy Schema** and upload its parts again with Add. The API also refuses a `policyGroup` together with `pageRanges`. If two policy classes in the profile carry the same group (for example, after one was copied by hand), the job fails without saving, because there is no single class to add to; remove the group from all but one of them.
+**A group cannot be combined with Save mode "Replace existing schema".** Replace removes every policy class in the profile — the group's class and every other one — before discovery runs, so a grouped upload under Replace would lose the earlier uploads it was meant to join. The form disables Start Discovery for that combination and the API refuses it (`saveMode: "replace"` with a `policyGroup`). To rebuild one group from an amended manual, use **Replace this group's rules** instead, which leaves every other policy class alone. The API also refuses a `policyGroup` together with `pageRanges`. If two policy classes in the profile carry the same group (for example, after one was copied by hand), the job fails without saving, because there is no single class to add to; remove the group from all but one of them.
 
 **Relation to the regex requirement and to duplicate rules.** A profile whose policy is one group holds one policy class, so the [multiple-class regex requirement](#required-add-a-document-matching-regex) does not apply to it, and a regex you add to the group's class keeps working as more chapters arrive. Uploading two different policies, grouped or not, still creates two classes, and the requirement then applies as usual. The job's [duplicate-rule warning](#limitations) still compares against rules in *other* classes; rules that collide *inside* the group are reported by the rename warning above instead.
 
 **Concurrent uploads.** Two Policy Discovery jobs saving into one configuration profile at the same time are serialised by a short lease, so the rules of two chapters uploaded together both land. A job that cannot take the lease within a minute fails rather than saving unguarded; run it again. A job that stopped while saving holds the lease until it expires, five minutes after that save began, so a retry within that window fails the same way. The lease covers Policy Discovery saves only. The profile's other writers do not take it — a Policy Schema edit saved from the UI, a classes discovery saving into the same profile, and the Replace clear at the start of a discovery — so one of those overlapping a Policy Discovery save can still overwrite one with the other.
 
+### Superseding rules in a group
+
+When you name a group the selected profile already holds, the form reads the group's current rules from the profile and offers three choices. Rule identity is never inferred: a rule is superseded only when you choose it, or when the whole group is replaced. A model guessing that two differently worded rules are the same rule would feed a confident wrong answer into compliance validation, so that is deliberately not offered.
+
+- **Add to group** — the default described above.
+- **Replace this group's rules** — for an amended manual. The upload's rules become the group's whole ruleset: every rule the group held is removed and the upload's rules are added. The class keeps its name, description, Document Name Regex, Page Content Regex and group, so the regex you set once keeps matching. No other policy class is touched, which is the difference from Save mode "Replace existing schema".
+- **Supersede chosen rules** — for a rider or amendment page. Choose the rules the upload supersedes from the group's current rules. Those rules are removed and the upload's rules are added. An uploaded rule with the same name as a superseded rule takes its place; every other uploaded rule is added as with Add, including the `_2` rename when its name matches a rule you did not choose. Choose a rule even when you expect the rider to restate it under the same name: a matching name alone is not treated as a supersession.
+
+Both choices need the group to exist, and a superseded rule name must be one the group holds now, matched exactly (case included). The API refuses anything else with a 400 that names the missing group or rules, before the document is uploaded. The discovery job checks again when it saves, under the same lease that serialises saves, because the group can change in between: if a chosen rule is gone by then, the job fails and saves nothing, rather than reporting a supersession that removed nothing. A replace or supersede whose upload produced no rules also fails without changing the group, because an empty extraction is far likelier to be a failure than an intended repeal.
+
+Superseded rules are removed from the profile's active rules, so rule validation stops evaluating them. The profile's earlier revisions still hold them, so a mistaken replace can be undone by restoring a revision from the profile's [revision history](configuration-profiles.md).
+
+The job's status message says what changed: how many rules a replace removed, or which rules a supersede removed, each with the document that had supplied it.
+
+**The upload record.** Every Policy Discovery save records itself on the policy class it wrote, in `x-aws-idp-policy-uploads`: one entry per upload, oldest first, holding the discovery job id (`uploadId`), the document's file name, when it was saved, the choice (`append`, `replace` or `supersede`), the rule names it supplied (after any `_2` rename), and the rules it superseded, each with the `uploadId` and document of the upload that had supplied it. The **Policy Schema** tab shows it as a read-only **Policy Discovery uploads** table when you select the class, so you can audit which document each rule came from and which upload replaced it. Rule validation does not read the record. A rule added by hand in the Policy Schema tab has no entry, and is shown as from *an unrecorded upload* if a later upload supersedes it. Classes saved before the record existed start one with their next upload. Renaming a rule in the Policy Schema tab is not recorded, so the record names the rule as it was saved.
+
 ### API Integration
 
 **API operation** (`POST /op/uploadDiscoveryDocument`; the shape below is the contract in `schema.graphql`):
 ```graphql
-mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String, $policyGroup: String) {
+mutation UploadDiscoveryDocument(
+  $fileName: String!
+  $discoveryType: String
+  $version: String
+  $policyGroup: String
+  $policyGroupMode: String
+  $supersededRules: [String]
+) {
   uploadDiscoveryDocument(
     fileName: $fileName
     discoveryType: $discoveryType
     version: $version
     policyGroup: $policyGroup
+    policyGroupMode: $policyGroupMode
+    supersededRules: $supersededRules
   ) {
     presignedUrl
     objectKey
@@ -349,7 +374,7 @@ mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $ve
 }
 ```
 
-Pass `discoveryType: "rules"` to route the upload to Policy Discovery instead of classes discovery. Pass `policyGroup` to add the upload's rules to that [policy group](#policy-groups); omit it, or send an empty string, for an ungrouped upload.
+Pass `discoveryType: "rules"` to route the upload to Policy Discovery instead of classes discovery. Pass `policyGroup` to add the upload's rules to that [policy group](#policy-groups); omit it, or send an empty string, for an ungrouped upload. `policyGroupMode` is `append` (the default when omitted), `replace` or `supersede`, and the last takes `supersededRules`, the exact names of the group's rules the upload supersedes. `replace` and `supersede` need a `policyGroup` the profile already holds, `supersededRules` is refused with any other mode, and every name in it must be a rule of the group; see [Superseding rules in a group](#superseding-rules-in-a-group).
 
 **Reading job status:** poll `listDiscoveryJobs` and filter client-side for the
 job id. GraphQL subscriptions are not used — `onDiscoveryJobStatusChange` is
@@ -380,6 +405,24 @@ result = discovery.discovery_rules_from_document(
     input_prefix="policies/ncci-medicare-manual-ch2.pdf",
     policy_group="NCCI Medicare Manual",
 )
+
+# Replace the group's rules with an amended manual's
+result = discovery.discovery_rules_from_document(
+    input_bucket="my-discovery-bucket",
+    input_prefix="policies/ncci-medicare-manual-2027.pdf",
+    policy_group="NCCI Medicare Manual",
+    policy_group_mode="replace",
+)
+
+# Or supersede named rules with a rider's
+result = discovery.discovery_rules_from_document(
+    input_bucket="my-discovery-bucket",
+    input_prefix="policies/ncci-rider-3.pdf",
+    policy_group="NCCI Medicare Manual",
+    policy_group_mode="supersede",
+    superseded_rules=["limit_on_units"],
+)
+print(result["groupChange"])  # {"mode": ..., "rules": [...], "superseded": [...]}
 
 # Or extract from a local file without persisting
 result = discovery.discovery_rules_from_document_local(
@@ -472,7 +515,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 **Naming & Regex:**
 - Immediately after each extraction, set the `Document Name Regex` on the new class. Undocumented regex ⇒ rules never fire.
 - When you upload the same policy document twice (e.g., iterating on prompts), remember each upload creates a new class with a fresh 8-hex suffix. Delete or disable the stale ones.
-- When a policy has to be uploaded in parts, give every part the same **Policy group**, and set the regex once on the group's class. Re-uploading a part into its group adds its rules a second time, so remove the old copies rather than expecting them to be replaced.
+- When a policy has to be uploaded in parts, give every part the same **Policy group**, and set the regex once on the group's class. Re-uploading a part with Add adds its rules a second time; upload an amended manual with **Replace this group's rules**, and a rider with **Supersede chosen rules**.
 
 
 ## Troubleshooting
@@ -500,7 +543,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 ## Limitations
 
 - **Single-document rule extraction only.** Policy Discovery does not currently support multi-document clustering (unlike [Multi-Document Collection Discovery](discovery.md#multi-document-collection-discovery)). Each upload is extracted independently; giving several uploads one [policy group](#policy-groups) is what puts their rules into one policy class.
-- **A later upload cannot supersede an earlier one.** Uploading into a policy group only appends, so an amendment or rider that restates a rule produces a second rule beside the first, and both are evaluated. Superseding is planned as a separate change; until then, remove the outdated rule in **Configuration → Policy Schema**.
+- **Superseding is declared, never inferred.** A later upload supersedes earlier rules only when it replaces its whole group or when you choose the rules it supersedes. An amendment uploaded with Add that rewords a rule produces a second rule beside the first, and both are evaluated. See [Superseding rules in a group](#superseding-rules-in-a-group).
 - **No automatic regex generation.** The LLM extracts rules but does not propose a `Document Name Regex` for the policy class. Regex authoring is a manual step today.
 
   Because rule validation requires a regex once a configuration holds **more than one** policy class, a *second* ungrouped Policy Discovery run (or one into a different [policy group](#policy-groups)) switches rule validation off for **every** policy class until you add one — the first policy's rules were evaluating, and now nothing is. The discovery job reports this in its status message when its save creates that state, but the remedy is manual: add a `Document Name Regex` (or `Page Content Regex`) to each policy class in **Configuration → Policy Schema**.

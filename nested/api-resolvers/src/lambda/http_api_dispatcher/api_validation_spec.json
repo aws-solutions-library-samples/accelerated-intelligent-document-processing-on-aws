@@ -3457,6 +3457,20 @@
           "name": "policyGroup",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "policyGroupMode",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "supersededRules",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },

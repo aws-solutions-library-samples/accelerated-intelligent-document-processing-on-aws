@@ -152,6 +152,10 @@ X_AWS_IDP_RULE_TYPE = "x-aws-idp-rule-type"
 # carrying this key instead of each creating a class of its own (#608). Unknown to
 # older releases, which ignore it (policy classes are free-form dicts).
 X_AWS_IDP_POLICY_GROUP = "x-aws-idp-policy-group"
+# The Policy Discovery uploads that built a policy class, oldest first: for each,
+# the rules it supplied and the earlier rules it superseded (#608). An audit
+# record only; rule validation does not read it.
+X_AWS_IDP_POLICY_UPLOADS = "x-aws-idp-policy-uploads"
 
 # Per-rule validation engine selection (values: "llm" or "z3")
 X_AWS_IDP_VALIDATION_ENGINE = "x-aws-idp-validation-engine"

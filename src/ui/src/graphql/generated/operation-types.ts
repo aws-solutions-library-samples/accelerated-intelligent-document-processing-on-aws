@@ -1909,9 +1909,11 @@ export type MutationUploadDiscoveryDocumentArgs = {
   pageLabels?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
   pageRanges?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
   policyGroup?: InputMaybe<Scalars['String']['input']>;
+  policyGroupMode?: InputMaybe<Scalars['String']['input']>;
   prefix?: InputMaybe<Scalars['String']['input']>;
   saveMode?: InputMaybe<Scalars['String']['input']>;
   skipJobCreation?: InputMaybe<Scalars['Boolean']['input']>;
+  supersededRules?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
@@ -4081,6 +4083,8 @@ export type UploadDiscoveryDocumentMutationVariables = Exact<{
   discoveryType?: InputMaybe<Scalars['String']['input']>;
   saveMode?: InputMaybe<Scalars['String']['input']>;
   policyGroup?: InputMaybe<Scalars['String']['input']>;
+  policyGroupMode?: InputMaybe<Scalars['String']['input']>;
+  supersededRules?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>> | InputMaybe<Scalars['String']['input']>>;
 }>;
 
 

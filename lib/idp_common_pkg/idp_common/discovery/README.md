@@ -169,6 +169,31 @@ the profile (Policy Schema edits, classes discovery, the resolver's Replace clea
 not take it. The upload resolver refuses a group with `saveMode: replace`, which
 would clear the group's class before the job runs, and with `pageRanges`.
 
+### A grouped upload can replace or supersede the group's rules (#608)
+
+`discovery_rules_from_document(..., policy_group_mode=..., superseded_rules=...,
+upload_id=...)` says what a grouped upload does to its group. `append` (the
+default) is the behaviour above. `replace` empties the class's `rule_properties`
+before adding the upload's rules; `supersede` removes exactly the rule names in
+`superseded_rules`, so an incoming rule with one of those names takes it and the
+rest append (with the `_2` rename). The class keeps every other key. Rule identity
+is never inferred. `normalize_policy_group_change` validates the shape (mode, a
+group for the non-append modes, rule names only for `supersede`) and
+`check_policy_group_change` the target (the group's class exists; every superseded
+name is one of its rules, exactly). The upload resolver calls both before minting a
+URL and `_save_rules_to_config` calls both again under the save lease, so a target
+that vanished in between fails the job without writing. A non-append upload that
+extracted no rules also fails without writing. Superseded rules are deleted from
+the active ruleset; the profile's revisions keep them.
+
+Every save appends an entry to the class's `x-aws-idp-policy-uploads` list:
+`uploadId` (the discovery job id), `document` (file name), `savedAt`, `mode`,
+`rules` (names as saved) and `superseded` (`{rule, uploadId, document}` of the
+upload that had supplied each, from `policy_rule_sources`, which replays the list).
+Ungrouped uploads record themselves on their own class too. Rule validation reads
+none of it. The result's `groupChange` (`{mode, rules, superseded}`) is what the
+discovery Lambda puts in the job's status message.
+
 ### Multi-record samples produce a suggestion, not a setting (#765)
 
 Both single-document flows append `_INSTANCE_COUNT_INSTRUCTION` to the prompt: the
