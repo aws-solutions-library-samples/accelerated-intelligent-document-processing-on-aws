@@ -126,7 +126,15 @@ Parameters:
       decision_model.max_concurrency to cap the decider's share; a reservation
       the account cannot spare fails the install.
 
+  AlarmTopicArn:
+    Type: String
+    Default: ''
+    Description: >
+      Optional SNS topic ARN the decider's error and throttle alarms notify. Empty
+      leaves the alarms visible in CloudWatch with no notification.
+
 Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
   EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, 'true']
   UseSnapStart: !Equals [!Ref EnableSnapStart, 'true']
@@ -551,6 +559,43 @@ Resources:
       Name: live
       FunctionName: !Ref DeciderFunction
       FunctionVersion: !GetAtt DeciderFunctionVersion.Version
+
+  # Errors are refusals and failed calls, which also fail the section they were
+  # for; throttles mean the account's Lambda concurrency, or ReservedConcurrency,
+  # could not hold another 10,240 MB environment.
+  DeciderFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The decision model function returned errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DeciderFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  DeciderFunctionThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The decision model function was throttled
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DeciderFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
 
   ###########################################################################
   # UI deployer: copies the UI bundle, registers the feature, and installs the

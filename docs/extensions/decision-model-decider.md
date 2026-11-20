@@ -160,6 +160,7 @@ an entry for it.
 | `ReservedConcurrency` | `0` | Reserved concurrency for the function; `0` reserves none. Each concurrent call is a 10,240 MB execution environment drawn from the account's Lambda concurrency, shared with the rest of the pipeline. To cap the decider's share, set it to at most the host's `MaxConcurrentWorkflows` times the configuration's `decision_model.max_concurrency`. A reservation the account cannot spare fails the install, which is why none is the default. |
 | `EnableVision` | `true` | Include the vision tower. Without it, a request with images is refused, and section classification and extraction confidence both default to `input: images`. |
 | `DeciderSourceRevision`, `ModelId`, `ModelRevision` | the pins above | What the image is built from. |
+| `AlarmTopicArn` | empty | An SNS topic for the function's two alarms, on errors and on throttles. Empty leaves them in CloudWatch with no notification. A throttle means the account's Lambda concurrency, or `ReservedConcurrency`, could not hold another 10,240 MB execution environment. |
 | `EnableXRayTracing` | `true` | X-Ray tracing for this stack's functions. An extension stack does not receive the host's setting. |
 | `LogRetentionDays` | `30` | Retention for the function's, the build's and the custom resources' log groups. |
 
