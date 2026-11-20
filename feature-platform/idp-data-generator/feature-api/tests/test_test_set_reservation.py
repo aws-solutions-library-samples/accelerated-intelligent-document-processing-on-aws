@@ -468,7 +468,7 @@ class TestTheProcessorReleasesAnUnusedClaim:
             def get_raw_configuration(self, _kind, _version):
                 return {"classes": [{"$id": "W2", "type": "object", "properties": {}}]}
 
-            def list_config_versions(self):
+            def list_config_versions(self, raise_errors=False):
                 return [{"versionName": "lending-package-sample", "managed": True}]
 
             def save_raw_configuration(self, *args, **kwargs):
@@ -489,6 +489,46 @@ class TestTheProcessorReleasesAnUnusedClaim:
         assert len(invocations) == 1
         assert saves == []
         assert _row(aws, "w2-synthetic")["status"] == "GENERATING"
+
+    def test_a_refused_target_profile_fails_once_and_releases_the_claim(
+        self, api, processor, aws, monkeypatch
+    ):
+        """A refusal cannot succeed on redelivery, so SQS is not asked to retry it."""
+        import idp_common.config.configuration_manager as cm
+
+        claimed = self._claim(api)
+        real_merge = processor.bootstrap_mod.merge_class_into_version
+        invocations = self._real_job(processor, monkeypatch)
+        monkeypatch.setattr(
+            processor.bootstrap_mod, "merge_class_into_version", real_merge
+        )
+        saves = []
+
+        class _ManagedConfig:
+            def get_raw_configuration(self, _kind, _version):
+                return {"classes": []}
+
+            def list_config_versions(self, raise_errors=False):
+                return [{"versionName": "lending-package-sample", "managed": True}]
+
+            def save_raw_configuration(self, *args, **kwargs):
+                saves.append((args, kwargs))
+
+        monkeypatch.setattr(cm, "ConfigurationManager", _ManagedConfig)
+        job = {
+            **claimed,
+            "preauthoredSchema": {"$id": "W2", "type": "object", "properties": {}},
+            "targetVersion": "lending-package-sample",
+        }
+
+        out = processor.handler(_record(job), None)
+
+        assert out == {"batchItemFailures": []}
+        assert invocations == []
+        assert saves == []
+        row = _row(aws, "w2-synthetic")
+        assert row["status"] == "FAILED"
+        assert row["error"] == processor._NOT_GENERATED
 
     def test_a_job_with_no_generator_runtime_fails_the_claim(
         self, api, processor, aws, monkeypatch

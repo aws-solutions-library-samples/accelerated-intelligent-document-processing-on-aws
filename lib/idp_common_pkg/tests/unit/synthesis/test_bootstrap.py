@@ -48,7 +48,7 @@ class _FakeConfigManager:
     def get_raw_configuration(self, config_type, version):
         return self.saved.get(version)
 
-    def list_config_versions(self):
+    def list_config_versions(self, raise_errors=False):
         return [{"versionName": name, "managed": False} for name in self.saved]
 
     def save_raw_configuration(
@@ -127,6 +127,16 @@ class TestProtectedProfiles:
             bootstrap.merge_class_into_version(
                 VALID_SCHEMA, "docsplit", config_manager=cm
             )
+        cm.save_raw_configuration.assert_not_called()
+
+    def test_an_unreadable_profile_listing_writes_nothing(self):
+        cm = self._manager([])
+        cm.list_config_versions.side_effect = RuntimeError("scan throttled")
+        with pytest.raises(RuntimeError, match="scan throttled"):
+            bootstrap.merge_class_into_version(
+                VALID_SCHEMA, "docsplit", config_manager=cm
+            )
+        cm.list_config_versions.assert_called_once_with(raise_errors=True)
         cm.save_raw_configuration.assert_not_called()
 
     @pytest.mark.parametrize(

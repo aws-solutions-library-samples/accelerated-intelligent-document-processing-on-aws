@@ -100,11 +100,11 @@ ends the conversation.
    from a real document is higher-fidelity than a prompt-only draft.
 
    Discovery saves what it finds into a **new** profile named
-   `quickstart-<date>-<time>` (UTC), one per conversation, and never into
-   a profile that already exists. On a stack with no configuration of its own yet
-   (nothing active, or only `default`), that profile becomes active straight away.
-   Otherwise the agent asks before making it the active profile, because the
-   active profile is what every new document on the stack is processed with.
+   `quickstart-<date>-<time>` (UTC), one per conversation; documents you attach
+   later in the same conversation go into that same profile. On a stack whose only
+   profile is `default`, it becomes active straight away. Otherwise the agent asks
+   before making it the active profile, because the active profile is what every
+   new document on the stack is processed with.
 5. **Activate.** When you approve, the agent creates a configuration profile and
    **activates** it, then confirms it's ready. Upload a document from **Upload
    Documents** in the side navigation and it's processed with your new

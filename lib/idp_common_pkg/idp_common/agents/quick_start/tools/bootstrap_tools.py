@@ -316,6 +316,11 @@ def create_config_version_impl(schema_text: str, version_name: str = "") -> str:
         return json.dumps(
             {"config_version": version, "activated": False, "error": str(e)}
         )
+    except Exception as e:
+        logger.error(f"Error saving config version '{version}': {e}")
+        return json.dumps(
+            {"config_version": version, "activated": False, "error": str(e)}
+        )
     return json.dumps({"config_version": version, "activated": False})
 
 

@@ -111,14 +111,16 @@ def refuse_protected_profile(version: str, *, config_manager: Any) -> None:
     and 'default' changes only through Save as default or idp-cli config-upload, so a
     class written into either by bootstrap is lost or applied to every document. The
     class goes into a profile of its own instead.
+
+    The listing is read with ``raise_errors=True``: an unreadable listing raises
+    rather than reading as "no profile is managed".
     """
     if version == "default":
         raise ProtectedProfileError(
             "'default' is not written by bootstrap: save the class into a new profile, "
             "and use Save as default from it if it should become the default."
         )
-    profiles = config_manager.list_config_versions()
-    for listed in profiles if isinstance(profiles, list) else []:
+    for listed in config_manager.list_config_versions(raise_errors=True):
         if listed.get("versionName") == version and listed.get("managed"):
             raise ProtectedProfileError(
                 f"'{version}' is a stack-managed profile, which a stack update "

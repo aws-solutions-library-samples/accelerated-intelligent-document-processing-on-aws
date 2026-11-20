@@ -357,11 +357,15 @@ def _process_job(job_id, body):
         schema
     )
     if tier == "existing-config":
-        message = f"Using class '{request.class_name}' from '{target_version}'"
+        message = f"Using class '{request.class_name}' from '{request.config_version}'"
     else:
-        bootstrap_mod.merge_class_into_version(
-            schema, target_version, config_manager=config_manager
-        )
+        try:
+            bootstrap_mod.merge_class_into_version(
+                schema, target_version, config_manager=config_manager
+            )
+        except bootstrap_mod.ProtectedProfileError as e:
+            _status(job_id, "FAILED", error=str(e))
+            return False
         message = f"Config version '{target_version}' created (tier={tier})"
     _status(job_id, "IN_PROGRESS", message=message, config_version=target_version)
 

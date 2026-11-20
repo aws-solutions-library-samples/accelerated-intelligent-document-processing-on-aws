@@ -18,12 +18,11 @@ export const newQuickStartProfileName = (now: Date): string =>
   `${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
 
 /**
- * Whether Quick Start makes its profile active without asking: when the stack has no
- * configuration of its own yet (nothing is active, or only 'default' is), or when that
- * profile is already the active one. Otherwise the user is asked first, because
- * activating changes what every new document on the stack is processed with.
+ * Whether Quick Start makes its profile active without asking: when that profile is
+ * already the active one, or when the stack has no profile of its own besides it, only
+ * 'default'. Otherwise the user is asked first, because activating changes what every
+ * new document on the stack is processed with, and another profile may be in use.
  */
-export const activatesWithoutAsking = (versions: ReadonlyArray<ProfileSummary>, target: string): boolean => {
-  const active = versions.find((version) => version.isActive);
-  return !active || active.versionName === 'default' || active.versionName === target;
-};
+export const activatesWithoutAsking = (versions: ReadonlyArray<ProfileSummary>, target: string): boolean =>
+  versions.some((version) => version.isActive && version.versionName === target) ||
+  versions.every((version) => version.versionName === 'default' || version.versionName === target);

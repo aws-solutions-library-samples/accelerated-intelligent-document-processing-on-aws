@@ -149,7 +149,7 @@ const AgentChatLayout = ({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [completedJobId, setCompletedJobId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const { versions, setActiveVersion, fetchVersions } = useConfigurationVersions();
+  const { versions, loaded: versionsLoaded, error: versionsError, setActiveVersion, fetchVersions } = useConfigurationVersions();
   const navigate = useNavigate();
 
   const discoveryTargetRef = useRef<string | null>(null);
@@ -160,9 +160,7 @@ const AgentChatLayout = ({
       const names = result.classNames.length ? result.classNames.join(', ') : 'document type(s)';
       const discoveryKind = result.totalDocuments === 1 ? 'Single-document' : 'Multi-document';
       const typeCount = result.clustersFound || result.classNames.length;
-      const activated = activateDiscoveryTargetRef.current;
-      const activeness = activated ? 'already' : 'not';
-      const summary =
+      const summaryFor = (activeness: 'already' | 'not') =>
         `I uploaded ${result.totalDocuments} document(s). ${discoveryKind} discovery inferred ` +
         `${typeCount} document type(s): ${names}, saved as a new configuration profile. Please summarize what was ` +
         `found in plain language for a first-time user. Briefly explain, in one plain sentence, that ` +
@@ -173,15 +171,24 @@ const AgentChatLayout = ({
         `[Discovery saved the schema to a new configuration profile "${result.configVersion}", which is ${activeness} the active profile; if it is not, ask before I process documents whether to make it the active profile, and call activate_config_version only once I agree. Its fields ` +
         `are not shown here — call get_class_schema for version "${result.configVersion}" before ` +
         `answering questions about the fields or refining them.]`;
+      const send = (activated: boolean) =>
+        sendMessage(summaryFor(activated ? 'already' : 'not'), { enableCodeIntelligence, enableExternalMcpAgents });
       setAttachedFiles([]);
       setUploadError(null);
       setCompletedJobId(result.jobId);
-      if (activated) {
-        setActiveVersion(result.configVersion)
-          .then(() => fetchVersions())
-          .catch((e) => logger.error('Failed to activate the Quick Start profile:', e));
+      if (!activateDiscoveryTargetRef.current) {
+        send(false);
+        return;
       }
-      sendMessage(summary, { enableCodeIntelligence, enableExternalMcpAgents });
+      setActiveVersion(result.configVersion)
+        .then(() => {
+          void fetchVersions();
+          send(true);
+        })
+        .catch((e) => {
+          logger.error('Failed to activate the Quick Start profile:', e);
+          send(false);
+        });
     },
     [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions],
   );
@@ -260,7 +267,7 @@ const AgentChatLayout = ({
       const filesToProcess = attachedFiles;
       if (!discoveryTargetRef.current) discoveryTargetRef.current = newQuickStartProfileName(new Date());
       const version = discoveryTargetRef.current;
-      activateDiscoveryTargetRef.current = activatesWithoutAsking(versions, version);
+      activateDiscoveryTargetRef.current = versionsLoaded && !versionsError && activatesWithoutAsking(versions, version);
       setCompletedJobId(null);
       setUploadError(null);
       setAttachedFiles([]);
@@ -395,7 +402,7 @@ const AgentChatLayout = ({
     },
     {
       id: 'QuickStartAddType',
-      prompt: 'Add a new document type to my existing configuration',
+      prompt: 'Set up another document type alongside my existing ones',
     },
   ];
 

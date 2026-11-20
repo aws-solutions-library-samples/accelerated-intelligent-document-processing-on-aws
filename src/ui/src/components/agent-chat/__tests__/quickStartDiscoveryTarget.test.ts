@@ -26,13 +26,41 @@ describe('the profile a Quick Start conversation saves into', () => {
   const target = 'quickstart-20261120-090507';
 
   it.each([
-    ['nothing is active', [{ versionName: 'docsplit', isActive: false }], true],
-    ['only default is active', [{ versionName: 'default', isActive: true }], true],
-    ['it is already the active profile', [{ versionName: target, isActive: true }], true],
+    ['only default exists', [{ versionName: 'default', isActive: true }], true],
+    [
+      'it is already the active profile',
+      [
+        { versionName: 'docsplit', isActive: false },
+        { versionName: target, isActive: true },
+      ],
+      true,
+    ],
+    [
+      'default is active beside a profile of the stack',
+      [
+        { versionName: 'default', isActive: true },
+        { versionName: 'team-invoices', isActive: false },
+      ],
+      false,
+    ],
+    ['nothing is active beside a profile of the stack', [{ versionName: 'docsplit', isActive: false }], false],
     ['a stack-managed profile is active', [{ versionName: 'docsplit', isActive: true }], false],
     ['a user profile is active', [{ versionName: 'team-invoices', isActive: true }], false],
-  ])('is made active without asking only when the stack has no configuration of its own (%s)', (_case, versions, activates) => {
+  ])('is made active without asking only when the stack has no profile of its own (%s)', (_case, versions, activates) => {
     expect(activatesWithoutAsking(versions, target)).toBe(activates);
+  });
+
+  it('is never made active without asking from a profile list that has not loaded or failed', () => {
+    const layout = readFileSync(join(__dirname, '..', 'AgentChatLayout.tsx'), 'utf-8');
+    expect(layout).toMatch(
+      /activateDiscoveryTargetRef\.current = versionsLoaded && !versionsError && activatesWithoutAsking\(versions, version\);/,
+    );
+  });
+
+  it('tells the agent it is active only once the activation has succeeded', () => {
+    const layout = readFileSync(join(__dirname, '..', 'AgentChatLayout.tsx'), 'utf-8');
+    expect(layout).toMatch(/setActiveVersion\(result\.configVersion\)\s*\.then\(\(\) => \{\s*void fetchVersions\(\);\s*send\(true\);/);
+    expect(layout).toMatch(/\.catch\(\(e\) => \{[^}]*send\(false\);/);
   });
 
   it('is what the chat layout uploads to, not the active profile', () => {
