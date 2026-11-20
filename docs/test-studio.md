@@ -2119,7 +2119,12 @@ The figures are stored under `confidenceMetrics.empty_values` in the test run's 
      confidence of each empty prediction under `empty_prediction_confidences`
 
 2. **Test Aggregation**: When viewing test results, the aggregation function:
-   - Loads all `stickler_comparison_result` records for the test run
+   - Loads all `stickler_comparison_result` records for the test run, and processes them in
+     document-key order, so aggregating the same results again gives the same metrics. Where
+     several values of one field have the same confidence and the review budget covers only
+     some of them, ECARB@30 counts the ones from documents earlier in that order as reviewed.
+     In the overall figure, tied values of different fields are ordered by field first, in
+     the order the fields first appear
    - Computes calibration metrics (AUROC, ECE, Brier) via `aggregate_from_comparisons` and a `BulkStructuredModelEvaluator` with the confidence metrics installed as bulk-level accumulators
    - Also runs `BulkStructuredModelEvaluator` with `ErrorCaptureAtBudgetMetric` to compute ECAB (Error Capture at Budget)
    - Aggregates path-based keys (e.g., `LineItems[0].Rate`) to pattern-based keys (`LineItems.Rate`)

@@ -312,6 +312,11 @@ document = Document.from_json(document_json_string)
 document = Document.from_s3(bucket="baseline-bucket", input_key="documents/sample.pdf")
 ```
 
+`Document.from_s3` returns pages and sections in ID order: numeric IDs numerically
+(page 10 after page 9), then any other ID by string. The evaluation's per-packet
+section details follow the baseline's section order, so the same baseline gives the
+same output in every process.
+
 ### Document Serialization
 
 ```python

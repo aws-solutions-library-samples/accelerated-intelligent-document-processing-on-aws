@@ -15,7 +15,7 @@ import os
 import re
 import threading
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -1003,32 +1003,40 @@ def _load_comparison_results(
 
     excluded_doc_keys: List[str] = []
 
-    # Execute parallel S3 loads
+    # Execute parallel S3 loads, and fold the results in document-key order.
+    # The scan returns items in an order nothing promises and the loads finish
+    # in whatever order the threads happen to, and folding each result as its
+    # future completed made the comparison list Stickler receives - and the
+    # order the weighted scores are summed in - differ between two aggregations
+    # of the same results. Stickler's error-capture-at-budget metric breaks
+    # ties between equal confidences by input order, so that moved whole
+    # errors, not only the last digits (#2133). ``executor.map`` yields in input
+    # order whatever order the loads finish in. The keys are compared as strings
+    # because the scan can return a number where a record's ``ObjectKey`` should
+    # be a string (#2165), and one such record must not fail the whole run.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(load_document_results, doc_key): doc_key
-            for doc_key in docs_to_load
-        }
+        loaded = list(
+            executor.map(load_document_results, sorted(docs_to_load, key=str))
+        )
 
-        for future in as_completed(futures):
-            result = future.result()
-            if result["success"]:
-                comparison_results.extend(result["comparisons"])
-                if result["weighted_score"] is not None:
-                    doc_weighted_scores[result["doc_key"]] = result["weighted_score"]
-                elif result.get("excluded_from_scoring"):
-                    # Doc had section results but every one was a no-op — keep
-                    # it visible as "excluded" so the UI can distinguish this
-                    # from a load failure.
-                    excluded_doc_keys.append(result["doc_key"])
-                if result.get("graded_scores"):
-                    doc_graded_packet_scores[result["doc_key"]] = result[
-                        "graded_scores"
-                    ]
-                if result.get("classification_errors"):
-                    doc_classification_errors[result["doc_key"]] = result[
-                        "classification_errors"
-                    ]
+    for result in loaded:
+        if result["success"]:
+            comparison_results.extend(result["comparisons"])
+            if result["weighted_score"] is not None:
+                doc_weighted_scores[result["doc_key"]] = result["weighted_score"]
+            elif result.get("excluded_from_scoring"):
+                # Doc had section results but every one was a no-op — keep
+                # it visible as "excluded" so the UI can distinguish this
+                # from a load failure.
+                excluded_doc_keys.append(result["doc_key"])
+            if result.get("graded_scores"):
+                doc_graded_packet_scores[result["doc_key"]] = result[
+                    "graded_scores"
+                ]
+            if result.get("classification_errors"):
+                doc_classification_errors[result["doc_key"]] = result[
+                    "classification_errors"
+                ]
 
     logger.info(
         f"Loaded {len(comparison_results)} comparison results for test run {test_run_id}"
