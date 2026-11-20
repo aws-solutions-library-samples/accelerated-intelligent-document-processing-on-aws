@@ -454,9 +454,9 @@ invitation and verification emails; Cognito service errors on the sign-in form t
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
 headers and generated report headings; the relative-time literal "just now", the unit suffixes
 on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on integer percents
-built in template strings (`${progressPct}%`), until their screens convert; extension UIs built
-before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
-until they carry stable codes; and document data, always. The remaining PRs of the series (the
-screens area by area, review tooling, enabling `fr-CA`, Cognito
-persistence, the configuration editor, error codes, agent-convention docs) are listed in
+built in template strings (`${progressPct}%`), until their screens convert; extension UIs that do
+not translate their own text, and feature `displayName`s; backend error texts until they carry
+stable codes; and document data, always. The remaining PRs of the series (the screens area by area,
+review tooling, enabling `fr-CA`, Cognito persistence, the configuration editor, error codes,
+agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
