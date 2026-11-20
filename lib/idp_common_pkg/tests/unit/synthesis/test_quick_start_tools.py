@@ -463,3 +463,4 @@ class TestCreateConfigVersionErrors:
         out = self._create(RuntimeError("throttled"))
         assert out["refused"] is False
         assert "try again" in out["error"]
+        assert "throttled" not in out["error"]

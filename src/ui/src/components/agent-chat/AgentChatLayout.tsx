@@ -149,11 +149,14 @@ const AgentChatLayout = ({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [completedJobId, setCompletedJobId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const { versions, loaded: versionsLoaded, error: versionsError, setActiveVersion } = useConfigurationVersions();
+  const { versions, loaded: versionsLoaded, error: versionsError, setActiveVersion, fetchVersions } = useConfigurationVersions();
   const navigate = useNavigate();
 
   const discoveryTargetRef = useRef<string | null>(null);
-  const activateDiscoveryTargetRef = useRef(false);
+  const latestVersionsRef = useRef({ versions, loaded: versionsLoaded, error: versionsError });
+  useEffect(() => {
+    latestVersionsRef.current = { versions, loaded: versionsLoaded, error: versionsError };
+  }, [versions, versionsLoaded, versionsError]);
 
   const handleUploadComplete = useCallback(
     (result: QuickStartUploadResult) => {
@@ -176,7 +179,8 @@ const AgentChatLayout = ({
       setAttachedFiles([]);
       setUploadError(null);
       setCompletedJobId(result.jobId);
-      if (!activateDiscoveryTargetRef.current) {
+      const latest = latestVersionsRef.current;
+      if (!(latest.loaded && !latest.error && activatesWithoutAsking(latest.versions, result.configVersion))) {
         send(false);
         return;
       }
@@ -264,7 +268,7 @@ const AgentChatLayout = ({
       const filesToProcess = attachedFiles;
       if (!discoveryTargetRef.current) discoveryTargetRef.current = newQuickStartProfileName(new Date());
       const version = discoveryTargetRef.current;
-      activateDiscoveryTargetRef.current = versionsLoaded && !versionsError && activatesWithoutAsking(versions, version);
+      void fetchVersions();
       setCompletedJobId(null);
       setUploadError(null);
       setAttachedFiles([]);
