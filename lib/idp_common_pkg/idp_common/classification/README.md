@@ -286,6 +286,15 @@ classification Lambda reports it under that name, which `ClassificationStep` ret
 (#2034). Recorded on the section, it would instead fail the whole document in
 ProcessResults with an error no retrier matches.
 
+The raised `TransientError` carries the usage of the calls the attempt completed (the
+pool's finished calls, the earlier packet windows, and under split-then-classify the
+splitting calls) as its failure metering (`utils.failure_metering`). The
+classification Lambda writes that usage to the tracking record together with the
+document as the attempt started it, with status `CLASSIFYING`, so a retried document
+is never shown half-classified or failed. On the page-level path the pages that
+succeeded are cached and the retry reads their usage back from the cache, so their
+usage is counted once.
+
 #### Section classification by a decision model
 
 With `section_classification.method: decision_model`,

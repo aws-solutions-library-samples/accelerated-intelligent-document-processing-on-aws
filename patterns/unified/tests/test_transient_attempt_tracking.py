@@ -326,6 +326,24 @@ class TestSummarization:
         assert _bedrock_tokens(row) == 0
         assert _earlier_steps_kept(row)
 
+    def test_a_whole_document_call_that_carried_usage_records_it_unfailed(
+        self, summarization, config, tracking
+    ):
+        """The service marks its in-memory document FAILED on this path before
+        raising, so what is written must be the document as the attempt began."""
+        fault = attach_failure_metering(
+            _throttle(), {"Summarization/bedrock/m": {"inputTokens": 7}}
+        )
+        model = Model('{"summary": "ok"}', fault, lambda kwargs: True)
+
+        with pytest.raises(TransientError):
+            _summarize(summarization, config, model, sections=False)
+
+        row = _recorded(tracking)
+        assert row.status == Status.SUMMARIZING
+        assert _bedrock_tokens(row) == 7
+        assert _earlier_steps_kept(row)
+
     def test_a_deterministic_failure_is_still_persisted_as_failed(
         self, summarization, config, tracking
     ):
