@@ -117,22 +117,24 @@ def test_every_taggable_awscc_resource_in_the_tree_takes_the_module_tags(
             tag = vendored.tag_attribute(cfn_type)
             if tag is None:
                 continue
-            line = re.search(rf"^  {tag[0]} = (.*)$", body, re.M)
+            line = re.search(rf"^  {tag[0]}\s+= (.*)$", body, re.M)
             if line and "var.tags" in line.group(1):
                 merged += 1
             else:
                 missing.append(f"{path.relative_to(root)}: {tf_type}.{name}")
         for name, body in MODULE.findall(text):
-            if not re.search(r"^  tags = var\.tags$", body, re.M):
+            if not re.search(r"^  tags\s+= var\.tags$", body, re.M):
                 missing.append(f"{path.relative_to(root)}: module.{name}")
         if path.name == "variables.tf":
             assert 'variable "tags" {' in text, path
     assert merged, "no taggable awscc resource in the tree"
     assert not missing, missing
     # The root refuses AWS's reserved prefix at plan.
-    assert (
-        'condition = alltrue([for k in keys(var.tags) : !startswith(lower(k), "aws:")])'
-        in (root / "variables.tf").read_text()
+    assert re.search(
+        r'^\s*condition\s+= alltrue\(\[for k in keys\(var\.tags\) : '
+        r'!startswith\(lower\(k\), "aws:"\)\]\)$',
+        (root / "variables.tf").read_text(),
+        re.M,
     )
 
 

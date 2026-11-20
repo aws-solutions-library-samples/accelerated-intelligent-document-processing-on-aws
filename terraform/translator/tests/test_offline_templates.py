@@ -557,8 +557,8 @@ def test_the_nested_vpc_condition_input_is_known_at_plan(standard_module):
     for name in ("patternstack", "multidocdiscoverystack"):
         start = main_tf.index(f'module "{name}" {{')
         block = main_tf[start : main_tf.index("\n}\n", start)]
-        assert 'vpc_id__cond = (local.c_deploy_in_vpc ? "present" : "")' in block
-        assert 'vpc_id = (local.c_deploy_in_vpc ? var.vpc_id : "")' in block
+        assert _attr(block, "vpc_id__cond", '(local.c_deploy_in_vpc ? "present" : "")')
+        assert _attr(block, "vpc_id", '(local.c_deploy_in_vpc ? var.vpc_id : "")')
 
 
 def _rule_cases(params: dict, rules: dict) -> list[tuple[str, dict, set]]:
@@ -717,7 +717,10 @@ def _security_header_members() -> list[str]:
 
 def _braced(text: str, opener: str) -> str:
     """The ``{...}`` object that ``opener`` (ending in ``{``) starts in ``text``."""
-    start = text.index(opener) + len(opener) - 1
+    # The written module pads `=` to align with its neighbours (terraform fmt).
+    found = re.search(re.escape(opener).replace(r"\ =", r"\s+="), text)
+    assert found, f"{opener!r} not found"
+    start = found.end() - 1
     depth = 0
     for i, ch in enumerate(text[start:], start):
         depth += {"{": 1, "}": -1}.get(ch, 0)
@@ -748,11 +751,12 @@ def test_every_security_header_the_policy_can_carry_is_set(variant, tmp_path):
     assert len(blocks) == (1 if variant is None else 0), len(blocks)
     for block in blocks:
         config = _braced(block, "security_headers_config = {")
-        unset = [m for m in members if not re.search(rf"^\s*{m} = \{{", config, re.M)]
+        unset = [m for m in members if not re.search(rf"^\s*{m}\s+= \{{", config, re.M)]
         assert not unset, unset
         # The header the template documents: X-XSS-Protection: 0.
         xss = _braced(config, "xss_protection = {")
-        assert sorted(ln.strip() for ln in xss[1:-1].strip().splitlines()) == [
+        lines = xss[1:-1].strip().splitlines()
+        assert sorted(re.sub(r"\s+=", " =", ln.strip()) for ln in lines) == [
             "override = true",
             "protection = false",
         ], xss
