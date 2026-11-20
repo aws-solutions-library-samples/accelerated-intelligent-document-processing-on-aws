@@ -371,7 +371,11 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
-	@make solution-profile-check || (echo -e "$(RED)ERROR: solution-profile/ is invalid or behind the code (see docs/solution-profile.md)$(NC)" && exit 1)
+	@echo "Solution profile check"
+	@if ! make solution-profile-check; then \
+		echo -e "$(RED)ERROR: the solution profile in solution-profile/ is invalid or behind the code (see docs/solution-profile.md)$(NC)"; \
+		exit 1; \
+	fi
 
 	@echo "Retired-service documentation check"
 	@if ! make check-retired-services; then \
