@@ -163,7 +163,7 @@ class FitCheckOperation:
                 "profile": profile,
                 "generated_by": generated_by,
                 "settings": settings,
-                "pricing": config.get("pricing") or [],
+                "pricing": self._pricing(name),
             }
             say(
                 f"Profile {profile} ({generated_by}): classes "
@@ -240,6 +240,21 @@ class FitCheckOperation:
         listing = self._client.config.list(stack_name=name)
         return {v.version_name: v.is_active for v in listing.versions}
 
+    def _pricing(self, name: str) -> List[Dict[str, Any]]:
+        """The stack's pricing table, as the reporting writer reads it: the
+        default pricing with any edits saved on the Pricing page laid over it."""
+        import os
+
+        from idp_common.config.configuration_manager import ConfigurationManager
+
+        os.environ["CONFIGURATION_TABLE_NAME"] = (
+            self._client.config._configure_config_env(name)
+        )
+        merged = ConfigurationManager(region=self._client._region).get_merged_pricing()
+        if merged is None:
+            return []
+        return list(merged.model_dump(mode="json").get("pricing") or [])
+
     def _snapshot(self, name: str) -> Dict[str, Optional[str]]:
         from idp_sdk._core.fit_check.collect import canonical_sha256
 
@@ -260,6 +275,19 @@ class FitCheckOperation:
         }
 
     def _generate_profile(self, name, profile, accepted, description, say) -> str:
+        """Generate the profile, with anything Discovery's agent prints sent to
+        stderr: stdout belongs to the command's own output (``--json``)."""
+        import contextlib
+        import sys
+
+        with contextlib.redirect_stdout(sys.stderr):
+            return self._generate_profile_quietly(
+                name, profile, accepted, description, say
+            )
+
+    def _generate_profile_quietly(
+        self, name, profile, accepted, description, say
+    ) -> str:
         from idp_sdk._core.fit_check.inputs import (
             DISCOVERY_FORMATS,
             MULTI_DOC_DISCOVERY_FORMATS,

@@ -427,7 +427,7 @@ def render_markdown(report: Dict[str, Any], record: Dict[str, Any]) -> str:
         f"{_fmt(s['latency_seconds']['p90'], 1)} s. Estimated cost per page "
         f"{_fmt(s['estimated_cost_usd_per_page'], 4)} USD.",
         "",
-        "Costs are estimates from the processing profile's pricing table applied to "
+        "Costs are estimates from the stack's pricing table applied to "
         "each document's metering. They leave out generating the configuration "
         "(Discovery and Quick Start run from this workstation and are not metered by "
         "the stack) and any attempt that Step Functions retried.",

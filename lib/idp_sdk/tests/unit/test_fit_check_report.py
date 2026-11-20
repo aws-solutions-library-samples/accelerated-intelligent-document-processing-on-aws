@@ -96,7 +96,7 @@ def test_the_row_limit_fires_only_above_the_measured_complete_size(rows, fires):
     doc = _doc(page_text={"1": _table(rows), "2": ""})
     findings = detectors.detect_table_rows(doc, SIMPLE)
     assert (refs.SIMPLE_ROW_LIMIT in _refs(findings)) is fires
-    assert any(f"a table of {rows} rows" in f.warning for f in findings)
+    assert any(f"a table of {rows} row(s)" in f.warning for f in findings)
 
 
 @pytest.mark.unit
@@ -104,7 +104,7 @@ def test_a_table_split_by_a_page_break_is_counted_once():
     text = _table(300)
     doc = _doc(page_text={"1": text, "2": text})  # each page repeats the header
     warnings = [f.warning for f in detectors.detect_table_rows(doc, SIMPLE)]
-    assert any("a table of 600 rows" in w for w in warnings), warnings
+    assert any("a table of 600 row(s)" in w for w in warnings), warnings
 
 
 @pytest.mark.unit

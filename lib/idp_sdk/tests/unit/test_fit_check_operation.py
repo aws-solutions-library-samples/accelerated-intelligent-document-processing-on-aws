@@ -63,6 +63,7 @@ def _operation(tmp_path, snapshots, *, config_profile=None):
     }
     op = FitCheckOperation(client)
     op._stack_version = MagicMock(return_value="0.6.16")
+    op._pricing = MagicMock(return_value=[])
     op._snapshot = MagicMock(side_effect=snapshots)
     names = {"default": True, "p1": False}
     op._profile_names = MagicMock(return_value=names)
@@ -237,3 +238,19 @@ def test_cleanup_deletes_each_uploaded_key_and_reads_back(tmp_path, monkeypatch)
         "remain"
         in op._cleanup("S", {"InputBucket": "in"}, keys, [], None, print)["error"]
     )
+
+
+@pytest.mark.unit
+def test_what_discovery_prints_goes_to_stderr_not_stdout(capsys):
+    """Discovery's agent streams its reasoning to stdout, which --json owns."""
+    op = FitCheckOperation(MagicMock(spec=IDPClient))
+
+    def chatty(*args):
+        print("agent chatter")
+        return "discovery"
+
+    op._generate_profile_quietly = chatty
+    assert op._generate_profile("S", "p", [], None, print) == "discovery"
+    captured = capsys.readouterr()
+    assert "agent chatter" not in captured.out
+    assert "agent chatter" in captured.err

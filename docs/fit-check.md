@@ -134,8 +134,9 @@ observation is the condition the limitation describes:
 
 ### Costs
 
-Each document's cost is an estimate: its metering, priced with the processing
-profile's pricing table by the same code that writes the reporting database's
+Each document's cost is an estimate: its metering, priced with the stack's pricing
+table (the defaults with any edits saved on the Pricing page, the table the
+reporting writer reads) by the same code that writes the reporting database's
 metering rows and the `DocumentEstimatedCost` metric
 (`idp_common.reporting.pricing`). A row with no price is left out rather than
 counted as zero, and a document whose rows are all unpriced has no cost. Two things

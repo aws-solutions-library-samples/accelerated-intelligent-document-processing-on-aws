@@ -112,8 +112,8 @@ def detect_table_rows(doc: Dict[str, Any], config: Dict[str, Any]) -> List[Findi
             extracted = _longest_list(section.get("inference_result"))
             findings.append(
                 Finding(
-                    f"{label}: the OCR text holds a table of {rows} rows; the longest "
-                    f"list field extracted has {extracted} items"
+                    f"{label}: the OCR text holds a table of {rows} row(s); the longest "
+                    f"list field extracted has {extracted} item(s)"
                 )
             )
             if simple and rows > SIMPLE_MODE_MEASURED_COMPLETE_ROWS:

@@ -21,6 +21,10 @@ from rich.markup import escape
 err_console = Console(stderr=True)
 
 
+def _na(value: Any, unit: str = "") -> str:
+    return "n/a" if value is None else f"{value}{unit}"
+
+
 def _summary(report: Dict[str, Any], result: Any) -> str:
     s = report["summary"]
     lines = [
@@ -41,8 +45,9 @@ def _summary(report: Dict[str, Any], result: Any) -> str:
         lines.append(f"  {t['ref']}: {t['documents']} document(s)")
     lat = s["latency_seconds"]
     lines.append(
-        f"Latency p50 {lat['p50']} s, p90 {lat['p90']} s; estimated cost per page "
-        f"{s['estimated_cost_usd_per_page']} USD (an estimate)"
+        f"Latency p50 {_na(lat['p50'], ' s')}, p90 {_na(lat['p90'], ' s')}; "
+        f"estimated cost per page {_na(s['estimated_cost_usd_per_page'], ' USD')} "
+        "(an estimate)"
     )
     if report["evaluation"] is None:
         lines.append(
