@@ -846,6 +846,8 @@ terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templat
 # main and nested stacks, read through Cloud Control and diffed, with explained
 # differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
 # credentials and both deployments, so it is a release-validation tier, not a CI gate.
+# A Terraform schedule carrying IDP_TERRAFORM_PARITY=true runs the same comparison
+# against a CloudFormation twin it deploys itself (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
 	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
 	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
