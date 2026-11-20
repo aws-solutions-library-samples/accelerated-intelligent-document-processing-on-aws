@@ -1719,8 +1719,9 @@ idp-cli delete-documents [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--status-filter`: Only delete documents with this status (use with --batch-id or --pattern)
+- `--status-filter`: Only delete documents whose current status is exactly this value (use with --batch-id or --pattern).
   - Options: `FAILED`, `COMPLETED`, `PROCESSING`, `QUEUED`
+  - `PROCESSING` is not a status a document is recorded with, so it selects nothing; a document still being processed carries the name of its current step, such as `OCR` or `EXTRACTING`.
 - `--dry-run`: Show what would be deleted without actually deleting
 - `--force`, `-y`: Skip confirmation prompt
 - `--region`: AWS region (optional)

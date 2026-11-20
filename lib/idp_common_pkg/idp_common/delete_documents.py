@@ -1089,7 +1089,8 @@ def _scan_all_document_keys(
 
     Args:
         tracking_table: DynamoDB table resource
-        status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
+        status_filter: Optional status to match against each document record's
+            ``ObjectStatus`` ('COMPLETED', 'FAILED', 'QUEUED', etc.)
 
     Returns:
         List of DynamoDB items with PK starting with 'doc#'
@@ -1099,7 +1100,11 @@ def _scan_all_document_keys(
     items: List[Dict[str, Any]] = []
     filter_expr = Attr("PK").begins_with("doc#")
     if status_filter:
-        filter_expr = filter_expr & Attr("Status").eq(status_filter)
+        # A document record stores its status as ``ObjectStatus`` (written by
+        # ``DocumentDynamoDBService``); no tracking record carries ``Status``, so
+        # filtering on that name selected nothing (#2189). Run records carry no
+        # status, so only the ``SK = "none"`` document record can match.
+        filter_expr = filter_expr & Attr("ObjectStatus").eq(status_filter)
 
     scan_kwargs: Dict[str, Any] = {"FilterExpression": filter_expr}
 
@@ -1217,7 +1222,8 @@ def get_documents_by_batch(
             selects ``batch-1/a.pdf`` and does **not** select ``batch-10/b.pdf``.
             For substring or wildcard selection use
             :func:`get_documents_by_pattern`.
-        status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
+        status_filter: Optional status the document record's ``ObjectStatus`` must equal
+            ('COMPLETED', 'FAILED', 'QUEUED', etc.)
 
     Returns:
         List of object keys. An empty list means the batch holds no matching
@@ -1257,7 +1263,8 @@ def get_documents_by_pattern(
         tracking_table: DynamoDB table resource
         pattern: Wildcard pattern to match against object keys. ``"*"`` is the
             explicit way to select every document.
-        status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
+        status_filter: Optional status the document record's ``ObjectStatus`` must equal
+            ('COMPLETED', 'FAILED', 'QUEUED', etc.)
 
     Returns:
         List of matching object keys. An empty list means nothing matched, and
