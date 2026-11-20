@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useEffect } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import {
   Container,
@@ -38,6 +39,7 @@ import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/Metri
 import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
 import ClassificationErrorsPanel from './ClassificationErrorsPanel';
 import { asFiniteNumber, costCellLabels, formatCostUsd } from './formatCost';
+import { emptyValueSummary } from './emptyValueMetrics';
 import { useFormatters } from '../../i18n/format';
 import {
   parseCostBreakdown,
@@ -57,6 +59,47 @@ import type { TestRunInput } from '../../graphql/generated/schema-types';
 import type { SelectProps } from '@cloudscape-design/components';
 
 const client = generateClient();
+
+const messages = defineMessages<{
+  confidencePrefix: NoMessageValues;
+  aurocIncludingEmpty: NoMessageValues;
+  emptyPredictions: NoMessageValues;
+  emptyPredictionsValue: { readonly count: number; readonly wrong: number };
+  emptyPredictionsValueWithAuroc: { readonly count: number; readonly wrong: number; readonly auroc: string };
+  olderSectionsNotScored: { readonly sections: number };
+}>({
+  confidencePrefix: {
+    id: 'testStudio.results.confidencePrefix',
+    defaultMessage: 'Confidence:',
+    description: 'Prefix before a confidence calibration metric name in the test run breakdown table.',
+  },
+  aurocIncludingEmpty: {
+    id: 'testStudio.results.aurocIncludingEmpty',
+    defaultMessage: 'AUROC incl. Empty Values',
+    description: 'Metric name: AUROC computed over all fields, including fields the extractor returned empty.',
+  },
+  emptyPredictions: {
+    id: 'testStudio.results.emptyPredictions',
+    defaultMessage: 'Empty Predictions',
+    description: 'Metric name: fields the extractor returned no value for.',
+  },
+  emptyPredictionsValue: {
+    id: 'testStudio.results.emptyPredictionsValue',
+    defaultMessage: '{count} ({wrong} wrong)',
+    description: '{count} is the number of empty predictions; {wrong} is how many of them had a value in the ground truth.',
+  },
+  emptyPredictionsValueWithAuroc: {
+    id: 'testStudio.results.emptyPredictionsValueWithAuroc',
+    defaultMessage: '{count} ({wrong} wrong, AUROC {auroc})',
+    description:
+      '{count} is the number of empty predictions; {wrong} is how many of them were wrong; {auroc} is the formatted AUROC over those fields alone.',
+  },
+  olderSectionsNotScored: {
+    id: 'testStudio.results.olderSectionsNotScored',
+    defaultMessage: '{sections, plural, one {# older section not scored} other {# older sections not scored}}',
+    description: 'Appended to the empty-predictions value when some sections were evaluated before this measure existed.',
+  },
+});
 
 interface CostItem {
   context: string;
@@ -90,6 +133,7 @@ const ComprehensiveBreakdown = ({
   confidenceMetrics,
 }: ComprehensiveBreakdownProps): React.JSX.Element => {
   const { formatFixed, formatNumber, formatPercent, locale } = useFormatters();
+  const intl = useIntl();
   const hasGradedPacketMetrics = !!gradedPacketMetrics?.mean && Object.keys(gradedPacketMetrics.mean).length > 0;
 
   if (!costBreakdown && !accuracyBreakdown && !splitClassificationMetrics && !hasGradedPacketMetrics && !fieldMetrics) {
@@ -266,6 +310,44 @@ const ComprehensiveBreakdown = ({
                                 : 'N/A',
                           });
                         }
+                      }
+
+                      // Empty predictions, which `overall` leaves out (#2052).
+                      const empty = emptyValueSummary(confMetrics);
+                      if (empty) {
+                        if (empty.aurocIncludingEmpty !== null) {
+                          items.push({
+                            metric: (
+                              <>
+                                <span style={{ color: '#687078' }}>{intl.formatMessage(messages.confidencePrefix)}</span>{' '}
+                                {intl.formatMessage(messages.aurocIncludingEmpty)}
+                                <MetricInfo metric="AUROC_INCLUDING_EMPTY" />
+                              </>
+                            ),
+                            value: formatFixed(empty.aurocIncludingEmpty, 3),
+                          });
+                        }
+                        const counts =
+                          empty.aurocEmptyOnly !== null
+                            ? intl.formatMessage(messages.emptyPredictionsValueWithAuroc, {
+                                count: empty.count,
+                                wrong: empty.wrong,
+                                auroc: formatFixed(empty.aurocEmptyOnly, 3),
+                              })
+                            : intl.formatMessage(messages.emptyPredictionsValue, { count: empty.count, wrong: empty.wrong });
+                        items.push({
+                          metric: (
+                            <>
+                              <span style={{ color: '#687078' }}>{intl.formatMessage(messages.confidencePrefix)}</span>{' '}
+                              {intl.formatMessage(messages.emptyPredictions)}
+                              <MetricInfo metric="EMPTY_PREDICTIONS" />
+                            </>
+                          ),
+                          value:
+                            empty.sectionsWithoutRecord > 0
+                              ? `${counts}; ${intl.formatMessage(messages.olderSectionsNotScored, { sections: empty.sectionsWithoutRecord })}`
+                              : counts,
+                        });
                       }
 
                       if (coverage) {

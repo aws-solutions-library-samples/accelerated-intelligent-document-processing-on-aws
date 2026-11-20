@@ -192,6 +192,19 @@ export interface ConfidenceMetrics {
     fields_total: number;
     ratio: number;
   };
+  /**
+   * Empty predictions (fields the extractor returned no value for), reported beside
+   * `overall` because `overall` leaves them out (#2052). Absent on runs aggregated
+   * before it existed.
+   */
+  empty_values?: {
+    count: number;
+    wrong: number;
+    with_confidence: number;
+    sections_without_record: number;
+    overall?: { auroc?: { value: number | null }; [key: string]: unknown };
+    including_empty?: { auroc?: { value: number | null }; [key: string]: unknown };
+  };
   field_count?: number;
   total_pairs?: number;
   [key: string]: unknown;

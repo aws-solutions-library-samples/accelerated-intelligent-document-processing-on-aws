@@ -70,7 +70,13 @@ def test_the_notify_stage_runs_after_the_deploy_stage(config, job):
 
 def test_it_runs_even_when_an_earlier_stage_failed(job):
     """`when: always` is the whole mechanism — without it this job is skipped too."""
-    scheduled = [rule for rule in job["rules"] if "schedule" in str(rule.get("if", ""))]
+    # The rules that ADMIT a scheduled pipeline; a `when: never` rule that rules
+    # one schedule out (the load probe's) is not one of them.
+    scheduled = [
+        rule
+        for rule in job["rules"]
+        if "schedule" in str(rule.get("if", "")) and rule.get("when") != "never"
+    ]
     assert scheduled, f"{JOB} no longer has a scheduled-pipeline rule"
     assert all(rule.get("when") == "always" for rule in scheduled), (
         "the scheduled rule must be `when: always`. On any other value GitLab "
@@ -87,8 +93,12 @@ def test_it_is_confined_to_the_scheduled_run(job):
 
 
 def test_it_cannot_redden_a_nightly(job):
-    scheduled = [r for r in job["rules"] if "schedule" in str(r.get("if", ""))]
-    assert all(r.get("allow_failure") is True for r in scheduled), (
+    scheduled = [
+        r
+        for r in job["rules"]
+        if "schedule" in str(r.get("if", "")) and r.get("when") != "never"
+    ]
+    assert scheduled and all(r.get("allow_failure") is True for r in scheduled), (
         "a notification problem must not be the thing that fails a nightly."
     )
 

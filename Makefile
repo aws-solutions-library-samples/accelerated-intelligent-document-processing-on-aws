@@ -163,15 +163,29 @@ setup: lock-constraints ## Install all packages into current Python environment 
 
 setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
-	@PYENV_PYTHON=$$(pyenv which python 2>/dev/null); \
-	SYS_PYTHON=$$(command -v python3 2>/dev/null); \
-	BASE_PYTHON=$${PYENV_PYTHON:-$$SYS_PYTHON}; \
+	@# The first-party packages declare requires-python ">=3.12,<3.14", so the base
+	@# interpreter is the first SUPPORTED one found, not merely the first `python3`
+	@# on PATH: on a host whose `python3` is 3.9, a venv built from it fails much
+	@# later with "No matching distribution found for setuptools>=84.1.0", which
+	@# names a build dependency rather than the interpreter. An existing .venv on an
+	@# unsupported interpreter is rebuilt (--clear), because `python -m venv` on an
+	@# existing directory keeps its old interpreter.
+	@BASE_PYTHON=""; \
+	for c in "$$(pyenv which python 2>/dev/null)" "$$(command -v python3.13 2>/dev/null)" "$$(command -v python3.12 2>/dev/null)" "$$(command -v python3 2>/dev/null)"; do \
+		[ -n "$$c" ] || continue; \
+		if "$$c" -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then BASE_PYTHON="$$c"; break; fi; \
+	done; \
 	if [ -z "$$BASE_PYTHON" ]; then \
-		echo -e "$(RED)ERROR: No python3 or pyenv python found. Install Python 3.12+ first.$(NC)"; \
+		echo -e "$(RED)ERROR: no Python 3.12 or 3.13 found (checked pyenv, python3.13, python3.12, python3$$(command -v python3 >/dev/null && echo " = $$(python3 --version 2>&1)")). Install one first.$(NC)"; \
 		exit 1; \
 	fi; \
 	echo "Using base Python: $$BASE_PYTHON ($$($$BASE_PYTHON --version))"; \
-	$$BASE_PYTHON -m venv $(VENV_DIR)
+	CLEAR=""; \
+	if [ -x $(VENV_DIR)/bin/python ] && ! $(VENV_DIR)/bin/python -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then \
+		echo "Existing $(VENV_DIR) uses $$($(VENV_DIR)/bin/python --version 2>&1), which is unsupported; rebuilding it."; \
+		CLEAR="--clear"; \
+	fi; \
+	$$BASE_PYTHON -m venv $$CLEAR $(VENV_DIR)
 	@echo "Upgrading pip..."
 	$(VENV_DIR)/bin/pip install --upgrade pip
 	@echo "Installing all first-party packages (single resolution pass)..."
@@ -197,11 +211,15 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@# bare commands, and nothing here puts $(VENV_DIR)/bin on PATH. Reading the
 	@# old wording as "nothing further is needed" is how CONTRIBUTING.md came to
 	@# document a setup sequence that fails with `ruff: No such file or directory`.
+	@# The Node step runs before the activation reminder, so the reminder is the
+	@# last thing printed: printed first, it scrolled away under the npm output.
+	@# setup_node.sh exits 0 in auto mode even when the install fails.
+	@scripts/setup_node.sh auto
+	@echo ""
 	@echo -e "$(YELLOW)   'make' targets that go through \$$(PYTHON)/\$$(PIP) will use $(VENV_DIR)/bin automatically.$(NC)"
-	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 	@echo -e "$(YELLOW)   The lint gates call 'ruff' and 'cfn-lint' as bare commands, so they need$(NC)"
 	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
-	@scripts/setup_node.sh auto
+	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 
 setup-node: ## Install src/ui and docs-site npm dependencies from their lockfiles, plus basedpyright (needs Node 22.12+; fails on any error)
 	@scripts/setup_node.sh required
@@ -1259,6 +1277,25 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
 endif
 	$(RUN_FIRST_PARTY) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
+
+# Usage: make stacktest-load STACK_NAME=<stack-name> [REGION=<region>] [DRY_RUN=1]
+#        [LOAD_PROBE_ARGS="--docs-per-arm 8 --max-cost-usd 25 --cleanup on-pass ..."]
+# Load probe against an EXISTING stack: uploads one NEW configuration profile per
+# arm (split-then-classify, holistic packet classification, agentic extraction,
+# and decision-model confidence when --decision-model-endpoint is given), submits
+# a few dozen sample packets at once, waits with a deadline, and fails on any
+# document failed for a transient (or unreadable) cause and on any section with
+# values but no confidence score. Step retries are reported as a trend, not
+# asserted. Refuses before creating anything when the document cap or the
+# estimated-cost cap is exceeded. DRY_RUN=1 validates the plan and configurations
+# offline and touches nothing. Exit 0 = PASS, 1 = FAIL, 2 = could not run.
+# Report: ./scratch/load-probe/<run id>/report.json. Also the GitLab `load_probe`
+# job, on its own schedule only (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
+stacktest-load: ## Load probe: a few dozen packets at once against an existing stack, under a document and dollar cap (STACK_NAME=...; DRY_RUN=1 touches nothing)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-load STACK_NAME=<stack-name> [REGION=...] [DRY_RUN=1])
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/load_probe.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(DRY_RUN),--dry-run,) $(LOAD_PROBE_ARGS)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state

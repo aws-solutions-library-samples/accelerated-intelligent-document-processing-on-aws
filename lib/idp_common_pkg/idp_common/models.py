@@ -1476,6 +1476,7 @@ class Document:
 
         from idp_common.s3 import get_json_content
         from idp_common.utils import build_s3_uri
+        from idp_common.utils.transient_errors import reraise_if_transient
 
         logger = logging.getLogger(__name__)
         s3_client = boto3.client("s3")
@@ -1537,6 +1538,12 @@ class Document:
                     )
 
                 except Exception as e:
+                    # A missing or malformed result.json drops this entry, but a
+                    # throttled, 5xx or timed-out read must not: a baseline with a
+                    # section silently missing scores that section's fields as
+                    # misses, and one with every section missing reads as "no
+                    # baseline". Let the evaluation retry instead (#2129).
+                    reraise_if_transient(e, where="evaluation")
                     logger.warning(f"Error loading page {page_id}: {str(e)}")
 
             # Update document with number of pages
@@ -1601,6 +1608,8 @@ class Document:
                     )
 
                 except Exception as e:
+                    # Transient reads propagate; see the page loop above (#2129).
+                    reraise_if_transient(e, where="evaluation")
                     logger.warning(f"Error loading section {section_id}: {str(e)}")
 
             return document

@@ -975,6 +975,54 @@ class TestTestCompareRendering:
             }
         ]
 
+    def test_two_saves_in_the_same_second_keep_both_comparisons(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """#2113: the file name carried only a one-second timestamp, so a second
+        comparison saved to the same directory in the same second replaced the
+        first. The clock is frozen both in the id helper and in the `datetime`
+        module itself, which a local `from datetime import datetime` would read."""
+        import datetime as datetime_module
+
+        from idp_sdk._core import ids
+
+        real_datetime = datetime_module.datetime
+        frozen = real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime_module.timezone.utc)
+
+        class _FrozenDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        monkeypatch.setattr(ids, "datetime", _FrozenDatetime)
+        monkeypatch.setattr(datetime_module, "datetime", _FrozenDatetime)
+
+        for _ in range(2):
+            p, _client = _patched_client(
+                compare_test_runs=MagicMock(return_value=_comparison(TWO_RUNS))
+            )
+            with p:
+                result = runner.invoke(
+                    cli_module.cli,
+                    [
+                        "test-compare",
+                        "--stack-name",
+                        "IDP",
+                        "--test-run-ids",
+                        "run-a,run-b",
+                        "--output-dir",
+                        str(tmp_path),
+                    ],
+                )
+            assert result.exit_code == 0, result.output
+
+        json_files = sorted(tmp_path.glob("comparison-20260102-030405-*.json"))
+        csv_files = sorted(tmp_path.glob("comparison-20260102-030405-*.csv"))
+        assert len(json_files) == 2, json_files
+        assert len(csv_files) == 2, csv_files
+        # Each save names its JSON and CSV with one shared id.
+        assert {f.stem for f in json_files} == {f.stem for f in csv_files}
+
     def test_long_run_ids_are_truncated_in_the_table_header(self, runner):
         """Column headers are cut to 20 characters; the CSV uses 30. Both are pinned
         because the two limits are easy to transpose, and a 30-character header in a

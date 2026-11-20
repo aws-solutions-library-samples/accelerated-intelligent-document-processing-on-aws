@@ -571,6 +571,7 @@
         "tp": 5
       }
     },
+    "empty_prediction_confidences": {},
     "field_comparisons": [
       {
         "actual_key": "invoice_number",

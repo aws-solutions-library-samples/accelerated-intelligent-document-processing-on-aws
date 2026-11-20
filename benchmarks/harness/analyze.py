@@ -360,8 +360,17 @@ def _assert_row_alignment(section, prefix, field, data_rows):
     )
 
 
-def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
+def confidence_observations(
+    sections, rows_typed, list_key, seq_ids=None, empty_sink=None
+):
     """``(confidence, correct)`` per list CELL, joined to exact truth by SEQ tag.
+
+    A cell whose predicted value is EMPTY (``None``, blank, or an empty container, by
+    ``idp_common.evaluation.empty_values.is_empty_prediction``, the definition Test
+    Studio's ``confidence_metrics.empty_values`` uses) is an observation like any
+    other: a missed value that scored high counts against the grader here. When
+    ``empty_sink`` is a list, each such observation is also appended to it, so the
+    caller can report how many empty predictions the figures include (#2052).
 
     This is the join #935 is about. A confidence score is only a calibration
     observation once it is paired with whether the value it scores was right, and
@@ -413,6 +422,8 @@ def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
     """
     if not rows_typed:
         return []
+    from idp_common.evaluation.empty_values import is_empty_prediction
+
     truth = {}
     for tag, cells in rows_typed.items():
         truth[_truth_seq(tag)] = {str(c).lower(): e for c, e in (cells or {}).items()}
@@ -451,9 +462,10 @@ def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
                             score, bool
                         ):
                             continue
-                        observations.append(
-                            (float(score), typed_match(cells[key], got))
-                        )
+                        observation = (float(score), typed_match(cells[key], got))
+                        observations.append(observation)
+                        if empty_sink is not None and is_empty_prediction(got):
+                            empty_sink.append(observation)
     return observations
 
 
@@ -519,13 +531,26 @@ def score_calibration(sections, rows_typed, list_key, observations=None, seq_ids
     ``observations`` lets a caller that already holds the pairs — the release-level
     pass, which retains them to compute the unbinned AUROC over a whole arm — pass
     them in rather than have the join run twice over the same sections.
+
+    ``calibration_empty_observations`` and ``calibration_empty_wrong`` say how many of
+    the observations are empty predictions and how many of those were wrong (#2052).
+    Every figure above already includes them; the two counts make that visible, which
+    is what Test Studio's ``confidence_metrics.empty_values`` does for a test run.
+    They are ``None`` when the caller passed ``observations`` in, because the pairs
+    alone no longer say which value was empty.
     """
+    empty = None
     if observations is None:
-        observations = confidence_observations(sections, rows_typed, list_key, seq_ids)
+        empty = []
+        observations = confidence_observations(
+            sections, rows_typed, list_key, seq_ids, empty_sink=empty
+        )
     if not observations:
         return {
             "calibration_observations": 0,
             "calibration_correct": None,
+            "calibration_empty_observations": None,
+            "calibration_empty_wrong": None,
             "calibration_ece": None,
             "calibration_ece_mean_conf": None,
             "calibration_auroc": None,
@@ -561,6 +586,10 @@ def score_calibration(sections, rows_typed, list_key, observations=None, seq_ids
     return {
         "calibration_observations": total,
         "calibration_correct": correct,
+        "calibration_empty_observations": len(empty) if empty is not None else None,
+        "calibration_empty_wrong": (
+            sum(1 for _score, ok in empty if not ok) if empty is not None else None
+        ),
         "calibration_ece": round(health.ece, 4) if health.ece is not None else None,
         "calibration_ece_mean_conf": (
             round(ece_mean_conf, 4) if ece_mean_conf is not None else None

@@ -205,7 +205,7 @@ Process documents from S3 or base64 content. To process documents via S3:
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143000",
+  "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
   "documents_queued": 5,
   "message": "Successfully queued 5 documents for processing"
 }
@@ -257,7 +257,7 @@ Reprocess documents from classification or extraction steps.
     "name": "reprocess",
     "arguments": {
       "step": "extraction",
-      "batch_id": "mcp-batch-20250124-143000"
+      "batch_id": "mcp-batch-20250124-143000-5c1d9e2a"
     }
   }
 }
@@ -267,7 +267,7 @@ Reprocess documents from classification or extraction steps.
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143000",
+  "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
   "documents_queued": 5,
   "step": "extraction",
   "message": "Successfully queued 5 documents for extraction reprocessing"
@@ -330,7 +330,7 @@ Exactly one of `batch_id` or `document_id` must be provided; passing neither ret
   "params": {
     "name": "get_results",
     "arguments": {
-      "batch_id": "mcp-batch-20250124-143022",
+      "batch_id": "mcp-batch-20250124-143022-a40f7b13",
       "section_id": 1,
       "limit": 10
     }
@@ -342,13 +342,13 @@ Exactly one of `batch_id` or `document_id` must be provided; passing neither ret
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143022",
+  "batch_id": "mcp-batch-20250124-143022-a40f7b13",
   "section_id": 1,
   "count": 1,
   "total_in_batch": 1,
   "documents": [
     {
-      "document_id": "mcp-batch-20250124-143022/document-001.pdf",
+      "document_id": "mcp-batch-20250124-143022-a40f7b13/document-001.pdf",
       "document_class": "invoice",
       "fields": {
         "vendor_info": {
@@ -459,7 +459,7 @@ document in the batch, each with `document_id`, `status`, `duration_seconds` and
   "params": {
     "name": "status",
     "arguments": {
-      "batch_id": "mcp-batch-20250124-143000",
+      "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
       "options": {
         "detailed": true
       }
@@ -472,7 +472,7 @@ document in the batch, each with `document_id`, `status`, `duration_seconds` and
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143000",
+  "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
   "status": {
     "total": 5,
     "completed": 3,

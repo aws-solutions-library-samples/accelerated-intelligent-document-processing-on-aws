@@ -141,13 +141,53 @@ class TestProcess:
 
         assert isinstance(result, DocumentUploadResult)
         assert result.status == "queued"
-        # "single-doc-YYYYmmdd-HHMMSS/invoice.pdf"
+        # "single-doc-YYYYmmdd-HHMMSS-<8 hex>/invoice.pdf"
         assert re.fullmatch(
-            r"single-doc-\d{8}-\d{6}/invoice\.pdf", result.document_id
+            r"single-doc-\d{8}-\d{6}-[0-9a-f]{8}/invoice\.pdf", result.document_id
         ), result.document_id
 
         stored = _s3(aws_region).get_object(Bucket=INPUT_BUCKET, Key=result.document_id)
         assert stored["Body"].read() == b"%PDF-1.7 invoice"
+
+    def test_two_uploads_of_one_file_name_in_the_same_second_both_survive(
+        self, idp_stack, aws_region, tmp_path, monkeypatch
+    ):
+        """#2113: with a timestamp-only prefix the second upload landed on the
+        first one's key and replaced it. The clock is frozen in both the id helper
+        and this module, so the test still freezes it if `process` goes back to
+        reading the time itself."""
+        from datetime import datetime, timezone
+
+        from idp_sdk._core import ids
+        from idp_sdk.operations import document as document_ops
+
+        frozen = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        monkeypatch.setattr(ids, "datetime", _FrozenDatetime)
+        monkeypatch.setattr(document_ops, "datetime", _FrozenDatetime)
+
+        first_dir, second_dir = tmp_path / "one", tmp_path / "two"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        (first_dir / "invoice.pdf").write_bytes(b"%PDF-1.7 first")
+        (second_dir / "invoice.pdf").write_bytes(b"%PDF-1.7 second")
+
+        first = idp_stack.document.process(file_path=str(first_dir / "invoice.pdf"))
+        second = idp_stack.document.process(file_path=str(second_dir / "invoice.pdf"))
+
+        assert first.document_id != second.document_id
+        assert first.document_id.startswith("single-doc-20260102-030405-")
+        s3 = _s3(aws_region)
+        bodies = [
+            s3.get_object(Bucket=INPUT_BUCKET, Key=r.document_id)["Body"].read()
+            for r in (first, second)
+        ]
+        assert bodies == [b"%PDF-1.7 first", b"%PDF-1.7 second"]
 
     def test_a_custom_document_id_is_silently_discarded(
         self, idp_stack, aws_region, tmp_path

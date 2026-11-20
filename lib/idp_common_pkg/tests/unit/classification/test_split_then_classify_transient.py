@@ -52,6 +52,10 @@ from tests.unit.classification.test_split_then_classify import (
     _reply,
     _service,
 )
+from tests.unit.decision_model.window_contract import (  # noqa: F401 - autouse
+    no_oversize_requests,
+    window_refusal,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -374,6 +378,9 @@ class _LambdaErrorDecider(FakeDecider):
 
     def invoke(self, FunctionName, InvocationType, Payload):
         self.requests.append(json.loads(Payload))
+        refusal = window_refusal(Payload)
+        if refusal:
+            return refusal
         if self.fail is not None:
             raise self.fail()
         raise _client_error(self.code, "Rate exceeded", "Invoke")
