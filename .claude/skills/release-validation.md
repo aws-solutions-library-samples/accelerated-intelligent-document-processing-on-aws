@@ -55,6 +55,13 @@ every tier has a row in the record — including any that could not run, with th
 Nothing else needs asking. VPC wiring, the seller region, and the benchmark stack
 are all decided below.
 
+**The solution profile is part of the release.** Before the battery, confirm
+`make solution-profile-check` reports the release rules ON and passing (the profile
+was reviewed with [update-solution-profile](update-solution-profile.md)), and after
+the GitHub Release exists, that `gh release view v<VERSION> --json assets` lists
+`solution-profile-genai-idp-accelerator-<VERSION>.tar.gz` and its `.sha256`. Record
+both in the validation record.
+
 ## Preflight — ten minutes that save a day
 
 1. **Credentials and account.** Stale env creds shadow the profile, so unset them

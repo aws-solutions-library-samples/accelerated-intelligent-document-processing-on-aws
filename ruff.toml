@@ -33,6 +33,7 @@ extend-exclude = [
 # >>> GENERATED scope — edit scripts/lint_debt.json, then --write
     "**/*.ipynb",
     "feature-platform/pii-anonymizer/hook/vendor",
+    "solution-profile/schema/v1/validate_profile.py",
 # <<< GENERATED scope
 ]
 
