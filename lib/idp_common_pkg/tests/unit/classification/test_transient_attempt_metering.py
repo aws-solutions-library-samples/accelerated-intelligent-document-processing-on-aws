@@ -73,17 +73,16 @@ class TestSplitThenClassify:
         with pytest.raises(TransientError) as caught:
             _run(_one_worker(granularity="packet"), _document(3), calls)
 
-        assert _tokens(
-            failure_metering(caught.value), "SectionClassification"
-        ) == TOKENS_PER_CALL * 2 + 4
+        assert (
+            _tokens(failure_metering(caught.value), "SectionClassification")
+            == TOKENS_PER_CALL * 2 + 4
+        )
 
     def test_a_throttled_page_boundary_call_carries_the_other_pages_usage(self):
         calls = _Calls({(SPLITTING, "3"): _throttle()})
 
         with pytest.raises(TransientError) as caught:
-            _run(
-                _one_worker(granularity="page"), _document(3), calls, page_texts=True
-            )
+            _run(_one_worker(granularity="page"), _document(3), calls, page_texts=True)
 
         metering = failure_metering(caught.value)
         assert calls.count(SPLITTING) == 3

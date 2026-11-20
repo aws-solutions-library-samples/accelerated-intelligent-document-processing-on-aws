@@ -228,7 +228,9 @@ def _storage():
     with (
         patch(
             "idp_common.s3.get_text_content",
-            side_effect=lambda uri: f"PAGE {uri.split('/pages/')[1].split('/')[0]} text",
+            side_effect=lambda uri: (
+                f"PAGE {uri.split('/pages/')[1].split('/')[0]} text"
+            ),
         ),
         patch("idp_common.s3.get_binary_content", return_value=_png()),
         patch("idp_common.image.get_binary_content", return_value=_png()),
