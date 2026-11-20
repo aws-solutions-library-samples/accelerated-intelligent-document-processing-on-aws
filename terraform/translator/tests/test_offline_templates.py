@@ -691,3 +691,61 @@ def test_only_the_stage_destination_drops_the_log_group_arn_suffix(variant, tmp_
     assert all(not s.endswith(':*"') for s in stages), stages
     assert bare == [s for s in stages if arn_use.search(s)], bare
     assert suffixed > 0
+
+
+# ------------------------------------- security headers round trip (#1997)
+def _security_header_members() -> list[str]:
+    """Every member of ``security_headers_config`` in the vendored awscc schema."""
+    schema = json.loads((REPO / "terraform/translator/schemas/awscc.json").read_text())
+    (provider,) = [
+        v
+        for v in schema["provider_schemas"].values()
+        if "awscc_cloudfront_response_headers_policy" in v["resource_schemas"]
+    ]
+    config = provider["resource_schemas"]["awscc_cloudfront_response_headers_policy"][
+        "block"
+    ]["attributes"]["response_headers_policy_config"]["nested_type"]["attributes"]
+    return sorted(config["security_headers_config"]["nested_type"]["attributes"])
+
+
+def _braced(text: str, opener: str) -> str:
+    """The ``{...}`` object that ``opener`` (ending in ``{``) starts in ``text``."""
+    start = text.index(opener) + len(opener) - 1
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        depth += {"{": 1, "}": -1}.get(ch, 0)
+        if depth == 0:
+            return text[start : i + 1]
+    raise AssertionError(f"unbalanced object after {opener!r}")
+
+
+@pytest.mark.parametrize("variant", [v for t, v in TEMPLATE_VARIANTS])
+def test_every_security_header_the_policy_can_carry_is_set(variant, tmp_path):
+    """#1997: awscc stores a ``security_headers_config`` member the
+    configuration leaves unset as an empty object, and sends it back on every
+    in-place update; Cloud Control then refuses the update because the empty
+    object lacks its required keys (measured for ``xss_protection``). So the
+    first change to the policy after a deployment failed ``terraform apply``.
+    Setting every member keeps an empty object out of state. A member a newer
+    awscc schema adds fails here until the template sets it."""
+    members = _security_header_members()
+    assert "xss_protection" in members, members
+    blocks = [
+        block
+        for module in _modules(_translate(tmp_path / "m", variant))
+        for block in re.split(r"\n(?=resource |data |module )", _module_text(module))
+        if block.startswith('resource "awscc_cloudfront_response_headers_policy"')
+    ]
+    # Only the standard variant serves the UI through CloudFront (headless has
+    # no UI, govcloud serves it through API Gateway).
+    assert len(blocks) == (1 if variant is None else 0), len(blocks)
+    for block in blocks:
+        config = _braced(block, "security_headers_config = {")
+        unset = [m for m in members if not re.search(rf"^\s*{m} = \{{", config, re.M)]
+        assert not unset, unset
+        # The header the template documents: X-XSS-Protection: 0.
+        xss = _braced(config, "xss_protection = {")
+        assert sorted(ln.strip() for ln in xss[1:-1].strip().splitlines()) == [
+            "override = true",
+            "protection = false",
+        ], xss

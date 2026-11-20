@@ -16550,6 +16550,18 @@ Resources:
           ReferrerPolicy:
             Override: true
             ReferrerPolicy: strict-origin-when-cross-origin
+          # X-XSS-Protection: 0 turns off the legacy browser XSS filter, which
+          # is the current OWASP recommendation (the CSP above is the control).
+          # It is set explicitly rather than left out because of the Terraform
+          # module: the awscc provider stores an unset XSSProtection as an
+          # empty object and sends it back on every update of this policy,
+          # which Cloud Control rejects (Override and Protection are required),
+          # so any later change to this policy failed `terraform apply` (#1997).
+          # terraform/translator/tests/test_offline_templates.py asserts every
+          # SecurityHeadersConfig member the awscc schema has is set here.
+          XSSProtection:
+            Override: true
+            Protection: false
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
