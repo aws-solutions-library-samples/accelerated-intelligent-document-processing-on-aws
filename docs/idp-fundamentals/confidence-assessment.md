@@ -109,13 +109,16 @@ no field raises a confidence alert.
 ### Choice 2: which scoring model reads the record
 
 In the separate pass, the **Confidence model** setting (`extraction.confidence.model`)
-names the scoring model. The default is Amazon Nova Lite (`us.amazon.nova-lite-v1:0`). In
-integrated mode, the extraction model scores its own values and this setting is unused.
+names the scoring model. In integrated mode, the extraction model scores its own values and
+this setting is unused.
 
-Scoring models differ less in how accurate their scores are on average than in how well
-they **separate** right values from wrong ones. That difference decides which model to
-choose, and [the configuration to start with](#the-configuration-to-start-with) explains
-it.
+To route review, what matters is how well a scoring model **separates** right values from
+wrong ones, more than how accurate its scores are on average. See
+[Which scoring model should I use?](../benchmark-guidance/confidence-assessment.md#which-scoring-model-should-i-use)
+
+**Escalation** (`extraction.confidence.escalation_enabled`, on by default) re-scores any rows
+the scoring model could not score, with a stronger model (`escalation_model`). See
+[Large-list batching](../extraction-and-confidence.md#large-list-batching-list_batch_size).
 
 ### What the scoring model reads
 
@@ -144,7 +147,7 @@ The accelerator scores a long list in batches of rows. Each batch reads the same
 fields outside the list, and the accelerator joins the batches so every cell gets its own
 score. The **List batch size** setting (`extraction.confidence.list_batch_size`, default
 25) sets the most rows in one batch. The accelerator uses a smaller batch when the scoring
-model's output limit requires it, and Amazon Nova Lite scores at most 12 rows per batch.
+model's output limit requires it.
 See [Large-list batching](../extraction-and-confidence.md#large-list-batching-list_batch_size).
 
 ### Thresholds decide which fields need a person
@@ -228,28 +231,32 @@ matched blueprint whose confidence is below `hitl.confidence_threshold` does. Se
 
 ## The configuration to start with
 
-**Start with the defaults: a separate pass, scored by Amazon Nova Lite.** The default
-scoring model reports how accurate your results are overall. Its scores are well calibrated: across our benchmark, its average score matched the
-share of values that were right to within 0.01. Use it to answer "how accurate is this
-batch?"
+**If people review values by confidence, start with a separate pass scored by Claude Haiku
+5.5, with escalation off,** and turn on human review. Changing the scoring model does not
+change the extracted values. See
+[Which scoring model should I use?](../benchmark-guidance/confidence-assessment.md#which-scoring-model-should-i-use)
 
-**To send only uncertain values to people, choose Claude Sonnet 5 as the scoring model**
-(`us.anthropic.claude-sonnet-5`), keep the separate pass, and turn on human review. The
-default scoring model gives nearly every value the same high score, so it rarely raises an
-alert, and its scores do not separate wrong values from right ones. Claude
-Sonnet 5 gave most wrong values low scores in our benchmark, so a threshold on its scores
-sends a small share of values to review and finds most of the errors (see
-[the benchmark results](#benchmark-results-how-well-each-scoring-model-separates-right-from-wrong)).
-Changing the scoring model does not change the extracted values.
+```yaml
+extraction:
+  confidence:
+    mode: separate
+    model: us.anthropic.claude-haiku-5-5
+    escalation_enabled: false
+```
+
+**If nobody reviews by confidence, turn it off** (*Off — no confidence*,
+`extraction.confidence.mode: off`). The extracted values stay the same, and no scoring pass
+runs. See
+[Separate scoring pass or integrated into extraction?](../benchmark-guidance/confidence-assessment.md#separate-scoring-pass-or-integrated-into-extraction)
 
 **Set thresholds per field.** Start with the default of 0.8, and raise the threshold on
 the fields your business depends on, such as amounts, account numbers and dates. Mark
 those fields **required** as well, so an empty value goes to review too.
 
-**Keep Top-K class confidence on.** Top-K is the default and adds few tokens per page. The
-default classification model, Amazon Nova 2 Lite, gives most pages the same score, so its
-class scores flag only some wrong document classes. If you rely on class scores to decide
-which sections a person checks, test Claude Haiku 4.5 as the classification model.
+**Keep Top-K class confidence on.** Top-K is the default, and adds only the ranked
+candidates to each answer. If you rely on class scores to decide which sections a person
+checks, first check on your test set that they separate right document classes from wrong
+ones.
 
 ## How many tokens confidence assessment uses, and what drives the count
 
@@ -259,9 +266,8 @@ batch of rows. Five things decide how many tokens the pass uses:
 - **The pages each call reads.** Each call reads the section's page text and page images
   again. With Simple extraction, every batch of a long list reads the whole section. With
   Advanced extraction, each batch reads only its shard's pages.
-- **The number of rows in your lists.** More rows mean more batches. Amazon Nova Lite
-  scores at most 12 rows per call, so a long list takes about twice as many calls as with
-  the other scoring models.
+- **The number of rows in your lists.** More rows mean more batches. A scoring model with a
+  small output limit scores fewer rows per call, so a long list takes more calls.
 - **The number of values.** The output holds one score per value and per list cell, plus a
   short reason for each score below 0.9.
 - **Page images.** Each image adds input tokens, and models count image tokens
@@ -273,50 +279,15 @@ batch of rows. Five things decide how many tokens the pass uses:
 Integrated mode adds the scores to the extraction call's output instead of making a second
 call. Off uses no tokens for confidence.
 
-Measured confidence tokens per page, on seven synthetic bank statements (52 pages, 5 to 800
-rows each), extraction by Claude Sonnet 4.6, OCR by Amazon Textract (release 0.6.14,
-November 2026):
-
-| Scoring model | Simple extraction: input tokens per page | Simple: output tokens per page | Advanced extraction: input tokens per page | Advanced: output tokens per page |
-|---|---|---|---|---|
-| Amazon Nova Lite (default) | 367,180 | 2,876 | 36,022 | 2,853 |
-| Amazon Nova 2 Lite | 66,487 | 3,927 | 6,045 | 3,490 |
-| Claude Sonnet 5 | 161,811 | 4,574 | 43,325 | 3,735 |
-
-Input tokens include the page text and images the accelerator serves from the prompt
-cache, which Amazon Bedrock bills at a reduced rate. Source:
-`benchmarks/results/v0.6.14/coresynth__confidence-model-*/summary.json`, configurations
-`core-tt-simple-sep` and `core-tt-adv-sep`, phase `Assessment`.
-
-What this shows:
-
-- **Long lists drive the count.** On the one-page statement with 5 rows, the default
-  scoring model read 3,243 input tokens in total. On the 17-page statement with 800 rows in
-  Simple mode, every batch reread all 17 pages.
-- **Advanced extraction scored the same values with about a tenth of the input tokens** of
-  Simple extraction with the default scoring model, because each batch reads one shard
-  instead of the whole section.
-- **Claude Sonnet 5 wrote more output tokens per page** than Amazon Nova Lite, 4,574
-  against 2,876 in Simple mode, and its tokens cost more each.
-
-For comparison, the Simple-mode extraction calls in the same runs read 3,336 input tokens
-per page. On documents with long lists, confidence assessment can be the largest token
-consumer in the pipeline. On the one-page statement, the scoring call and the extraction
-call read about the same number of input tokens. See
+On long lists with Simple extraction, the scoring pass can read more tokens than extraction
+itself. See
 [Extraction & Confidence](../extraction-and-confidence.md#0-choosing-a-configuration-start-here)
-for the trade-off between the modes.
+for the trade-off between the modes, and
+[Separate scoring pass or integrated into extraction?](../benchmark-guidance/confidence-assessment.md#separate-scoring-pass-or-integrated-into-extraction)
+for what confidence costs.
 
-**Class confidence** adds tokens to every classification call. Measured on 20 public
-packets (298 pages) with page-by-page classification (release 0.6.7, September 2026):
-
-| Classification model | Class confidence | Input tokens per page | Output tokens per page |
-|---|---|---|---|
-| Amazon Nova 2 Lite (default) | *Off* | 1,738 | 154 |
-| Amazon Nova 2 Lite (default) | *Top-K* (default) | 1,966 | 199 |
-| Claude Haiku 4.5 | *Off* | 3,169 | 268 |
-| Claude Haiku 4.5 | *Top-K* | 3,416 | 353 |
-
-Source: `benchmarks/results/v0.6.7/clsconf/summary.json` and `summary_off_control.json`.
+**Class confidence** adds tokens to every classification call: *Top-K* adds the ranked
+candidates to each answer.
 
 ## How to measure confidence on your own documents
 
@@ -364,15 +335,19 @@ a change that fixes it:
 
 | What you see | Cause | What to change |
 |---|---|---|
-| Almost no alerts, low AUROC, and the review-effort estimate reads **Unreliable** | The scoring model gives nearly every value the same high score. The default scoring model does this on most documents | Choose Claude Sonnet 5 as the scoring model |
+| Almost no alerts, low AUROC, and the review-effort estimate reads **Unreliable** | The scoring model gives nearly every value the same high score | Choose Claude Haiku 5.5 as the scoring model |
 | More alerts than your reviewers can handle | A threshold is high for a scoring model that spreads its scores out | Lower the threshold on fields with many alerts and few errors, and keep it high on critical fields |
 | Wrong values with high scores | The scoring model is sure of a misread value, often on a poor scan where the page text agrees with the wrong value | Review the random audit sample of high-scoring documents, and add a schema pattern or a rule for the field |
 | A value missing from the record, with no alert | An empty field has no value to score | Mark the field **required**, so an empty value goes to review |
 | Rows missing from a list, with no alert | A row that never came back has no score | Watch the row-count processing issues, or set `extraction.row_shortfall_action: fail`. Advanced extraction returns long lists more completely |
 | No field is ever flagged | `hitl.confidence_threshold` is 0, and the fields have no threshold of their own | Set a global threshold, such as 0.8 |
-| Most pages show the same class score, wrong pages included | The default classification model gives most pages one score | Test Claude Haiku 4.5 as the classification model |
+| Most pages show the same class score, wrong pages included | The classification model gives most pages one score | Test another classification model on your test set |
 
 ## Benchmark results: how well each scoring model separates right from wrong
+
+*Measured on releases 0.6.7 to 0.6.14 with Claude Sonnet 4.6, Claude Sonnet 5, Claude Haiku
+4.5, Amazon Nova Lite and Amazon Nova 2 Lite. For current recommendations, see
+[Confidence Assessment Benchmarks](../benchmark-guidance/confidence-assessment.md).*
 
 ### Field confidence when extraction makes mistakes
 
@@ -479,14 +454,61 @@ AUROC figures are estimates on small samples. The class results come from one ru
 files. Real documents with poor scans produce more errors, and the ranking can differ.
 Measure on your own test set before you set thresholds.
 
+### Confidence tokens per page
+
+Confidence tokens per page, on seven synthetic bank statements (52 pages, 5 to 800 rows
+each), extraction by Claude Sonnet 4.6, OCR by Amazon Textract (release 0.6.14, November
+2026):
+
+| Scoring model | Simple extraction: input tokens per page | Simple: output tokens per page | Advanced extraction: input tokens per page | Advanced: output tokens per page |
+|---|---|---|---|---|
+| Amazon Nova Lite (default) | 367,180 | 2,876 | 36,022 | 2,853 |
+| Amazon Nova 2 Lite | 66,487 | 3,927 | 6,045 | 3,490 |
+| Claude Sonnet 5 | 161,811 | 4,574 | 43,325 | 3,735 |
+
+Input tokens include the page text and images the accelerator serves from the prompt
+cache, which Amazon Bedrock bills at a reduced rate. Source:
+`benchmarks/results/v0.6.14/coresynth__confidence-model-*/summary.json`, configurations
+`core-tt-simple-sep` and `core-tt-adv-sep`, phase `Assessment`.
+
+What this shows:
+
+- **Long lists drive the count.** On the one-page statement with 5 rows, the default
+  scoring model read 3,243 input tokens in total. On the 17-page statement with 800 rows in
+  Simple mode, every batch reread all 17 pages.
+- **Advanced extraction scored the same values with about a tenth of the input tokens** of
+  Simple extraction with the default scoring model, because each batch reads one shard
+  instead of the whole section.
+- **Claude Sonnet 5 wrote more output tokens per page** than Amazon Nova Lite, 4,574
+  against 2,876 in Simple mode, and its tokens cost more each.
+
+For comparison, the Simple-mode extraction calls in the same runs read 3,336 input tokens
+per page. On the one-page statement, the scoring call and the extraction call read about the
+same number of input tokens.
+
+### Class confidence tokens per page
+
+Class confidence tokens per page, on 20 public packets (298 pages) with page-by-page
+classification (release 0.6.7, September 2026):
+
+| Classification model | Class confidence | Input tokens per page | Output tokens per page |
+|---|---|---|---|
+| Amazon Nova 2 Lite (default) | *Off* | 1,738 | 154 |
+| Amazon Nova 2 Lite (default) | *Top-K* (default) | 1,966 | 199 |
+| Claude Haiku 4.5 | *Off* | 3,169 | 268 |
+| Claude Haiku 4.5 | *Top-K* | 3,416 | 353 |
+
+Source: `benchmarks/results/v0.6.7/clsconf/summary.json` and `summary_off_control.json`.
+
 ## Improving confidence once your pipeline is running
 
 When your measurements show alerts in the wrong places, these changes help most, roughly in
 this order.
 
-**Choose Claude Sonnet 5 as the scoring model when people review by confidence.** The
-change affects only the scores. The extracted values stay the same, so you can compare the
-two scoring models on the same test set.
+**Choose Claude Haiku 5.5 as the scoring model when people review by confidence.** The
+change affects only the scores. The extracted values stay the same, so you can compare
+scoring models on the same test set. See
+[Which scoring model should I use?](../benchmark-guidance/confidence-assessment.md#which-scoring-model-should-i-use)
 
 **Set thresholds field by field from your own numbers.** Look at each field's AUROC and
 alert rate in Test Studio. Raise the threshold where wrong values still get through, and
@@ -499,8 +521,7 @@ something to check the value against.
 
 **Keep page images in the confidence prompt for visual fields.** Checkboxes, signatures,
 stamps and handwritten amounts show only in the image, so the scoring model needs it to
-check them. The default prompt
-sends the images.
+check them. The default prompt sends the images.
 
 **Mark the fields you cannot do without as required.** An empty required field goes to
 review even though it has no score. See

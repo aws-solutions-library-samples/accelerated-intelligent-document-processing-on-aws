@@ -109,9 +109,9 @@ pay stub starts there, such as a new pay period.
 
 **All at once (holistic).** The model reads the whole file in one call and returns the
 sections and their document classes together. Because it sees every page, it can compare
-them to decide where one document ends and the next begins. By default one call
-covers up to 20 pages. For a longer file, the accelerator reads it in overlapping 20-page
-windows and merges the results.
+them to decide where one document ends and the next begins. One call covers up to 20 pages
+by default (`classification.combined.packet.window_pages`). For a longer file, the
+accelerator reads it in overlapping windows of that many pages and merges the results.
 
 ```mermaid
 flowchart LR
@@ -166,17 +166,42 @@ For every setting, see
 
 ## The configuration to start with
 
-**For files of up to about 40 pages, start with holistic classification in one call, with
-page images.** The model sees the whole file at once, which is what it needs to place section
-boundaries, and the images give it the visual cues. We have seen strong results with this
-configuration, and in our benchmark it found document boundaries more
-accurately than page-by-page classification (see
-[the benchmark results](#benchmark-results-accuracy-and-tokens-by-configuration)).
+**Start with holistic classification, with Claude Haiku 5.5 reading the page text only.**
+Set granularity to *packet*, keep *Split and classify together (one call)*, choose Claude
+Haiku 5.5 as the model, and turn off **Send page images**. The model sees the whole file at
+once, which is what it needs to place section boundaries. See
+[Which approach should I use?](../benchmark-guidance/splitting-and-classification.md#which-approach-should-i-use)
+and [Do I need page images in the classification prompt?](../benchmark-guidance/splitting-and-classification.md#do-i-need-page-images-in-the-classification-prompt)
 
-**For complex packets, especially files over about 30 pages, test the alternatives on your
-own files.** Past the 20-page window, a holistic call no longer sees the whole file at once.
-Compare holistic classification with *Split first, then classify each section* and with
-page-by-page classification, using a test set of your own files.
+```yaml
+classification:
+  strategy: combined
+  combined:
+    granularity: packet
+    llm:
+      model: us.anthropic.claude-haiku-5-5
+      modality: {text: true, images: false}
+```
+
+**If classification reads page images, use a 10-page window on long packets**
+(`classification.combined.packet.window_pages`; default 20). Each window is one call, and a
+smaller window keeps each call's prompt shorter. See
+[How long a packet can holistic classification handle?](../benchmark-guidance/splitting-and-classification.md#how-long-a-packet-can-holistic-classification-handle)
+
+**On long or complex packets, test the alternatives on your own files.** Past its window, a
+holistic call no longer sees the whole file at once. Compare holistic classification with
+*Split first, then classify each section* and with page-by-page classification. See
+[Do long packets change which approach to use?](../benchmark-guidance/splitting-and-classification.md#do-long-packets-change-which-approach-to-use)
+
+**A decision model is worth testing for section classification.** With *Split first, then
+classify each section*, a small decision model on AWS Lambda, such as the
+[Strands Decider 2B](https://huggingface.co/StrandsAgents/strands-decider-2B-qwen3.5-v1-2610),
+can classify each section: set `section_classification.method` to `decision_model` and point
+`decision_model.endpoint` at the function (see
+[The split-then-classify strategy](../classification.md#the-split-then-classify-strategy)).
+Give each class a one-line description of what its pages look like, and send the first two
+page images (`pages: first_k`, `k: 2`). See
+[Can a decision model classify the sections?](../benchmark-guidance/splitting-and-classification.md#can-a-decision-model-classify-the-sections)
 
 **If every file holds exactly one document, skip section detection.** Set section splitting
 to *One section*. The accelerator keeps all of a file's pages in one section and gives it the
@@ -184,49 +209,23 @@ document class that most of its pages receive.
 
 ## How many tokens classification uses, and what drives the count
 
-Classification runs on every page of every file, so at high volume it is one of the largest
-consumers of tokens in the pipeline. On real invoices processed with the default
-configuration, classification used about 15% of all the tokens spent on each document.
-Four things decide how many tokens it uses:
+Classification runs on every page of every file. Four things decide how many tokens it uses:
 
 - **Page by page or holistic.** A page-by-page call repeats the instructions, the list of
   document classes and their descriptions for every page, and the model writes its reasoning
   for every page. A holistic call sends the instructions once per file and returns one
   answer.
 - **Page images.** Each image adds input tokens. How many depends on the classification
-  model and the image size: about 240 tokens per page with the default model at the default
-  size in our benchmark, and up to several thousand with other models or larger images.
+  model and the image size.
 - **Neighboring pages as context.** Showing the model one neighbor on each side of a page
   triples the text and images each call reads; two neighbors on each side multiply it by
   five.
 - **The classification model.** Models count tokens differently, especially for images, and
   larger models charge more for each token.
 
-Measured classification tokens per page, on 20 public packets with the default classification
-model, Amazon Nova 2 Lite (release 0.6.14, November 2026):
-
-| Configuration | Input tokens per page | Output tokens per page |
-|---|---|---|
-| Page by page, text and images (default) | 2,633 | 217 |
-| Page by page, text only | 2,394 | 234 |
-| Holistic, text and images | 1,080 | 40 |
-| Holistic, text only | 844 | 41 |
-
-Input tokens include the instructions the accelerator serves from the prompt cache, which
-Amazon Bedrock bills at a reduced rate. Source:
-`benchmarks/results/v0.6.14/clsvariants/summary.json`.
-
-What this shows:
-
-- **Holistic classification used about 60% fewer input tokens and 80% fewer output tokens
-  per page** than page-by-page classification, because it sends the instructions once per
-  file and answers once.
-- **Page images added about 240 input tokens per page** with the default model, in either
-  mode.
-
-At very high volume, compare holistic classification with text only against the same
-configuration with images, and keep images if your test set shows they improve boundary
-accuracy for your files. See [What each setting costs](../classification.md#what-each-setting-costs).
+Reading text only leaves out the image tokens. Add page images only if your test set shows
+they place more section boundaries right on your files. See
+[What each setting costs](../classification.md#what-each-setting-costs).
 
 ## How to measure section detection and classification on your own files
 
@@ -267,6 +266,9 @@ same-class documents, such as a run of pay stubs, try page-by-page classificatio
 
 ## Benchmark results: accuracy and tokens by configuration
 
+*Measured on releases 0.6.9 and 0.6.14 with Amazon Nova 2 Lite. For current recommendations,
+see [Splitting and Section Classification Benchmarks](../benchmark-guidance/splitting-and-classification.md).*
+
 ### Files that hold many documents
 
 **Dataset:** [DocSplit-Poly-Seq](benchmark-datasets.md#docsplit-poly-seq), 20 public files
@@ -300,6 +302,30 @@ What this shows:
   follow.
 - **Detecting sections first, then classifying, scored highest on both boundary and label
   accuracy** in this run. It is the main alternative to test on complex packets.
+
+### Classification tokens per page
+
+Classification tokens per page, on the same 20 packets with Amazon Nova 2 Lite (release
+0.6.14, November 2026):
+
+| Configuration | Input tokens per page | Output tokens per page |
+|---|---|---|
+| Page by page, text and images (default) | 2,633 | 217 |
+| Page by page, text only | 2,394 | 234 |
+| Holistic, text and images | 1,080 | 40 |
+| Holistic, text only | 844 | 41 |
+
+Input tokens include the instructions the accelerator serves from the prompt cache, which
+Amazon Bedrock bills at a reduced rate. Source:
+`benchmarks/results/v0.6.14/clsvariants/summary.json`.
+
+What this shows:
+
+- **Holistic classification used about 60% fewer input tokens and 80% fewer output tokens
+  per page** than page-by-page classification, because it sends the instructions once per
+  file and answers once.
+- **Page images added about 240 input tokens per page** with the default model, in either
+  mode.
 
 ### Files that hold one or two documents
 

@@ -139,7 +139,8 @@ Each problem-set page reports results from this repository's
 [benchmark suite](../benchmarking/index.md). The suite runs public and synthetic datasets
 through a deployed stack under many configurations and scores every run. The results show
 what each option buys, so you can start your own testing from a configuration that already
-works.
+works. [Benchmarks by Problem Set](../benchmark-guidance/index.md) has the latest results and
+what we recommend.
 
 | Problem set | Benchmarked |
 |---|---|

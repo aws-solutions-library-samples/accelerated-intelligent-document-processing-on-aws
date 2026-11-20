@@ -150,9 +150,11 @@ Where to look first depends on your documents:
   [Confidence Assessment](idp-fundamentals/confidence-assessment.md).
 - **Business rules:** see [Rule Validation](idp-fundamentals/rule-validation.md).
 
-[Configuration guidance](benchmarking/config-guidance.md) has the measured trade-offs for
-each option, and [Configuration Best Practices](idp-configuration-best-practices.md) covers
-prompt and schema design.
+[Benchmarks by Problem Set](benchmark-guidance/index.md) has the measured trade-offs for
+each option and a recommended setup to start from.
+[Configuration guidance](benchmarking/config-guidance.md) has more on each option, and
+[Configuration Best Practices](idp-configuration-best-practices.md) covers prompt and schema
+design.
 
 ## Step 5: Go to production
 

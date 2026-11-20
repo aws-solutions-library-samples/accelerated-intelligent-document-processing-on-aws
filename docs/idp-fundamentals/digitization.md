@@ -221,32 +221,34 @@ reads the pages as part of its own processing, and the editor hides the *OCR* se
 
 ## The configuration to start with
 
-**Start with the default: Amazon Textract with `TABLES`, `LAYOUT` and `SIGNATURES` at 300
-DPI.** Textract returns positions and confidence for every word, so the scoring model can
-use the reader's confidence and the Web UI can draw a box around every extracted value.
-`TABLES` keeps each value in its row and column, which matters for statements, invoices and
-any document with line items. In our benchmark, no other reader extracted more accurately
-from real invoices or synthetic statements, and on bank checks only Textract with `LAYOUT`
-alone scored higher, by 0.3 points (see
-[the benchmark results](#benchmark-results-extraction-accuracy-by-reader)).
+**Start with Amazon Textract, `LAYOUT` only, at 300 DPI.** In **Textract features**
+(`ocr.features`), replace the default `TABLES`, `LAYOUT` and `SIGNATURES` with `LAYOUT`.
+Textract returns positions and confidence for every word, so the scoring model can use the
+reader's confidence and the Web UI can draw a box around every extracted value. Textract
+charges each page by the features you select, and `LAYOUT` alone costs less than `TABLES`
+(see [Amazon Textract pricing](https://aws.amazon.com/textract/pricing/)). See
+[Which Textract features do I need?](../benchmark-guidance/digitization.md#which-textract-features-do-i-need)
+and [Does the OCR reader make a difference to extraction accuracy?](../benchmark-guidance/digitization.md#does-the-ocr-reader-make-a-difference-to-extraction-accuracy)
 
-**If your documents have no tables, try `LAYOUT` alone.** Textract charges for each page by
-the features you select, and `TABLES` costs more per page than `LAYOUT` alone. On real
-invoices, layout only scored within the noise of the default. If your documents have no signature
-fields, remove `SIGNATURES`, so stray pen marks do not add detections to the page text.
+**Add `TABLES` if you use agentic extraction on long tables.** With `TABLES`, the
+accelerator writes each table as a Markdown table, and agentic extraction's table tool and
+the row-count checks read those tables. With `LAYOUT` alone, Textract returns a table as
+lines of text with tab-separated cells, which neither can read. See
+[Short lists and other extraction mistakes](extraction.md#short-lists-and-other-extraction-mistakes-which-configuration-makes-which).
 
 **Test another reader if Textract does not cover your documents.** Textract reads a fixed
 set of languages; see
 [OCR backend language support](../languages.md#ocr-backend-considerations-for-language-support).
 For other languages, heavy handwriting or unusual layouts, compare a vision-language model
-and a specialized OCR model with the default on your own test set. If confidence scores and
+and a specialized OCR model with Textract on your own test set. If confidence scores and
 bounding boxes matter to you, prefer a reader that returns them: Bedrock Data Automation or
 the Mistral OCR hook.
 
-**Keep the resolution at 300 DPI.** Bedrock scales every image down to its own limit before
-counting tokens, so a lower resolution saves few tokens in later steps. Below about 200 DPI,
+**Keep the resolution at 300 DPI.** Each model scales an image down to its own size limit
+before counting tokens, so a lower resolution saves few tokens in later steps. Below about 200 DPI,
 Textract drops small and faint characters from its output. See
-[Do not lower resolution to save tokens](../ocr-image-sizing-guide.md#do-not-lower-resolution-to-save-tokens).
+[What resolution should pages be rendered at?](../benchmark-guidance/digitization.md#what-resolution-should-pages-be-rendered-at)
+and [Do not lower resolution to save tokens](../ocr-image-sizing-guide.md#do-not-lower-resolution-to-save-tokens).
 
 ## How many tokens digitization uses, and how the reader changes the tokens of later steps
 
@@ -258,54 +260,23 @@ billed however its provider bills it, often per page.
 **A vision-language model uses tokens on every page.** Three things decide how many:
 
 - **The page image.** The input is the instruction and the page image. How many tokens an
-  image costs depends on the model and the image size, and Bedrock scales large images down before counting, so
+  image costs depends on the model and the image size, and the model scales large images down before counting, so
   a higher resolution adds few tokens.
 - **How much the page says.** The output is the transcription, so a dense page of small print
   or a long table costs far more output tokens than a check.
 - **The model.** Models count image tokens differently, and larger models charge more for
   each token.
 
-Measured OCR tokens per page with Amazon Nova 2 Lite, the default vision-language model
-(release 0.6.14, November 2026):
-
-| Documents | Pages measured | Input tokens per page | Output tokens per page |
-|---|---|---|---|
-| Bank checks | 20 | 329 | 229 |
-| Real invoices | 81 | 329 | 1,666 |
-| Synthetic bank statements of 1 to 17 pages | 52 | 329 | 198 to 3,203, by file |
-
-Source: `benchmarks/results/v0.6.14/core/summary.json`, cell `core-llm-simple-sep`,
-`tokens_by_phase.OCR`.
-
 **The reader also changes the tokens every later step uses,** because each step reads the
-page text the reader wrote. Measured tokens per page for the whole pipeline on the same 20
-real invoices (81 pages), by reader:
+page text the reader wrote:
 
-| Phase | Textract, tables (default) | Textract, layout only | Vision-language model |
-|---|---|---|---|
-| OCR, input | — | — | 329 |
-| OCR, output | — | — | 1,666 |
-| Classification, input | 2,391 | 2,124 | 3,086 |
-| Extraction, input | 3,666 | 3,320 | 4,389 |
-| Confidence assessment, input | 10,484 | 10,414 | 6,176 |
-| **All phases, input** | **16,542** | **15,858** | **13,981** |
-| **All phases, output** | **1,413** | **1,408** | **3,192** |
+- **Longer page text** means more input tokens for classification and extraction.
+- **`TABLES`** adds Markdown table markup to the page text.
+- **The reader's confidence.** Textract and Bedrock Data Automation add each line's
+  confidence to the scoring model's prompt. A reader with no confidence makes that prompt
+  shorter, and the scoring model judges each value without the reader's confidence.
 
-Input tokens include prompt-cache reads and writes. The classification model was Amazon Nova
-2 Lite, the extraction model Claude Sonnet 4.6, and the scoring model Amazon Nova Lite.
-Source: `benchmarks/results/v0.6.14/core/summary.json`, cells `core-tt-simple-sep`,
-`core-tl-simple-sep` and `core-llm-simple-sep`, document `realkie`.
-
-What this shows:
-
-- **The vision-language model wrote longer page text than Textract on these invoices,** so
-  classification and extraction read about 20–30% more input tokens per page.
-- **The scoring model read about 40% fewer input tokens per page with the vision-language
-  model,** because that reader has no line-by-line confidence to add to the scoring model's
-  prompt. The same drop means the scoring model judged each value without the reader's
-  confidence.
-- **Layout only cut input tokens slightly** in every phase, because the page text carried
-  no table markup.
+See [What is the cheapest configuration that keeps accuracy?](../benchmark-guidance/token-use.md#what-is-the-cheapest-configuration-that-keeps-accuracy)
 
 ## How to measure digitization on your own documents
 
@@ -353,13 +324,16 @@ Each reader, and each setting, tends to make its own kind of mistake:
 | Configuration | Typical mistake | Example | What to change |
 |---|---|---|---|
 | **Textract, low resolution** | A value is missing from the page text | A page number or a hand-filled box number is absent below about 200 DPI | Keep `ocr.image.dpi` at 300. Scan image files at 300 DPI or more |
-| **Textract, layout only** | A long table loses its structure: rows split, run together or go missing | A statement table that a plain-text layout cannot separate into rows | Add `TABLES`, or use Bedrock Data Automation |
+| **Textract, layout only** | A table comes back as lines of text, not a Markdown table, so agentic extraction's table tool and the row-count checks cannot read it | A long statement table | Add `TABLES`, or use Bedrock Data Automation |
 | **Vision-language model** | A character changes, and the value looks right | A fixed-width ID such as `SEQ00042` comes back as `SEQ000042` | Use Textract for pages full of IDs and account numbers, or tighten the **Task prompt** |
 | **Vision-language model, Chandra and Cohere Parse hooks** | No reader confidence for the scoring model | Confidence comes from the scoring model alone | Use Textract, Bedrock Data Automation or the Mistral OCR hook when confidence drives review |
 | **Any reader, on photos** | Characters misread in shadows or faint areas | A phone photo of a receipt with a dark corner | Turn on *Preprocessing* (the Bedrock Data Automation backend does its own image processing and skips it) |
 | **Textract with `SIGNATURES`** | A stray mark is reported as a signature | A smudge in an empty signature box | Remove `SIGNATURES` if no field asks about signatures. See [The SIGNATURES feature](../configuration.md#the-signatures-feature) |
 
 ## Benchmark results: extraction accuracy by reader
+
+*Measured on release 0.6.14 with Claude Sonnet 4.6, Amazon Nova 2 Lite and Amazon Nova Lite.
+For current recommendations, see [Digitization (OCR) Benchmarks](../benchmark-guidance/digitization.md).*
 
 The benchmark measures readers by their effect on extraction: only the reader changes, and
 every other setting stays the same. The benchmark has no valid measurement of the Bedrock
@@ -415,6 +389,48 @@ with one extraction model. All three datasets are printed and fairly clean. For 
 phone photos, faxes and languages other than English, run the same comparison on your own
 pages.
 
+### Tokens per page by reader
+
+OCR tokens per page with Amazon Nova 2 Lite, the default vision-language model (release
+0.6.14, November 2026):
+
+| Documents | Pages measured | Input tokens per page | Output tokens per page |
+|---|---|---|---|
+| Bank checks | 20 | 329 | 229 |
+| Real invoices | 81 | 329 | 1,666 |
+| Synthetic bank statements of 1 to 17 pages | 52 | 329 | 198 to 3,203, by file |
+
+Source: `benchmarks/results/v0.6.14/core/summary.json`, cell `core-llm-simple-sep`,
+`tokens_by_phase.OCR`.
+
+Tokens per page for the whole pipeline on the same 20 real invoices (81 pages), by reader:
+
+| Phase | Textract, tables (default) | Textract, layout only | Vision-language model |
+|---|---|---|---|
+| OCR, input | — | — | 329 |
+| OCR, output | — | — | 1,666 |
+| Classification, input | 2,391 | 2,124 | 3,086 |
+| Extraction, input | 3,666 | 3,320 | 4,389 |
+| Confidence assessment, input | 10,484 | 10,414 | 6,176 |
+| **All phases, input** | **16,542** | **15,858** | **13,981** |
+| **All phases, output** | **1,413** | **1,408** | **3,192** |
+
+Input tokens include prompt-cache reads and writes. The classification model was Amazon Nova
+2 Lite, the extraction model Claude Sonnet 4.6, and the scoring model Amazon Nova Lite.
+Source: `benchmarks/results/v0.6.14/core/summary.json`, cells `core-tt-simple-sep`,
+`core-tl-simple-sep` and `core-llm-simple-sep`, document `realkie`.
+
+What this shows:
+
+- **The vision-language model wrote longer page text than Textract on these invoices,** so
+  classification and extraction read about 20–30% more input tokens per page.
+- **The scoring model read about 40% fewer input tokens per page with the vision-language
+  model,** because that reader has no line-by-line confidence to add to the scoring model's
+  prompt. The same drop means the scoring model judged each value without the reader's
+  confidence.
+- **Layout only cut input tokens slightly** in every phase, because the page text carried
+  no table markup.
+
 ## Improving digitization once your pipeline is running
 
 When your test set shows wrong values that the reader caused, these changes help most,
@@ -431,7 +447,7 @@ page text entirely is usually a resolution problem. The accelerator renders PDFs
 but an image file keeps the resolution it was scanned or photographed at. See
 [When to change the defaults](../ocr-image-sizing-guide.md#when-to-change-the-defaults).
 
-**Turn on `TABLES` for documents with tables.** If rows run together or cells land in the
+**Add `TABLES` when tables come back wrong.** If rows run together or cells land in the
 wrong column, add `TABLES` in **Textract features**. See
 [Textract features](../configuration.md#textract-features--the-tables-costaccuracy-trade-off).
 
@@ -442,7 +458,8 @@ uneven lighting and low contrast before the reader sees the page. See
 **Keep the page image in the extraction prompt.** The default extraction prompts send the
 page image with the page text, so the extraction model can correct a misread character
 against the image and read checkboxes the text does not show. If you write your own
-extraction prompt, keep the `{DOCUMENT_IMAGE}` placeholder in it.
+extraction prompt, keep the `{DOCUMENT_IMAGE}` placeholder in it. See
+[What is the impact of document modality?](../benchmark-guidance/extraction.md#what-is-the-impact-of-document-modality)
 
 **Tell a vision-language model exactly what to write.** The **Task prompt** decides what the
 page text looks like. Ask for tables as Markdown pipe tables, so table parsing can read them,

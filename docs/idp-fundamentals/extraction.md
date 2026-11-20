@@ -46,8 +46,8 @@ them, one suited to each.
 
 ## How the accelerator extracts the fields of a section
 
-A language model, the **extraction model**, does the reading. The shipped default is Claude
-Sonnet 5 (`extraction.model`). You choose how the model works through the section with
+A language model, the **extraction model** (`extraction.model`), does the reading. You
+choose how the model works through the section with
 *Extraction mode* (`extraction.mode`): *Simple — single-pass* (the default) or *Advanced —
 sharded, for large documents*.
 
@@ -94,7 +94,8 @@ with a bounded number of fields. Three properties follow from the single request
   before it sends it, and stops with an explanation (`ExtractionInputTooLarge`) when the
   section is larger than the extraction model's input window.
 - **A request with more than 20 page images** has each image reduced to at most 2,000 pixels
-  on a side, because Amazon Bedrock caps images at that size in such requests.
+  on a side with Claude models, which set that limit themselves; see
+  [Claude's vision limits](https://platform.claude.com/docs/en/build-with-claude/vision#request-limits).
 
 See [Simple (non-agentic) extraction](../extraction-and-confidence.md#simple-non-agentic-extraction).
 
@@ -162,8 +163,8 @@ flowchart LR
     class R file
 ```
 
-One more check runs in Advanced mode without any setting: when the OCR text holds a table of
-more than 30 rows and every list field comes back empty, the accelerator sends the agent back
+One more check runs in Advanced mode without any setting: when the OCR text holds a Markdown
+table of more than 30 rows and every list field comes back empty, the accelerator sends the agent back
 for another try, naming the field and the row count. The agent also scores confidence inside
 each shard, so confidence scales with the shards; see
 [Confidence Assessment](confidence-assessment.md).
@@ -184,7 +185,7 @@ Every record passes through the same checks before the accelerator stores it:
   converts types as values arrive.
 - **Schema validation** (*Schema Validation & Escalation*, `extraction.validation`) checks the
   record against the full schema, including formats such as dates and email addresses, and
-  records any violation on the section. Validation is on by default and costs nothing.
+  records any violation on the section. Validation is on by default.
 - **Completeness checks** compare each list with what the section's OCR text shows and raise a
   processing issue when rows appear to be missing.
   [Short lists and other extraction mistakes](#short-lists-and-other-extraction-mistakes-which-configuration-makes-which)
@@ -204,7 +205,7 @@ return a list of records instead of one. See
 | Who writes the list rows | The model, every row | The table tool, in code, when the OCR has Markdown tables |
 | Section size | Must fit in one request | Split into shards |
 | Schema checks | After the model answers | At every tool call, then after the merge |
-| Extraction models | Every supported model | Models that use tools reliably, such as Claude Sonnet 5 |
+| Extraction models | Every supported model | Models that use tools reliably, such as Claude Haiku 5.5 and Claude Sonnet 5.5 |
 
 *Extraction mode* applies to every document class in a
 [configuration profile](../configuration-profiles.md). To process short forms in one mode and
@@ -213,32 +214,44 @@ with a [prefix mapping](../configuration-profiles.md#prefix-mappings-assigning-a
 
 ## The configuration to start with
 
-**For forms and documents with a bounded number of fields, such as invoices, start with
-single-pass extraction (*Simple*), the default.** One request reads the whole section and
-returns the record. On real invoices, single-pass extraction scored as high as agentic
-extraction and read about a tenth of the extraction input tokens (see
-[Invoices](#invoices-realkie-fcc-verified)).
+**Start with Claude Haiku 5.5 and single-pass extraction** (`extraction.model:
+us.anthropic.claude-haiku-5-5`, and *Simple*, the default mode). One request reads the whole
+section and returns the record. See
+[Which extraction model should I use?](../benchmark-guidance/extraction.md#which-extraction-model-should-i-use)
 
-**For documents with long lists, from a few hundred rows up, choose agentic extraction
-(*Advanced*).** Statements, transaction logs and holdings reports are the typical cases. In
-our benchmark, agentic extraction returned every row of every statement we tested, up to
-3,200 rows on 66 pages, and from 400 rows it finished in about half the time of a single-pass
-(see [Long lists](#long-lists-synthetic-bank-statements)).
+**Agentic extraction (*Advanced*) may do better on exceptionally long or complex
+extractions,** such as invoices or receipts with many line items. A single pass writes every
+row in one response, so a very long list can come back short or not fit in one request. Use
+agentic extraction with Claude Haiku 5.5, and leave deterministic table parsing off
+(`extraction.agentic.table_parsing.enabled: false`; the shipped configuration turns it on).
+See [When is agentic extraction worth it?](../benchmark-guidance/extraction.md#when-is-agentic-extraction-worth-it)
+and [Does deterministic table parsing help agentic extraction?](../benchmark-guidance/extraction.md#does-deterministic-table-parsing-help-agentic-extraction)
 
-**In either mode, keep Amazon Textract's `TABLES` feature on** (the shipped default,
-`ocr.features`). The table tool and the row-count checks both read the Markdown tables it
-produces.
+**Send the page images with the OCR text,** as the default prompts do. See
+[What is the impact of document modality?](../benchmark-guidance/extraction.md#what-is-the-impact-of-document-modality)
+
+**Keep reasoning effort low** (`extraction.reasoning_effort: low`, the default). See
+[Does more reasoning effort improve extraction?](../benchmark-guidance/extraction.md#does-more-reasoning-effort-improve-extraction)
+
+**For schema enforcement, use structured output once it is released
+([#1785](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1785)),
+not the forced tool.** Leave `extraction.forced_tool.enabled` off, its default. See
+[Does schema enforcement improve accuracy or cost?](../benchmark-guidance/extraction.md#does-schema-enforcement-improve-accuracy-or-cost)
+
+**For long tables, add Amazon Textract's `TABLES` feature** (`ocr.features`). The row-count
+checks read the Markdown tables it writes; with `LAYOUT` alone, Textract writes a table as
+lines of text. See [Digitization](digitization.md#the-configuration-to-start-with).
 
 ## How many tokens extraction uses, and what drives the count
 
 Four things decide how many tokens extraction uses:
 
 - **The rows the model writes.** Output tokens grow with the length of the list. In a single
-  pass, Claude Sonnet 5 wrote about 48 output tokens per row of a three-column statement. In
-  agentic mode the table tool assembles the rows, and the agent wrote about 39 per row.
+  pass the model writes every row. In agentic mode with table parsing on, the table tool
+  assembles the rows in code.
 - **How often the model rereads its instructions.** A single-pass reads each page once. An
   agent sends its prompt again on every turn of its loop, and every shard repeats the
-  instructions and the schema, so agentic extraction reads several times the input tokens.
+  instructions and the schema, so agentic extraction reads more input tokens.
   Amazon Bedrock serves most of the repeated part from the prompt cache, which it bills at a
   reduced rate.
 - **Page images.** Each image adds input tokens, and how many depends on the extraction model
@@ -246,55 +259,8 @@ Four things decide how many tokens extraction uses:
 - **The extraction model.** Models count tokens differently, especially for images, and models
   differ in how many tokens they spend reasoning.
 
-Measured extraction tokens on synthetic bank statements with Claude Sonnet 5, the default
-extraction model (release 0.6.14, November 2026; mean over the runs shown):
-
-| Statement | Runs per mode | Mode | Input per document | Output per document | Input per page | Output per page |
-|---|---|---|---|---|---|---|
-| 100 rows, 3 pages | 6 | Single-pass | 20,221 | 4,900 | 6,740 | 1,633 |
-| | | Agentic | 82,691 | 4,075 | 27,564 | 1,358 |
-| 400 rows, 9 pages | 11 | Single-pass | 60,000 | 19,315 | 6,667 | 2,146 |
-| | | Agentic | 215,171 | 15,597 | 23,908 | 1,733 |
-| 800 rows, 17 pages | 6 | Single-pass ¹ | 112,977 | 38,556 | 6,646 | 2,268 |
-| | | Agentic | 431,289 | 31,100 | 25,370 | 1,829 |
-| 3,200 rows, 66 pages | 2 | Single-pass ² | 0 | 0 | — | — |
-| | | Agentic | 1,405,276 | 123,564 | 21,292 | 1,872 |
-
-¹ The four runs that returned every row. The two runs that returned part of the list wrote
-2,277 output tokens each; see
-[Short lists and other extraction mistakes](#short-lists-and-other-extraction-mistakes-which-configuration-makes-which).
-
-² The statement was too large for one request, so the accelerator stopped before sending it
-and spent no extraction tokens.
-
-Measured extraction tokens on real invoices with Claude Sonnet 4.6, the benchmark's control
-model (20 documents, 81 pages, release 0.6.14):
-
-| Configuration | Input / output per document | Input / output per page |
-|---|---|---|
-| Single-pass | 14,849 / 2,121 | 3,666 / 524 |
-| Agentic | 141,719 / 6,031 | 34,992 / 1,489 |
-
-Input tokens include tokens read from and written to the prompt cache. The figures cover the
-extraction phase only; classification and confidence assessment use tokens of their own. Sources:
-`benchmarks/results/v0.6.14/{cost__extraction-model-sonnet5,coresynth__extraction-model-sonnet5,astravalue,astracap}/summary.json`
-for the statements and `benchmarks/results/v0.6.14/core/summary.json` for the invoices, field
-`tokens_by_phase.Extraction`.
-
-What this shows:
-
-- **On long statements, agentic extraction read 3.6 to 4.1 times the input tokens of a
-  single-pass and wrote about a fifth fewer output tokens.** Between 65% and 78% of the
-  agentic input came from the prompt cache.
-- **On invoices, agentic extraction read about 9.5 times the input tokens and wrote 2.8
-  times the output,** with 85% of the input from the prompt cache. An invoice's short list
-  gives the table tool little to save, while the agent loop still repeats its prompt.
-- **Input tokens per page stayed roughly level as statements grew,** in both modes, so a
-  statement's extraction input scales with its page count and its output with its row count.
-
-The same pattern holds with Claude Sonnet 4.6, one run per size: about 3,100 input tokens per
-page in a single-pass (100 to 1,600 rows) and 17,300 to 21,600 in agentic mode (100 to
-3,200 rows). Source: `benchmarks/results/v0.6.14/scaling/summary.json`.
+See [When is agentic extraction worth it?](../benchmark-guidance/extraction.md#when-is-agentic-extraction-worth-it)
+for what each mode costs.
 
 ## How to measure extraction on your own documents
 
@@ -305,7 +271,7 @@ whole:
 | Number | Question it answers |
 |---|---|
 | **Completeness** | What share of the rows in the ground truth came back? Rows returned ÷ rows in the ground truth. |
-| **Accuracy over compared cells** | Of the values compared in the rows that came back, what share match the ground truth? In our statement benchmark, the compared cells are each returned row's date and amount, matched exactly. |
+| **Accuracy over compared cells** | Of the values compared in the rows that came back, what share match the ground truth? |
 | **Weighted accuracy** | How close is the whole record to the ground truth, field by field? Stickler scores each field from 0 to 1 with that field's comparison method, then averages the scores, weighted by each field's weight. |
 
 Read completeness and accuracy together. Accuracy counts only the rows that came back, so a
@@ -335,17 +301,12 @@ column and on the *Processing Report* tab.
 | **Single-pass or agentic** on a section that holds several records of one class | Returns the first record only | `extraction_multi_instance_suspected`, when *Multi-instance Section Detection* is on | Set *Records per section* to *Several — wrap my single-record class* |
 | **Single-pass or agentic** with a value in the wrong format | Stores the value as the model wrote it | `extraction_validation_failed` (warning) | Declare the format on the field, and say it in the description |
 
-**A short list is the mistake to watch for on long documents.** On the 800-row statement, the
-two single-pass runs that returned part of the list returned its first 43 rows and finished
-with `COMPLETED`. They also ran faster and wrote far fewer tokens than the complete runs, so
-neither the document status nor the run time shows the loss. The accelerator's row-count
-check does: it compares the rows extracted with the rows in the section's OCR tables of the
-same width, and raises `extraction_rows_below_ocr_estimate` when fewer than half came back.
-Across every release 0.6.14 benchmark cell that ran Claude Sonnet 5 in a single-pass on that
-statement with table-rendering OCR, 9 of 16 runs returned part of the list, and the
-accelerator raised `extraction_rows_below_ocr_estimate` on all 9. Source:
-`processing_issue_codes` in `benchmarks/results/v0.6.14/coresynth__extraction-model-sonnet5/`
-and `astravalue/`.
+**A short list is the mistake to watch for on long documents.** A single pass that stops
+early returns the first rows of the list and finishes with `COMPLETED`. It also runs faster
+and writes fewer tokens than a complete run, so neither the document status nor the run time
+shows the loss. The accelerator's row-count check does: it compares the rows extracted with
+the rows in the section's OCR tables of the same width, and raises
+`extraction_rows_below_ocr_estimate` when fewer than half came back.
 
 Three settings change what happens to a short list:
 
@@ -373,6 +334,9 @@ See [Detecting a truncated list](../extraction-and-confidence.md#detecting-a-tru
 every completeness signal.
 
 ## Benchmark results: completeness, accuracy and tokens by extraction mode
+
+*Measured on release 0.6.14 with Claude Sonnet 5 and Claude Sonnet 4.6. For current
+recommendations, see [Key Information Extraction Benchmarks](../benchmark-guidance/extraction.md).*
 
 ### Long lists: synthetic bank statements
 
@@ -407,6 +371,14 @@ What this shows:
   read fewer tokens there.
 - **Wrong values were not the issue on long lists. Missing rows were,** which is why
   completeness is the number to follow.
+
+On the 800-row statement, the two single-pass runs that returned part of the list returned
+its first 43 rows and finished with `COMPLETED`, faster and with far fewer tokens than the
+complete runs. Across every release 0.6.14 benchmark cell that ran Claude Sonnet 5 in a
+single-pass on that statement with table-rendering OCR, 9 of 16 runs returned part of the
+list, and the accelerator raised `extraction_rows_below_ocr_estimate` on all 9. Source:
+`processing_issue_codes` in `benchmarks/results/v0.6.14/coresynth__extraction-model-sonnet5/`
+and `astravalue/`.
 
 With Claude Sonnet 4.6 (one run per size, `benchmarks/results/v0.6.14/scaling/`), a single
 pass returned every row up to 1,600 rows on 33 pages, taking about 17 and 18 minutes at
@@ -448,6 +420,57 @@ run 6 to 11 times; the largest ran twice. RealKIE is 20 documents of one documen
 once per configuration on the control model rather than the default, so treat differences
 under about two standard errors as unresolved. Confirm the choice on your own documents.
 
+### Extraction tokens by mode
+
+Extraction tokens on synthetic bank statements with Claude Sonnet 5 (release 0.6.14, November
+2026; mean over the runs shown):
+
+| Statement | Runs per mode | Mode | Input per document | Output per document | Input per page | Output per page |
+|---|---|---|---|---|---|---|
+| 100 rows, 3 pages | 6 | Single-pass | 20,221 | 4,900 | 6,740 | 1,633 |
+| | | Agentic | 82,691 | 4,075 | 27,564 | 1,358 |
+| 400 rows, 9 pages | 11 | Single-pass | 60,000 | 19,315 | 6,667 | 2,146 |
+| | | Agentic | 215,171 | 15,597 | 23,908 | 1,733 |
+| 800 rows, 17 pages | 6 | Single-pass ¹ | 112,977 | 38,556 | 6,646 | 2,268 |
+| | | Agentic | 431,289 | 31,100 | 25,370 | 1,829 |
+| 3,200 rows, 66 pages | 2 | Single-pass ² | 0 | 0 | — | — |
+| | | Agentic | 1,405,276 | 123,564 | 21,292 | 1,872 |
+
+¹ The four runs that returned every row. The two runs that returned part of the list wrote
+2,277 output tokens each; see [Long lists](#long-lists-synthetic-bank-statements).
+
+² The statement was too large for one request, so the accelerator stopped before sending it
+and spent no extraction tokens.
+
+Extraction tokens on real invoices with Claude Sonnet 4.6, the benchmark's control model (20
+documents, 81 pages, release 0.6.14):
+
+| Configuration | Input / output per document | Input / output per page |
+|---|---|---|
+| Single-pass | 14,849 / 2,121 | 3,666 / 524 |
+| Agentic | 141,719 / 6,031 | 34,992 / 1,489 |
+
+Input tokens include tokens read from and written to the prompt cache. The figures cover the
+extraction phase only; classification and confidence assessment use tokens of their own. Sources:
+`benchmarks/results/v0.6.14/{cost__extraction-model-sonnet5,coresynth__extraction-model-sonnet5,astravalue,astracap}/summary.json`
+for the statements and `benchmarks/results/v0.6.14/core/summary.json` for the invoices, field
+`tokens_by_phase.Extraction`.
+
+What this shows:
+
+- **On long statements, agentic extraction read 3.6 to 4.1 times the input tokens of a
+  single-pass and wrote about a fifth fewer output tokens.** Between 65% and 78% of the
+  agentic input came from the prompt cache.
+- **On invoices, agentic extraction read about 9.5 times the input tokens and wrote 2.8
+  times the output,** with 85% of the input from the prompt cache. An invoice's short list
+  gives the table tool little to save, while the agent loop still repeats its prompt.
+- **Input tokens per page stayed roughly level as statements grew,** in both modes, so a
+  statement's extraction input scales with its page count and its output with its row count.
+
+The same pattern holds with Claude Sonnet 4.6, one run per size: about 3,100 input tokens per
+page in a single-pass (100 to 1,600 rows) and 17,300 to 21,600 in agentic mode (100 to
+3,200 rows). Source: `benchmarks/results/v0.6.14/scaling/summary.json`.
+
 ## Improving accuracy once your pipeline is running
 
 When your test set shows fields with wrong or missing values, these changes help most, roughly
@@ -462,11 +485,12 @@ early fixes are wording fixes, and they cost nothing.
 
 **Declare types and formats in the schema.** Give amounts the type `number` and dates
 *Format (JSON Schema)* `date`, and use *Pattern (regex)* or *Enum (Allowed Values)* for codes.
-Value coercion then repairs common mismatches for free, and schema validation reports the
-rest. `format: date` means ISO 8601 (YYYY-MM-DD); for dates written day-first or month-first,
+Value coercion then repairs common mismatches without a model call, and schema validation
+reports the rest. `format: date` means ISO 8601 (YYYY-MM-DD); for dates written day-first or month-first,
 set `extraction.coercion.date_order` to your documents' convention. See
-[Value coercion](../extraction-and-confidence.md#value-coercion-extractioncoercion) and
-[Schema validation](../extraction-and-confidence.md#schema-validation-extractionvalidation).
+[Value coercion](../extraction-and-confidence.md#value-coercion-extractioncoercion),
+[Schema validation](../extraction-and-confidence.md#schema-validation-extractionvalidation) and
+[Do schema validation and value coercion improve the output?](../benchmark-guidance/extraction.md#do-schema-validation-and-value-coercion-improve-the-output)
 
 **Add a few-shot example for a hard document class.** A few-shot example is a sample document
 with its correct values, which the accelerator adds to the extraction prompt for that

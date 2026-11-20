@@ -239,20 +239,19 @@ your configuration fields such as *Monthly income* and *Application date*. The f
 extraction model reads the extracted fields alongside the page text, and you can measure
 those fields against ground truth like any other field.
 
-**Keep the default engine, models and options, and move exact rules to Z3.** The default
-fact extraction and orchestrator model is Claude Sonnet 4.6, with the three default
-recommendation options. Leave rules that need judgment on the language-model engine. Switch
-rules that are pure arithmetic or comparisons to *Symbolic (Z3)*, and declare a value that can
-hold a fraction, such as a ratio or an amount, as `Real`.
+**Keep the default engine, models and options, and move exact rules to Z3.** Leave rules
+that need judgment on the language-model engine, with the default models and the three
+default recommendation options. Switch rules that are pure arithmetic or comparisons to
+*Symbolic (Z3)*, and declare a value that can hold a fraction, such as a ratio or an amount,
+as `Real`.
 
 **Give each policy class a Document Name Regex as soon as you have more than one.** Without
 one, the accelerator cannot tell which policy classes apply, and it validates none of them.
 
 ## How many tokens rule validation uses, and what drives the count
 
-We have not measured rule validation tokens. The benchmark suite does not run rule
-validation, so no committed benchmark result reports its tokens. The accelerator records
-the tokens on every file it processes, so you can measure them on your own files (see
+The accelerator records rule validation tokens on every file it processes, so you can
+measure them on your own files (see
 [the next section](#how-to-measure-rule-validation-on-your-own-files)).
 
 What drives the count:
