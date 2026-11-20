@@ -16,6 +16,7 @@ counts for these pages to within the decider's fixed prompt of about 8 tokens.
 from __future__ import annotations
 
 import hashlib
+import re
 
 import pytest
 
@@ -177,10 +178,72 @@ def test_prose_is_estimated_and_cut_within_2_percent_of_the_previous_estimate(te
         (" \n", 1.0),
         ("日本", 2.0),
         ("ab-12", 4.0),
+        # Letter-only runs that read as codes count like letters beside digits.
+        ("kQzRbT", 4.5),
+        ("XKQZPT", 4.5),
+        ("bcdfgh", 4.5),
+        ("BCDFGA", 4.5),
+        ("Statement", 4.5),
+        ("INVOICE", 3.5),
+        # Ideographs by level: GB 2312 or JIS X 0208 first level, Big5 first
+        # level only, any other.
+        ("们", 1.0),
+        ("請", 1.0),
+        ("們", 1.5),
+        ("禤", 2.5),
+        ("𠀀", 4.0),
+        # The ends of each level: Big5's last first-level character and its first
+        # second-level one, GB 2312's first and last first-level and first
+        # second-level, JIS X 0208's first first-level and first second-level.
+        ("籲", 1.5),
+        ("乂", 2.5),
+        ("啊", 1.0),
+        ("座", 1.0),
+        ("亜", 1.0),
+        ("椀", 1.0),  # JIS X 0208's last first-level row, in no other set
+        # The ideograph blocks' ends: extension A, compatibility ideographs, the
+        # supplementary blocks (extension B's last, G's first, the last of all),
+        # and the first code point after them.
+        ("\u3400", 3.0),
+        ("\u4dbf", 3.0),
+        ("\ufa11", 2.5),
+        ("\U0002a6df", 4.0),
+        ("\U00030000", 4.0),
+        ("\U000323af", 4.0),
+        ("\U000323b0", 1.0),
+        ("亍", 2.5),
+        ("弌", 2.5),
+        ("の", 1.0),
+        ("한", 1.0),
     ],
 )
 def test_each_character_class_is_weighted(text, tokens):
     assert estimate_tokens(text) == tokens
+
+
+#: Words of statement and form text, which must still count as words.
+STATEMENT_WORDS = (
+    "Statement Balance CARRIED FORWARD Interest Withdrawals Payments Deposit "
+    "InvoiceNumber AccountHolder iPhone McDonald USA LLC IRS Mr Dr pH "
+    "Schedule"
+).split()
+
+
+@pytest.mark.parametrize("word", STATEMENT_WORDS)
+def test_ordinary_words_count_as_words(word):
+    from idp_common.decision_model.budget import WORD_LETTER_TOKENS
+
+    assert estimate_tokens(word) == WORD_LETTER_TOKENS * len(word)
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["kQzRbTmWpL", "aGVsbGgd", "XKQZPTRBNM", "qwrtzpxk", "BCDFGHAB", "zzzzza"],
+)
+def test_random_letter_codes_count_as_codes(code):
+    from idp_common.decision_model.budget import CODE_RUN_LETTER_TOKENS
+
+    assert estimate_tokens(code) == CODE_RUN_LETTER_TOKENS * len(code)
 
 
 @pytest.mark.parametrize("style", ["table", "codes", "figures", "words"])
@@ -189,3 +252,190 @@ def test_a_cut_never_holds_more_than_its_budget(style, budget):
     kept, dropped = truncate_to_tokens(_page(style), budget)
     assert dropped > 0
     assert estimate_tokens(kept) <= budget
+
+
+# --- Letter-only codes and rare CJK characters (#2212) -------------------------
+
+
+def _letters(seed: int, length: int, alphabet: str) -> str:
+    out = []
+    for _ in range(length):
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        out.append(alphabet[(seed >> 16) % len(alphabet)])
+    return "".join(out)
+
+
+_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _gb2312_level_two(count: int) -> str:
+    """``count`` characters of GB 2312's second level, spread over its rows."""
+    return "".join(
+        bytes((0xD8 + k * 7 % 32, 0xA1 + k * 13 % 94)).decode("gb2312")
+        for k in range(count)
+    )
+
+
+#: Shapes the estimate before #2212 weighed as words or common CJK, which the
+#: decider's tokenizer splits into one to three tokens a character.
+CODE_AND_RARE_SHAPES = {
+    "mixed-case codes": lambda: "\n".join(
+        _letters(11 + i, 12, _LETTERS) for i in range(60)
+    ),
+    "mixed-case words": lambda: " ".join(
+        _letters(i, 3 + i % 6, _LETTERS) for i in range(150)
+    ),
+    "base64 letters": lambda: "\n".join(
+        _letters(29 + i, 64, _LETTERS + "+/") for i in range(12)
+    ),
+    "capital codes": lambda: " ".join(
+        _letters(41 + i, 10, _LETTERS[:26]) for i in range(70)
+    ),
+    "lower-case codes": lambda: " ".join(
+        _letters(53 + i, 10, _LETTERS[26:]) for i in range(70)
+    ),
+    "rare hanzi": lambda: _gb2312_level_two(400),
+    "rare surnames": lambda: "\n".join(
+        f"{i + 1}. 姓名 "
+        + "禤亓厍逯鬲昝隗郗仉笪郇毌"[i % 12]
+        + "珺玥煜堃喆赟昶炜琰祎"[i % 10]
+        for i in range(60)
+    ),
+    "rare name kanji": lambda: "\n".join(
+        f"氏名 {'髙﨑彅遙凜雫苺颯椿柊皐澪琥珀瑛綾楓梓櫂'[i % 19]}"
+        f"{'彧翀骞晞犇淼焱垚'[i % 8]}"
+        for i in range(60)
+    ),
+}
+
+#: ``(first 16 hex digits of the shape's SHA-256, its count by the decider's
+#: tokenizer)``, measured with the pinned model's tokenizer (#2212).
+CODE_AND_RARE_TOKENS = {
+    "mixed-case codes": ("d47f78975b64446f", 530),
+    "mixed-case words": ("dfa839390f511a54", 561),
+    "base64 letters": ("a26d99722d613405", 521),
+    "capital codes": ("997356291c23adc9", 424),
+    "lower-case codes": ("075df464bc749e0a", 375),
+    "rare hanzi": ("a552048adaf44bbb", 725),
+    "rare surnames": ("51676ecfd1a01d3b", 632),
+    "rare name kanji": ("162a156e397363bd", 451),
+}
+
+#: What a confidence request with text only spent outside its text in the live
+#: check: question, the decider's prompt (#2051, run 4: total less the tokenizer
+#: count of the state, 124 for every page shape). Its question was estimated at
+#: ``QUESTION_ESTIMATE``, so its text was cut to the default less that.
+CONFIDENCE_TEXT_OVERHEAD_TOKENS = 124
+
+
+@pytest.mark.parametrize("shape", sorted(CODE_AND_RARE_SHAPES))
+def test_the_code_and_rare_shapes_are_the_text_the_tokenizer_counted(shape):
+    digest = hashlib.sha256(CODE_AND_RARE_SHAPES[shape]().encode()).hexdigest()
+    assert digest[:16] == CODE_AND_RARE_TOKENS[shape][0]
+
+
+@pytest.mark.parametrize("shape", sorted(CODE_AND_RARE_SHAPES))
+def test_text_of_each_code_and_rare_shape_cut_to_the_default_fits_the_window(shape):
+    """A confidence request whose text is all this shape is predicted to fit.
+
+    The text is cut to the default ``max_input_tokens`` less the question, and
+    costs that budget times this shape's real tokens per estimated token. Before
+    #2212 the ratio was 1.15 to 1.81 for six of these shapes (the window allows
+    about 1.15), so a request of mixed-case codes, base64 letters or rare CJK
+    characters overflowed; it is now 0.77 to 1.08.
+    """
+    text = CODE_AND_RARE_SHAPES[shape]()
+    ratio = CODE_AND_RARE_TOKENS[shape][1] / estimate_tokens(text)
+    budget = state_budget(DEFAULT_MAX_INPUT_TOKENS, QUESTION_ESTIMATE, 0)
+    assert ratio * budget + CONFIDENCE_TEXT_OVERHEAD_TOKENS <= CONTEXT_WINDOW_TOKENS
+    assert ratio <= 1.1
+
+
+def _estimate_2209(text: str) -> float:
+    """The per-character-class estimate #2209 shipped, before #2212."""
+    total = 0.0
+    position = 0
+    for run in re.finditer(r"[A-Za-z0-9]+", text):
+        total += sum(
+            0.5 if c in " \t\n\r" else 1.0 for c in text[position : run.start()]
+        )
+        digits = sum(c.isdigit() for c in run.group())
+        letter = 0.75 if digits else 0.5
+        total += digits + letter * (len(run.group()) - digits)
+        position = run.end()
+    return total + sum(0.5 if c in " \t\n\r" else 1.0 for c in text[position:])
+
+
+ZH_HANS = (
+    "尊敬的客户：感谢您选择我行的服务。本对账单列示了您的账户在本期内的全部交易明细，"
+    "包括存款、取款、转账及各项费用。请您仔细核对账单中的各项内容，如对任何交易有疑问，"
+    "请在收到对账单之日起三十日内与我们联系，逾期视为您已确认账单内容无误。\n"
+    "本合同自双方签字盖章之日起生效，有效期为一年。合同期满前三十日内，如任何一方未提出"
+    "书面异议，本合同自动续期一年。因履行本合同发生的争议，双方应友好协商解决。\n"
+)
+ZH_HANT = (
+    "親愛的客戶您好：感謝您選擇本行的服務。本對帳單列示您的帳戶於本期內的全部交易明細，"
+    "包括存款、提款、轉帳及各項費用。請您詳細核對帳單內容，如對任何交易有疑問，"
+    "請於收到對帳單之日起三十日內與我們聯繫，逾期視為您已確認帳單內容無誤。\n"
+    "本契約自雙方簽名蓋章之日起生效，有效期間為一年。契約期滿前三十日內，如任何一方未以"
+    "書面提出異議，本契約自動延長一年。因履行本契約所生之爭議，雙方應本誠信原則協商解決。\n"
+)
+JA = (
+    "お客様各位：平素より当行をご利用いただき、誠にありがとうございます。本明細書には、"
+    "当期におけるお客様の口座のお取引内容をすべて記載しております。ご不明な点がございま"
+    "したら、明細書到着後三十日以内に当行までお問い合わせください。\n"
+    "本契約は、双方が署名捺印した日から効力を生じ、有効期間は一年間とします。本契約に関"
+    "して紛争が生じた場合は、東京地方裁判所を第一審の専属的合意管轄裁判所とします。\n"
+)
+JA_NAMES = (
+    "氏名：髙橋 雄一郎　住所：東京都世田谷区桜新町二丁目十五番八号\n"
+    "氏名：渡邊 美咲　住所：大阪府大阪市北区梅田一丁目三番一号　勤務先：株式会社山﨑製作所\n"
+    "氏名：齋藤 健太　住所：神奈川県横浜市中区山下町十番地　生年月日：平成元年四月一日\n"
+)
+#: Realistic text and the most #2212 may raise its estimate over #2209's, so
+#: everyday text keeps nearly all the room it had. Measured: English prose (this
+#: repository's documentation, code blocks dropped) +0.5%, simplified Chinese and
+#: Japanese prose 0%, traditional Chinese prose +6.5% here and up to +12% on
+#: denser bank wording (common traditional characters outside GB 2312 count
+#: 1.5), Japanese names with rare kanji +2.4% here and up to +7%.
+PROSE_MARGINS = [
+    (PROSE, 1.0),
+    (ZH_HANS, 1.0),
+    (JA, 1.0),
+    (ZH_HANT, 1.07),
+    (JA_NAMES, 1.05),
+]
+
+
+@pytest.mark.parametrize(
+    "text, margin", PROSE_MARGINS, ids=["en", "zh-hans", "ja", "zh-hant", "ja-names"]
+)
+def test_everyday_text_is_estimated_within_its_margin_of_the_2209_estimate(
+    text, margin
+):
+    assert (
+        _estimate_2209(text) <= estimate_tokens(text) <= margin * _estimate_2209(text)
+    )
+
+
+@pytest.mark.parametrize(
+    "run, code",
+    [
+        ("aBeCiDoF", True),  # case flips only
+        ("aBaB", True),  # four letters, the fewest the case sign reads
+        ("aBa", False),
+        ("aBcdefG", True),  # two flips in seven: exactly once every three
+        ("aBcdeFghi", True),  # three flips in nine letters: once every three
+        ("aBcdeFghijk", False),  # three in eleven
+        ("astrnge", True),  # five consonants in a row
+        ("abstract", False),  # four
+        ("bcdfaghjakl", True),  # two vowels in eleven letters, under a fifth
+        ("bcdfaghjak", False),  # two in ten
+        ("bcdafg", True),  # one in six, the fewest letters the vowel sign reads
+        ("dryly", False),  # ``y`` is a vowel
+    ],
+)
+def test_each_sign_of_a_code_has_its_stated_threshold(run, code):
+    from idp_common.decision_model.budget import _reads_as_code
+
+    assert _reads_as_code(run) is code
