@@ -538,6 +538,7 @@ The options are:
 | `--terraform-bin` | `terraform` or `tofu` |
 | `--terraform-assume-role-arn ARN` | an IAM role both providers assume, written into the `aws` and `awscc` provider blocks of `main.tf` in each provider's own `assume_role` syntax (a block for `aws`, an attribute for `awscc`), so the resources are created as that role instead of as you. You need `sts:AssumeRole` on it. The role needs permission to create, change and delete every resource the deployment creates, including `cloudcontrol:*` for the `awscc` resources and `iam:CreateRole`/`iam:PassRole` on the roles the module creates. A new deployment names every role starting with the deployment name (`stack_name`); a deployment first applied with an earlier module keeps the names its roles were created with (Terraform's generated `terraform-<timestamp>` names among them), because an upgrade does not rename a role, so a role scoped to a name prefix must also cover those. If its role creation is conditioned on a permissions boundary, as the [CloudFormation service role](../iam-roles/cloudformation-management/README.md)'s is, pass that boundary as `PermissionsBoundaryArn` in `--parameters` so the module attaches it to every role it creates |
 | `--terraform-allow-replace-stateful` | apply even if the plan deletes or replaces a resource that holds data or that CloudFormation would retain, losing its data; without it such a plan is refused and nothing is applied. `--terraform-allow-replace-retained` is the earlier name and still works |
+| `--terraform-state local\|s3` | where Terraform keeps the state. `local`, the default, keeps it in `terraform.tfstate` in the directory. `s3` keeps it in an encrypted, versioned S3 bucket that `idp-cli` creates and locks it with a DynamoDB table; see [Keeping the state in S3](#keeping-the-state-in-s3) |
 | `--wait` | accepted as on the CloudFormation path |
 
 `--parameters` takes CloudFormation names, not Terraform variable names. The CLI maps
@@ -545,13 +546,102 @@ each one to its variable through the `idp-terraform.json` file shipped in the mo
 so `--parameters` lines you already use with CloudFormation deployments work
 unchanged.
 
-Terraform state is kept locally in that directory unless you put a backend there
-first. Keep the directory: it is the only record Terraform has of what it deployed,
-and without it neither `idp-cli` nor Terraform can update or delete the deployment.
-To keep the state remotely, create the directory before the first deploy and put a
-`terraform { backend "s3" { ... } }` block in a file of its own, such as `backend.tf`.
+Terraform state is kept locally in that directory unless you pass
+`--terraform-state s3` or put a backend there first. With a local state, keep the
+directory: it is the only record Terraform has of what it deployed, and without it
+neither `idp-cli` nor Terraform can update or delete the deployment. To use a backend
+of your own, create the directory before the first deploy and put a
+`terraform { backend "..." { ... } }` block in a file of its own, such as `backend.tf`.
 `idp-cli` writes `main.tf` itself and marks it with a comment; it does not overwrite a
-`main.tf` it did not write.
+`main.tf` or a `backend.tf` it did not write.
+
+#### Keeping the state in S3
+
+`idp-cli deploy --terraform --terraform-state s3` keeps the state in S3 instead of in
+the directory, so the deployment survives the loss of the directory and a second
+operator, whose credentials are in the same account, can deploy from another
+directory against the same state:
+
+```bash
+idp-cli deploy --terraform --terraform-state s3 \
+  --stack-name idp-tf --admin-email you@example.com --region us-east-1
+```
+
+Before it writes anything into the directory, `idp-cli` makes sure two resources exist
+in the deployment's Region and in the account of the credentials running it, creating
+them when they are missing:
+
+- **The state bucket**, `idp-tf-<stack-name>-<account-id>-<region>` (the stack name
+  lowercased). A new bucket gets a public access block with all four settings on,
+  versioning, SSE-S3 default encryption, and a bucket policy that denies every request
+  not made over TLS, because the state holds the deployment's settings and some of its
+  outputs (the MCP client secrets, for example) in clear. The state object is
+  `<stack-name>/terraform.tfstate`.
+- **The lock table**, a DynamoDB table named `idp-tf-lock-<stack-name>` with the
+  `LockID` key the S3 backend uses, billed on demand.
+
+`idp-cli` then writes `backend.tf` in the directory with `bucket`, `key`, `region`,
+`encrypt = true` and `dynamodb_table`, marked as written by `idp-cli`, and rewrites it
+on every deploy with `--terraform-state s3`.
+
+The lock is the DynamoDB table rather than the S3 backend's own `use_lockfile`,
+because `use_lockfile` needs Terraform or OpenTofu 1.10 and the module supports 1.7
+and later; two operators whose binaries locked in different ways would not exclude each
+other, so every deploy uses the table. Terraform 1.11 and later print a deprecation
+warning for `dynamodb_table`; the lock still works.
+
+A later deploy reuses both. The bucket must belong to your account: a bucket of that
+name in another account is refused and nothing is written to it. A reused bucket is
+never recreated or emptied. Of its four protective settings, a deploy applies only one
+the bucket lacks entirely, which finishes a creation an earlier deploy was interrupted
+in. A setting someone changed is left as it is, with a warning, for versioning
+(suspended), the public access block (any of its four settings off) and the bucket
+policy (one without a deny on non-TLS requests). Every call on the bucket names your
+account as its expected owner.
+
+Two directory changes are refused rather than carried out. A directory that already
+holds a local `terraform.tfstate` cannot be switched to `s3`, because moving an
+existing state into S3 (`terraform init -migrate-state`) is not supported yet; it is
+planned as a follow-up. And a directory whose `backend.tf` `idp-cli` wrote must keep
+being deployed with `--terraform-state s3`. A deploy from a new directory with
+`--terraform-state s3` and the same stack name uses the same bucket and state.
+
+The identity running `idp-cli` needs these permissions in addition to the deployment's
+own:
+
+| Permission | Resource | Why |
+|---|---|---|
+| `sts:GetCallerIdentity` | — | the account id in the bucket name |
+| `s3:ListBucket` | the state bucket | `HeadBucket`, and the backend listing the state |
+| `s3:CreateBucket`, `s3:PutBucketVersioning`, `s3:PutBucketPublicAccessBlock`, `s3:PutEncryptionConfiguration`, `s3:PutBucketPolicy` | the state bucket | creating it, on the first deploy |
+| `s3:GetBucketVersioning`, `s3:GetBucketPublicAccessBlock`, `s3:GetEncryptionConfiguration`, `s3:GetBucketPolicy` | the state bucket | checking a reused bucket's settings |
+| `s3:GetObject`, `s3:PutObject` | `<bucket>/<stack-name>/terraform.tfstate` | reading and writing the state |
+| `dynamodb:CreateTable`, `dynamodb:DescribeTable` | the lock table | creating it, on the first deploy |
+| `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:DeleteItem` | the lock table | taking and releasing the lock |
+
+`--terraform-assume-role-arn` does not apply to the backend: the bucket and the table
+are created, and the state is read and written, with your own credentials, and the
+bucket name carries your credentials' account rather than the role's. Two operators
+who assume the same role from different accounts therefore compute different bucket
+names and do not share a state; the second one's deploy would plan the whole
+deployment as new. A shared state needs operators whose own credentials are in one
+account. Each deploy logs the bucket it created or reused.
+
+`idp-cli delete --terraform` deletes neither the bucket nor the table, so the state's
+history stays recoverable from the bucket's versions. To remove them once the
+deployment is deleted and you no longer need its state, empty the bucket of every
+object version (the S3 console's **Empty** action on the bucket does that), then delete
+the bucket and the table:
+
+```bash
+aws s3api delete-bucket --bucket idp-tf-<stack-name>-<account-id>-<region>
+aws dynamodb delete-table --table-name idp-tf-lock-<stack-name>
+```
+
+Emptying it from the command line means deleting each version by its `VersionId`;
+`aws s3 rm --recursive` removes only the current versions and leaves the bucket
+undeletable. `delete-objects` takes at most 1000 keys per request and refuses an empty
+list, so loop over `list-object-versions` pages if you script it.
 
 ## Parameters
 
@@ -951,8 +1041,9 @@ in `terraform/translator`, and a test fails when it is out of date.
 | cfn_nag `W78` | Point-in-time recovery not required for concurrency tracking table as data is transient | `ConcurrencyTable` |
 | cfn_nag `W84` | LogGroup does not require KMS Key Id | `ReadPreviousIDPPatternFunctionLogGroup` |
 | cfn_nag `W84` | LogGroup does not require KMS Key Id, since it's only logging checks on stack name length | `StacknameCheckFunctionLogGroup` |
+| cfn_nag `W84` | Logs one key ARN verdict per stack operation; encrypting it with the key it checks would make the check wait for that key | `CustomerManagedKmsKeyCheckFunctionLogGroup` |
 | cfn_nag `W89` | Dispatcher only calls SFN StartExecution + SSM DeleteParameter + urllib to CFN — no VPC needed | `DataMartMigrationDispatcherFunction` |
-| cfn_nag `W89` | Function does not require VPC access | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction`, `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `CompleteSectionReviewFunction`, `FinetuningDeploymentHandlerFunction`, `FinetuningJobCreatorFunction`, `FinetuningJobStatusCheckerFunction`, `FinetuningJobsResolverFunction`, `FinetuningListDocumentsFunction`, `FinetuningMergeDataFunction`, `FinetuningProcessDocumentFunction`, `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryAnalyzeFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryClusterFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryEmbedFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoverySaveFunction`, `MultiDocDiscoveryPrepareFunction`, `ReadPreviousIDPPatternFunction`, `UserManagementFunction`, `UserSyncFunction` |
+| cfn_nag `W89` | Function does not require VPC access | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction`, `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `CompleteSectionReviewFunction`, `CustomerManagedKmsKeyCheckFunction`, `FinetuningDeploymentHandlerFunction`, `FinetuningJobCreatorFunction`, `FinetuningJobStatusCheckerFunction`, `FinetuningJobsResolverFunction`, `FinetuningListDocumentsFunction`, `FinetuningMergeDataFunction`, `FinetuningProcessDocumentFunction`, `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryAnalyzeFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryClusterFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryEmbedFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoverySaveFunction`, `MultiDocDiscoveryPrepareFunction`, `ReadPreviousIDPPatternFunction`, `UserManagementFunction`, `UserSyncFunction` |
 | cfn_nag `W89` | Function does not require VPC access as it has no network access | `StacknameCheckFunction` |
 | cfn_nag `W89` | Function does not require VPC access as it only interacts with AWS services via APIs | `APIRESOLVERSTACK/AbortTestRunsResolverFunction`, `APIRESOLVERSTACK/AbortWorkflowResolverFunction`, `APIRESOLVERSTACK/AgentChatResolverFunction`, `APIRESOLVERSTACK/AgentRequestHandlerFunction`, `APIRESOLVERSTACK/ConfigurationResolverFunction`, `APIRESOLVERSTACK/CopyToBaselineResolverFunction`, `APIRESOLVERSTACK/CreateDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteAgentChatSessionFunction`, `APIRESOLVERSTACK/DeleteDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteTestsResolverFunction`, `APIRESOLVERSTACK/DiscoveryUploadResolverFunction`, `APIRESOLVERSTACK/DocumentVersionsResolverFunction`, `APIRESOLVERSTACK/GetAgentChatMessagesFunction`, `APIRESOLVERSTACK/GetFileContentsResolverFunction`, `APIRESOLVERSTACK/GetSampleDocumentResolverFunction`, `APIRESOLVERSTACK/GetStepFunctionExecutionResolverFunction`, `APIRESOLVERSTACK/ListAgentChatSessionsFunction`, `APIRESOLVERSTACK/ListDocumentsByDateRangeResolverFunction`, `APIRESOLVERSTACK/ProcessChangesResolverFunction`, `APIRESOLVERSTACK/QueryKnowledgeBaseResolverFunction`, `APIRESOLVERSTACK/ReprocessDocumentResolverFunction`, `APIRESOLVERSTACK/SendChatDocumentMessageResolverFunction`, `APIRESOLVERSTACK/TestResultsResolverFunction`, `APIRESOLVERSTACK/TestRunnerFunction`, `APIRESOLVERSTACK/TestSetResolverFunction`, `APIRESOLVERSTACK/UploadResolverFunction`, `AgentChatProcessorFunction`, `AgentCoreGatewayManagerFunction`, `AgentCoreMCPHandlerFunction`, `AgentProcessorFunction`, `BlueprintOptimizationFunction`, `CalculateCapacityFunction`, `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction`, `CognitoUserPoolEmailDomainVerifyFunction`, `DOCUMENTKB/CreateOSSIndexLambdaFunction`, `DOCUMENTKB/GetAdjustedStackNameFunction`, `DOCUMENTKB/GetSeedUrlsFunction`, `DOCUMENTKB/S3VectorManagerFunction`, `DOCUMENTKB/StartIngestionJobFunction`, `DashboardMergerFunction`, `DiscoveryProcessorFunction`, `ExternalIdPGroupMappingFunction`, `FccDatasetDeployerFunction`, `GetDomainLambda`, `InitializeConcurrencyTableLambda`, `LookupFunction`, `McpCredentialManagerFunction`, `McpDefaultCredentialFunction`, `McpIdentityInterceptorFunction`, `McpInterceptorAttachFunction`, `MeteringHourMigrationFunction`, `OcrBenchmarkDeployerFunction`, `PATTERNSTACK/BDAOCRProjectFunction`, `PATTERNSTACK/CodeBuildTrigger`, `PATTERNSTACK/EvaluationFunction`, `PostProcessingDecompressor`, `QueueProcessor`, `QueueSender`, `ResolveOIDCClientSecretFunction`, `ReviewQueueSweeperFunction`, `RvlCdipNmpDeployerFunction`, `SaveReportingDataFunctionV2`, `StartUICodeBuild`, `TestFileCopierFunction`, `TestRunSweeperFunction`, `TestSetBucketAutoDeleteFunction`, `TestSetBucketNotificationFunction`, `TestSetFileCopierFunction`, `UpdateConfigurationFunction`, `UpdateSettingsFunction`, `W2DatasetDeployerFunction`, `WorkflowTracker` |
 | cfn_nag `W89` | Function does not require VPC access as it only interacts with DynamoDB | `BackfillWorkerFunction` |
@@ -981,7 +1072,7 @@ in `terraform/translator`, and a test fails when it is out of date.
 | cfn_nag `W92` | Function does not require reserved concurrency; it runs only during stack operations | `McpDefaultCredentialFunction`, `McpInterceptorAttachFunction` |
 | cfn_nag `W92` | Lambda function does not need reserved concurrency | `APIRESOLVERSTACK/SyncBdaIdpResolverFunction`, `TestSetZipExtractorFunction` |
 | cfn_nag `W92` | One-shot per stack update; no ReservedConcurrentExecutions required | `DataMartMigrationDispatcherFunction` |
-| cfn_nag `W92` | Reserved concurrency not required | `ApiHandlerFunction`, `BatchPreProcessorFunction`, `ConfigurationCopyFunction`, `ReadPreviousIDPPatternFunction`, `StacknameCheckFunction` |
+| cfn_nag `W92` | Reserved concurrency not required | `ApiHandlerFunction`, `BatchPreProcessorFunction`, `ConfigurationCopyFunction`, `CustomerManagedKmsKeyCheckFunction`, `ReadPreviousIDPPatternFunction`, `StacknameCheckFunction` |
 | cfn_nag `W92` | Reserved concurrency not required; scales on demand | `APIRESOLVERSTACK/HttpApiDispatcherFunction` |
 | cfn_nag `W92` | ReservedConcurrentExecutions=12 pins concurrency (was 1, bumped to accommodate the migration state machine's Map MaxConcurrency=8 + 3 scheduled crons + 1 headroom); the setting is present, not absent | `DataMartRollupFunction` |
 | checkov `CKV_AWS_173` | Env vars are non-sensitive (table names, ARNs) | `APIRESOLVERSTACK/HttpApiDispatcherFunction` |
@@ -992,7 +1083,7 @@ in `terraform/translator`, and a test fails when it is out of date.
 | checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (bucket name, prefix, log level) | `VersionCheckResolverFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (bucket names and log level) | `TestFileCopierFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level and feature flags) | `CalculateCapacityFunction` |
-| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level only) | `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `ReadPreviousIDPPatternFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level only) | `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `CustomerManagedKmsKeyCheckFunction`, `ReadPreviousIDPPatternFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain only configuration | `DataMartMigrationDispatcherFunction`, `DataMartRollupFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain only non-sensitive configuration | `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction` |
 | checkov `CKV_AWS_173` | Environment variables contain only non-sensitive configuration values (log levels, table names) - no secrets or PII | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction` |

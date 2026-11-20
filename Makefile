@@ -1066,6 +1066,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# CustomerManagedKmsKeyArn check (#2016): a change on update is refused in either
+	@# direction, a supplied key is checked on create. Real botocore clients behind
+	@# Stubbers with an explicit region.
+	cd src/lambda/customer_managed_kms_key_check && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
 	@# filters) and the custom resource that attaches it to the gateway. moto for
 	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
@@ -1487,7 +1491,9 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 # deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
 # passwords still sign in, then destroys both and sweeps what they retained. Measured
 # at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
-# continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# continues a stopped or failed run from WORK_DIR. UPSTREAM_TAG=<tag> picks one of the
+# upstream releases the driver pins (default: the release a RESUME=1 run recorded,
+# else the newest; `rotate` takes this week's, as the weekly schedule does). See docs/testing.md and
 # .claude/skills/release-validation.md (tier J).
 #   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
 #       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
@@ -1498,6 +1504,7 @@ _TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
 	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
 	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
 	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(UPSTREAM_TAG),--upstream-tag $(UPSTREAM_TAG),) \
 	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
 
 stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)

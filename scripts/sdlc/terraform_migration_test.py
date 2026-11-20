@@ -16,7 +16,9 @@ that the old deployment really stops processing, and that destroying the old
 deployment really leaves the adopted resources alone. This script is that run, made
 repeatable:
 
-1. clone the pinned upstream tag (and check the commit it resolves to), deploy its
+1. clone one of the upstream releases ``UPSTREAM_RELEASES`` pins (and check the
+   commit and ``sources/`` it resolves to; ``--upstream-tag rotate``, which the
+   scheduled run passes, takes a different one each week), deploy its
    ``examples/unified-processor`` configuration as ``<old-name>``;
 2. seed it as a user would: two documents processed (``samples/lending_package.pdf``
    and a W-2), two Cognito users with random passwords (an Admin, and an Author
@@ -30,9 +32,13 @@ repeatable:
    configuration edit survived, ``idp-cli config-list`` shows every profile, and a
    new document is processed by the new deployment and not by the old one;
 6. ``detach``, the old deployment's destroy plan, ``check-destroy``, the old
-   deployment's destroy, a second sign-in check against what is left, then the new
-   deployment's ``idp-cli delete --terraform`` and a sweep of what either retained,
-   by name.
+   deployment's destroy, a second sign-in check against what is left and a check
+   that the Region's API Gateway CloudWatch role is the one it was before the
+   destroy and still exists, then the new deployment's ``idp-cli delete
+   --terraform`` and a sweep of what either retained, by name. Before the sweep the
+   setting goes back to what it was when the run started (or, when that is refused,
+   is cleared and a finding names the value to restore), and the run fails if it
+   still leaves the setting naming a role that no longer exists.
 
 Teardown runs in a ``finally``: a failed phase still destroys both deployments
 (new first, then old, since at that point both states may name the shared
@@ -40,8 +46,9 @@ resources) and sweeps by name. ``--keep`` and ``--stop-after`` skip it.
 
 WHAT IT DOES NOT PROVE
 ----------------------
-* Other upstream example configurations (``bda-processor`` and the rest), other
-  upstream tags, or an upstream deployment that is months old (the expiry checks run
+* Other upstream example configurations (``bda-processor`` and the rest), upstream
+  releases ``UPSTREAM_RELEASES`` does not pin (on any one run, any release but the
+  one it took), or an upstream deployment that is months old (the expiry checks run
   against objects minutes old, so ``check-retention`` cannot find anything to
   refuse).
 * The knowledge-base re-sync, the alerts subscription, or the browser sign-in (an
@@ -66,7 +73,8 @@ Running upstream runs third-party code: ``terraform apply`` executes upstream's
 the run's credentials). Upstream ships no provider lock and constrains providers with
 ``>=`` only; the driver installs ``terraform_migration_upstream.terraform.lock.hcl``,
 the lock the passing run resolved, before ``init``, so the provider builds are pinned
-and hash-checked. Upstream's commit and its ``sources/`` submodule are pinned too.
+and hash-checked. Upstream's commit and its ``sources/`` (a submodule or a vendored tree)
+are pinned too, per release.
 
 USAGE
 -----
@@ -100,7 +108,7 @@ import traceback
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -111,15 +119,53 @@ sys.path.insert(0, str(HERE))
 import cognito_srp  # noqa: E402
 
 UPSTREAM_REPO = "https://github.com/awslabs/genai-idp-terraform"
-UPSTREAM_TAG = "v0.6.9-tf.0"
-#: The commit the tag resolved to when this test was written. A tag can be moved;
-#: a clone resolving it anywhere else is refused, because the test would no longer
-#: be exercising what it was written against.
-UPSTREAM_COMMIT = "5fdac033b2376f16beddffc2a391422d18cf2292"
-#: Upstream's ``sources/`` is a git submodule holding this repository at a release
-#: tag, and upstream's README has it initialised after the clone. Pinned for the
-#: same reason as the commit above.
-UPSTREAM_SOURCES_COMMIT = "325794a6ffe1c89bac41a0180c991e681eb70bc8"
+
+
+@dataclass(frozen=True)
+class UpstreamRelease:
+    """One upstream release the run can migrate from, with what its clone must
+    resolve to. A tag can be moved; a clone resolving it anywhere else is refused,
+    because the test would no longer be exercising what it was written against.
+
+    ``sources`` is what ``git ls-tree <commit> sources`` must report: upstream's
+    ``sources/`` holds this repository at a release, as a git submodule
+    (``("commit", <sha>)``, initialised after the clone as upstream's README says)
+    or, in earlier releases, as a vendored tree (``("tree", <sha>)``, which the
+    pinned commit already fixes and which needs no initialising)."""
+
+    tag: str
+    commit: str
+    sources: Tuple[str, str]
+
+
+#: Every release the scheduled run rotates through, oldest first; the last is the
+#: default for a run started by hand. A release belongs here only if the run can
+#: exercise it unchanged: its ``examples/unified-processor`` declares every
+#: variable upstream_tfvars sets (the seed phase needs the evaluation and test-set
+#: features), every resource type it declares is one v0.6.9-tf.0 declares (the
+#: release the command's resource kinds were derived from), and its provider
+#: constraints admit UPSTREAM_LOCK_FILE. Releases before v0.6.4-tf.0 fail the
+#: first test: their example has no ``enable_evaluation`` or ``enable_test_studio``.
+UPSTREAM_RELEASES: Tuple[UpstreamRelease, ...] = (
+    # The oldest release that passes the three checks above, read from its
+    # files; it has not yet been through a live run. Vendors sources/ as a tree.
+    UpstreamRelease(
+        tag="v0.6.4-tf.0",
+        commit="29b62a9ee0f0b53b26e4cc25e7d2bba629804a3b",
+        sources=("tree", "bd0fb105f2a60ed807e02e112de4d71b1473de75"),
+    ),
+    # The newest release, and the one the passing run in the guide measured.
+    UpstreamRelease(
+        tag="v0.6.9-tf.0",
+        commit="5fdac033b2376f16beddffc2a391422d18cf2292",
+        sources=("commit", "325794a6ffe1c89bac41a0180c991e681eb70bc8"),
+    ),
+)
+UPSTREAM_TAG = UPSTREAM_RELEASES[-1].tag
+UPSTREAM_COMMIT = UPSTREAM_RELEASES[-1].commit
+#: ``--upstream-tag rotate``: the release for this run's week (rotated_upstream_tag).
+#: What the scheduled CI run passes. A resumed run keeps the release it recorded.
+ROTATE_UPSTREAM_TAG = "rotate"
 UPSTREAM_EXAMPLE = "examples/unified-processor"
 #: Upstream ships no provider lock file, so its `>=` constraints would resolve to
 #: whatever the registry has on the day. This is the lock the passing run
@@ -336,6 +382,126 @@ def upstream_iam_overrides(
             lines.append("}")
         files[directory / IAM_OVERRIDE_FILE] = "\n".join(lines) + "\n"
     return files
+
+
+def upstream_release(tag: str) -> UpstreamRelease:
+    """The pinned release for ``tag``; ValueError for a tag UPSTREAM_RELEASES does
+    not pin, since there would be no commit to hold the clone to."""
+    for release in UPSTREAM_RELEASES:
+        if release.tag == tag:
+            return release
+    raise ValueError(
+        f"upstream tag {tag!r} is not one of the pinned releases "
+        f"({', '.join(r.tag for r in UPSTREAM_RELEASES)}); add it to "
+        "UPSTREAM_RELEASES with the commit and sources/ it resolves to"
+    )
+
+
+def rotated_upstream_tag(
+    day: date, releases: Sequence[UpstreamRelease] = UPSTREAM_RELEASES
+) -> str:
+    """The release a scheduled run on ``day`` migrates from.
+
+    One release per Monday-to-Sunday week, in list order, so runs a week apart
+    take consecutive releases and every release is covered once in
+    ``len(releases)`` weekly runs. A rerun the same week gets the same release,
+    and ``--upstream-tag <that tag>`` reproduces it on any day. The date is read
+    when the driver starts, so a schedule firing just before Monday 00:00 UTC
+    can land either side of the boundary and repeat a release."""
+    if not releases:
+        raise ValueError("no upstream releases to rotate through")
+    week = (day.toordinal() - 1) // 7  # date.min (ordinal 1) is a Monday
+    return releases[week % len(releases)].tag
+
+
+def resolve_upstream_tag(
+    requested: Optional[str], stored: Optional[str], day: date
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(tag, None)`` for the release this invocation uses, or ``(None, why)``.
+
+    A work directory whose run recorded a release keeps it: its old deployment
+    was cloned and deployed from that release, so a teardown or a resume on
+    another one would plan the wrong configuration against its state. That holds
+    for ``rotate`` (a run resumed in a later week, or reaped by a later build)
+    and for no tag at all, and is refused for an explicit tag that differs. With
+    nothing recorded, no tag means the newest release."""
+    if stored:
+        if requested not in (None, ROTATE_UPSTREAM_TAG, stored):
+            return None, (
+                f"the upstream tag is {requested!r} here but {stored!r} in this "
+                "work directory's run"
+            )
+        tag = stored
+    elif requested == ROTATE_UPSTREAM_TAG:
+        tag = rotated_upstream_tag(day)
+    else:
+        tag = requested or UPSTREAM_TAG
+    try:
+        upstream_release(tag)
+    except ValueError as e:
+        return None, str(e)
+    return tag, None
+
+
+def iam_role_name(role_arn: str) -> str:
+    """The role name in ``arn:<partition>:iam::<account>:role/<path/><name>``."""
+    return role_arn.rsplit("/", 1)[-1]
+
+
+def api_gateway_role_problems(
+    before: str, after: str, after_exists: Optional[bool]
+) -> List[str]:
+    """What destroying the old deployment did to the Region's API Gateway
+    CloudWatch role, given the setting before and after the destroy and whether
+    the role ``after`` names still exists (None: could not be read).
+
+    The setting is one per account and Region, shared by every REST API there, so
+    a destroy that clears it, points it elsewhere or deletes the role it names
+    stops API Gateway logging for all of them. Nothing to check when the Region
+    had no role before the destroy."""
+    if not before:
+        return []
+    if not after:
+        return [
+            f"the old destroy cleared the Region's API Gateway CloudWatch role "
+            f"(it was {before})"
+        ]
+    if after != before:
+        return [
+            f"the old destroy changed the Region's API Gateway CloudWatch role "
+            f"from {before} to {after}"
+        ]
+    if after_exists is False:
+        return [
+            f"the Region's API Gateway CloudWatch role is still {after}, but the "
+            "old destroy deleted that role"
+        ]
+    if after_exists is None:
+        return [
+            f"could not read whether the API Gateway CloudWatch role {after} exists"
+        ]
+    return []
+
+
+def api_gateway_role_left_problems(
+    start: str, start_exists: Optional[bool], now: str, now_exists: Optional[bool]
+) -> List[str]:
+    """Whether the run leaves the Region's API Gateway CloudWatch role setting
+    naming a role that no longer exists, given the setting when the run started
+    and now (and whether each named role existed then). Not reported when the
+    Region was already in exactly that state before the run."""
+    if not now or now_exists is True:
+        return []
+    if now_exists is None:
+        return [f"could not read whether the API Gateway CloudWatch role {now} exists"]
+    if now == start and start_exists is False:
+        return []
+    return [
+        f"the Region's API Gateway CloudWatch role setting names {now}, a role "
+        f"that no longer exists (when the run started it was {start or 'unset'}); "
+        "API Gateway logging in this Region fails until it is set to a role that "
+        "exists"
+    ]
 
 
 def validate_names(old_name: str, new_name: str) -> List[str]:
@@ -878,8 +1044,11 @@ class Settings:
     terraform_bin: str
     module_url: str
     upstream_repo: str = UPSTREAM_REPO
-    upstream_tag: str = UPSTREAM_TAG
-    upstream_commit: str = UPSTREAM_COMMIT
+    #: A tag UPSTREAM_RELEASES pins, ROTATE_UPSTREAM_TAG, or None for the release
+    #: the work directory's run recorded, else the newest (resolve_upstream_tag).
+    upstream_tag: Optional[str] = None
+    #: Overrides the release's pinned commit; None holds the clone to the pin.
+    upstream_commit: Optional[str] = None
     assume_role_arn: Optional[str] = None
     keep: bool = False
     resume: bool = False
@@ -934,8 +1103,30 @@ class Run:
         self.started = time.monotonic()
         self.preflight_passed = False
         self._mirror_cleared = False
+        #: Set by resolve_release, before any phase runs.
+        self.release: Optional[UpstreamRelease] = None
 
     # -- plumbing --------------------------------------------------------------
+
+    def resolve_release(self) -> Optional[str]:
+        """Fix the upstream release this invocation uses (resolve_upstream_tag)
+        and record it in the context; why it cannot, or None."""
+        tag, problem = resolve_upstream_tag(
+            self.s.upstream_tag,
+            self.ctx.get("upstreamTag"),
+            datetime.now(timezone.utc).date(),
+        )
+        if problem or tag is None:
+            return problem or "no upstream release"
+        self.release = upstream_release(tag)
+        self.ctx["upstreamTag"] = tag
+        return None
+
+    @property
+    def upstream(self) -> UpstreamRelease:
+        if self.release is None:
+            raise PhaseFailed("the upstream release was not resolved")
+        return self.release
 
     @property
     def old_dir(self) -> Path:
@@ -1221,6 +1412,24 @@ class Run:
         self.ctx["findings"].append(text)
         print(f"  ✗ {text}", flush=True)
 
+    # -- the Region's API Gateway CloudWatch role ------------------------------
+
+    def role_exists(self, role_arn: str) -> Optional[bool]:
+        """Whether the IAM role ``role_arn`` names exists; None when that cannot
+        be read."""
+        try:
+            self.boto("iam").get_role(RoleName=iam_role_name(role_arn))
+            return True
+        except Exception as e:  # noqa: BLE001 - classified below
+            code = getattr(e, "response", {}).get("Error", {}).get("Code")
+            return False if code == "NoSuchEntity" else None
+
+    def api_gateway_role(self) -> Dict[str, Any]:
+        """The Region's API Gateway CloudWatch role setting (``""`` when unset) and
+        whether the role it names exists (None when unset or unreadable)."""
+        arn = self.boto("apigateway").get_account().get("cloudwatchRoleArn") or ""
+        return {"arn": arn, "exists": self.role_exists(arn) if arn else None}
+
     # -- secrets -----------------------------------------------------------------
 
     def secrets(self) -> Dict[str, Any]:
@@ -1293,6 +1502,15 @@ class Run:
                     "reach something this run did not create: "
                     + ", ".join(clashes[:10])
                 )
+        if "apiGatewayRoleAtStart" not in self.ctx:
+            # Before upstream's deploy, which sets the Region's role to its own:
+            # what leftover-check compares the end of the run against.
+            try:
+                self.ctx["apiGatewayRoleAtStart"] = self.api_gateway_role()
+            except Exception as e:  # noqa: BLE001 - reported as the refusal
+                raise PhaseFailed(
+                    f"cannot read the Region's API Gateway account settings: {e}"
+                ) from e
         self.preflight_passed = True
         return f"account ok, {headroom} roles of headroom, terraform {self.ctx['terraformVersion']}"
 
@@ -1322,7 +1540,7 @@ class Run:
                     "--depth",
                     "1",
                     "--branch",
-                    self.s.upstream_tag,
+                    self.upstream.tag,
                     self.s.upstream_repo,
                     str(target),
                 ],
@@ -1331,37 +1549,40 @@ class Run:
         head = self.sh(
             ["git", "rev-parse", "HEAD"], "upstream-clone.log", cwd=target
         ).stdout.strip()
-        if head != self.s.upstream_commit:
+        release = self.upstream
+        commit = self.s.upstream_commit or release.commit
+        if head != commit:
             raise PhaseFailed(
-                f"{self.s.upstream_tag} resolves to {head}, not the pinned {self.s.upstream_commit}; "
+                f"{release.tag} resolves to {head}, not the pinned {commit}; "
                 "the tag has moved, so read the new commit before pinning it"
             )
+        kind, sources = release.sources
         pinned = self.sh(
             ["git", "ls-tree", "HEAD", "sources"], "upstream-clone.log", cwd=target
         ).stdout.split()
-        if len(pinned) < 3 or pinned[2] != UPSTREAM_SOURCES_COMMIT:
+        if pinned[1:3] != [kind, sources]:
             raise PhaseFailed(
-                f"upstream pins sources/ at {pinned[2:3]}, not {UPSTREAM_SOURCES_COMMIT}"
+                f"upstream has sources/ as {' '.join(pinned[1:3]) or 'nothing'}, "
+                f"not the pinned {kind} {sources}"
             )
-        # Upstream's README: `sources/` is a submodule, initialised after the clone.
-        self.sh(
-            ["git", "submodule", "update", "--init", "--depth", "1", "sources"],
-            "upstream-clone.log",
-            cwd=target,
-            timeout=1800,
-        )
-        checked_out = self.sh(
-            ["git", "rev-parse", "HEAD"], "upstream-clone.log", cwd=target / "sources"
-        ).stdout.strip()
-        if checked_out != UPSTREAM_SOURCES_COMMIT:
-            raise PhaseFailed(
-                f"sources/ checked out {checked_out}, not {UPSTREAM_SOURCES_COMMIT}"
+        if kind == "commit":
+            # Upstream's README: `sources/` is a submodule, initialised after the
+            # clone. A vendored tree is already checked out at the pinned commit.
+            self.sh(
+                ["git", "submodule", "update", "--init", "--depth", "1", "sources"],
+                "upstream-clone.log",
+                cwd=target,
+                timeout=1800,
             )
+            checked_out = self.sh(
+                ["git", "rev-parse", "HEAD"],
+                "upstream-clone.log",
+                cwd=target / "sources",
+            ).stdout.strip()
+            if checked_out != sources:
+                raise PhaseFailed(f"sources/ checked out {checked_out}, not {sources}")
         self.ctx["upstreamCommit"] = head
-        return (
-            f"{self.s.upstream_tag} at {head[:12]}, sources/ at "
-            f"{UPSTREAM_SOURCES_COMMIT[:12]}"
-        )
+        return f"{release.tag} at {head[:12]}, sources/ {kind} {sources[:12]}"
 
     def prepare_old_root(self) -> str:
         """Write what the upstream example's root needs beside upstream's own
@@ -2281,6 +2502,16 @@ class Run:
         self.ctx["oldNames"] = merge_names(
             self.ctx.get("oldNames") or {}, physical_names(self.old_state())
         )
+        if "apiGatewayRoleBeforeOldDestroy" not in self.ctx:
+            # Once: a resumed destroy compares against the setting before the first
+            # attempt, not against what a partial destroy left. None when it cannot
+            # be read, which verify-after-old-destroy reports rather than passes.
+            try:
+                arn: Optional[str] = self.api_gateway_role()["arn"]
+            except Exception as e:  # noqa: BLE001 - the destroy still runs
+                print(f"  ⚠ cannot read the API Gateway account settings: {e}")
+                arn = None
+            self.ctx["apiGatewayRoleBeforeOldDestroy"] = arn
         self.save()
         self.terraform(
             self.old_dir,
@@ -2316,9 +2547,22 @@ class Run:
                     f"adopted table {table} is gone after the old destroy: {e}"
                 )
         self.check_users(handles, findings)
+        role = self.api_gateway_role()
+        if self.ctx.get("apiGatewayRoleBeforeOldDestroy") is not None:
+            findings += api_gateway_role_problems(
+                self.ctx["apiGatewayRoleBeforeOldDestroy"], role["arn"], role["exists"]
+            )
+        else:
+            findings.append(
+                "the Region's API Gateway CloudWatch role was not recorded before "
+                "the old destroy, so what the destroy did to it is unknown"
+            )
         if findings:
             raise PhaseFailed("; ".join(findings))
-        return "adopted buckets and tables stand; both users still sign in"
+        return (
+            "adopted buckets and tables stand; both users still sign in; the "
+            f"Region's API Gateway CloudWatch role is {role['arn'] or 'unset'}"
+        )
 
     # Teardown ------------------------------------------------------------------------------
 
@@ -2366,6 +2610,7 @@ class Run:
             set(names.get("bda_projects", [])) | set(self.ctx.get("bdaProjects") or [])
         )
         sweeper = Sweeper(self, names)
+        self.hand_back_api_gateway_role(sweeper)
         deleted, errors = sweeper.sweep()
         self.ctx["swept"] = deleted
         if errors:
@@ -2374,6 +2619,80 @@ class Run:
                 + "; ".join(errors[:10])
             )
         return f"{len(deleted)} retained resources deleted"
+
+    def hand_back_api_gateway_role(self, sweeper: "Sweeper") -> None:
+        """Before the sweep: if the Region's API Gateway CloudWatch role setting
+        names a role the sweep would delete, set it back to what it was when the
+        run started.
+
+        Upstream's deploy points the setting at its own role, and the migration
+        keeps both (destroying either would stop logging for every API in the
+        Region), so at teardown the setting names a role carrying this run's name.
+        Deleting that role while the setting still names it is the same harm.
+
+        The start role is restored unless it was known not to exist; one whose
+        existence could not be read is restored too, rather than cleared. A start
+        that names a role the sweep selects was recorded after upstream's deploy
+        (a context from before the start was recorded), so it says nothing about
+        the Region before the run and the setting is cleared. When the restore is
+        refused (the run's role may pass only roles under the ``idp`` prefix), the
+        setting is cleared instead, which passes no role, and a finding names the
+        value to restore: keeping the run's role would not help, because the
+        build's IAM clean-up deletes every role under the run's boundary."""
+        start = self.ctx.get("apiGatewayRoleAtStart")
+        if start is None:
+            return
+        try:
+            arn = self.api_gateway_role()["arn"]
+        except Exception as e:  # noqa: BLE001 - leftover-check reports it again
+            self.finding(f"sweep: cannot read the API Gateway account settings: {e}")
+            return
+        if not arn or not sweeper.owned(iam_role_name(arn), "roles"):
+            return
+        start_arn = start.get("arn") or ""
+        if start_arn and sweeper.owned(iam_role_name(start_arn), "roles"):
+            start_arn = ""
+        target = start_arn if start.get("exists") is not False else ""
+        problem = self.set_api_gateway_role(target)
+        if problem is None:
+            print(
+                "  the Region's API Gateway CloudWatch role is back to "
+                f"{target or 'unset'}",
+                flush=True,
+            )
+            return
+        restore = (
+            "; restore it with `aws apigateway update-account --patch-operations "
+            f"op=replace,path=/cloudwatchRoleArn,value={target}` as a principal "
+            "that may pass that role"
+        )
+        cleared = self.set_api_gateway_role("") if target else problem
+        if cleared is None:
+            self.finding(
+                "sweep: could not set the Region's API Gateway CloudWatch role back "
+                f"to {target} ({problem}), so it is now unset and API Gateway "
+                f"logging in the Region is off{restore}"
+            )
+            return
+        self.finding(
+            "sweep: could not set the Region's API Gateway CloudWatch role back to "
+            f"{target or 'unset'} ({problem}) or clear it ({cleared}), so it still "
+            f"names {iam_role_name(arn)}, which the sweep deletes"
+            + (restore if target else "")
+        )
+
+    def set_api_gateway_role(self, arn: str) -> Optional[str]:
+        """Set the Region's API Gateway CloudWatch role (``""`` clears it); why
+        that was refused, or None."""
+        try:
+            self.boto("apigateway").update_account(
+                patchOperations=[
+                    {"op": "replace", "path": "/cloudwatchRoleArn", "value": arn}
+                ]
+            )
+        except Exception as e:  # noqa: BLE001 - the caller reports it
+            return str(e) or type(e).__name__
+        return None
 
     def phase_leftover_check(self) -> str:
         names = merge_names(
@@ -2395,6 +2714,19 @@ class Run:
             if managed:
                 left.append(f"the {label} state still lists {len(managed)} resources")
         self.ctx["leftovers"] = left
+        start = self.ctx.get("apiGatewayRoleAtStart")
+        if start is not None:
+            # A finding, not a leftover: no teardown can rebuild a deleted role, so
+            # a later build's reap would retry it for nothing.
+            try:
+                now = self.api_gateway_role()
+                problems = api_gateway_role_left_problems(
+                    start["arn"], start["exists"], now["arn"], now["exists"]
+                )
+            except Exception as e:  # noqa: BLE001 - the leftover verdict still runs
+                problems = [f"cannot read the API Gateway account settings: {e}"]
+            for problem in problems:
+                self.finding(f"leftover-check: {problem}")
         # A KMS key cannot be deleted at once; pending deletion is the end state.
         if left:
             raise PhaseFailed(
@@ -2562,6 +2894,9 @@ class Run:
         problems = self.identity_problems()
         if not self.ctx.get("created"):
             problems.append("the work directory's run created nothing")
+        release_problem = self.resolve_release()
+        if release_problem:
+            problems.append(release_problem)
         if problems:
             print("✗ teardown refused: " + "; ".join(problems), flush=True)
             return 2
@@ -2616,6 +2951,11 @@ class Run:
             # later teardown sweep for the wrong deployment.
             print("✗ " + "; ".join(stored), flush=True)
             return 2
+        refusal = self.resolve_release()
+        if refusal:
+            print(f"✗ {refusal}", flush=True)
+            return 2
+        print(f"upstream release {self.upstream.tag}", flush=True)
         self.ctx.pop("leftovers", None)
         self.ctx.update(
             oldName=self.s.old_name,
@@ -2623,7 +2963,6 @@ class Run:
             upstreamIamPath=self.s.upstream_iam_path,
             region=self.s.region,
             moduleUrl=self.s.module_url,
-            upstreamTag=self.s.upstream_tag,
         )
         failed = False
         stopped = False
@@ -2688,7 +3027,7 @@ class Run:
             "region": self.s.region,
             "moduleUrl": self.s.module_url,
             "upstreamRepo": self.s.upstream_repo,
-            "upstreamTag": self.s.upstream_tag,
+            "upstreamTag": self.ctx.get("upstreamTag"),
             "upstreamCommit": self.ctx.get("upstreamCommit", ""),
             "terraformVersion": self.ctx.get("terraformVersion"),
             "phases": self.ctx["phases"],
@@ -3005,8 +3344,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         "--terraform-assume-role-arn", help="role the new deployment's providers assume"
     )
     p.add_argument("--upstream-repo", default=UPSTREAM_REPO)
-    p.add_argument("--upstream-tag", default=UPSTREAM_TAG)
-    p.add_argument("--upstream-commit", default=UPSTREAM_COMMIT)
+    p.add_argument(
+        "--upstream-tag",
+        choices=[r.tag for r in UPSTREAM_RELEASES] + [ROTATE_UPSTREAM_TAG],
+        help=f"the release to migrate from; {ROTATE_UPSTREAM_TAG!r} takes this "
+        "week's (the scheduled run's choice); default: the release a resumed run "
+        f"recorded, else {UPSTREAM_TAG}",
+    )
+    p.add_argument(
+        "--upstream-commit",
+        help="override the release's pinned commit (default: the pin)",
+    )
     p.add_argument("--expected-account", help="refuse to run in any other account")
     p.add_argument(
         "--upstream-iam-path",

@@ -404,6 +404,7 @@ idp-cli deploy [OPTIONS]
 - `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
 - `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
+- `--terraform-state`: `local` (default) keeps the Terraform state in `terraform.tfstate` in `--terraform-dir`; `s3` keeps it in an encrypted, versioned S3 bucket `idp-tf-<stack-name>-<account>-<region>` that the CLI creates if missing (and never deletes), locked with the DynamoDB table `idp-tf-lock-<stack-name>`. A directory that already holds a local state is refused with `s3`; moving it is not supported yet. Used with `--terraform`; refused without it. See [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3)
 
 **Note:** `--from-code`, `--template-url`, and `--template-file` are mutually exclusive. Use `--from-code` for development/testing from local source, `--template-url` for production deployments from a pre-published template, and `--template-file` to deploy a locally-built template.
 
@@ -898,6 +899,11 @@ Proceeding with stack deletion...
 **Note:** CREATE operations cannot be cancelled directly - they must complete or roll back naturally. UPDATE operations can be cancelled immediately.
 
 #### The retained KMS key
+
+A stack deployed with a key of your own ([`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md))
+created no key, so nothing in this section applies to it: `delete` names the supplied
+key, says it is yours and that the retained data stays encrypted with it, and prints
+no deletion steps.
 
 The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
 data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would

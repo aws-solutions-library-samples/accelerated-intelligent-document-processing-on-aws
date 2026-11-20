@@ -498,6 +498,8 @@
         "circuit_breaker_manager/index.py": 81.96,
         "circuit_breaker_manager/log_sanitizer.py": 64.0,
         "complete_section_review/index.py": 100.0,
+        "customer_managed_kms_key_check/cfnresponse.py": 43.48,
+        "customer_managed_kms_key_check/index.py": 100.0,
         "external_idp_group_mapping/index.py": 98.13,
         "finetuning_deployment_handler/index.py": 51.08,
         "finetuning_job_creator/index.py": 40.32,

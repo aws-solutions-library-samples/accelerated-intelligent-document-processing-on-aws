@@ -4701,32 +4701,6 @@ TERRAFORM_CONVERGENCE_STEP = "Step 2b: Terraform re-plan after apply is empty"
 TERRAFORM_STEPS_REFUSED_ROW = "Steps not started (too little build time left)"
 
 
-def _log_group_arn_gains_wildcard(before, after) -> bool:
-    """The planned value is the stored log-group ARN with CloudFormation's
-    ``:*`` appended, and nothing else differs."""
-    return isinstance(before, str) and bool(before) and after == f"{before}:*"
-
-
-#: Re-plan changes check_terraform_convergence reports without failing the run,
-#: one Terraform address each, with the single attribute path the change may
-#: touch, a test the before and after values of that path must pass, and the
-#: issue the change is a known defect under. A change on a listed address that
-#: touches any other attribute, or fails the test, or is not a plain update, still
-#: fails the run. Registered in scripts/tests/gate_exemptions.json; the staleness
-#: test in scripts/sdlc/tests/test_terraform_replan_convergence.py fails once the
-#: generated module stops producing the shape an entry describes.
-TERRAFORM_REPLAN_EXEMPT_CHANGES = {
-    # #2006: the translator writes a log group's GetAtt Arn in CloudFormation's
-    # form, "<arn>:*", and Cloud Control stores the stage's access-log
-    # destination without the suffix, so the plan shows the suffix being added
-    # again after every apply.
-    "module.idp.module.apiresolverstack.awscc_apigateway_stage.http_api_stage": (
-        ("access_log_setting", "destination_arn"),
-        _log_group_arn_gains_wildcard,
-        2006,
-    ),
-}
-
 #: Heads the consolidated summary, and marks the failure email's subject, on a
 #: Terraform run, so its result is never read as the CloudFormation nightly's.
 #: The Terraform schedule runs every night too, so the label names the deploy
@@ -5467,37 +5441,6 @@ def _changed_paths(before, after, unknown, path=()):
     return [] if before == after else [path]
 
 
-def _value_at(value, path):
-    for key in path:
-        if isinstance(value, dict):
-            value = value.get(key)
-        elif isinstance(value, list) and isinstance(key, int) and key < len(value):
-            value = value[key]
-        else:
-            return None
-    return value
-
-
-def _replan_exemption(change):
-    """The issue a re-plan change is a registered known defect under, or None.
-
-    Matches only a plain update of a listed address whose one changed attribute
-    is the listed path, with before and after values the entry's test accepts.
-    """
-    entry = TERRAFORM_REPLAN_EXEMPT_CHANGES.get(change.get("address"))
-    detail = change.get("change") or {}
-    if entry is None or detail.get("actions") != ["update"]:
-        return None
-    path, accepts, issue = entry
-    before, after = detail.get("before"), detail.get("after")
-    changed = _changed_paths(before, after, detail.get("after_unknown"))
-    if changed != [path] or not accepts(
-        _value_at(before, path), _value_at(after, path)
-    ):
-        return None
-    return issue
-
-
 def _describe_change(change):
     """One line naming an address, its actions and the attribute paths it
     changes. Paths only: the values can be sensitive and the line is printed."""
@@ -5522,15 +5465,13 @@ def judge_terraform_replan(returncode, plan_json, log_tail=""):
     """The verdict on the re-plan after apply, from `plan -detailed-exitcode`'s
     exit status and the saved plan's `show -json` text.
 
-    Returns ``{"status", "detail", "changes", "known"}``. ``status`` is
-    ``converged`` (exit 0, or exit 2 whose every change is a registered known
-    defect in TERRAFORM_REPLAN_EXEMPT_CHANGES), ``drift`` (exit 2 with any other
-    change), or ``error`` (exit 1, a timeout, or a plan that could not be read):
+    Returns ``{"status", "detail", "changes"}``. ``status`` is ``converged``
+    (exit 0), ``drift`` (exit 2, whatever the changes are), or ``error`` (exit 1, a timeout, or a plan that could not be read):
     the re-plan did not answer, so whether the module converges is unknown.
-    ``changes`` and ``known`` are the description lines of the failing and the
-    registered changes. Only ``converged`` passes.
+    ``changes`` holds the description lines of the changes. Only ``converged``
+    passes.
     """
-    verdict = {"status": "error", "detail": "", "changes": [], "known": []}
+    verdict = {"status": "error", "detail": "", "changes": []}
     if returncode == 0:
         verdict.update(status="converged", detail="the re-plan after apply is empty")
         return verdict
@@ -5553,40 +5494,26 @@ def judge_terraform_replan(returncode, plan_json, log_tail=""):
     for change in plan.get("resource_changes") or []:
         if (change.get("change") or {}).get("actions") == ["no-op"]:
             continue
-        issue = _replan_exemption(change)
-        line = _describe_change(change)
-        if issue is None:
-            verdict["changes"].append(line)
-        else:
-            verdict["known"].append(f"known defect #{issue}: {line}")
+        verdict["changes"].append(_describe_change(change))
     for name, output in sorted((plan.get("output_changes") or {}).items()):
         actions = (output or {}).get("actions") or ["?"]
         if actions != ["no-op"]:
             verdict["changes"].append(f"output.{name} ({'/'.join(actions)})")
-    if not verdict["changes"] and not verdict["known"]:
+    if not verdict["changes"]:
         verdict["changes"].append(
             "exit 2 with no resource or output change in the saved plan"
         )
-    if verdict["changes"]:
-        listed = verdict["changes"][:TERRAFORM_REPLAN_LISTED_CHANGES]
-        rest = len(verdict["changes"]) - len(listed)
-        verdict.update(
-            status="drift",
-            detail=(
-                f"the re-plan after apply is not empty: {len(verdict['changes'])} "
-                "change(s), so the module does not converge: "
-                + "; ".join(listed)
-                + (f"; and {rest} more" if rest > 0 else "")
-            ),
-        )
-    else:
-        verdict.update(
-            status="converged",
-            detail=(
-                "the re-plan after apply holds only registered known defects: "
-                + "; ".join(verdict["known"])
-            ),
-        )
+    listed = verdict["changes"][:TERRAFORM_REPLAN_LISTED_CHANGES]
+    rest = len(verdict["changes"]) - len(listed)
+    verdict.update(
+        status="drift",
+        detail=(
+            f"the re-plan after apply is not empty: {len(verdict['changes'])} "
+            "change(s), so the module does not converge: "
+            + "; ".join(listed)
+            + (f"; and {rest} more" if rest > 0 else "")
+        ),
+    )
     return verdict
 
 
@@ -5646,15 +5573,13 @@ def check_terraform_convergence(terraform):
     verdict = judge_terraform_replan(replan.returncode, plan_json, log_tail)
     icon = "✅" if verdict["status"] == "converged" else "❌"
     print(f"{icon} Terraform re-plan after apply: {verdict['detail']}")
-    for line in verdict["known"]:
-        print(f"   ⚠️ not failing the run, registered known defect: {line}")
     return verdict
 
 
 def terraform_convergence_rows(convergence):
     """The step_results row for a re-plan verdict: ``{}`` for a run that made
-    none (CloudFormation), otherwise one row, failed on drift or error, and
-    passed with the registered known defects named when there are any."""
+    none (CloudFormation), otherwise one row, failed on drift or error and
+    passed otherwise."""
     if not convergence:
         return {}
     if convergence["status"] != "converged":
@@ -5664,13 +5589,7 @@ def terraform_convergence_rows(convergence):
                 "error": convergence["detail"],
             }
         }
-    known = convergence.get("known") or []
-    return {
-        TERRAFORM_CONVERGENCE_STEP: {
-            "status": "passed",
-            "error": "; ".join(known),
-        }
-    }
+    return {TERRAFORM_CONVERGENCE_STEP: {"status": "passed", "error": ""}}
 
 
 def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
@@ -12033,7 +11952,8 @@ def send_failure_notification(subject, summary_text):
 # Weekly Terraform-migration run (IDP_RUN_TERRAFORM_MIGRATION=true)
 #
 # Instead of the primary suite, the build runs scripts/sdlc/terraform_migration_test.py:
-# it deploys a pinned awslabs/genai-idp-terraform release, migrates it in place onto
+# it deploys a pinned awslabs/genai-idp-terraform release (a different one each week,
+# TERRAFORM_MIGRATION_UPSTREAM_TAG), migrates it in place onto
 # the module this build published, verifies, and destroys both. Every AWS call the
 # driver and its subprocesses make (upstream's Terraform and the `aws` commands its
 # provisioners run, `idp-cli`, boto3) goes through one AWS profile that assumes this
@@ -12050,6 +11970,12 @@ def send_failure_notification(subject, summary_text):
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: The driver's ``--upstream-tag`` on every migration run: the release for the
+#: run's week, rotating through the releases the driver pins (UPSTREAM_RELEASES
+#: and rotated_upstream_tag in terraform_migration_test.py), so weekly runs cover
+#: each in turn and the summary names the one this run took. A reap passes it too,
+#: and the driver keeps the release the dead run's context recorded.
+TERRAFORM_MIGRATION_UPSTREAM_TAG = "rotate"
 #: The line the GitLab job's after_script reads the build's summary from (its
 #: `sed -n '/<marker>/,$p'` over the CodeBuild log, in .gitlab-ci.yml). Every
 #: path that ends a build with a summary prints it first.
@@ -12196,7 +12122,8 @@ def terraform_migration_driver_command(
     process it starts already run as the run's TFDeployRole through the AWS
     profile (render_migration_aws_config), and that role's trust admits only the
     build's principal, so asking it to assume itself is refused — by the SDK's
-    own lookups in ``migrate plan`` and by the new root's providers alike."""
+    own lookups in ``migrate plan`` and by the new root's providers alike. The
+    upstream release rotates (TERRAFORM_MIGRATION_UPSTREAM_TAG)."""
     mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
@@ -12219,6 +12146,8 @@ def terraform_migration_driver_command(
         terraform_migration_upstream_iam_path(new_name),
         "--upstream-permissions-boundary-arn",
         boundary_arn,
+        "--upstream-tag",
+        TERRAFORM_MIGRATION_UPSTREAM_TAG,
         *mirror,
     ]
 
