@@ -491,6 +491,7 @@ def _deploy_terraform(
     assume_role_arn: Optional[str] = None,
     allow_replace_retained: bool = False,
     tags: Optional[Dict[str, str]] = None,
+    terraform_state: Optional[str] = None,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
@@ -562,6 +563,7 @@ def _deploy_terraform(
             assume_role_arn=assume_role_arn,
             allow_replace_retained=allow_replace_retained,
             tags=tags,
+            terraform_state=terraform_state or "local",
         )
         console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
         outputs = result.outputs
@@ -1032,6 +1034,18 @@ def cli():
         "the earlier name (used with --terraform)"
     ),
 )
+@click.option(
+    "--terraform-state",
+    type=click.Choice(["local", "s3"], case_sensitive=False),
+    default=None,
+    help=(
+        "Where Terraform keeps the deployment's state (used with --terraform). "
+        "local (the default): terraform.tfstate in --terraform-dir. s3: an "
+        "encrypted, versioned bucket idp-tf-<stack-name>-<account>-<region>, "
+        "created if missing and kept on delete, locked with the DynamoDB table "
+        "idp-tf-lock-<stack-name>; a directory with a local state is refused"
+    ),
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -1062,6 +1076,7 @@ def deploy(
     terraform_bin: str,
     terraform_assume_role_arn: Optional[str],
     terraform_allow_replace_retained: bool,
+    terraform_state: Optional[str],
 ):
     """
     Deploy or update IDP stack from command line
@@ -1158,8 +1173,15 @@ def deploy(
             # As on the CloudFormation path, no tags (or only blank segments)
             # keeps the deployment's tags.
             tags=_parse_tags(tags) or None,
+            terraform_state=terraform_state,
         )
         return
+    if terraform_state:
+        console.print(
+            "[red]✗ Error: --terraform-state is used with --terraform; a "
+            "CloudFormation stack keeps no Terraform state.[/red]"
+        )
+        sys.exit(1)
     if terraform_assume_role_arn:
         console.print(
             "[red]✗ Error: --terraform-assume-role-arn is used with --terraform; "

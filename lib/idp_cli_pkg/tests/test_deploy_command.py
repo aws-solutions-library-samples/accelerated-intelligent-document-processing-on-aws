@@ -1983,6 +1983,7 @@ class TestTheCommandSurface:
             "terraform_bin",
             "terraform_assume_role_arn",
             "terraform_allow_replace_retained",
+            "terraform_state",
         }
 
     def test_only_stack_name_is_required(self):
