@@ -47,7 +47,7 @@ import BulkSkipModal from '../review-bulk/BulkSkipModal';
 import type { BulkSkipMode } from '../review-bulk/BulkSkipModal';
 import BulkResultsModal from '../review-bulk/BulkResultsModal';
 import { isSkippableQueueItem } from '../review-bulk/review-menu-items';
-import { NO_SKIPPABLE_SELECTION_REASON } from '../document-actions/action-reasons';
+import { actionReasonMessages } from '../document-actions/action-reasons';
 import { jobDetailPath } from '../../routes/constants';
 import type { WorkItem } from './work-items';
 
@@ -595,7 +595,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
         id: 'skip-selected',
         text: counted(intl.formatMessage(messages.skipAllReviews), skippable.length),
         disabled: skippable.length === 0,
-        disabledReason: NO_SKIPPABLE_SELECTION_REASON,
+        disabledReason: intl.formatMessage(actionReasonMessages.noSkippableSelection),
       },
       { id: 'skip-by-profile', text: intl.formatMessage(messages.skipByProfile) },
     ],

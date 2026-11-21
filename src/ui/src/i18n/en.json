@@ -943,6 +943,18 @@
     "defaultMessage": "Unknown error",
     "description": "Stands for the reason in \"Download failed: …\" when the failure gave none."
   },
+  "documentActions.editPageText.notice": {
+    "defaultMessage": "Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.",
+    "description": "Notice in the document page's page text editor: what Save and Reprocess, the label of its save button, replaces."
+  },
+  "documentActions.editPageText.save": {
+    "defaultMessage": "Save and Reprocess",
+    "description": "Button of the document page's page text editor: saves the page's text, then reprocesses the document."
+  },
+  "documentActions.editPageText.saved": {
+    "defaultMessage": "Saved page {pageId}'s text of {name}. The sections that hold it are being extracted again.",
+    "description": "Success notification after Save and Reprocess saved a page's edited text and reprocessed the document. {pageId} is the page's number; {name} is the document name."
+  },
   "documentActions.moreActions.abort": {
     "defaultMessage": "Abort",
     "description": "Item of the document page's More Actions menu: stops the document's processing."
@@ -983,6 +995,186 @@
     "defaultMessage": "Use As Evaluation Baseline",
     "description": "Item of the document page's More Actions menu: copies the document's results into the evaluation baseline."
   },
+  "documentActions.pageGrouping.consequence": {
+    "defaultMessage": "<b>Save page grouping</b> rewrites this document's section grouping and keeps the extracted field values, including any a reviewer corrected; the document is not reprocessed, so they may no longer match their pages. <b>Save and Re-extract</b> saves the grouping, then extracts again the sections whose class or pages changed, replacing their values.",
+    "description": "What the two saves of the Edit Page Grouping board on the document page do. <b>Save page grouping</b> and <b>Save and Re-extract</b> are the labels of its two save buttons, shown in bold."
+  },
+  "documentActions.pageGrouping.reextracting": {
+    "defaultMessage": "Saved the page grouping of {name}, and re-extracting {count, plural, one {section} other {sections}} {ids}.",
+    "description": "Success notification after Save and Re-extract on the Edit Page Grouping board saved the grouping and sent the re-extract. {name} is the document name; {count} is how many sections; {ids} lists their numbers, separated by commas."
+  },
+  "documentActions.reasons.alreadyInReview": {
+    "defaultMessage": "This document is already in review",
+    "description": "Why Send to review on the document page is unavailable: the document is already in a review."
+  },
+  "documentActions.reasons.baselineCopying": {
+    "defaultMessage": "A copy to the evaluation baseline is in progress",
+    "description": "Why Use As Evaluation Baseline on the document page is unavailable while its request to copy the document to the evaluation baseline is on its way."
+  },
+  "documentActions.reasons.bdaReprocess": {
+    "defaultMessage": "Not available in BDA mode: reprocessing would leave the changed sections without extracted data.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable for a document processed with Bedrock Data Automation (BDA)."
+  },
+  "documentActions.reasons.choosePages": {
+    "defaultMessage": "Choose at least one page",
+    "description": "Why the Reset Page Class button of its dialog is unavailable: no page is chosen."
+  },
+  "documentActions.reasons.chooseSections": {
+    "defaultMessage": "Choose at least one section",
+    "description": "Why the Re-extract button of the Re-extract Sections dialog is unavailable: no section is chosen."
+  },
+  "documentActions.reasons.configLoading": {
+    "defaultMessage": "Loading this document's configuration…",
+    "description": "Why an action of the document page that reprocesses the document is unavailable while the document's configuration loads."
+  },
+  "documentActions.reasons.historical": {
+    "defaultMessage": "Not available while you view a past version. Choose Return to current version in Version History.",
+    "description": "Why an action of the document page is unavailable while the page shows a past version of the document. \"Return to current version\" is the label of a button in the Version History panel."
+  },
+  "documentActions.reasons.legacyReviewRegroup": {
+    "defaultMessage": "Available once this document's review is finished",
+    "description": "Why Edit Page Grouping on the document page is unavailable while the document's review (outside the review queues) is in progress."
+  },
+  "documentActions.reasons.noCost": {
+    "defaultMessage": "This document has no cost data yet",
+    "description": "Why Estimated Cost in the document page's Reports menu is unavailable: the document has no usage recorded yet."
+  },
+  "documentActions.reasons.noEvaluationReport": {
+    "defaultMessage": "This document has no evaluation report",
+    "description": "Why Evaluation Report in the document page's Reports menu is unavailable."
+  },
+  "documentActions.reasons.noExecution": {
+    "defaultMessage": "This document has no processing run to show",
+    "description": "Why Processing Flow in the document page's Reports menu is unavailable: the document has no workflow run."
+  },
+  "documentActions.reasons.noPageText": {
+    "defaultMessage": "This document has no page text",
+    "description": "Why Edit Page Text on the document page is unavailable: no page of the document has text."
+  },
+  "documentActions.reasons.noPages": {
+    "defaultMessage": "This document has no pages",
+    "description": "Why Reset Page Class on the document page is unavailable: the document has no pages."
+  },
+  "documentActions.reasons.noPendingReview": {
+    "defaultMessage": "This document has no pending review",
+    "description": "Why Skip All Reviews on the document page is unavailable: no review of the document is waiting."
+  },
+  "documentActions.reasons.noRuleValidation": {
+    "defaultMessage": "This document has no rule validation summary",
+    "description": "Why Rule Validation Summary in the document page's Reports menu is unavailable."
+  },
+  "documentActions.reasons.noSendableSelection": {
+    "defaultMessage": "Select finished documents that are not in review",
+    "description": "Why Send to review in the document list's Review menu is unavailable: no selected document has finished processing and is outside review."
+  },
+  "documentActions.reasons.noSkippableSelection": {
+    "defaultMessage": "Select documents with a pending review",
+    "description": "Why Skip All Reviews for a selection (the document list's Review menu, a review queue's More actions menu) is unavailable: no selected document has a pending review."
+  },
+  "documentActions.reasons.notAbortable": {
+    "defaultMessage": "Only a document that is still processing can be aborted",
+    "description": "Why Abort on the document page is unavailable: the document is no longer processing."
+  },
+  "documentActions.reasons.notFinished": {
+    "defaultMessage": "This document has not finished processing",
+    "description": "Why Send to review on the document page is unavailable: the document is still processing."
+  },
+  "documentActions.reasons.pageNoText": {
+    "defaultMessage": "No text available",
+    "description": "Why a page row's View Page Text or Edit Page Text in the Document Pages table is unavailable: the page has no text."
+  },
+  "documentActions.reasons.reextractNoClass": {
+    "defaultMessage": "Choose a class for {count, plural, one {section} other {sections}} {ids} before re-extracting",
+    "description": "Why Save and Re-extract on the Edit Page Grouping board of the document page is unavailable: changed sections have no class. {count} is how many; {ids} lists their numbers, separated by commas."
+  },
+  "documentActions.reasons.reextractOrderOnly": {
+    "defaultMessage": "Only the page order changed, so nothing needs re-extracting. Choose Save page grouping.",
+    "description": "Why Save and Re-extract on the Edit Page Grouping board of the document page is unavailable when only the order of pages changed. \"Save page grouping\" is the label of the board's other save button."
+  },
+  "documentActions.reasons.reviewOwner": {
+    "defaultMessage": "Needs an Admin, or the reviewer who holds this document's open review.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable to a user who is not an Admin and does not hold the document's open review. Admin is a user role."
+  },
+  "documentActions.reasons.reviewQueueOff": {
+    "defaultMessage": "The Default review queue is off",
+    "description": "Why Send to review is unavailable: the review queue named Default is turned off. Default is the name of a queue."
+  },
+  "documentActions.reasons.reviewerFinished": {
+    "defaultMessage": "This document's review is finished, so a Reviewer can no longer change it.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable to a Reviewer once the document's review is finished. Reviewer is a user role."
+  },
+  "documentActions.reasons.reviewerUnclaimed": {
+    "defaultMessage": "Choose Start Review first: a Reviewer changes a document while holding its review.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable to a Reviewer while nobody holds its review. \"Start Review\" is the label of a button of the page; Reviewer is a user role."
+  },
+  "documentActions.reasons.ruleValidationHistorical": {
+    "defaultMessage": "Rule validation isn't kept for past versions",
+    "description": "Why Rule Validation Summary in the document page's Reports menu is unavailable while the page shows a past version."
+  },
+  "documentActions.reasons.sectionNoClass": {
+    "defaultMessage": "This section has no class",
+    "description": "Why a section can't be chosen in the Re-extract Sections dialog: it has no class."
+  },
+  "documentActions.reasons.sectionNoData": {
+    "defaultMessage": "This section has no data yet",
+    "description": "Why a section row's Edit Data or View Data in the Document Sections table is unavailable: the section has no result yet."
+  },
+  "documentActions.reasons.sectionSkipped": {
+    "defaultMessage": "This section is skipped by its configuration",
+    "description": "Why a section can't be chosen in the Re-extract Sections dialog: the document's configuration skips its class."
+  },
+  "documentActions.reasons.testStudioReviewMenu": {
+    "defaultMessage": "Review actions apply to production documents",
+    "description": "Why the document list's Review menu is unavailable in its Test Studio view. Test Studio is the name of a feature."
+  },
+  "documentActions.reextract.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Re-extract Sections dialog that closes it without sending anything."
+  },
+  "documentActions.reextract.failed": {
+    "defaultMessage": "Could not re-extract the sections: {error}",
+    "description": "Error shown inside the Re-extract Sections dialog when its request failed. {error} is the server's reason."
+  },
+  "documentActions.reextract.fieldDescription": {
+    "defaultMessage": "Each section is extracted again with its current class and pages.",
+    "description": "Help text under the label of the Re-extract Sections dialog's list."
+  },
+  "documentActions.reextract.fieldLabel": {
+    "defaultMessage": "Sections to re-extract",
+    "description": "Label of the Re-extract Sections dialog's list, where the sections to extract again are chosen."
+  },
+  "documentActions.reextract.header": {
+    "defaultMessage": "Re-extract Sections",
+    "description": "Title of the dialog that extracts chosen sections of the document again, opened from the More Actions menu."
+  },
+  "documentActions.reextract.noClass": {
+    "defaultMessage": "No class",
+    "description": "Shown in the Re-extract Sections dialog's list in place of the class of a section that has none."
+  },
+  "documentActions.reextract.placeholder": {
+    "defaultMessage": "Choose sections",
+    "description": "Placeholder of the Re-extract Sections dialog's list before any section is chosen."
+  },
+  "documentActions.reextract.reextract": {
+    "defaultMessage": "Re-extract",
+    "description": "Button of the Re-extract Sections dialog that extracts the chosen sections again."
+  },
+  "documentActions.reextract.reextracting": {
+    "defaultMessage": "Re-extracting {count, plural, one {section} other {sections}} {ids} of {name}.",
+    "description": "Success notification after the Re-extract Sections dialog sent its request. {count} is how many sections; {ids} lists their numbers, separated by commas; {name} is the document name."
+  },
+  "documentActions.reextract.sectionDescription": {
+    "defaultMessage": "{class} · pages {pages}",
+    "description": "Second line of a section in the Re-extract Sections dialog's list. {class} is the section's class (a document type from the configuration, or No class); {pages} lists its page numbers, separated by commas."
+  },
+  "documentActions.reextract.sectionLabel": {
+    "defaultMessage": "Section {id}",
+    "description": "A section of the document, in the Re-extract Sections dialog's list and its warning. {id} is the section's number."
+  },
+  "documentActions.reextract.warning": {
+    "defaultMessage": "These sections are extracted again: {sections}. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.",
+    "description": "Warning in the Re-extract Sections dialog once sections are chosen: what re-extracting replaces. {sections} lists the chosen sections, each worded as \"Section <number>\", separated by commas. OCR (optical character recognition) and classification are processing steps."
+  },
   "documentActions.reportDialog.evaluationReport": {
     "defaultMessage": "Evaluation Report",
     "description": "Title of the dialog that shows the document's evaluation report, opened from the document page's Reports menu."
@@ -1014,6 +1206,58 @@
   "documentActions.reports.summary": {
     "defaultMessage": "Summary",
     "description": "Item of the document page's Reports menu: opens the document's summary."
+  },
+  "documentActions.resetPageClass.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Reset Page Class dialog that closes it without sending anything."
+  },
+  "documentActions.resetPageClass.confirm": {
+    "defaultMessage": "Reset Page Class",
+    "description": "Button of the Reset Page Class dialog that resets the class of the chosen pages."
+  },
+  "documentActions.resetPageClass.everyPage": {
+    "defaultMessage": "Every page is classified again, so pages can move to other sections and sections can be added or removed.",
+    "description": "Item of the list in the Reset Page Class dialog's warning: what a reset does to the pages."
+  },
+  "documentActions.resetPageClass.everySection": {
+    "defaultMessage": "Every section is rebuilt and extracted again. Values corrected by hand in any section, not only the ones holding these pages, are replaced.",
+    "description": "Item of the list in the Reset Page Class dialog's warning: what a reset does to the sections and their values."
+  },
+  "documentActions.resetPageClass.failed": {
+    "defaultMessage": "Could not reset the page class: {error}",
+    "description": "Error shown inside the Reset Page Class dialog when its request failed. {error} is the server's reason."
+  },
+  "documentActions.resetPageClass.fieldLabel": {
+    "defaultMessage": "Pages to reset",
+    "description": "Label of the Reset Page Class dialog's list, where the pages whose class is reset are chosen."
+  },
+  "documentActions.resetPageClass.header": {
+    "defaultMessage": "Reset Page Class",
+    "description": "Title of the dialog that resets the class of chosen pages and classifies the document again, opened from the More Actions menu."
+  },
+  "documentActions.resetPageClass.intro": {
+    "defaultMessage": "Resetting a page's class classifies the whole document again:",
+    "description": "Opening line of the warning in the Reset Page Class dialog, followed by a list of what a reset does."
+  },
+  "documentActions.resetPageClass.pageLabel": {
+    "defaultMessage": "Page {id}",
+    "description": "A page of the document in the Reset Page Class dialog's list. {id} is the page's number."
+  },
+  "documentActions.resetPageClass.placeholder": {
+    "defaultMessage": "Choose pages",
+    "description": "Placeholder of the Reset Page Class dialog's list before any page is chosen."
+  },
+  "documentActions.resetPageClass.resetting": {
+    "defaultMessage": "Resetting the class of {count, plural, one {page} other {pages}} {ids} of {name}: the document is being classified and extracted again.",
+    "description": "Success notification after the Reset Page Class dialog sent its request. {count} is how many pages; {ids} lists their numbers, separated by commas; {name} is the document name."
+  },
+  "documentActions.resetPageClass.reviewCompleted": {
+    "defaultMessage": "If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.",
+    "description": "Item of the list in the Reset Page Class dialog's warning: what a reset does to the document's review."
+  },
+  "documentActions.resetPageClass.unclassified": {
+    "defaultMessage": "Unclassified",
+    "description": "Shown in the Reset Page Class dialog's list in place of the class of a page that has none."
   },
   "documentActions.sendToReview.failed": {
     "defaultMessage": "Could not send {name} to review: {outcome}.",
@@ -2882,6 +3126,26 @@
   "documents.versions.viewingPrevious": {
     "defaultMessage": "Viewing a previous version (read-only). Extraction results and page text shown below reflect this version's output.",
     "description": "Notice shown while the document page shows a previous version."
+  },
+  "editScreen.documentStatus.bdaRegroup": {
+    "defaultMessage": "Page grouping cannot be changed for a document processed with Bedrock Data Automation (BDA). Field values can still be edited.",
+    "description": "Why Edit Page Grouping is unavailable for a document processed with Bedrock Data Automation (BDA), the name of an AWS service."
+  },
+  "editScreen.documentStatus.inReviewShort": {
+    "defaultMessage": "This document is in a review queue",
+    "description": "Why a menu item about a document, such as Summary in the Reports menu, is unavailable while the document is in a review queue."
+  },
+  "editScreen.documentStatus.noSections": {
+    "defaultMessage": "This document has no sections",
+    "description": "Why Edit Page Grouping, or Re-extract Sections on the document page, is unavailable: the document has no sections."
+  },
+  "editScreen.documentStatus.noSummary": {
+    "defaultMessage": "This document has no summary",
+    "description": "Why Summary in the Reports menu is unavailable: the document has no summary report."
+  },
+  "editScreen.documentStatus.processing": {
+    "defaultMessage": "Available when processing finishes",
+    "description": "Why an action about a document, or its direct edit, is unavailable while the document is still processing."
   },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",

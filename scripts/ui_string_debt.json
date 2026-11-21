@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 189,
-    "findings": 5200
+    "files": 184,
+    "findings": 5165
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -87,11 +87,6 @@
     "src/ui/src/components/discovery/PdfPageSelector.tsx": 13,
     "src/ui/src/components/discovery/job-tools-panel.tsx": 9,
     "src/ui/src/components/discovery/tools-panel.tsx": 12,
-    "src/ui/src/components/document-actions/EditPageTextDialog.tsx": 3,
-    "src/ui/src/components/document-actions/ReextractSectionsDialog.tsx": 13,
-    "src/ui/src/components/document-actions/ResetPageClassDialog.tsx": 13,
-    "src/ui/src/components/document-actions/action-reasons.ts": 1,
-    "src/ui/src/components/document-actions/use-detail-page-class-board.tsx": 5,
     "src/ui/src/components/document-agents-layout/AgentJobStatus.tsx": 6,
     "src/ui/src/components/document-agents-layout/AgentMessagesDisplay.tsx": 25,
     "src/ui/src/components/document-agents-layout/AgentQueryInput.tsx": 32,
