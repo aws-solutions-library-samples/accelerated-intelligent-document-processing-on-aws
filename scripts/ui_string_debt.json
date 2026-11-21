@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 172,
-    "findings": 5094
+    "files": 171,
+    "findings": 5032
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -152,9 +152,8 @@
     "src/ui/src/components/pages-panel/PageTextEditorModal.tsx": 1,
     "src/ui/src/components/pricing-layout/PricingLayout.tsx": 77,
     "src/ui/src/components/pricing-layout/tools-panel.tsx": 9,
-    "src/ui/src/components/step-function-flow/FlowDiagram.tsx": 9,
-    "src/ui/src/components/step-function-flow/StepDetails.tsx": 25,
-    "src/ui/src/components/step-function-flow/StepFunctionFlowViewer.tsx": 30,
+    "src/ui/src/components/step-function-flow/FlowDiagram.tsx": 1,
+    "src/ui/src/components/step-function-flow/StepFunctionFlowViewer.tsx": 1,
     "src/ui/src/components/test-studio/AbortTestModal.tsx": 8,
     "src/ui/src/components/test-studio/AddDocumentsModals.tsx": 40,
     "src/ui/src/components/test-studio/AddProcessedDocumentsModal.tsx": 33,

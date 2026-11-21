@@ -2315,6 +2315,226 @@
     "defaultMessage": "Document Details",
     "description": "Heading of the panel that lists the fields of a document on its page."
   },
+  "documents.processingFlow.autoRefreshOff": {
+    "defaultMessage": "⏸️ Auto-Refresh Off",
+    "description": "Beside the refresh buttons in Reports › Processing Flow on the document page: the dialog does not reload the execution by itself. Keep the emoji."
+  },
+  "documents.processingFlow.autoRefreshOn": {
+    "defaultMessage": "🔄 Auto-Refresh On",
+    "description": "Beside the refresh buttons in Reports › Processing Flow on the document page: the dialog reloads the execution every 10 seconds. Keep the emoji."
+  },
+  "documents.processingFlow.diagram.legendCompleted": {
+    "defaultMessage": "Completed",
+    "description": "Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a step that succeeded."
+  },
+  "documents.processingFlow.diagram.legendFailed": {
+    "defaultMessage": "Failed",
+    "description": "Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a step that failed."
+  },
+  "documents.processingFlow.diagram.legendPending": {
+    "defaultMessage": "Pending",
+    "description": "Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a pending step."
+  },
+  "documents.processingFlow.diagram.legendRunning": {
+    "defaultMessage": "Running",
+    "description": "Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a step that is running."
+  },
+  "documents.processingFlow.diagram.mapIterations": {
+    "defaultMessage": "Map Iterations ({count})",
+    "description": "Heading over the iterations of a Map step in the flow diagram of Reports › Processing Flow on the document page. {count} is the number of iterations. Map is a Step Functions state type."
+  },
+  "documents.processingFlow.diagram.moreIterations": {
+    "defaultMessage": "+{count} more",
+    "description": "After the first six iterations of a Map step in the flow diagram of Reports › Processing Flow on the document page. {count} is the number of further iterations, which the diagram does not draw."
+  },
+  "documents.processingFlow.diagram.noSteps": {
+    "defaultMessage": "No steps available",
+    "description": "Shown in the flow diagram of Reports › Processing Flow on the document page when the execution has no steps."
+  },
+  "documents.processingFlow.diagramTitle": {
+    "defaultMessage": "Processing Flow",
+    "description": "Header of the section of Reports › Processing Flow on the document page that draws the execution's steps as a diagram."
+  },
+  "documents.processingFlow.disableAutoRefresh": {
+    "defaultMessage": "Disable Auto-Refresh",
+    "description": "Button in Reports › Processing Flow on the document page that stops reloading the execution every 10 seconds."
+  },
+  "documents.processingFlow.disabledTitle": {
+    "defaultMessage": "This step was disabled in configuration and performed no processing",
+    "description": "Tooltip of a step in the flow diagram and the Steps Timeline of Reports › Processing Flow on the document page, when the configuration the document was processed with turned the step off."
+  },
+  "documents.processingFlow.enableAutoRefresh": {
+    "defaultMessage": "Enable Auto-Refresh",
+    "description": "Button in Reports › Processing Flow on the document page that starts reloading the execution every 10 seconds."
+  },
+  "documents.processingFlow.errorLabel": {
+    "defaultMessage": "Error:",
+    "description": "Bold label before the error an execution or a step reported, in the Execution Overview and the Steps Timeline of Reports › Processing Flow on the document page. The error stays in English."
+  },
+  "documents.processingFlow.executionFailed": {
+    "defaultMessage": "Execution Failed",
+    "description": "Header of the alert in the Execution Overview of Reports › Processing Flow on the document page when the execution failed. The alert shows the error the execution reported, in English."
+  },
+  "documents.processingFlow.field.completed": {
+    "defaultMessage": "Completed",
+    "description": "Label of the end time of the execution, a step or a map iteration in Reports › Processing Flow on the document page, shown once it has one."
+  },
+  "documents.processingFlow.field.duration": {
+    "defaultMessage": "Duration",
+    "description": "Label of how long the execution, a step or a map iteration ran, in minutes and seconds, in Reports › Processing Flow on the document page."
+  },
+  "documents.processingFlow.field.started": {
+    "defaultMessage": "Started",
+    "description": "Label of the start time of the execution, a step or a map iteration in Reports › Processing Flow on the document page."
+  },
+  "documents.processingFlow.field.status": {
+    "defaultMessage": "Status",
+    "description": "Label of the status of the execution, a step or a map iteration in Reports › Processing Flow on the document page."
+  },
+  "documents.processingFlow.iterations": {
+    "defaultMessage": "{count, plural, one {# iteration} other {# iterations}}",
+    "description": "Badge on a Map step in the flow diagram and the Steps Timeline of Reports › Processing Flow on the document page. {count} is the number of iterations of the Map step. Map is a Step Functions state type."
+  },
+  "documents.processingFlow.lastUpdated": {
+    "defaultMessage": "Last updated: {time}",
+    "description": "When Reports › Processing Flow on the document page last loaded the execution. {time} is the time of day, formatted for the UI language."
+  },
+  "documents.processingFlow.loadErrorFallback": {
+    "defaultMessage": "An error occurred while loading the processing flow.",
+    "description": "Text of the alert in Reports › Processing Flow on the document page when the document's execution could not be loaded and the error has no message of its own."
+  },
+  "documents.processingFlow.loadErrorHeader": {
+    "defaultMessage": "Error loading processing flow",
+    "description": "Header of the alert in Reports › Processing Flow on the document page when the document's execution could not be loaded."
+  },
+  "documents.processingFlow.loading": {
+    "defaultMessage": "Loading processing flow...",
+    "description": "Shown in Reports › Processing Flow on the document page while the document's Step Functions execution loads."
+  },
+  "documents.processingFlow.malwareScanStep": {
+    "defaultMessage": "Malware Scan",
+    "description": "Name of the first step in Reports › Processing Flow on the document page: the malware scan of the uploaded file, which runs before the processing workflow starts."
+  },
+  "documents.processingFlow.mapIteration": {
+    "defaultMessage": "Map Iteration",
+    "description": "Badge on an entry of the Steps Timeline in Reports › Processing Flow on the document page that is one iteration of a Map step. Map is a Step Functions state type."
+  },
+  "documents.processingFlow.notAvailable": {
+    "defaultMessage": "N/A",
+    "description": "Shown in Reports › Processing Flow on the document page as the duration and the start time of the execution, a step or a map iteration that has no start time."
+  },
+  "documents.processingFlow.notEnabled": {
+    "defaultMessage": "NOT ENABLED",
+    "description": "Badge on a step in the flow diagram and the Steps Timeline of Reports › Processing Flow on the document page, when the configuration the document was processed with turned the step off."
+  },
+  "documents.processingFlow.notFound": {
+    "defaultMessage": "No Step Functions execution found for this document.",
+    "description": "Text of the notice in Reports › Processing Flow on the document page when the document has no Step Functions execution. Step Functions is the name of an AWS service."
+  },
+  "documents.processingFlow.notFoundHeader": {
+    "defaultMessage": "No processing flow found",
+    "description": "Header of the notice in Reports › Processing Flow on the document page when the document has no Step Functions execution."
+  },
+  "documents.processingFlow.overviewTitle": {
+    "defaultMessage": "Execution Overview",
+    "description": "Header of the section of Reports › Processing Flow on the document page that shows the execution's status, duration, start time and end time."
+  },
+  "documents.processingFlow.refreshNow": {
+    "defaultMessage": "Refresh Now",
+    "description": "Button in Reports › Processing Flow on the document page that reloads the execution once."
+  },
+  "documents.processingFlow.status.aborted": {
+    "defaultMessage": "ABORTED",
+    "description": "Status of the execution in the Execution Overview of Reports › Processing Flow on the document page, as Step Functions reports it: the execution was stopped before it finished. English is the Step Functions value itself; translate it as a short status label."
+  },
+  "documents.processingFlow.status.error": {
+    "defaultMessage": "ERROR",
+    "description": "Status in the Execution Overview of Reports › Processing Flow on the document page when the execution's details could not be read. It is the application's own value, not a Step Functions status. English is the value itself; translate it as a short status label."
+  },
+  "documents.processingFlow.status.failed": {
+    "defaultMessage": "FAILED",
+    "description": "Status of the execution, a step or a map iteration in Reports › Processing Flow on the document page, in Step Functions terms: it failed. English is the Step Functions value itself; translate it as a short status label."
+  },
+  "documents.processingFlow.status.pendingRedrive": {
+    "defaultMessage": "PENDING_REDRIVE",
+    "description": "Status of the execution in the Execution Overview of Reports › Processing Flow on the document page, as Step Functions reports it: a redrive of the execution, a rerun from where it failed, is waiting to start. English is the Step Functions value itself; translate it as a short status label."
+  },
+  "documents.processingFlow.status.running": {
+    "defaultMessage": "RUNNING",
+    "description": "Status of the execution, a step or a map iteration in Reports › Processing Flow on the document page, in Step Functions terms: it is still running. English is the Step Functions value itself; translate it as a short status label."
+  },
+  "documents.processingFlow.status.succeeded": {
+    "defaultMessage": "SUCCEEDED",
+    "description": "Status of the execution, a step or a map iteration in Reports › Processing Flow on the document page, in Step Functions terms: it finished successfully. English is the Step Functions value itself; translate it as a short status label."
+  },
+  "documents.processingFlow.status.timedOut": {
+    "defaultMessage": "TIMED_OUT",
+    "description": "Status of the execution in the Execution Overview of Reports › Processing Flow on the document page, as Step Functions reports it: the execution timed out. English is the Step Functions value itself; translate it as a short status label."
+  },
+  "documents.processingFlow.step.copyInput": {
+    "defaultMessage": "Copy input data",
+    "description": "Screen-reader label of the copy button of the Input Data section in the Step Details of Reports › Processing Flow on the document page."
+  },
+  "documents.processingFlow.step.copyOutput": {
+    "defaultMessage": "Copy output data",
+    "description": "Screen-reader label of the copy button of the Output Data section in the Step Details of Reports › Processing Flow on the document page."
+  },
+  "documents.processingFlow.step.disabledHeader": {
+    "defaultMessage": "Step Disabled in Configuration",
+    "description": "Header of the notice in the Step Details of Reports › Processing Flow on the document page when the configuration the document was processed with turned the chosen step off."
+  },
+  "documents.processingFlow.step.disabledNotice": {
+    "defaultMessage": "This step was disabled in the configuration (<strong>{setting}</strong>) and performed no processing. While the step function executed this step, the Lambda function detected the disabled state and skipped all processing logic.",
+    "description": "Notice in the Step Details of Reports › Processing Flow on the document page when the configuration the document was processed with turned the chosen step off. {setting} is the configuration setting that turns it off, enabled: false, shown as written; <strong> makes it bold."
+  },
+  "documents.processingFlow.step.errorDetails": {
+    "defaultMessage": "Error Details",
+    "description": "Header of the alert inside the Step Error section in the Step Details of Reports › Processing Flow on the document page. The alert shows the error the step reported, in English."
+  },
+  "documents.processingFlow.step.inputData": {
+    "defaultMessage": "Input Data",
+    "description": "Header of the expandable section in the Step Details of Reports › Processing Flow on the document page that shows the data the chosen step received."
+  },
+  "documents.processingFlow.step.iterationError": {
+    "defaultMessage": "Iteration Error",
+    "description": "Header of the alert under a failed iteration of the chosen Map step in the Step Details of Reports › Processing Flow on the document page. The alert shows the error the iteration reported, in English."
+  },
+  "documents.processingFlow.step.mapIterations": {
+    "defaultMessage": "Map Iterations ({count})",
+    "description": "Header of the expandable section in the Step Details of Reports › Processing Flow on the document page that lists the iterations of the chosen Map step. {count} is the number of iterations. Map is a Step Functions state type."
+  },
+  "documents.processingFlow.step.noInput": {
+    "defaultMessage": "No input data available for this step.",
+    "description": "Shown in the Step Details of Reports › Processing Flow on the document page when the chosen step has no input data."
+  },
+  "documents.processingFlow.step.noOutput": {
+    "defaultMessage": "No output data available for this step.",
+    "description": "Shown in the Step Details of Reports › Processing Flow on the document page when the chosen step has no output data."
+  },
+  "documents.processingFlow.step.outputData": {
+    "defaultMessage": "Output Data",
+    "description": "Header of the expandable section in the Step Details of Reports › Processing Flow on the document page that shows what the chosen step returned; for the Malware Scan step, the explanation of its verdict."
+  },
+  "documents.processingFlow.step.stepError": {
+    "defaultMessage": "Step Error",
+    "description": "Header of the expandable section in the Step Details of Reports › Processing Flow on the document page that shows the error the chosen step failed with."
+  },
+  "documents.processingFlow.step.type": {
+    "defaultMessage": "Type: {type}",
+    "description": "Under the chosen step's name in the Step Details of Reports › Processing Flow on the document page. {type} is the step's state type as the execution reports it (Task, Choice, Map …), in English."
+  },
+  "documents.processingFlow.stepDetailsTitle": {
+    "defaultMessage": "Step Details",
+    "description": "Header of the section of Reports › Processing Flow on the document page that shows the step chosen in the diagram or the Steps Timeline."
+  },
+  "documents.processingFlow.timelineTitle": {
+    "defaultMessage": "Steps Timeline",
+    "description": "Header of the section of Reports › Processing Flow on the document page that lists the execution's steps with their status and duration."
+  },
+  "documents.processingFlow.title": {
+    "defaultMessage": "Document Processing Flow",
+    "description": "Title of the dialog that Reports › Processing Flow opens on the document page, which shows the document's Step Functions execution."
+  },
   "documents.processingIssue.code.assessmentConfidenceOutOfRange": {
     "defaultMessage": "assessment_confidence_out_of_range",
     "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when the model returned confidence values outside the range 0 to 1. English is the code itself; translate it as a short readable label."
