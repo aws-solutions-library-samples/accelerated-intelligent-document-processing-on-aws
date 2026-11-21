@@ -452,7 +452,7 @@ Admin, configuration and Test Studio screens (the configuration editor, includin
 is a committed follow-up right after `fr-CA` ships; the rest is optional later); Cognito
 invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
-headers and generated report headings; the relative-time literal "just now", the unit suffixes
+headers and generated report headings; the unit suffixes
 on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on integer percents
 built in template strings (`${progressPct}%`), until their screens convert; extension UIs that do
 not translate their own text, and feature `displayName`s; backend error texts until they carry

@@ -14,7 +14,7 @@ import { usePaginationLabels } from '../common/labels';
 import TruncatedText from '../common/TruncatedText';
 import { NoDataState, TableHeader, TableNoMatchState, filterCounterText } from '../common/table';
 import { useFormatters } from '../../i18n/format';
-import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
+import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../../utils/date-time';
 import { SOURCE_LABELS } from './work-items';
 import type { WorkItem, WorkSource } from './work-items';
 import { workItemActions } from './use-work-item-actions';
@@ -46,9 +46,12 @@ const SOURCE_OPTIONS: SelectProps.Option[] = [
 
 /** An item's age in the UI locale; a column's `cell` cannot call a hook, so this is a component. */
 const Age = ({ iso }: { iso: string | null }): React.JSX.Element => {
+  const intl = useIntl();
   const { locale } = useFormatters();
   return iso ? (
-    <span title={formatDateTime(iso, locale)}>{formatRelativeTime(iso, locale)}</span>
+    <span title={formatDateTime(iso, locale)}>
+      {formatRelativeTime(iso, locale, undefined, intl.formatMessage(relativeTimeMessages.justNow))}
+    </span>
   ) : (
     <Box color="text-status-inactive">—</Box>
   );

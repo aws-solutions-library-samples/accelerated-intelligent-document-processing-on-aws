@@ -31,7 +31,7 @@ import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { useFormatters } from '../../i18n/format';
-import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
+import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../../utils/date-time';
 import QueueAnnotatorsTable, { queueAnnotatorRows } from './QueueAnnotatorsTable';
 import QueueProgress from './QueueProgress';
 import useSavedQueueDefinitions from './use-saved-queue-definitions';
@@ -479,7 +479,12 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                     label: 'Oldest waiting',
                     value: mySummary.oldestEnqueuedAt ? (
                       <span title={formatDateTime(mySummary.oldestEnqueuedAt, locale)}>
-                        {formatRelativeTime(mySummary.oldestEnqueuedAt, locale)}
+                        {formatRelativeTime(
+                          mySummary.oldestEnqueuedAt,
+                          locale,
+                          undefined,
+                          intl.formatMessage(relativeTimeMessages.justNow),
+                        )}
                       </span>
                     ) : (
                       '—'

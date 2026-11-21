@@ -20,7 +20,7 @@ import useUserRole from '../../hooks/use-user-role';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { useFormatters } from '../../i18n/format';
-import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
+import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../../utils/date-time';
 import { productionQueuePath, testSetQueuePath } from '../../routes/constants';
 import type { ReviewQueueSummary, TestSetQueueSummary } from '../../graphql/generated/operation-types';
 import { usePaginationLabels } from '../common/labels';
@@ -80,8 +80,13 @@ const byNumber = (pick: (r: MyQueueRow) => number | null) => (a: MyQueueRow, b: 
 
 /** The oldest waiting time in the UI locale; a column's `cell` cannot call a hook, so this is a component. */
 const OldestWaitingCell = ({ at }: { at: string }): React.JSX.Element => {
+  const intl = useIntl();
   const { locale } = useFormatters();
-  return <span title={formatDateTime(at, locale)}>{formatRelativeTime(at, locale)}</span>;
+  return (
+    <span title={formatDateTime(at, locale)}>
+      {formatRelativeTime(at, locale, undefined, intl.formatMessage(relativeTimeMessages.justNow))}
+    </span>
+  );
 };
 
 const COLUMNS: TableProps.ColumnDefinition<MyQueueRow>[] = [

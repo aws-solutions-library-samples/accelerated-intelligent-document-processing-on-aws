@@ -9,6 +9,7 @@
 // badge are the only signal. Flash messages are reserved for the user's own actions.
 import React, { createContext, useCallback, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import { generateClient } from '../api/client-shim';
 import {
@@ -73,7 +74,40 @@ interface Snapshot {
 
 const INITIAL_STATE: InboxState = { unreadCount: null, recent: [], loaded: false, pollError: null, changeToken: 0 };
 
-const plural = (n: number): string => (n === 1 ? '1 message' : `${n} messages`);
+/** The notices shown after the user's own Inbox actions; worded when the action succeeds. */
+const messages = defineMessages<{
+  markedRead: { readonly count: number };
+  markedUnread: { readonly count: number };
+  markedAllRead: NoMessageValues;
+  deleted: { readonly count: number };
+  clearedRead: NoMessageValues;
+}>({
+  markedRead: {
+    id: 'inbox.provider.markedRead',
+    defaultMessage: 'Marked {count, plural, one {# message} other {# messages}} as read',
+    description: 'Notice at the top of the page after the user marked Inbox messages as read. {count} is the number of messages marked.',
+  },
+  markedUnread: {
+    id: 'inbox.provider.markedUnread',
+    defaultMessage: 'Marked {count, plural, one {# message} other {# messages}} as unread',
+    description: 'Notice at the top of the page after the user marked Inbox messages as unread. {count} is the number of messages marked.',
+  },
+  markedAllRead: {
+    id: 'inbox.provider.markedAllRead',
+    defaultMessage: 'Marked all messages as read',
+    description: 'Notice at the top of the page after the user marked every Inbox message as read.',
+  },
+  deleted: {
+    id: 'inbox.provider.deleted',
+    defaultMessage: 'Deleted {count, plural, one {# message} other {# messages}}',
+    description: 'Notice at the top of the page after the user deleted Inbox messages. {count} is the number of messages deleted.',
+  },
+  clearedRead: {
+    id: 'inbox.provider.clearedRead',
+    defaultMessage: 'Cleared read messages',
+    description: 'Notice at the top of the page after the user deleted every Inbox message they had read.',
+  },
+});
 
 // The API returns null only when the resolver failed without an error envelope.
 const requireResult = (value: InboxMutationResult | null | undefined, field: string): InboxMutationResult => {
@@ -90,6 +124,9 @@ interface InboxProviderProps {
 }
 
 export const InboxProvider = ({ children, enabled = true }: InboxProviderProps): React.JSX.Element => {
+  // Only the mutations below word their notices with it: the poll, refresh and the unread
+  // sync never read it, so a language switch sends no request.
+  const intl = useIntl();
   const { setSuccessMessage, setErrorMessage } = useAppContext();
   const [state, setState] = useState<InboxState>(INITIAL_STATE);
 
@@ -194,11 +231,11 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           return requireResult(res.data?.markInboxMessages, 'markInboxMessages');
         },
         read ? 'mark messages as read' : 'mark messages as unread',
-        (r) => `Marked ${plural(r.updated)} as ${read ? 'read' : 'unread'}`,
+        (r) => intl.formatMessage(read ? messages.markedRead : messages.markedUnread, { count: r.updated }),
         o?.silent ?? false,
       );
     },
-    [runMutation],
+    [runMutation, intl],
   );
 
   const markAllRead = useCallback(
@@ -214,11 +251,11 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           return requireResult(res.data?.markAllInboxMessagesRead, 'markAllInboxMessagesRead');
         },
         'mark all messages as read',
-        () => 'Marked all messages as read',
+        () => intl.formatMessage(messages.markedAllRead),
         o?.silent ?? false,
       );
     },
-    [runMutation],
+    [runMutation, intl],
   );
 
   const deleteMessages = useCallback(
@@ -236,11 +273,11 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           return requireResult(res.data?.deleteInboxMessages, 'deleteInboxMessages');
         },
         'delete messages',
-        (r) => `Deleted ${plural(r.updated)}`,
+        (r) => intl.formatMessage(messages.deleted, { count: r.updated }),
         false,
       );
     },
-    [runMutation],
+    [runMutation, intl],
   );
 
   const clearRead = useCallback(
@@ -252,10 +289,10 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           return requireResult(res.data?.clearReadInboxMessages, 'clearReadInboxMessages');
         },
         'clear read messages',
-        () => 'Cleared read messages',
+        () => intl.formatMessage(messages.clearedRead),
         false,
       ),
-    [runMutation],
+    [runMutation, intl],
   );
 
   const value = useMemo<InboxContextValue>(

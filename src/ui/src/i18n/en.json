@@ -67,6 +67,18 @@
     "defaultMessage": "Document Processing",
     "description": "First crumb of the breadcrumb trail on the document list and on every page under it: the application home, which opens the document list."
   },
+  "breadcrumbs.inbox.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Inbox page."
+  },
+  "breadcrumbs.inbox.home": {
+    "defaultMessage": "Home",
+    "description": "First crumb of the breadcrumb trail on the Inbox page: the Home page."
+  },
+  "breadcrumbs.inbox.inbox": {
+    "defaultMessage": "Inbox",
+    "description": "Last crumb of the breadcrumb trail on the Inbox page: the Inbox itself."
+  },
   "breadcrumbs.layout.ariaLabel": {
     "defaultMessage": "Breadcrumbs",
     "description": "Screen-reader name of the breadcrumb navigation landmark on the Extensions catalog and the configuration and analysis pages."
@@ -422,6 +434,10 @@
   "common.pagination.previous": {
     "defaultMessage": "Previous page",
     "description": "Screen-reader label of the previous-page button of a table's pagination."
+  },
+  "common.relativeTime.justNow": {
+    "defaultMessage": "just now",
+    "description": "Relative time of something less than 45 seconds old, where older times read \"5 minutes ago\" or \"yesterday\"."
   },
   "common.table.filterCount": {
     "defaultMessage": "{count, plural, one {# match} other {# matches}}",
@@ -3071,6 +3087,302 @@
     "defaultMessage": "Language",
     "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
   },
+  "inbox.bell.ariaLabel": {
+    "defaultMessage": "{count, plural, =0 {Inbox, no unread messages} one {Inbox, # unread message} other {Inbox, # unread messages}}",
+    "description": "Screen-reader label of the Inbox bell in the top bar. {count} is the number of unread messages."
+  },
+  "inbox.bell.empty": {
+    "defaultMessage": "No messages yet",
+    "description": "Disabled item of the Inbox bell's menu when the Inbox is empty."
+  },
+  "inbox.bell.loading": {
+    "defaultMessage": "Loading…",
+    "description": "Disabled item of the Inbox bell's menu while the messages load."
+  },
+  "inbox.bell.markAllRead": {
+    "defaultMessage": "Mark all as read",
+    "description": "Item of the Inbox bell's menu that marks every message as read."
+  },
+  "inbox.bell.noUnread": {
+    "defaultMessage": "No unread messages",
+    "description": "Why Mark all as read is disabled in the Inbox bell menu: nothing is unread."
+  },
+  "inbox.bell.recent": {
+    "defaultMessage": "Recent",
+    "description": "Heading of the Inbox bell's menu, above the newest messages."
+  },
+  "inbox.bell.title": {
+    "defaultMessage": "Inbox",
+    "description": "Title of the Inbox bell's menu in the top bar, and the bell's screen-reader label while the unread count is still loading."
+  },
+  "inbox.bell.unread": {
+    "defaultMessage": "Unread",
+    "description": "Marker of an unread message in the Inbox bell's menu, after its severity and its time."
+  },
+  "inbox.bell.viewAll": {
+    "defaultMessage": "View all in Inbox",
+    "description": "Item of the Inbox bell's menu that opens the Inbox page."
+  },
+  "inbox.category.queue": {
+    "defaultMessage": "Queue",
+    "description": "Type column of the Inbox table for a message about a review queue the reader works, such as items waiting in it."
+  },
+  "inbox.category.task": {
+    "defaultMessage": "Task",
+    "description": "Type column of the Inbox table for a message about the reader's own review work: an assignment, a claim released or expiring."
+  },
+  "inbox.deleteModal.body": {
+    "defaultMessage": "Are you sure you want to delete {count, plural, one {this message} other {these # messages}}? This action cannot be undone.",
+    "description": "Question of the dialog that confirms deleting Inbox messages, above their titles. {count} is the number of messages."
+  },
+  "inbox.deleteModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the dialog confirming the deletion of Inbox messages without deleting them."
+  },
+  "inbox.deleteModal.delete": {
+    "defaultMessage": "Delete",
+    "description": "Button that confirms deleting the Inbox messages the dialog lists."
+  },
+  "inbox.deleteModal.header": {
+    "defaultMessage": "{count, plural, one {Delete message} other {Delete messages}}",
+    "description": "Title of the dialog that confirms deleting Inbox messages. {count} is the number of messages to delete."
+  },
+  "inbox.deleteModal.more": {
+    "defaultMessage": "and {count} more",
+    "description": "Last line of the list of message titles in the delete dialog, when it lists only the first ten. {count} is how many are not listed."
+  },
+  "inbox.messageModal.close": {
+    "defaultMessage": "Close",
+    "description": "Button in the footer of the dialog that shows one Inbox message."
+  },
+  "inbox.messageModal.closeAriaLabel": {
+    "defaultMessage": "Close message",
+    "description": "Screen-reader label of the close (X) button of the dialog that shows one Inbox message."
+  },
+  "inbox.messageModal.noDetails": {
+    "defaultMessage": "No details.",
+    "description": "Shown in the dialog of an Inbox message that has a title but no body."
+  },
+  "inbox.messageModal.openRelated": {
+    "defaultMessage": "Open related page",
+    "description": "Button in the footer of an Inbox message dialog that goes to the page the message is about."
+  },
+  "inbox.messageModal.received": {
+    "defaultMessage": "Received",
+    "description": "Label above the date and time an Inbox message arrived, in its dialog."
+  },
+  "inbox.messageModal.severity": {
+    "defaultMessage": "Severity",
+    "description": "Label above an Inbox message's severity (Info, Warning, ...) in its dialog."
+  },
+  "inbox.messageModal.source": {
+    "defaultMessage": "Source",
+    "description": "Label above the platform feature that sent an Inbox message, in its dialog. The value is shown as the platform writes it."
+  },
+  "inbox.messagesTable.allSeverities": {
+    "defaultMessage": "All severities",
+    "description": "First option of the Inbox table's severity filter: no filtering by severity."
+  },
+  "inbox.messagesTable.allTypes": {
+    "defaultMessage": "All types",
+    "description": "First option of the Inbox table's message type filter: no filtering by type."
+  },
+  "inbox.messagesTable.clearRead.body": {
+    "defaultMessage": "Delete every message you have already read? This action cannot be undone.",
+    "description": "Question of the dialog that confirms deleting every read Inbox message."
+  },
+  "inbox.messagesTable.clearRead.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Clear read messages dialog without deleting anything."
+  },
+  "inbox.messagesTable.clearRead.confirm": {
+    "defaultMessage": "Clear read",
+    "description": "Button that confirms deleting every read Inbox message."
+  },
+  "inbox.messagesTable.clearRead.header": {
+    "defaultMessage": "Clear read messages",
+    "description": "Title of the dialog that confirms deleting every read Inbox message."
+  },
+  "inbox.messagesTable.column.action": {
+    "defaultMessage": "Action",
+    "description": "Column header of the Inbox table: each row's menu of actions."
+  },
+  "inbox.messagesTable.column.received": {
+    "defaultMessage": "Received",
+    "description": "Column header of the Inbox table: when each message arrived."
+  },
+  "inbox.messagesTable.column.severity": {
+    "defaultMessage": "Severity",
+    "description": "Column header of the Inbox table: the severity of each message (Info, Warning, ...)."
+  },
+  "inbox.messagesTable.column.title": {
+    "defaultMessage": "Title",
+    "description": "Column header of the Inbox table: the title of each message."
+  },
+  "inbox.messagesTable.column.type": {
+    "defaultMessage": "Type",
+    "description": "Column header of the Inbox table: the kind of message (Task, Queue, or the type name)."
+  },
+  "inbox.messagesTable.deleteSelected": {
+    "defaultMessage": "Delete",
+    "description": "Button in the header of the Inbox table that deletes the selected messages, after a confirmation."
+  },
+  "inbox.messagesTable.deleteSelectedHint": {
+    "defaultMessage": "Delete the selected messages",
+    "description": "Tooltip of the Delete button in the header of the Inbox table, while messages are selected."
+  },
+  "inbox.messagesTable.empty.body": {
+    "defaultMessage": "You'll see messages here when work is assigned to you or something needs your attention.",
+    "description": "Text under the heading the Inbox table shows when the user has no message."
+  },
+  "inbox.messagesTable.empty.title": {
+    "defaultMessage": "No messages",
+    "description": "Heading the Inbox table shows when the user has no message."
+  },
+  "inbox.messagesTable.filterBySeverity": {
+    "defaultMessage": "Filter by severity",
+    "description": "Screen-reader label of the severity filter of the Inbox table."
+  },
+  "inbox.messagesTable.filterByType": {
+    "defaultMessage": "Filter by type",
+    "description": "Screen-reader label of the message type filter of the Inbox table."
+  },
+  "inbox.messagesTable.find": {
+    "defaultMessage": "Find messages",
+    "description": "Placeholder and screen-reader label of the Inbox table's text filter."
+  },
+  "inbox.messagesTable.heading": {
+    "defaultMessage": "Messages",
+    "description": "Heading of the Inbox table, followed by the message count."
+  },
+  "inbox.messagesTable.loadFailed": {
+    "defaultMessage": "Could not load messages",
+    "description": "Title of the error shown above the Inbox table when the messages could not be loaded."
+  },
+  "inbox.messagesTable.loading": {
+    "defaultMessage": "Loading messages",
+    "description": "Shown in the Inbox table while the messages load."
+  },
+  "inbox.messagesTable.markSelectedRead": {
+    "defaultMessage": "Mark as read",
+    "description": "Button in the header of the Inbox table that marks the selected messages as read."
+  },
+  "inbox.messagesTable.markSelectedReadHint": {
+    "defaultMessage": "Mark the selected messages as read",
+    "description": "Tooltip of the Mark as read button in the header of the Inbox table, while messages are selected."
+  },
+  "inbox.messagesTable.markSelectedUnread": {
+    "defaultMessage": "Mark as unread",
+    "description": "Button in the header of the Inbox table that marks the selected messages as unread."
+  },
+  "inbox.messagesTable.markSelectedUnreadHint": {
+    "defaultMessage": "Mark the selected messages as unread",
+    "description": "Tooltip of the Mark as unread button in the header of the Inbox table, while messages are selected."
+  },
+  "inbox.messagesTable.more.button": {
+    "defaultMessage": "More actions",
+    "description": "Menu button in the header of the Inbox table that holds the actions on the whole list."
+  },
+  "inbox.messagesTable.more.clearRead": {
+    "defaultMessage": "Clear read",
+    "description": "Item of the Inbox table's More actions menu that deletes every read message, after a confirmation."
+  },
+  "inbox.messagesTable.more.markAllRead": {
+    "defaultMessage": "Mark all as read",
+    "description": "Item of the Inbox table's More actions menu that marks every message as read."
+  },
+  "inbox.messagesTable.more.noRead": {
+    "defaultMessage": "No read messages",
+    "description": "Why Clear read is disabled in the More actions menu of the Inbox table: no message is read."
+  },
+  "inbox.messagesTable.more.noUnread": {
+    "defaultMessage": "No unread messages",
+    "description": "Why Mark all as read is disabled in the More actions menu of the Inbox table: nothing is unread."
+  },
+  "inbox.messagesTable.more.refresh": {
+    "defaultMessage": "Refresh messages",
+    "description": "Screen-reader label of the refresh (circular arrow) button in the header of the Inbox table."
+  },
+  "inbox.messagesTable.noSelection": {
+    "defaultMessage": "Select one or more messages",
+    "description": "Tooltip of the Inbox table's Mark as read, Mark as unread and Delete buttons while no message is selected."
+  },
+  "inbox.messagesTable.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Inbox table preferences without applying them."
+  },
+  "inbox.messagesTable.preferences.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Button that applies the Inbox table preferences."
+  },
+  "inbox.messagesTable.preferences.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Heading of the page size choices in the Inbox table preferences."
+  },
+  "inbox.messagesTable.preferences.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# message} other {# messages}}",
+    "description": "One page size choice in the Inbox table preferences. {count} is the number of messages per page (10, 20 or 50)."
+  },
+  "inbox.messagesTable.preferences.title": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the Inbox table preferences dialog (page size), opened from the gear button by the pagination."
+  },
+  "inbox.messagesTable.readState.all": {
+    "defaultMessage": "All",
+    "description": "Option of the read-state filter of the Inbox table: every message."
+  },
+  "inbox.messagesTable.readState.label": {
+    "defaultMessage": "Read state",
+    "description": "Screen-reader label of the Inbox table filter that shows all messages or only the unread ones."
+  },
+  "inbox.messagesTable.readState.unread": {
+    "defaultMessage": "Unread",
+    "description": "Option of the read-state filter of the Inbox table: only the unread messages."
+  },
+  "inbox.messagesTable.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button of the notice above the Inbox table that reloads the list."
+  },
+  "inbox.messagesTable.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the load error above the Inbox table that loads the messages again."
+  },
+  "inbox.messagesTable.row.delete": {
+    "defaultMessage": "Delete",
+    "description": "Item of a row's action menu in the Inbox table that deletes the message, after a confirmation."
+  },
+  "inbox.messagesTable.row.markRead": {
+    "defaultMessage": "Mark as read",
+    "description": "Item of an unread message's action menu in the Inbox table."
+  },
+  "inbox.messagesTable.row.markUnread": {
+    "defaultMessage": "Mark as unread",
+    "description": "Item of a read message's action menu in the Inbox table."
+  },
+  "inbox.messagesTable.row.open": {
+    "defaultMessage": "Open",
+    "description": "Item of a row's action menu in the Inbox table that opens the message."
+  },
+  "inbox.messagesTable.rowActions": {
+    "defaultMessage": "Actions for {title}",
+    "description": "Screen-reader label of a row's action menu in the Inbox table. {title} is the message title, as the platform writes it."
+  },
+  "inbox.messagesTable.selection.all": {
+    "defaultMessage": "Select all messages",
+    "description": "Screen-reader label of the checkbox in the header of the Inbox table that selects every message on the page."
+  },
+  "inbox.messagesTable.selection.group": {
+    "defaultMessage": "Message selection",
+    "description": "Screen-reader name of the selection checkboxes of the Inbox table."
+  },
+  "inbox.messagesTable.selection.item": {
+    "defaultMessage": "Select {title}",
+    "description": "Screen-reader label of the checkbox of one Inbox table row. {title} is the message title, as the platform writes it."
+  },
+  "inbox.messagesTable.stale": {
+    "defaultMessage": "New activity since this list was loaded.",
+    "description": "Notice above the Inbox table when messages changed while rows were selected, so the list was not reloaded."
+  },
   "inbox.navLink.text": {
     "defaultMessage": "Inbox",
     "description": "Side-navigation link, first in the Home section of every user, to the Inbox of notifications."
@@ -3078,6 +3390,98 @@
   "inbox.navLink.unread": {
     "defaultMessage": "{count, plural, one {unread} other {unread}}",
     "description": "Read by screen readers after the count badge of the Inbox link, as in \"3 unread\". {count} is the number of unread messages; the badge itself shows the number."
+  },
+  "inbox.page.description": {
+    "defaultMessage": "Messages addressed to you or your groups.",
+    "description": "Line under the heading of the Inbox page."
+  },
+  "inbox.page.settings": {
+    "defaultMessage": "Inbox settings",
+    "description": "Tooltip and screen-reader label of the settings (gear) button in the Inbox heading, which opens the Inbox settings."
+  },
+  "inbox.page.title": {
+    "defaultMessage": "Inbox",
+    "description": "Heading of the Inbox page (Home › Inbox), which lists the messages the platform sends the user."
+  },
+  "inbox.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Inbox settings dialog without saving."
+  },
+  "inbox.preferences.empty": {
+    "defaultMessage": "No message types yet. Types appear here when a platform feature that sends Inbox messages is in use.",
+    "description": "Shown in the Inbox settings dialog when no message type exists yet."
+  },
+  "inbox.preferences.header": {
+    "defaultMessage": "Inbox settings",
+    "description": "Title of the dialog, opened from the Inbox heading, where the user chooses which message types they receive."
+  },
+  "inbox.preferences.intro": {
+    "defaultMessage": "Turn off the message types you don't want. Muted types aren't delivered; turning one back on affects new messages only.",
+    "description": "Introduction at the top of the Inbox settings dialog, above the list of message types."
+  },
+  "inbox.preferences.loadFailed": {
+    "defaultMessage": "Could not load preferences",
+    "description": "Title of the error shown in the Inbox settings dialog when the settings could not be loaded."
+  },
+  "inbox.preferences.loading": {
+    "defaultMessage": "Loading preferences",
+    "description": "Shown in the Inbox settings dialog while the message types and their settings load."
+  },
+  "inbox.preferences.receive": {
+    "defaultMessage": "Receive",
+    "description": "Text of the toggle, under each message type in the Inbox settings dialog, that turns that type on or off."
+  },
+  "inbox.preferences.receiveAriaLabel": {
+    "defaultMessage": "Receive {type}",
+    "description": "Screen-reader label of the toggle that turns one Inbox message type on or off. {type} is the type name, as the platform writes it."
+  },
+  "inbox.preferences.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the load error in the Inbox settings dialog that loads the settings again."
+  },
+  "inbox.preferences.save": {
+    "defaultMessage": "Save",
+    "description": "Button that saves the Inbox settings."
+  },
+  "inbox.preferences.saved": {
+    "defaultMessage": "Inbox settings saved",
+    "description": "Notice shown at the top of the page after the Inbox settings are saved."
+  },
+  "inbox.provider.clearedRead": {
+    "defaultMessage": "Cleared read messages",
+    "description": "Notice at the top of the page after the user deleted every Inbox message they had read."
+  },
+  "inbox.provider.deleted": {
+    "defaultMessage": "Deleted {count, plural, one {# message} other {# messages}}",
+    "description": "Notice at the top of the page after the user deleted Inbox messages. {count} is the number of messages deleted."
+  },
+  "inbox.provider.markedAllRead": {
+    "defaultMessage": "Marked all messages as read",
+    "description": "Notice at the top of the page after the user marked every Inbox message as read."
+  },
+  "inbox.provider.markedRead": {
+    "defaultMessage": "Marked {count, plural, one {# message} other {# messages}} as read",
+    "description": "Notice at the top of the page after the user marked Inbox messages as read. {count} is the number of messages marked."
+  },
+  "inbox.provider.markedUnread": {
+    "defaultMessage": "Marked {count, plural, one {# message} other {# messages}} as unread",
+    "description": "Notice at the top of the page after the user marked Inbox messages as unread. {count} is the number of messages marked."
+  },
+  "inbox.severity.error": {
+    "defaultMessage": "Error",
+    "description": "Inbox message severity: something failed. Shown in the Inbox table, its filter, the bell and the message dialog."
+  },
+  "inbox.severity.info": {
+    "defaultMessage": "Info",
+    "description": "Inbox message severity: for information. Shown in the Inbox table, its filter, the bell and the message dialog."
+  },
+  "inbox.severity.success": {
+    "defaultMessage": "Success",
+    "description": "Inbox message severity: something succeeded. Shown in the Inbox table, its filter, the bell and the message dialog."
+  },
+  "inbox.severity.warning": {
+    "defaultMessage": "Warning",
+    "description": "Inbox message severity: something needs attention. Shown in the Inbox table, its filter, the bell and the message dialog."
   },
   "mcp.configuration.adminOnly": {
     "defaultMessage": "MCP Configuration is available to Admin users only.",

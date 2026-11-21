@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 216,
-    "findings": 5680
+    "files": 209,
+    "findings": 5582
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -144,14 +144,8 @@
     "src/ui/src/components/feature-page/FeaturesToolsPanel.tsx": 32,
     "src/ui/src/components/feature-page/entitlement-source.ts": 7,
     "src/ui/src/components/genaiidp-layout/navigation.tsx": 4,
-    "src/ui/src/components/inbox/DeleteInboxMessagesModal.tsx": 7,
-    "src/ui/src/components/inbox/InboxLayout.tsx": 1,
-    "src/ui/src/components/inbox/InboxMessageModal.tsx": 7,
-    "src/ui/src/components/inbox/InboxMessagesTable.tsx": 51,
-    "src/ui/src/components/inbox/InboxPage.tsx": 4,
-    "src/ui/src/components/inbox/InboxPreferences.tsx": 12,
-    "src/ui/src/components/inbox/inbox-bell.tsx": 11,
-    "src/ui/src/components/inbox/message-category.ts": 2,
+    "src/ui/src/components/inbox/InboxMessagesTable.tsx": 1,
+    "src/ui/src/components/inbox/InboxPreferences.tsx": 2,
     "src/ui/src/components/json-schema-builder/SchemaBuilder.tsx": 133,
     "src/ui/src/components/json-schema-builder/SchemaCanvas.tsx": 15,
     "src/ui/src/components/json-schema-builder/SchemaDiagram.tsx": 9,
@@ -229,7 +223,7 @@
     "src/ui/src/components/upload-document/UploadDocumentPanel.tsx": 2,
     "src/ui/src/components/user-management/UserManagementLayout.tsx": 98,
     "src/ui/src/components/user-management/tools-panel.tsx": 11,
-    "src/ui/src/contexts/inbox.tsx": 10,
+    "src/ui/src/contexts/inbox.tsx": 5,
     "src/ui/src/hooks/use-agent-chat.ts": 6,
     "src/ui/src/hooks/use-config-prefix-mappings.ts": 6,
     "src/ui/src/hooks/use-config-profile-revisions.ts": 10,
@@ -246,7 +240,6 @@
     "src/ui/src/hooks/utils/graphql-error.ts": 3,
     "src/ui/src/routes/constants.ts": 6,
     "src/ui/src/utils/config-prefix-key.ts": 3,
-    "src/ui/src/utils/date-time.ts": 1,
     "src/ui/src/utils/errorUtils.ts": 1,
     "src/ui/src/utils/github-feedback.ts": 22,
     "src/ui/src/utils/idpSchemaExtensions.ts": 8
