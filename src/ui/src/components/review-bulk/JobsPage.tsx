@@ -19,7 +19,7 @@ import {
   Table,
   TextFilter,
 } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import usePolling from '../../hooks/use-polling';
@@ -353,7 +353,7 @@ const JobsPage = (): React.JSX.Element => {
   const { isAdmin } = useUserRole();
   const [jobs, setJobs] = useState<BulkReviewJob[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ action: TypedMessageDescriptor<NoMessageValues>; cause: unknown } | null>(null);
   const [target, setTarget] = useState<{ action: JobAction; job: BulkReviewJob } | null>(null);
   const [busy, setBusy] = useState(false);
   const [preferences, setPreferences] = useLocalStorage<JobsTablePreferences>('jobs-table-preferences', DEFAULT_JOBS_PREFERENCES);
@@ -373,11 +373,11 @@ const JobsPage = (): React.JSX.Element => {
       setJobs(all);
       setError(null);
     } catch (e) {
-      setError(describeApiError(e, intl.formatMessage(messages.loadJobsAction)));
+      setError({ action: messages.loadJobsAction, cause: e });
     } finally {
       setLoading(false);
     }
-  }, [intl]);
+  }, []);
 
   const { items, collectionProps, filterProps, filteredItemsCount, paginationProps, actions } = useCollection(jobs ?? [], {
     filtering: {
@@ -418,7 +418,7 @@ const JobsPage = (): React.JSX.Element => {
         setSuccessMessage(intl.formatMessage(messages.deleted, { jobId: job.jobId }));
       }
     } catch (e) {
-      setErrorMessage(describeApiError(e, intl.formatMessage(action === 'cancel' ? messages.cancelJobAction : messages.deleteJobAction)));
+      setErrorMessage(describeApiError(e, action === 'cancel' ? messages.cancelJobAction : messages.deleteJobAction, intl));
       void load();
     } finally {
       setBusy(false);
@@ -490,7 +490,7 @@ const JobsPage = (): React.JSX.Element => {
             </Button>
           }
         >
-          {error}
+          {describeApiError(error.cause, error.action, intl)}
         </Alert>
       )}
       <Table

@@ -6,8 +6,9 @@
  * (`0,62 < 0,80`) and a Test Studio document's alert count read French, and so do the work
  * table's state labels, `Vous` for the reader's own items and an empty table's "No data!".
  * The rows hold codes and the table words them, so the source filter keeps its choice across
- * a language switch and relabels it. Under `en` the same renders read today's English.
- * Queue and test set ids stay as stored.
+ * a language switch and relabels it. A poll error reads as one French sentence, its action
+ * phrase included. Under `en` the same renders read today's English. Queue and test set ids
+ * stay as stored, and so does the server's error text.
  */
 import React from 'react';
 import { act, screen, waitFor } from '@testing-library/react';
@@ -97,8 +98,13 @@ const FR = {
   'reviewQueues.reasons.lowConfidenceField': 'Confiance faible : {field} {score, number, ::.00} < {threshold, number, ::.00}',
   'common.reviewStatus.state.open': 'En attente',
   'common.table.noData': 'Aucune donnée !',
+  'reviewQueues.myTasks.loadTasksAction': 'charger vos tâches',
+  'common.apiError.failed': 'Échec de l’opération « {action} » : {error}',
 };
 const FR_CA = { locale: 'fr-CA', enabledLocales: ['en', 'fr-CA'], messages: FR } as const;
+
+/** What the shared poll holds when its last read failed: the server's error, as thrown. */
+const POLL_ERROR = { errors: [{ message: 'Throttled', errorType: 'InternalError' }] };
 
 const Router = ({ children }: { children: React.ReactNode }) => <MemoryRouter>{children}</MemoryRouter>;
 
@@ -156,6 +162,13 @@ describe('Home › Tasks under fr-CA', () => {
     expect(table().findRows()).toHaveLength(1);
     expect(cellText(1, TASK_REASON)).toBe('2 confidence alerts');
   });
+
+  it('reads a poll error as one French sentence', async () => {
+    state.reviewWork.current = { ...state.reviewWork.current!, pollError: POLL_ERROR };
+    renderWithIntl(<MyTasksPage />, { ...FR_CA, wrapper: Router });
+    expect(await screen.findByText('Échec de l’opération « charger vos tâches » : Throttled')).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to/)).toBeNull();
+  });
 });
 
 describe('the work table under fr-CA', () => {
@@ -183,6 +196,12 @@ describe('Home › Tasks under en', () => {
     expect(cellText(1, TASK_REASON)).toBe('Low confidence: Employer name 0.62 < 0.80');
     expect(cellText(2, TASK_REASON)).toBe('2 confidence alerts');
     expect(chosenSource()).toBe('All sources');
+  });
+
+  it('reads a poll error in English', () => {
+    state.reviewWork.current = { ...state.reviewWork.current!, pollError: POLL_ERROR };
+    renderWithIntl(<MyTasksPage />, { wrapper: Router });
+    expect(screen.getByText('Failed to load your tasks: Throttled')).toBeInTheDocument();
   });
 });
 

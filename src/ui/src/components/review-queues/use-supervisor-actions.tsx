@@ -50,6 +50,11 @@ const messages = defineMessages<{
   move: NoMessageValues;
   noOtherQueue: NoMessageValues;
   remove: NoMessageValues;
+  loadAnnotatorsAction: NoMessageValues;
+  assignItemAction: NoMessageValues;
+  unassignItemAction: NoMessageValues;
+  moveItemAction: NoMessageValues;
+  removeItemAction: NoMessageValues;
   assigned: { readonly count: number; readonly email: string };
   unassigned: Count;
   moved: { readonly count: number; readonly queue: string };
@@ -105,6 +110,36 @@ const messages = defineMessages<{
     id: 'reviewQueues.supervisorActions.remove',
     defaultMessage: 'Remove from queue…',
     description: 'Row menu item of a review item that takes it out of review (opens a dialog).',
+  },
+  loadAnnotatorsAction: {
+    id: 'reviewQueues.supervisorActions.loadAnnotatorsAction',
+    defaultMessage: 'load the Annotators',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the Annotators an Admin can assign items to cannot be loaded. Annotator is a user role.',
+  },
+  assignItemAction: {
+    id: 'reviewQueues.supervisorActions.assignItemAction',
+    defaultMessage: 'assign it',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when one review item cannot be assigned; "it" is the item.',
+  },
+  unassignItemAction: {
+    id: 'reviewQueues.supervisorActions.unassignItemAction',
+    defaultMessage: 'unassign it',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when one review item cannot be taken back from its Annotator; "it" is the item.',
+  },
+  moveItemAction: {
+    id: 'reviewQueues.supervisorActions.moveItemAction',
+    defaultMessage: 'move it',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when one review item cannot be moved to another queue; "it" is the item.',
+  },
+  removeItemAction: {
+    id: 'reviewQueues.supervisorActions.removeItemAction',
+    defaultMessage: 'remove it',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when one review item cannot be taken out of review; "it" is the item.',
   },
   assigned: {
     id: 'reviewQueues.supervisorActions.assigned',
@@ -162,6 +197,14 @@ const failureMessages: Record<SupervisorAction, TypedMessageDescriptor<Failures>
   remove: messages.removeFailed,
 };
 
+/** Each action's phrase in the error sentence of one failed item. */
+const itemActionMessages: Record<SupervisorAction, TypedMessageDescriptor<NoMessageValues>> = {
+  assign: messages.assignItemAction,
+  unassign: messages.unassignItemAction,
+  move: messages.moveItemAction,
+  remove: messages.removeItemAction,
+};
+
 interface Options {
   /** Every system-wide queue definition: the targets Move offers and each queue's eligible Annotators. */
   queues: readonly ReviewQueueDefinition[];
@@ -176,25 +219,26 @@ const useSupervisorActions = ({ queues, onChanged }: Options) => {
   const [annotators, setAnnotators] = useState<string[] | null>(null);
   const [annotatorsLoading, setAnnotatorsLoading] = useState(false);
 
+  // Rethrows, so the handler that asked for the list words the error: this load never reads `intl`.
   const loadAnnotators = useCallback(async () => {
     setAnnotatorsLoading(true);
     try {
       setAnnotators(await listAnnotatorEmails());
-    } catch (err) {
-      setErrorMessage(describeApiError(err, 'load the Annotators'));
     } finally {
       setAnnotatorsLoading(false);
     }
-  }, [setErrorMessage]);
+  }, []);
 
   const open = useCallback(
     (action: SupervisorAction, items: readonly ReviewItem[]) => {
       const eligible = items.filter(ELIGIBLE[action]);
       if (eligible.length === 0) return;
       setTarget({ action, items: eligible });
-      if (action === 'assign' && annotators == null) void loadAnnotators();
+      if (action === 'assign' && annotators == null) {
+        loadAnnotators().catch((err: unknown) => setErrorMessage(describeApiError(err, messages.loadAnnotatorsAction, intl)));
+      }
     },
-    [annotators, loadAnnotators],
+    [annotators, loadAnnotators, setErrorMessage, intl],
   );
 
   /** Row menu entries for an item, as one "Admin" group. */
@@ -251,7 +295,7 @@ const useSupervisorActions = ({ queues, onChanged }: Options) => {
         await fn(item);
         ok += 1;
       } catch (err) {
-        failed.push(`${documentName(item.objectKey)} (${describeApiError(err, `${action} it`)})`);
+        failed.push(`${documentName(item.objectKey)} (${describeApiError(err, itemActionMessages[action], intl)})`);
       }
     }
     setBusy(false);

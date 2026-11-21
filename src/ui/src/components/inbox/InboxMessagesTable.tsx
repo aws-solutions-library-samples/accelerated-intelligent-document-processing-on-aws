@@ -64,6 +64,7 @@ const messages = defineMessages<{
   rowMarkRead: NoMessageValues;
   rowDelete: NoMessageValues;
   loadFailed: NoMessageValues;
+  loadMessagesAction: NoMessageValues;
   retry: NoMessageValues;
   stale: NoMessageValues;
   refresh: NoMessageValues;
@@ -179,6 +180,12 @@ const messages = defineMessages<{
     id: 'inbox.messagesTable.loadFailed',
     defaultMessage: 'Could not load messages',
     description: 'Title of the error shown above the Inbox table when the messages could not be loaded.',
+  },
+  loadMessagesAction: {
+    id: 'inbox.messagesTable.loadMessagesAction',
+    defaultMessage: 'load your messages',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the Inbox messages cannot be loaded.',
   },
   retry: {
     id: 'inbox.messagesTable.retry',
@@ -386,7 +393,8 @@ const InboxMessagesTable = (): React.JSX.Element => {
   const { locale } = useFormatters();
   const [items, setItems] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // What the last read threw, worded at render: loadAll never reads `intl`.
+  const [loadError, setLoadError] = useState<{ readonly cause: unknown } | null>(null);
   const [selectedItems, setSelectedItems] = useState<InboxMessage[]>([]);
   const [stale, setStale] = useState(false);
   const [types, setTypes] = useState<readonly InboxMessageType[]>([]);
@@ -436,7 +444,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
       setStale(false);
     } catch (err) {
       logger.error('listInboxMessages failed', err);
-      setLoadError(describeApiError(err, 'load your messages'));
+      setLoadError({ cause: err });
     } finally {
       setLoading(false);
     }
@@ -694,7 +702,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
             </Button>
           }
         >
-          {loadError}
+          {describeApiError(loadError.cause, messages.loadMessagesAction, intl)}
         </Alert>
       )}
       {stale && (

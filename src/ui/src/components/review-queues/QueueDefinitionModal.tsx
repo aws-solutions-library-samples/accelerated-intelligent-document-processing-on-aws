@@ -63,6 +63,10 @@ type Name = { readonly name: string };
 
 const messages = defineMessages<{
   goneQueue: NoMessageValues;
+  reloadQueueAction: NoMessageValues;
+  saveSettingsAction: NoMessageValues;
+  createQueueAction: NoMessageValues;
+  saveQueueAction: NoMessageValues;
   idRule: NoMessageValues;
   idTaken: NoMessageValues;
   nameRequired: NoMessageValues;
@@ -110,6 +114,30 @@ const messages = defineMessages<{
     id: 'reviewQueues.queueSettings.goneQueue',
     defaultMessage: 'This queue no longer exists. It may have been deleted. Close this dialog.',
     description: "Error in the Queue Settings dialog's changed-queue warning when Reload queue finds the queue gone.",
+  },
+  reloadQueueAction: {
+    id: 'reviewQueues.queueSettings.reloadQueueAction',
+    defaultMessage: 'reload the queue',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Reload queue, in the Queue Settings dialog, cannot read the queue.',
+  },
+  saveSettingsAction: {
+    id: 'reviewQueues.queueSettings.saveSettingsAction',
+    defaultMessage: 'save the queue settings',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the settings of a Test Studio queue cannot be saved.',
+  },
+  createQueueAction: {
+    id: 'reviewQueues.queueSettings.createQueueAction',
+    defaultMessage: 'create the queue',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when a new production queue cannot be created.',
+  },
+  saveQueueAction: {
+    id: 'reviewQueues.queueSettings.saveQueueAction',
+    defaultMessage: 'save the queue',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the settings of a production queue cannot be saved.',
   },
   idRule: {
     id: 'reviewQueues.queueSettings.idRule',
@@ -331,8 +359,11 @@ const messages = defineMessages<{
   },
 });
 
-/** Why Reload queue failed: a message worded at render, or the API's error sentence. */
-type ReloadError = { readonly message: TypedMessageDescriptor<NoMessageValues> } | string;
+/** A refused call: its action phrase and what it threw, worded at render. */
+type ApiFailure = { readonly action: TypedMessageDescriptor<NoMessageValues>; readonly cause: unknown };
+
+/** Why Reload queue failed: a message worded at render, or a refused call. */
+type ReloadError = { readonly message: TypedMessageDescriptor<NoMessageValues> } | ApiFailure;
 
 interface QueueDefinitionModalProps {
   visible: boolean;
@@ -374,7 +405,7 @@ const QueueDefinitionModal = ({
   const [skipReasonsText, setSkipReasonsText] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiFailure | null>(null);
   // The production queue the form was filled from: the prop, or a reload after a
   // refused save. Its version is what a save is checked against.
   const [base, setBase] = useState<ReviewQueueDefinition | null>(queue);
@@ -419,7 +450,7 @@ const QueueDefinitionModal = ({
       if (current) fill(current);
       else setReloadError({ message: messages.goneQueue });
     } catch (err) {
-      setReloadError(describeApiError(err, 'reload the queue'));
+      setReloadError({ action: messages.reloadQueueAction, cause: err });
     } finally {
       setReloading(false);
     }
@@ -487,7 +518,7 @@ const QueueDefinitionModal = ({
           skipReasons,
         });
       } catch (err) {
-        setError(describeApiError(err, 'save the queue settings'));
+        setError({ action: messages.saveSettingsAction, cause: err });
       } finally {
         setSaving(false);
       }
@@ -513,7 +544,7 @@ const QueueDefinitionModal = ({
       onSaved(creating ? await createReviewQueue(input) : await updateReviewQueue(input));
     } catch (err) {
       if (!creating && isQueueChangedError(err)) setChanged(true);
-      else setError(describeApiError(err, creating ? 'create the queue' : 'save the queue'));
+      else setError({ action: creating ? messages.createQueueAction : messages.saveQueueAction, cause: err });
     } finally {
       setSaving(false);
     }
@@ -542,7 +573,7 @@ const QueueDefinitionModal = ({
         </Box>
       }
     >
-      <Form errorText={error ?? undefined}>
+      <Form errorText={error ? describeApiError(error.cause, error.action, intl) : undefined}>
         <SpaceBetween size="m">
           {changed && (
             <Alert
@@ -557,7 +588,11 @@ const QueueDefinitionModal = ({
               <FormattedMessage {...messages.changedBody} />
               {reloadError && (
                 <Box color="text-status-error">
-                  {typeof reloadError === 'string' ? reloadError : <FormattedMessage {...reloadError.message} />}
+                  {'action' in reloadError ? (
+                    describeApiError(reloadError.cause, reloadError.action, intl)
+                  ) : (
+                    <FormattedMessage {...reloadError.message} />
+                  )}
                 </Box>
               )}
             </Alert>

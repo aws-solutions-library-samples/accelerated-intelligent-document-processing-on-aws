@@ -22,6 +22,8 @@ const messages = defineMessages<{
   saved: NoMessageValues;
   loading: NoMessageValues;
   loadFailed: NoMessageValues;
+  loadPreferencesAction: NoMessageValues;
+  savePreferencesAction: NoMessageValues;
   retry: NoMessageValues;
   receiveAriaLabel: { readonly type: string };
   receive: NoMessageValues;
@@ -49,6 +51,18 @@ const messages = defineMessages<{
     id: 'inbox.preferences.loadFailed',
     defaultMessage: 'Could not load preferences',
     description: 'Title of the error shown in the Inbox settings dialog when the settings could not be loaded.',
+  },
+  loadPreferencesAction: {
+    id: 'inbox.preferences.loadPreferencesAction',
+    defaultMessage: 'load Inbox preferences',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the Inbox settings cannot be loaded.',
+  },
+  savePreferencesAction: {
+    id: 'inbox.preferences.savePreferencesAction',
+    defaultMessage: 'save Inbox preferences',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the Inbox settings cannot be saved.',
   },
   retry: {
     id: 'inbox.preferences.retry',
@@ -108,7 +122,8 @@ const InboxPreferences = ({ visible, onDismiss }: InboxPreferencesProps): React.
   const [savedMuted, setSavedMuted] = useState<ReadonlySet<string>>(new Set());
   const [muted, setMuted] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // What the last read threw, worded at render: load never reads `intl`.
+  const [loadError, setLoadError] = useState<{ readonly cause: unknown } | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = async (): Promise<void> => {
@@ -123,7 +138,7 @@ const InboxPreferences = ({ visible, onDismiss }: InboxPreferencesProps): React.
       setLoadError(null);
     } catch (err) {
       logger.error('getInboxPreferences failed', err);
-      setLoadError(describeApiError(err, 'load Inbox preferences'));
+      setLoadError({ cause: err });
     } finally {
       setLoading(false);
     }
@@ -160,7 +175,7 @@ const InboxPreferences = ({ visible, onDismiss }: InboxPreferencesProps): React.
       onDismiss();
     } catch (err) {
       logger.error('updateInboxPreferences failed', err);
-      setErrorMessage(describeApiError(err, 'save Inbox preferences'));
+      setErrorMessage(describeApiError(err, messages.savePreferencesAction, intl));
     } finally {
       setSaving(false);
     }
@@ -186,7 +201,7 @@ const InboxPreferences = ({ visible, onDismiss }: InboxPreferencesProps): React.
             </Button>
           }
         >
-          {loadError}
+          {describeApiError(loadError.cause, messages.loadPreferencesAction, intl)}
         </Alert>
       );
     }

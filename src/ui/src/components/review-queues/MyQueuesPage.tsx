@@ -40,6 +40,7 @@ const messages = defineMessages<{
   refresh: NoMessageValues;
   loadedWarning: NoMessageValues;
   loadError: NoMessageValues;
+  loadQueuesAction: NoMessageValues;
   retry: NoMessageValues;
   loading: NoMessageValues;
   tableTitle: NoMessageValues;
@@ -83,6 +84,12 @@ const messages = defineMessages<{
     id: 'reviewQueues.myQueues.loadError',
     defaultMessage: "Couldn't load your queues",
     description: 'Header of the error on Home › Queues when the queues could not be loaded at all.',
+  },
+  loadQueuesAction: {
+    id: 'reviewQueues.myQueues.loadQueuesAction',
+    defaultMessage: 'load your queues',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the queues on Home › Queues cannot be loaded.',
   },
   retry: {
     id: 'reviewQueues.myQueues.retry',
@@ -354,7 +361,7 @@ const MyQueuesPage = (): React.JSX.Element => {
               </Button>
             }
           >
-            {describeApiError(error, 'load your queues')}
+            {describeApiError(error, messages.loadQueuesAction, intl)}
           </Alert>
         </Box>
       )}

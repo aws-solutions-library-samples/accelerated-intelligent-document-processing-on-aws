@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Alert, Box, Button, Container, Header, KeyValuePairs, ProgressBar, SpaceBetween, Spinner } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 import usePolling from '../../hooks/use-polling';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
@@ -188,6 +188,9 @@ const progressStatus = (status: string): 'error' | 'success' | 'in-progress' =>
 const isNotFound = (e: unknown): boolean =>
   /NOT_FOUND|not found/i.test(String((e as { errors?: { message?: string }[] })?.errors?.[0]?.message ?? e));
 
+/** The page's error, worded at render: a message, or a refused call with its action phrase. */
+type PageError = { message: TypedMessageDescriptor<NoMessageValues> } | { action: TypedMessageDescriptor<NoMessageValues>; cause: unknown };
+
 const JobDetailPage = (): React.JSX.Element => {
   const intl = useIntl();
   const { locale } = useFormatters();
@@ -195,7 +198,7 @@ const JobDetailPage = (): React.JSX.Element => {
   const [job, setJob] = useState<BulkReviewJob | null>(null);
   const [results, setResults] = useState<BulkDocumentOutcome[]>([]);
   const [nextToken, setNextToken] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<PageError | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async () => {
@@ -206,13 +209,9 @@ const JobDetailPage = (): React.JSX.Element => {
       setNextToken(page.nextToken ?? null);
       setError(null);
     } catch (e) {
-      setError(
-        isNotFound(e) || isAuthorizationError(e)
-          ? intl.formatMessage(messages.notFound)
-          : describeApiError(e, intl.formatMessage(messages.loadJobAction)),
-      );
+      setError(isNotFound(e) || isAuthorizationError(e) ? { message: messages.notFound } : { action: messages.loadJobAction, cause: e });
     }
-  }, [jobId, intl]);
+  }, [jobId]);
 
   useEffect(() => {
     void load();
@@ -227,13 +226,14 @@ const JobDetailPage = (): React.JSX.Element => {
       setResults((prev) => [...prev, ...page.results]);
       setNextToken(page.nextToken ?? null);
     } catch (e) {
-      setError(describeApiError(e, intl.formatMessage(messages.loadMoreAction)));
+      setError({ action: messages.loadMoreAction, cause: e });
     } finally {
       setLoadingMore(false);
     }
   };
 
-  if (error && !job) return <Alert type="error">{error}</Alert>;
+  const errorText = error && ('action' in error ? describeApiError(error.cause, error.action, intl) : intl.formatMessage(error.message));
+  if (error && !job) return <Alert type="error">{errorText}</Alert>;
   if (!job) return <Spinner size="large" />;
   const pct = job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : ACTIVE_JOB_STATUSES.has(job.status) ? 0 : 100;
 
@@ -247,7 +247,7 @@ const JobDetailPage = (): React.JSX.Element => {
         }
       >
         <SpaceBetween size="m">
-          {error && <Alert type="error">{error}</Alert>}
+          {error && <Alert type="error">{errorText}</Alert>}
           {job.stalled && (
             <Alert type="warning">
               <FormattedMessage {...messages.stalled} />

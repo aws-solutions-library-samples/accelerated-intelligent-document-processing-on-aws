@@ -215,6 +215,14 @@
     "defaultMessage": "Some Bedrock quotas could not be read",
     "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
   },
+  "common.apiError.failed": {
+    "defaultMessage": "Failed to {action}: {error}",
+    "description": "Error shown when a call to the server failed. {action} is an infinitive verb phrase from another message, such as \"load jobs\"; {error} is the text the server sent, shown as it is."
+  },
+  "common.apiError.permissionDenied": {
+    "defaultMessage": "You do not have permission to {action}. If your account is new, ask an administrator to assign it a role.",
+    "description": "Error shown when the server refused a call because the user lacks permission. {action} is an infinitive verb phrase from another message, such as \"load jobs\"."
+  },
   "common.circuitBreakerPanel.adminControls": {
     "defaultMessage": "Admin controls",
     "description": "Heading above the pause, resume and probe buttons of the circuit breaker dialog."
@@ -1378,6 +1386,42 @@
   "documents.abortModal.warningIconAriaLabel": {
     "defaultMessage": "Warning",
     "description": "Screen-reader label of the warning icon in the Abort dialog."
+  },
+  "documents.api.abortFailed": {
+    "defaultMessage": "Failed to abort document(s): {errors}",
+    "description": "Error shown when none of the documents being processed could be stopped. {errors} is the reasons the server sent, separated by commas, or Unknown error."
+  },
+  "documents.api.abortPartial": {
+    "defaultMessage": "Aborted {abortedCount} document(s), but {failedCount} failed",
+    "description": "Error shown when only some of the documents being processed could be stopped. {abortedCount} is how many were stopped, {failedCount} how many could not be."
+  },
+  "documents.api.abortWorkflowFailed": {
+    "defaultMessage": "Failed to abort workflow(s) - please try again later",
+    "description": "Error shown when the request to stop processing documents could not be sent or failed."
+  },
+  "documents.api.deleteDocumentsAction": {
+    "defaultMessage": "delete document(s)",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when documents cannot be deleted."
+  },
+  "documents.api.deleteIncomplete": {
+    "defaultMessage": "Failed to delete document(s) - the server reported the delete did not complete",
+    "description": "Error shown when the server answered a delete of documents without completing it."
+  },
+  "documents.api.listDocumentsAction": {
+    "defaultMessage": "list documents",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the document list cannot be loaded."
+  },
+  "documents.api.loadDocumentAction": {
+    "defaultMessage": "load this document",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a document cannot be loaded."
+  },
+  "documents.api.reprocessFailed": {
+    "defaultMessage": "Failed to reprocess document(s) - please try again later",
+    "description": "Error shown when documents could not be sent for processing again."
+  },
+  "documents.api.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Shown in the error of a stop request that failed when the server sent no reason."
   },
   "documents.classConfidence.considered": {
     "defaultMessage": "Considered",
@@ -3899,6 +3943,10 @@
     "defaultMessage": "Could not load messages",
     "description": "Title of the error shown above the Inbox table when the messages could not be loaded."
   },
+  "inbox.messagesTable.loadMessagesAction": {
+    "defaultMessage": "load your messages",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Inbox messages cannot be loaded."
+  },
   "inbox.messagesTable.loading": {
     "defaultMessage": "Loading messages",
     "description": "Shown in the Inbox table while the messages load."
@@ -4063,6 +4111,10 @@
     "defaultMessage": "Could not load preferences",
     "description": "Title of the error shown in the Inbox settings dialog when the settings could not be loaded."
   },
+  "inbox.preferences.loadPreferencesAction": {
+    "defaultMessage": "load Inbox preferences",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Inbox settings cannot be loaded."
+  },
   "inbox.preferences.loading": {
     "defaultMessage": "Loading preferences",
     "description": "Shown in the Inbox settings dialog while the message types and their settings load."
@@ -4083,17 +4135,41 @@
     "defaultMessage": "Save",
     "description": "Button that saves the Inbox settings."
   },
+  "inbox.preferences.savePreferencesAction": {
+    "defaultMessage": "save Inbox preferences",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Inbox settings cannot be saved."
+  },
   "inbox.preferences.saved": {
     "defaultMessage": "Inbox settings saved",
     "description": "Notice shown at the top of the page after the Inbox settings are saved."
+  },
+  "inbox.provider.clearReadAction": {
+    "defaultMessage": "clear read messages",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when deleting every Inbox message already read fails."
   },
   "inbox.provider.clearedRead": {
     "defaultMessage": "Cleared read messages",
     "description": "Notice at the top of the page after the user deleted every Inbox message they had read."
   },
+  "inbox.provider.deleteMessagesAction": {
+    "defaultMessage": "delete messages",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Inbox messages cannot be deleted."
+  },
   "inbox.provider.deleted": {
     "defaultMessage": "Deleted {count, plural, one {# message} other {# messages}}",
     "description": "Notice at the top of the page after the user deleted Inbox messages. {count} is the number of messages deleted."
+  },
+  "inbox.provider.markAllReadAction": {
+    "defaultMessage": "mark all messages as read",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when marking every Inbox message as read fails."
+  },
+  "inbox.provider.markReadAction": {
+    "defaultMessage": "mark messages as read",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Inbox messages cannot be marked as read."
+  },
+  "inbox.provider.markUnreadAction": {
+    "defaultMessage": "mark messages as unread",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Inbox messages cannot be marked as unread."
   },
   "inbox.provider.markedAllRead": {
     "defaultMessage": "Marked all messages as read",
@@ -5567,6 +5643,10 @@
     "defaultMessage": "Couldn't load your queues",
     "description": "Header of the error on Home › Queues when the queues could not be loaded at all."
   },
+  "reviewQueues.myQueues.loadQueuesAction": {
+    "defaultMessage": "load your queues",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the queues on Home › Queues cannot be loaded."
+  },
   "reviewQueues.myQueues.loadedWarning": {
     "defaultMessage": "Showing the last loaded queues",
     "description": "Header of the warning on Home › Queues when refreshing the queues failed but earlier ones are still shown."
@@ -5606,6 +5686,10 @@
   "reviewQueues.myTasks.loadError": {
     "defaultMessage": "Couldn't load your tasks",
     "description": "Header of the warning on Home › Tasks when the tasks could not be loaded at all."
+  },
+  "reviewQueues.myTasks.loadTasksAction": {
+    "defaultMessage": "load your tasks",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the tasks on Home › Tasks cannot be loaded."
   },
   "reviewQueues.myTasks.loadedWarning": {
     "defaultMessage": "Showing the last loaded tasks",
@@ -5655,6 +5739,10 @@
     "defaultMessage": "Couldn't claim {count, plural, one {# item} other {# items}}: {failures}",
     "description": "Error after an Annotator claimed review items on a queue's page and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
   },
+  "reviewQueues.queuePage.claimItemAction": {
+    "defaultMessage": "claim it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be claimed on a queue's page; \"it\" is the item."
+  },
   "reviewQueues.queuePage.claimNext.capReached": {
     "defaultMessage": "You hold as many items from this queue as you may. Finish or skip one first.",
     "description": "Error after an Annotator chose Next item on a review queue's page while already holding as many of the queue's items as it allows one person."
@@ -5670,6 +5758,10 @@
   "reviewQueues.queuePage.claimNext.none": {
     "defaultMessage": "No item was claimed.",
     "description": "Error after an Annotator chose Next item on a review queue's page and the server claimed nothing, for a reason the page does not know."
+  },
+  "reviewQueues.queuePage.claimNextItemAction": {
+    "defaultMessage": "claim the next item",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Next item, on a queue's page, cannot claim an item."
   },
   "reviewQueues.queuePage.claimNotWaiting": {
     "defaultMessage": "This item is not waiting for review",
@@ -5702,6 +5794,14 @@
   "reviewQueues.queuePage.loadMore": {
     "defaultMessage": "Load more",
     "description": "Button under a review queue's Documents table that loads its next page of items."
+  },
+  "reviewQueues.queuePage.loadMoreItemsAction": {
+    "defaultMessage": "load more items",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Load more, under a queue's Documents table, cannot load the next page of items."
+  },
+  "reviewQueues.queuePage.loadQueueAction": {
+    "defaultMessage": "load this queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a review queue's page cannot load the queue."
   },
   "reviewQueues.queuePage.loading": {
     "defaultMessage": "Loading…",
@@ -5887,6 +5987,10 @@
     "defaultMessage": "Create",
     "description": "Button of the queue dialog that creates the queue."
   },
+  "reviewQueues.queueSettings.createQueueAction": {
+    "defaultMessage": "create the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a new production queue cannot be created."
+  },
   "reviewQueues.queueSettings.createTitle": {
     "defaultMessage": "Create Queue",
     "description": "Title of the queue dialog when it creates a production review queue."
@@ -5971,9 +6075,21 @@
     "defaultMessage": "Enter at least one reason.",
     "description": "Error under the Skip reasons field of the Queue Settings dialog when an existing queue would have none."
   },
+  "reviewQueues.queueSettings.reloadQueueAction": {
+    "defaultMessage": "reload the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Reload queue, in the Queue Settings dialog, cannot read the queue."
+  },
   "reviewQueues.queueSettings.save": {
     "defaultMessage": "Save",
     "description": "Button of the Queue Settings dialog that saves the queue's settings."
+  },
+  "reviewQueues.queueSettings.saveQueueAction": {
+    "defaultMessage": "save the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the settings of a production queue cannot be saved."
+  },
+  "reviewQueues.queueSettings.saveSettingsAction": {
+    "defaultMessage": "save the queue settings",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the settings of a Test Studio queue cannot be saved."
   },
   "reviewQueues.queueSettings.settingsTitle": {
     "defaultMessage": "Queue Settings: {name}",
@@ -6067,6 +6183,10 @@
     "defaultMessage": "Delete queue",
     "description": "Title of the dialog that confirms deleting a production queue."
   },
+  "reviewQueues.queuesPage.deleteQueueAction": {
+    "defaultMessage": "delete the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a queue cannot be deleted in Review Management."
+  },
   "reviewQueues.queuesPage.deleted": {
     "defaultMessage": "Deleted the queue {name}.",
     "description": "Notice after an Admin deleted a queue that held no items. {name} is the queue's name, as stored."
@@ -6086,6 +6206,14 @@
   "reviewQueues.queuesPage.finalizing": {
     "defaultMessage": "An item in this queue is being completed. Try again in a minute.",
     "description": "Error in the Delete queue dialog when the server refused the delete because one of the queue's items is being completed."
+  },
+  "reviewQueues.queuesPage.loadQueuesAction": {
+    "defaultMessage": "load the review queues",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the production queues cannot be loaded in Review Management."
+  },
+  "reviewQueues.queuesPage.loadTestSetsAction": {
+    "defaultMessage": "load the test sets",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Test Studio queues cannot be loaded in Review Management."
   },
   "reviewQueues.queuesPage.menu.delete": {
     "defaultMessage": "Delete",
@@ -6355,6 +6483,10 @@
     "defaultMessage": "Couldn't assign {count, plural, one {# item} other {# items}}: {failures}",
     "description": "Error after an Admin assigned review items and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
   },
+  "reviewQueues.supervisorActions.assignItemAction": {
+    "defaultMessage": "assign it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be assigned; \"it\" is the item."
+  },
   "reviewQueues.supervisorActions.assigned": {
     "defaultMessage": "Assigned {count, plural, one {# item} other {# items}} to {email}.",
     "description": "Notice after an Admin assigned review items. {count} is how many were assigned and {email} is the Annotator's e-mail address."
@@ -6363,6 +6495,10 @@
     "defaultMessage": "Admin",
     "description": "Group heading in a review item's row menu on a queue's page, holding the actions only an Admin has. Admin is a user role."
   },
+  "reviewQueues.supervisorActions.loadAnnotatorsAction": {
+    "defaultMessage": "load the Annotators",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Annotators an Admin can assign items to cannot be loaded. Annotator is a user role."
+  },
   "reviewQueues.supervisorActions.move": {
     "defaultMessage": "Move to another queue…",
     "description": "Row menu item of a review item that moves it to another review queue (opens a dialog)."
@@ -6370,6 +6506,10 @@
   "reviewQueues.supervisorActions.moveFailed": {
     "defaultMessage": "Couldn't move {count, plural, one {# item} other {# items}}: {failures}",
     "description": "Error after an Admin moved review items to another queue and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.moveItemAction": {
+    "defaultMessage": "move it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be moved to another queue; \"it\" is the item."
   },
   "reviewQueues.supervisorActions.moved": {
     "defaultMessage": "Moved {count, plural, one {# item} other {# items}} to {queue}.",
@@ -6399,6 +6539,10 @@
     "defaultMessage": "Couldn't remove {count, plural, one {# item} other {# items}}: {failures}",
     "description": "Error after an Admin removed review items from review and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
   },
+  "reviewQueues.supervisorActions.removeItemAction": {
+    "defaultMessage": "remove it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be taken out of review; \"it\" is the item."
+  },
   "reviewQueues.supervisorActions.removed": {
     "defaultMessage": "Removed {count, plural, one {# item} other {# items}} from review.",
     "description": "Notice after an Admin took review items out of review. {count} is how many."
@@ -6410,6 +6554,10 @@
   "reviewQueues.supervisorActions.unassignFailed": {
     "defaultMessage": "Couldn't unassign {count, plural, one {# item} other {# items}}: {failures}",
     "description": "Error after an Admin unassigned review items and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.unassignItemAction": {
+    "defaultMessage": "unassign it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be taken back from its Annotator; \"it\" is the item."
   },
   "reviewQueues.supervisorActions.unassigned": {
     "defaultMessage": "Unassigned {count, plural, one {# item} other {# items}}.",

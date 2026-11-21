@@ -9,7 +9,7 @@
 // badge are the only signal. Flash messages are reserved for the user's own actions.
 import React, { createContext, useCallback, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, useIntl, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 import { generateClient } from '../api/client-shim';
 import {
@@ -74,13 +74,21 @@ interface Snapshot {
 
 const INITIAL_STATE: InboxState = { unreadCount: null, recent: [], loaded: false, pollError: null, changeToken: 0 };
 
-/** The notices shown after the user's own Inbox actions; worded when the action succeeds. */
+/**
+ * The notices shown after the user's own Inbox actions, worded when the action succeeds, and
+ * the phrase naming each action in its error, worded when the action fails.
+ */
 const messages = defineMessages<{
   markedRead: { readonly count: number };
   markedUnread: { readonly count: number };
   markedAllRead: NoMessageValues;
   deleted: { readonly count: number };
   clearedRead: NoMessageValues;
+  markReadAction: NoMessageValues;
+  markUnreadAction: NoMessageValues;
+  markAllReadAction: NoMessageValues;
+  deleteMessagesAction: NoMessageValues;
+  clearReadAction: NoMessageValues;
 }>({
   markedRead: {
     id: 'inbox.provider.markedRead',
@@ -106,6 +114,36 @@ const messages = defineMessages<{
     id: 'inbox.provider.clearedRead',
     defaultMessage: 'Cleared read messages',
     description: 'Notice at the top of the page after the user deleted every Inbox message they had read.',
+  },
+  markReadAction: {
+    id: 'inbox.provider.markReadAction',
+    defaultMessage: 'mark messages as read',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Inbox messages cannot be marked as read.',
+  },
+  markUnreadAction: {
+    id: 'inbox.provider.markUnreadAction',
+    defaultMessage: 'mark messages as unread',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Inbox messages cannot be marked as unread.',
+  },
+  markAllReadAction: {
+    id: 'inbox.provider.markAllReadAction',
+    defaultMessage: 'mark all messages as read',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when marking every Inbox message as read fails.',
+  },
+  deleteMessagesAction: {
+    id: 'inbox.provider.deleteMessagesAction',
+    defaultMessage: 'delete messages',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Inbox messages cannot be deleted.',
+  },
+  clearReadAction: {
+    id: 'inbox.provider.clearReadAction',
+    defaultMessage: 'clear read messages',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when deleting every Inbox message already read fails.',
   },
 });
 
@@ -190,7 +228,7 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
     async (
       optimistic: (s: Snapshot) => Snapshot,
       call: () => Promise<InboxMutationResult>,
-      action: string,
+      action: TypedMessageDescriptor<NoMessageValues>,
       successText: (r: InboxMutationResult) => string,
       silent: boolean,
     ): Promise<InboxMutationResult> => {
@@ -206,13 +244,13 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
         return result;
       } catch (err) {
         mutationEpochRef.current += 1;
-        logger.error(`Inbox mutation failed: ${action}`, err);
+        logger.error(`Inbox mutation failed: ${String(action.defaultMessage)}`, err);
         setState((prev) => ({ ...prev, unreadCount: snapshot.unreadCount, recent: snapshot.recent }));
-        setErrorMessage(describeApiError(err, action));
+        setErrorMessage(describeApiError(err, action, intl));
         throw err;
       }
     },
-    [refresh, setErrorMessage, setSuccessMessage],
+    [refresh, setErrorMessage, setSuccessMessage, intl],
   );
 
   const markMessages = useCallback(
@@ -230,7 +268,7 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           const res = await client.graphql({ query: markInboxMessagesMutation, variables: { ids, read } });
           return requireResult(res.data?.markInboxMessages, 'markInboxMessages');
         },
-        read ? 'mark messages as read' : 'mark messages as unread',
+        read ? messages.markReadAction : messages.markUnreadAction,
         (r) => intl.formatMessage(read ? messages.markedRead : messages.markedUnread, { count: r.updated }),
         o?.silent ?? false,
       );
@@ -250,7 +288,7 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           const res = await client.graphql({ query: markAllInboxMessagesReadMutation });
           return requireResult(res.data?.markAllInboxMessagesRead, 'markAllInboxMessagesRead');
         },
-        'mark all messages as read',
+        messages.markAllReadAction,
         () => intl.formatMessage(messages.markedAllRead),
         o?.silent ?? false,
       );
@@ -272,7 +310,7 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           const res = await client.graphql({ query: deleteInboxMessagesMutation, variables: { ids } });
           return requireResult(res.data?.deleteInboxMessages, 'deleteInboxMessages');
         },
-        'delete messages',
+        messages.deleteMessagesAction,
         (r) => intl.formatMessage(messages.deleted, { count: r.updated }),
         false,
       );
@@ -288,7 +326,7 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
           const res = await client.graphql({ query: clearReadInboxMessagesMutation });
           return requireResult(res.data?.clearReadInboxMessages, 'clearReadInboxMessages');
         },
-        'clear read messages',
+        messages.clearReadAction,
         () => intl.formatMessage(messages.clearedRead),
         false,
       ),

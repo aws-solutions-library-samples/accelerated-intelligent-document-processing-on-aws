@@ -22,8 +22,10 @@
  * it sent the reader back to the same button.
  */
 
+import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 // Hoisted: the hook builds its GraphQL client at module scope, before ordinary
 // top-level consts in this file are initialized.
@@ -43,6 +45,9 @@ vi.mock('../../graphql/generated', () => ({
 
 import useGraphQlApi from '../use-graphql-api';
 
+const English = ({ children }: { children: React.ReactNode }) =>
+  React.createElement(IntlProvider, { locale: 'en', defaultLocale: 'en' }, children);
+
 /** What the dispatcher sends for a resolver that raised, as Amplify throws it. */
 const dispatcherFailure = (message: string) => ({
   errors: [{ message, errorType: 'InternalError' }],
@@ -53,7 +58,7 @@ const RESOLVER_MESSAGE =
   'Error in list entry deletion: An error occurred (ValidationException) when calling the Query operation';
 
 const deleteOnce = async (keys: string[]) => {
-  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: 1 }));
+  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: 1 }), { wrapper: English });
   let answer: unknown;
   await act(async () => {
     answer = await hook.result.current.deleteDocuments(keys);

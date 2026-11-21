@@ -20,6 +20,7 @@ const messages = defineMessages<{
   description: NoMessageValues;
   loadedWarning: NoMessageValues;
   loadError: NoMessageValues;
+  loadTasksAction: NoMessageValues;
   retry: NoMessageValues;
   tableTitle: NoMessageValues;
   empty: NoMessageValues;
@@ -44,6 +45,12 @@ const messages = defineMessages<{
     id: 'reviewQueues.myTasks.loadError',
     defaultMessage: "Couldn't load your tasks",
     description: 'Header of the warning on Home › Tasks when the tasks could not be loaded at all.',
+  },
+  loadTasksAction: {
+    id: 'reviewQueues.myTasks.loadTasksAction',
+    defaultMessage: 'load your tasks',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the tasks on Home › Tasks cannot be loaded.',
   },
   retry: {
     id: 'reviewQueues.myTasks.retry',
@@ -117,7 +124,7 @@ const MyTasksPage = (): React.JSX.Element => {
               </Button>
             }
           >
-            {describeApiError(pollError, 'load your tasks')}
+            {describeApiError(pollError, messages.loadTasksAction, intl)}
           </Alert>
         )}
         <WorkItemsTable

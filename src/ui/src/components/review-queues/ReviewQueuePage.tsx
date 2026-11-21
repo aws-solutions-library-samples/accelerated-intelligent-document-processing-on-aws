@@ -95,6 +95,8 @@ const messages = defineMessages<{
   claimed: { readonly name: string };
   claimedCount: { readonly count: number };
   claimFailed: { readonly count: number; readonly failures: string };
+  claimItemAction: NoMessageValues;
+  claimNextItemAction: NoMessageValues;
   claim: NoMessageValues;
   claimAssignedToYou: NoMessageValues;
   claimAssignedTo: { readonly annotator: string };
@@ -104,6 +106,7 @@ const messages = defineMessages<{
   refresh: NoMessageValues;
   stale: NoMessageValues;
   loadError: NoMessageValues;
+  loadQueueAction: NoMessageValues;
   retry: NoMessageValues;
   progressDescription: NoMessageValues;
   keyMetrics: NoMessageValues;
@@ -125,6 +128,7 @@ const messages = defineMessages<{
   nextItem: NoMessageValues;
   annotatorDescription: NoMessageValues;
   loadMore: NoMessageValues;
+  loadMoreItemsAction: NoMessageValues;
   saved: { readonly name: string };
 }>({
   moreActions: {
@@ -220,6 +224,18 @@ const messages = defineMessages<{
     description:
       "Error after an Annotator claimed review items on a queue's page and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons.",
   },
+  claimItemAction: {
+    id: 'reviewQueues.queuePage.claimItemAction',
+    defaultMessage: 'claim it',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when one review item cannot be claimed on a queue\'s page; "it" is the item.',
+  },
+  claimNextItemAction: {
+    id: 'reviewQueues.queuePage.claimNextItemAction',
+    defaultMessage: 'claim the next item',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Next item, on a queue\'s page, cannot claim an item.',
+  },
   claim: {
     id: 'reviewQueues.queuePage.claim',
     defaultMessage: 'Claim',
@@ -267,6 +283,12 @@ const messages = defineMessages<{
     id: 'reviewQueues.queuePage.loadError',
     defaultMessage: "Couldn't load this queue",
     description: "Header of the error on a review queue's page when the queue could not be loaded at all.",
+  },
+  loadQueueAction: {
+    id: 'reviewQueues.queuePage.loadQueueAction',
+    defaultMessage: 'load this queue',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when a review queue\'s page cannot load the queue.',
   },
   retry: {
     id: 'reviewQueues.queuePage.retry',
@@ -379,6 +401,12 @@ const messages = defineMessages<{
     id: 'reviewQueues.queuePage.loadMore',
     defaultMessage: 'Load more',
     description: "Button under a review queue's Documents table that loads its next page of items.",
+  },
+  loadMoreItemsAction: {
+    id: 'reviewQueues.queuePage.loadMoreItemsAction',
+    defaultMessage: 'load more items',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Load more, under a queue\'s Documents table, cannot load the next page of items.',
   },
   saved: {
     id: 'reviewQueues.queuePage.saved',
@@ -509,7 +537,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
         await claimItem(item);
         ok += 1;
       } catch (err) {
-        failed.push(`${documentName(item.objectKey)} (${describeApiError(err, 'claim it')})`);
+        failed.push(`${documentName(item.objectKey)} (${describeApiError(err, messages.claimItemAction, intl)})`);
       }
     }
     if (ok > 0)
@@ -540,7 +568,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
       }
       await afterClaim();
     } catch (err) {
-      setErrorMessage(describeApiError(err, 'claim the next item'));
+      setErrorMessage(describeApiError(err, messages.claimNextItemAction, intl));
     } finally {
       setClaiming(null);
     }
@@ -643,7 +671,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
       setItems((prev) => [...(prev ?? []), ...page.items.map(fromReviewItem(isAdmin ? 'review' : 'queues'))]);
       setNextToken(page.nextToken ?? null);
     } catch (err) {
-      setErrorMessage(describeApiError(err, 'load more items'));
+      setErrorMessage(describeApiError(err, messages.loadMoreItemsAction, intl));
     } finally {
       setLoadingMore(false);
     }
@@ -706,7 +734,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
               </Button>
             }
           >
-            {describeApiError(error, 'load this queue')}
+            {describeApiError(error, messages.loadQueueAction, intl)}
           </Alert>
         )}
         {summary && (

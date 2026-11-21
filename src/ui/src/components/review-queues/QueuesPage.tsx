@@ -62,6 +62,7 @@ const messages = defineMessages<{
   deleted: QueueName;
   deletedMoved: QueueName;
   finalizing: NoMessageValues;
+  deleteQueueAction: NoMessageValues;
   menuView: NoMessageValues;
   menuSettings: NoMessageValues;
   menuDelete: NoMessageValues;
@@ -84,6 +85,7 @@ const messages = defineMessages<{
   title: NoMessageValues;
   productionStale: NoMessageValues;
   productionLoadError: NoMessageValues;
+  loadQueuesAction: NoMessageValues;
   retry: NoMessageValues;
   productionLoading: NoMessageValues;
   productionDescription: NoMessageValues;
@@ -92,6 +94,7 @@ const messages = defineMessages<{
   productionFindAriaLabel: NoMessageValues;
   testSetsStale: NoMessageValues;
   testSetsLoadError: NoMessageValues;
+  loadTestSetsAction: NoMessageValues;
   testSetsLoading: NoMessageValues;
   testSetsDescription: NoMessageValues;
   preparingSets: { readonly count: number };
@@ -154,6 +157,12 @@ const messages = defineMessages<{
     id: 'reviewQueues.queuesPage.finalizing',
     defaultMessage: 'An item in this queue is being completed. Try again in a minute.',
     description: "Error in the Delete queue dialog when the server refused the delete because one of the queue's items is being completed.",
+  },
+  deleteQueueAction: {
+    id: 'reviewQueues.queuesPage.deleteQueueAction',
+    defaultMessage: 'delete the queue',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when a queue cannot be deleted in Review Management.',
   },
   menuView: {
     id: 'reviewQueues.queuesPage.menu.view',
@@ -268,6 +277,12 @@ const messages = defineMessages<{
     defaultMessage: "Couldn't load the review queues",
     description: 'Header of the error in Review Management when the production queues could not be loaded at all.',
   },
+  loadQueuesAction: {
+    id: 'reviewQueues.queuesPage.loadQueuesAction',
+    defaultMessage: 'load the review queues',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the production queues cannot be loaded in Review Management.',
+  },
   retry: {
     id: 'reviewQueues.queuesPage.retry',
     defaultMessage: 'Retry',
@@ -310,6 +325,12 @@ const messages = defineMessages<{
     id: 'reviewQueues.queuesPage.testSets.loadError',
     defaultMessage: "Couldn't load the test sets",
     description: 'Header of the error in Review Management when the Test Studio queues (one per test set) could not be loaded at all.',
+  },
+  loadTestSetsAction: {
+    id: 'reviewQueues.queuesPage.loadTestSetsAction',
+    defaultMessage: 'load the test sets',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the Test Studio queues cannot be loaded in Review Management.',
   },
   testSetsLoading: {
     id: 'reviewQueues.queuesPage.testSets.loading',
@@ -595,7 +616,9 @@ const QueuesPage = (): React.JSX.Element => {
       await loadProduction();
     } catch (err) {
       setDeleteError(
-        reviewErrorCode(err) === 'QUEUE_FINALIZING' ? intl.formatMessage(messages.finalizing) : describeApiError(err, 'delete the queue'),
+        reviewErrorCode(err) === 'QUEUE_FINALIZING'
+          ? intl.formatMessage(messages.finalizing)
+          : describeApiError(err, messages.deleteQueueAction, intl),
       );
     } finally {
       setDeleteBusy(false);
@@ -845,7 +868,7 @@ const QueuesPage = (): React.JSX.Element => {
                   </Button>
                 }
               >
-                {describeApiError(productionError, 'load the review queues')}
+                {describeApiError(productionError, messages.loadQueuesAction, intl)}
               </Alert>
             )}
             <Table<ProductionRow>
@@ -888,7 +911,7 @@ const QueuesPage = (): React.JSX.Element => {
                   </Button>
                 }
               >
-                {describeApiError(testSetError, 'load the test sets')}
+                {describeApiError(testSetError, messages.loadTestSetsAction, intl)}
               </Alert>
             )}
             <Table<TestSetRow>
