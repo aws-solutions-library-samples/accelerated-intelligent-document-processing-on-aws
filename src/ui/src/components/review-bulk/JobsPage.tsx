@@ -33,7 +33,7 @@ import { usePaginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
 import { TableEmptyState, TableHeader, TableNoMatchState, filterCounterText } from '../common/table';
 import { cancelBulkJob, deleteBulkJob, listBulkJobs } from './bulk-review-api';
-import { ACTIVE_JOB_STATUSES, JOB_MODE_LABELS, JOB_TYPE_LABELS, jobStatusView } from './bulk-outcomes';
+import { ACTIVE_JOB_STATUSES, jobModeLabel, jobStatusView, jobTypeLabel } from './bulk-outcomes';
 import JobActionModal from './JobActionModals';
 import type { JobAction } from './JobActionModals';
 
@@ -282,7 +282,8 @@ const PAGE_SIZES = [10, 20, 50];
 export const skippedCount = (job: Pick<BulkReviewJob, 'counts'>): number => job.counts.find((c) => c.outcome === 'SKIPPED')?.count ?? 0;
 
 export const JobStatus = ({ job }: { job: Pick<BulkReviewJob, 'status' | 'stalled'> }): React.JSX.Element => {
-  const view = jobStatusView(job.status);
+  const intl = useIntl();
+  const view = jobStatusView(job.status, intl);
   return (
     <SpaceBetween direction="horizontal" size="xxs">
       <StatusIndicator type={view.type}>{view.label}</StatusIndicator>
@@ -337,8 +338,9 @@ export const jobMenuItems = (job: Pick<BulkReviewJob, 'status'>, intl: IntlShape
   ];
 };
 
-const searchText = (j: BulkReviewJob): string =>
-  [j.jobId, JOB_TYPE_LABELS[j.jobType] ?? j.jobType, jobStatusView(j.status).label, j.requestedBy, j.profile ?? '', j.reason]
+/** The text the filter matches, with the Type and Status worded as the table shows them. */
+const searchText = (j: BulkReviewJob, intl: IntlShape): string =>
+  [j.jobId, jobTypeLabel(j.jobType, intl), jobStatusView(j.status, intl).label, j.requestedBy, j.profile ?? '', j.reason]
     .join(' ')
     .toLowerCase();
 
@@ -383,7 +385,7 @@ const JobsPage = (): React.JSX.Element => {
         <TableEmptyState title={intl.formatMessage(messages.emptyTitle)} description={intl.formatMessage(messages.emptyDescription)} />
       ),
       noMatch: <TableNoMatchState onClearFilter={() => actions.setFiltering('')} />,
-      filteringFunction: (j, text) => searchText(j).includes(text.trim().toLowerCase()),
+      filteringFunction: (j, text) => searchText(j, intl).includes(text.trim().toLowerCase()),
     },
     pagination: { pageSize: preferences.pageSize },
     sorting: { defaultState: { sortingColumn: { sortingField: 'createdAt' }, isDescending: true } },
@@ -435,11 +437,11 @@ const JobsPage = (): React.JSX.Element => {
     {
       id: 'type',
       header: intl.formatMessage(messages.columnType),
-      cell: (j) => JOB_TYPE_LABELS[j.jobType] ?? j.jobType,
+      cell: (j) => jobTypeLabel(j.jobType, intl),
       sortingField: 'jobType',
     },
     { id: 'status', header: intl.formatMessage(messages.columnStatus), cell: (j) => <JobStatus job={j} />, sortingField: 'status' },
-    { id: 'mode', header: intl.formatMessage(messages.columnMode), cell: (j) => JOB_MODE_LABELS[j.mode] ?? j.mode, sortingField: 'mode' },
+    { id: 'mode', header: intl.formatMessage(messages.columnMode), cell: (j) => jobModeLabel(j.mode, intl), sortingField: 'mode' },
     { id: 'profile', header: intl.formatMessage(messages.columnProfile), cell: (j) => j.profile ?? '-', sortingField: 'profile' },
     { id: 'requestedBy', header: intl.formatMessage(messages.columnRequestedBy), cell: (j) => j.requestedBy, sortingField: 'requestedBy' },
     {

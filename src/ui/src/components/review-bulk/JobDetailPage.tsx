@@ -14,7 +14,7 @@ import { useFormatters } from '../../i18n/format';
 import { formatDateTime } from '../../utils/date-time';
 import type { BulkDocumentOutcome, BulkReviewJob } from '../../graphql/generated/schema-types';
 import { getBulkJob } from './bulk-review-api';
-import { ACTIVE_JOB_STATUSES, JOB_MODE_LABELS, JOB_TYPE_LABELS } from './bulk-outcomes';
+import { ACTIVE_JOB_STATUSES, jobModeLabel, jobTypeLabel } from './bulk-outcomes';
 import BulkResultsTable from './BulkResultsTable';
 import { JobStatus } from './JobsPage';
 import OutcomeCounts from './OutcomeCounts';
@@ -242,7 +242,7 @@ const JobDetailPage = (): React.JSX.Element => {
       <Container
         header={
           <Header variant="h1" description={job.jobId}>
-            {JOB_TYPE_LABELS[job.jobType] ?? job.jobType}
+            {jobTypeLabel(job.jobType, intl)}
           </Header>
         }
       >
@@ -267,7 +267,7 @@ const JobDetailPage = (): React.JSX.Element => {
             columns={3}
             items={[
               { label: intl.formatMessage(messages.status), value: <JobStatus job={job} /> },
-              { label: intl.formatMessage(messages.mode), value: JOB_MODE_LABELS[job.mode] ?? job.mode },
+              { label: intl.formatMessage(messages.mode), value: jobModeLabel(job.mode, intl) },
               { label: intl.formatMessage(messages.profile), value: job.profile ?? '-' },
               {
                 label: intl.formatMessage(messages.submittedBetween),

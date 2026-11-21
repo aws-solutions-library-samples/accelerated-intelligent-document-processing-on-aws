@@ -140,7 +140,7 @@ const BulkResultsTable = ({ results, loading = false, exportName, header, footer
     all,
     ...Object.keys(BULK_OUTCOMES)
       .filter((o) => present.has(o))
-      .map((o) => ({ label: outcomeView(o).label, value: o })),
+      .map((o) => ({ label: outcomeView(o, intl).label, value: o })),
   ];
   const { items, filterProps, paginationProps, collectionProps, filteredItemsCount } = useCollection(filtered, {
     filtering: {
@@ -225,12 +225,12 @@ const BulkResultsTable = ({ results, loading = false, exportName, header, footer
           id: 'outcome',
           header: intl.formatMessage(messages.outcomeColumn),
           cell: (r) => {
-            const view = outcomeView(r.outcome);
+            const view = outcomeView(r.outcome, intl);
             return <StatusIndicator type={view.type}>{view.label}</StatusIndicator>;
           },
           sortingField: 'outcome',
         },
-        { id: 'detail', header: intl.formatMessage(messages.detailColumn), cell: (r) => detailLabel(r.detail) || '-' },
+        { id: 'detail', header: intl.formatMessage(messages.detailColumn), cell: (r) => detailLabel(r.detail, intl) || '-' },
       ]}
     />
   );

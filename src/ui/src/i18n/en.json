@@ -4747,6 +4747,106 @@
     "defaultMessage": "Will be skipped",
     "description": "Outcome label in the dry-run preview of bulk Skip All Reviews: the reviews that the run will skip."
   },
+  "reviewBulk.outcomes.detail.finalizeRetryPending": {
+    "defaultMessage": "Finishing run will be retried",
+    "description": "Detail of a skipped review queue item in the bulk results table: the run that finishes its review could not start at once and is retried automatically."
+  },
+  "reviewBulk.outcomes.detail.resubmitFailed": {
+    "defaultMessage": "Resubmit failed",
+    "description": "Detail of a skipped document in the bulk results table: resubmitting it for downstream processing failed."
+  },
+  "reviewBulk.outcomes.detail.resubmitSkipped": {
+    "defaultMessage": "Not resubmitted (by request)",
+    "description": "Detail of a skipped document in the bulk results table: it was not resubmitted for downstream processing, as the requester chose."
+  },
+  "reviewBulk.outcomes.detail.resubmitterNotConfigured": {
+    "defaultMessage": "Resubmit not configured",
+    "description": "Detail of a skipped document in the bulk results table: it was not resubmitted, because resubmitting is not set up."
+  },
+  "reviewBulk.outcomes.jobMode.profile": {
+    "defaultMessage": "By profile",
+    "description": "How a bulk Skip All Reviews job chose its documents: by configuration profile and submitted-date range. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobMode.selected": {
+    "defaultMessage": "Selected documents",
+    "description": "How a bulk Skip All Reviews job chose its documents: the ones the user selected. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.cancelled": {
+    "defaultMessage": "Cancelled",
+    "description": "Status of a bulk Skip All Reviews job stopped at the requester's or an Admin's request. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.failed": {
+    "defaultMessage": "Failed",
+    "description": "Status of a bulk Skip All Reviews job that stopped on an error. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.queued": {
+    "defaultMessage": "Queued",
+    "description": "Status of a bulk Skip All Reviews job that is waiting to start. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.running": {
+    "defaultMessage": "Running",
+    "description": "Status of a bulk Skip All Reviews job that is working. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.succeeded": {
+    "defaultMessage": "Succeeded",
+    "description": "Status of a bulk Skip All Reviews job that finished. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobType.skipAllReviews": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "Type of a bulk Skip All Reviews job (the action's name), in the Jobs table and as the heading of the job's page."
+  },
+  "reviewBulk.outcomes.outcome.alreadyFinished": {
+    "defaultMessage": "Already finished",
+    "description": "Outcome of one document in bulk Skip All Reviews: left alone, because its review is already finished."
+  },
+  "reviewBulk.outcomes.outcome.alreadyInReview": {
+    "defaultMessage": "Already in review",
+    "description": "Outcome of one document in Send to review: not sent, because it is already in a review."
+  },
+  "reviewBulk.outcomes.outcome.failed": {
+    "defaultMessage": "Failed",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: an error stopped it, and it can be tried again."
+  },
+  "reviewBulk.outcomes.outcome.heldByOther": {
+    "defaultMessage": "Held by another reviewer",
+    "description": "Outcome of one document in bulk Skip All Reviews: left alone, because another reviewer holds its review."
+  },
+  "reviewBulk.outcomes.outcome.notAttempted": {
+    "defaultMessage": "Not attempted",
+    "description": "Outcome of one document in bulk Skip All Reviews: not tried, because the run reached its time limit first; it can be tried again."
+  },
+  "reviewBulk.outcomes.outcome.notFinishedProcessing": {
+    "defaultMessage": "Not finished processing",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: left alone, because it has not finished processing."
+  },
+  "reviewBulk.outcomes.outcome.notPending": {
+    "defaultMessage": "Not pending",
+    "description": "Outcome of one document in bulk Skip All Reviews: left alone, because it has no pending review."
+  },
+  "reviewBulk.outcomes.outcome.notPermitted": {
+    "defaultMessage": "Not permitted",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: left alone, because it is outside the user's scope or does not exist."
+  },
+  "reviewBulk.outcomes.outcome.resubmitFailed": {
+    "defaultMessage": "Resubmit failed",
+    "description": "Outcome of one document in bulk Skip All Reviews: its review was skipped, but its downstream processing run could not be queued."
+  },
+  "reviewBulk.outcomes.outcome.reviewQueueOff": {
+    "defaultMessage": "Review queue off",
+    "description": "Outcome of one document in Send to review: not sent, because the Default review queue is turned off."
+  },
+  "reviewBulk.outcomes.outcome.sent": {
+    "defaultMessage": "Sent",
+    "description": "Outcome of one document in Send to review: it was sent to the Default review queue."
+  },
+  "reviewBulk.outcomes.outcome.skipped": {
+    "defaultMessage": "Skipped",
+    "description": "Outcome of one document in bulk Skip All Reviews: its review was skipped."
+  },
+  "reviewBulk.outcomes.outcome.testStudioExcluded": {
+    "defaultMessage": "Test Studio excluded",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: left alone, because it is a Test Studio document."
+  },
   "reviewBulk.reviewMenu.releaseReview": {
     "defaultMessage": "Release Review",
     "description": "Review menu item of the Document List (Admin) that releases the claims on the selected documents' reviews."
