@@ -391,6 +391,10 @@
     "defaultMessage": "Loading revisions…",
     "description": "Shown in place of the Configuration revision selector while the revisions load."
   },
+  "common.copyToBaseline.inProgress": {
+    "defaultMessage": "A copy to the evaluation baseline is in progress",
+    "description": "Why Use As Evaluation Baseline is unavailable: a copy of the document's results to the evaluation baseline is running."
+  },
   "common.dateRangeFields.bothDatesRequired": {
     "defaultMessage": "Both start and end dates are required.",
     "description": "Validation error of a UTC date range when the start or end date is empty."
@@ -483,9 +487,73 @@
     "defaultMessage": "Previous page",
     "description": "Screen-reader label of the previous-page button of a table's pagination."
   },
+  "common.reasonModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the dialog that asks why before a review action (such as Skip All Reviews): closes it and does nothing."
+  },
+  "common.reasonModal.note": {
+    "defaultMessage": "Note",
+    "description": "Label, and screen-reader name, of the free-text note in the dialog that asks why before a review action."
+  },
+  "common.reasonModal.noteDescription": {
+    "defaultMessage": "Optional. Kept with the reason in the review history.",
+    "description": "Help text of the Note field: a note is optional and is recorded with the reason in the review history."
+  },
+  "common.reasonModal.noteTooLong": {
+    "defaultMessage": "Keep the note to {max} characters.",
+    "description": "Error under the Note field when the note is too long. {max} is the most characters a note may have."
+  },
+  "common.reasonModal.reason": {
+    "defaultMessage": "Reason",
+    "description": "Label, and screen-reader name, of the list of reasons in the dialog that asks why before a review action."
+  },
+  "common.reasonModal.reasonPlaceholder": {
+    "defaultMessage": "Choose a reason",
+    "description": "Placeholder of the Reason list until a reason is chosen."
+  },
+  "common.reasonModal.reasonRequired": {
+    "defaultMessage": "Choose a reason.",
+    "description": "Error under the Reason list when the review action was confirmed without a reason."
+  },
   "common.relativeTime.justNow": {
     "defaultMessage": "just now",
     "description": "Relative time of something less than 45 seconds old, where older times read \"5 minutes ago\" or \"yesterday\"."
+  },
+  "common.reviewStatus.inReviewQueue.canWork": {
+    "defaultMessage": "This document is in a review queue. Choose Edit to work on it there.",
+    "description": "Why an action of the document page is unavailable while the document waits in a review queue, for a user who works review queues: the page's Edit button opens its queue item."
+  },
+  "common.reviewStatus.inReviewQueue.cannotWork": {
+    "defaultMessage": "This document is in a review queue. An Admin, Annotator or Reviewer reviews it there.",
+    "description": "Why an action of the document page is unavailable while the document waits in a review queue, for a user who does not work review queues."
+  },
+  "common.reviewStatus.reason.downstreamQuery": {
+    "defaultMessage": "Customer or downstream query",
+    "description": "A reason in the Reason list of Send to review: a customer or a downstream system asked about the document."
+  },
+  "common.reviewStatus.reason.duplicateDocument": {
+    "defaultMessage": "Duplicate document",
+    "description": "A reason in the Reason list of Skip All Reviews and bulk skip: the document is a copy of another one."
+  },
+  "common.reviewStatus.reason.otherSeeNote": {
+    "defaultMessage": "Other (see note)",
+    "description": "A reason in the Reason list of Skip All Reviews, bulk skip and Send to review: another reason, written in the Note."
+  },
+  "common.reviewStatus.reason.reviewNotNeeded": {
+    "defaultMessage": "Review not needed for this document",
+    "description": "A reason in the Reason list of Skip All Reviews and bulk skip: the document needs no review."
+  },
+  "common.reviewStatus.reason.spotCheck": {
+    "defaultMessage": "Spot check",
+    "description": "A reason in the Reason list of Send to review: a finished document is checked at random."
+  },
+  "common.reviewStatus.reason.suspectedExtractionError": {
+    "defaultMessage": "Suspected extraction error",
+    "description": "A reason in the Reason list of Send to review: a value extracted from the document looks wrong."
+  },
+  "common.reviewStatus.reason.valuesLookCorrect": {
+    "defaultMessage": "Extracted values look correct",
+    "description": "A reason in the Reason list of Skip All Reviews and bulk skip: the document's extracted values look correct."
   },
   "common.reviewStatus.state.claimed": {
     "defaultMessage": "Claimed",
@@ -783,9 +851,169 @@
     "defaultMessage": "For a rider: the rules you choose are removed and this upload's rules are added. A new rule with a superseded rule's name takes its place; the rest are added alongside.",
     "description": "Explanation of the Supersede chosen rules option."
   },
+  "documentActions.bar.details": {
+    "defaultMessage": "Details",
+    "description": "Option of the document page's view switch: shows the document's details, sections and pages."
+  },
+  "documentActions.bar.edit": {
+    "defaultMessage": "Edit",
+    "description": "Primary button of the document page's action bar: opens the document's edit page."
+  },
+  "documentActions.bar.editInQueue": {
+    "defaultMessage": "Edit this document in its review queue",
+    "description": "Screen-reader name of the Edit button while the document is in a review queue, where Edit opens its queue item."
+  },
+  "documentActions.bar.moreActions": {
+    "defaultMessage": "More Actions",
+    "description": "Menu of the document page's action bar with the changes, the downloads, and Reprocess, Abort and Delete."
+  },
+  "documentActions.bar.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button of the document page's action bar that reads the document again."
+  },
+  "documentActions.bar.reports": {
+    "defaultMessage": "Reports",
+    "description": "Menu of the document page's action bar that opens the document's reports."
+  },
+  "documentActions.bar.source": {
+    "defaultMessage": "Source",
+    "description": "Option of the document page's view switch: shows the source document in place of its details."
+  },
+  "documentActions.bar.startReview": {
+    "defaultMessage": "Start Review",
+    "description": "Button of the document page's action bar with which a reviewer takes the document's pending review."
+  },
+  "documentActions.bar.troubleshoot": {
+    "defaultMessage": "Troubleshoot",
+    "description": "Button of the document page's action bar that opens Troubleshoot, where an agent looks into the document's processing."
+  },
+  "documentActions.bar.viewSwitch": {
+    "defaultMessage": "Show the document's details or its source",
+    "description": "Screen-reader name of the Details | Source switch at the start of the document page's action bar."
+  },
+  "documentActions.baseline.available": {
+    "defaultMessage": "Baseline available",
+    "description": "Value of the Evaluation field of Document Details once the document's results are in the evaluation baseline."
+  },
+  "documentActions.baseline.copyFailed": {
+    "defaultMessage": "The copy of {name} to the evaluation baseline failed.",
+    "description": "Error notification when a running copy of the document to the evaluation baseline ended in an error. {name} is the document name."
+  },
+  "documentActions.baseline.copyStarted": {
+    "defaultMessage": "Copying {name} to the evaluation baseline. Its evaluation status shows when the copy is done.",
+    "description": "Success notification after Use As Evaluation Baseline started the copy. {name} is the document name."
+  },
+  "documentActions.baseline.copying": {
+    "defaultMessage": "Baseline copying in progress",
+    "description": "Value of the Evaluation field of Document Details while the document's results are copied to the evaluation baseline."
+  },
+  "documentActions.baseline.failed": {
+    "defaultMessage": "Baseline copy failed",
+    "description": "Value of the Evaluation field of Document Details when the copy of the document's results to the evaluation baseline failed."
+  },
+  "documentActions.baseline.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Value of the Evaluation field of Document Details when the document has no evaluation status."
+  },
+  "documentActions.baseline.useFailed": {
+    "defaultMessage": "Could not use {name} as the evaluation baseline: {error}",
+    "description": "Error notification when Use As Evaluation Baseline could not start the copy. {name} is the document name; {error} is the server's reason."
+  },
+  "documentActions.download.all": {
+    "defaultMessage": "Download All (ZIP)",
+    "description": "Item of the document page's More Actions menu: downloads the document's files as a ZIP, after asking what to include."
+  },
+  "documentActions.download.baselines": {
+    "defaultMessage": "Download Baselines (ZIP)",
+    "description": "Item of the document page's More Actions menu: downloads the document's evaluation baseline as a ZIP."
+  },
+  "documentActions.download.failed": {
+    "defaultMessage": "Download failed: {error}",
+    "description": "Error notification when a download from the document page failed. {error} is the reason as the browser or the server gave it, or \"Unknown error\"."
+  },
+  "documentActions.download.menu": {
+    "defaultMessage": "Download",
+    "description": "Name of the document page's downloads menu, whose items show as a group in the More Actions menu."
+  },
+  "documentActions.download.predictions": {
+    "defaultMessage": "Download Predictions (ZIP)",
+    "description": "Item of the document page's More Actions menu: downloads the document's extraction results as a ZIP."
+  },
+  "documentActions.download.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Stands for the reason in \"Download failed: …\" when the failure gave none."
+  },
+  "documentActions.moreActions.abort": {
+    "defaultMessage": "Abort",
+    "description": "Item of the document page's More Actions menu: stops the document's processing."
+  },
+  "documentActions.moreActions.delete": {
+    "defaultMessage": "Delete",
+    "description": "Item of the document page's More Actions menu, the last one: deletes the document."
+  },
+  "documentActions.moreActions.editPageGrouping": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Item of the document page's More Actions menu: opens the board where the document's pages are regrouped into sections."
+  },
+  "documentActions.moreActions.editPageText": {
+    "defaultMessage": "Edit Page Text",
+    "description": "Item of the document page's More Actions menu: opens the dialog that edits a page's text and reprocesses it."
+  },
+  "documentActions.moreActions.reextractSections": {
+    "defaultMessage": "Re-extract Sections",
+    "description": "Item of the document page's More Actions menu: opens the dialog that extracts chosen sections again."
+  },
+  "documentActions.moreActions.reprocess": {
+    "defaultMessage": "Reprocess",
+    "description": "Item of the document page's More Actions menu: processes the document again."
+  },
+  "documentActions.moreActions.resetPageClass": {
+    "defaultMessage": "Reset Page Class",
+    "description": "Item of the document page's More Actions menu: opens the dialog that classifies chosen pages again."
+  },
   "documentActions.moreActions.sendToReview": {
     "defaultMessage": "Send to review",
     "description": "Item of the document page's More Actions menu that sends a finished document to a review queue."
+  },
+  "documentActions.moreActions.skipAllReviews": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "Item of the document page's More Actions menu: asks why, then skips all of the document's pending section reviews."
+  },
+  "documentActions.moreActions.useAsBaseline": {
+    "defaultMessage": "Use As Evaluation Baseline",
+    "description": "Item of the document page's More Actions menu: copies the document's results into the evaluation baseline."
+  },
+  "documentActions.reportDialog.evaluationReport": {
+    "defaultMessage": "Evaluation Report",
+    "description": "Title of the dialog that shows the document's evaluation report, opened from the document page's Reports menu."
+  },
+  "documentActions.reportDialog.ruleValidationEmpty": {
+    "defaultMessage": "Rule validation summary not available for this document",
+    "description": "Text of the Rule Validation Summary dialog when the document has no rule validation summary."
+  },
+  "documentActions.reportDialog.ruleValidationSummary": {
+    "defaultMessage": "Rule Validation Summary",
+    "description": "Title of the dialog that shows the document's rule validation summary, opened from the document page's Reports menu."
+  },
+  "documentActions.reports.estimatedCost": {
+    "defaultMessage": "Estimated Cost",
+    "description": "Item of the document page's Reports menu: opens the estimated cost of processing the document."
+  },
+  "documentActions.reports.evaluationReport": {
+    "defaultMessage": "Evaluation Report",
+    "description": "Item of the document page's Reports menu: opens the document's evaluation report."
+  },
+  "documentActions.reports.processingFlow": {
+    "defaultMessage": "Processing Flow",
+    "description": "Item of the document page's Reports menu: opens the diagram of the document's processing workflow."
+  },
+  "documentActions.reports.ruleValidationSummary": {
+    "defaultMessage": "Rule Validation Summary",
+    "description": "Item of the document page's Reports menu: opens the document's rule validation summary."
+  },
+  "documentActions.reports.summary": {
+    "defaultMessage": "Summary",
+    "description": "Item of the document page's Reports menu: opens the document's summary."
   },
   "documentActions.sendToReview.failed": {
     "defaultMessage": "Could not send {name} to review: {outcome}.",
@@ -795,6 +1023,34 @@
     "defaultMessage": "Sent {name} to review.",
     "description": "Success notification after Send to review. {name} is the document name."
   },
+  "documentActions.skipAllReviews.confirm": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "Confirm button of the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.failed": {
+    "defaultMessage": "Failed to skip all sections: {error}",
+    "description": "Error notification when Skip All Reviews did not skip the reviews. {error} is the server's reason."
+  },
+  "documentActions.skipAllReviews.header": {
+    "defaultMessage": "Skip All Section Reviews",
+    "description": "Title of the dialog that asks why before Skip All Reviews skips all of the document's pending section reviews."
+  },
+  "documentActions.skipAllReviews.intro": {
+    "defaultMessage": "Skipping review will:",
+    "description": "Lead-in of the list of what skipping does, in the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.markSkipped": {
+    "defaultMessage": "Mark all pending sections as review skipped without human verification",
+    "description": "First item of the list of what skipping does, in the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.question": {
+    "defaultMessage": "Are you sure you want to skip all section reviews?",
+    "description": "Question above the reason in the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.recorded": {
+    "defaultMessage": "Record this action, with your reason, in the review history",
+    "description": "Second item of the list of what skipping does, in the Skip All Section Reviews dialog."
+  },
   "documentActions.skipAllReviews.resubmitDescription": {
     "defaultMessage": "Re-runs Summarization and Evaluation on the unedited results and fires the post-processing hook.",
     "description": "Help text under the Resubmit checkbox in the Skip All Section Reviews dialog."
@@ -802,6 +1058,38 @@
   "documentActions.skipAllReviews.resubmitLabel": {
     "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
     "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
+  },
+  "documentActions.skipAllReviews.skipped": {
+    "defaultMessage": "Skipped the review of {name}.",
+    "description": "Success notification after Skip All Reviews skipped the document's pending section reviews. {name} is the document name."
+  },
+  "documentActions.skipAllReviews.warning": {
+    "defaultMessage": "This action will skip all pending section reviews and continue the document processing workflow.",
+    "description": "Warning at the top of the Skip All Section Reviews dialog."
+  },
+  "documentActions.startReview.claimed": {
+    "defaultMessage": "You now hold the review of {name}. Choose Edit to work on it.",
+    "description": "Success notification after Start Review gave the user the review of the document. {name} is the document name."
+  },
+  "documentActions.startReview.failed": {
+    "defaultMessage": "Failed to start review: {error}",
+    "description": "Error notification when Start Review did not give the user the review. {error} is the server's reason."
+  },
+  "documentActions.unfinishedPageText.notice": {
+    "defaultMessage": "Page {pageId}'s text was saved, but {name} was not reprocessed.",
+    "description": "Error notice on the document page when a page's edited text was saved but reprocessing the document failed. {pageId} is the page's number; {name} is the document name."
+  },
+  "documentActions.unfinishedPageText.reprocessFailed": {
+    "defaultMessage": "Could not reprocess {name}: {error}",
+    "description": "Error notification when Retry reprocess failed again. {name} is the document name; {error} is the server's reason."
+  },
+  "documentActions.unfinishedPageText.retry": {
+    "defaultMessage": "Retry reprocess",
+    "description": "Button of the notice that a saved page text was not reprocessed: reprocesses the document again."
+  },
+  "documentActions.unfinishedPageText.saved": {
+    "defaultMessage": "Saved page {pageId}'s text of {name}. The sections that hold it are being extracted again.",
+    "description": "Success notification after Retry reprocess reprocessed a page whose edited text was saved earlier. {pageId} is the page's number; {name} is the document name."
   },
   "documentPanel.callerAttributes.label": {
     "defaultMessage": "Attributes",

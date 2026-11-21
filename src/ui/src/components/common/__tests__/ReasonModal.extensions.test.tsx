@@ -4,11 +4,18 @@
 /** ReasonModal's optional controls: a disabled-confirm reason, blocked dismissal, extras. */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 
 import ReasonModal from '../ReasonModal';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const renderModal = (props: Partial<React.ComponentProps<typeof ReasonModal>> = {}) => {
   const onConfirm = vi.fn();
@@ -23,6 +30,7 @@ const renderModal = (props: Partial<React.ComponentProps<typeof ReasonModal>> = 
       onConfirm={onConfirm}
       {...props}
     />,
+    { wrapper: English },
   );
   const modal = createWrapper(document.body).findModal()!;
   const button = (label: string) =>

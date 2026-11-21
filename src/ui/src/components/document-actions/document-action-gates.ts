@@ -17,6 +17,8 @@
 // availability. The actions that call processChanges are, for a caller who is not an
 // Admin, also refused unless the caller holds the document's open review (O), as the
 // server refuses them.
+import type { IntlShape } from 'react-intl';
+
 import { baselineCopyBlockedReason } from '../common/copy-to-baseline';
 import { ABORTABLE_STATUSES } from '../common/document-statuses';
 import { inReviewQueueEditReason, isHitlReviewFinished, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
@@ -210,11 +212,15 @@ export const isOfferedTo = (roles: ActionRoles, action: GatedAction): boolean =>
 /** The first reason that applies, in order. */
 const first = (...checks: [boolean, string | undefined][]): string | undefined => checks.find(([applies]) => applies)?.[1];
 
-export const documentActionGates = (input: GateInput): DocumentActionGates => {
+/**
+ * Every action's gate for one document. With `intl`, the reasons that a review queue holds
+ * the document or a baseline copy runs are in the UI's language; without it, English.
+ */
+export const documentActionGates = (input: GateInput, intl?: IntlShape): DocumentActionGates => {
   const { roles, doc, displayed, isHistorical, holdsReview, bdaMode, configLoading, baselineRequestInFlight, defaultQueueEnabled } = input;
   const H: [boolean, string] = [isHistorical, HISTORICAL_REASON];
   const inQueue = isInReviewQueue(doc.hitlStatus);
-  const Q: [boolean, string] = [inQueue, inReviewQueueEditReason(roles.canWorkReviewQueues)];
+  const Q: [boolean, string] = [inQueue, inReviewQueueEditReason(roles.canWorkReviewQueues, intl)];
   const processing = !isEditableStatus(doc.objectStatus);
   const P: [boolean, string] = [processing, PROCESSING_REASON];
   const C: [boolean, string] = [configLoading, CONFIG_LOADING_REASON];
@@ -282,12 +288,12 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
       Q,
       P,
       [baselineRequestInFlight, BASELINE_COPYING_REASON],
-      [!!baselineCopyBlockedReason(doc.evaluationStatus), baselineCopyBlockedReason(doc.evaluationStatus)],
+      [!!baselineCopyBlockedReason(doc.evaluationStatus), baselineCopyBlockedReason(doc.evaluationStatus, intl)],
     ),
     'skip-all': gate(
       'skip-all',
       H,
-      [hitl.queueManaged && hitl.kind === 'in_review', inReviewQueueEditReason(roles.canWorkReviewQueues)],
+      [hitl.queueManaged && hitl.kind === 'in_review', inReviewQueueEditReason(roles.canWorkReviewQueues, intl)],
       [!pendingReview, NO_PENDING_REVIEW_REASON],
     ),
     'send-to-review': gate(

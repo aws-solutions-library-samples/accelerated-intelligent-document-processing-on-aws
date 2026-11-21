@@ -120,17 +120,68 @@ export const isInReviewQueue = (raw: string | null | undefined): boolean => {
 };
 
 /**
+ * The fixed reasons the server accepts, one message each (`Other (see note)` is in both
+ * lists below). A reason is sent as its English source text, the one spelling the server
+ * accepts; the message only words it for the reader (fixedReasonLabel).
+ */
+const fixedReasonMessages = defineMessages<{
+  valuesLookCorrect: NoMessageValues;
+  reviewNotNeeded: NoMessageValues;
+  duplicateDocument: NoMessageValues;
+  otherSeeNote: NoMessageValues;
+  spotCheck: NoMessageValues;
+  suspectedExtractionError: NoMessageValues;
+  downstreamQuery: NoMessageValues;
+}>({
+  valuesLookCorrect: {
+    id: 'common.reviewStatus.reason.valuesLookCorrect',
+    defaultMessage: 'Extracted values look correct',
+    description: "A reason in the Reason list of Skip All Reviews and bulk skip: the document's extracted values look correct.",
+  },
+  reviewNotNeeded: {
+    id: 'common.reviewStatus.reason.reviewNotNeeded',
+    defaultMessage: 'Review not needed for this document',
+    description: 'A reason in the Reason list of Skip All Reviews and bulk skip: the document needs no review.',
+  },
+  duplicateDocument: {
+    id: 'common.reviewStatus.reason.duplicateDocument',
+    defaultMessage: 'Duplicate document',
+    description: 'A reason in the Reason list of Skip All Reviews and bulk skip: the document is a copy of another one.',
+  },
+  otherSeeNote: {
+    id: 'common.reviewStatus.reason.otherSeeNote',
+    defaultMessage: 'Other (see note)',
+    description: 'A reason in the Reason list of Skip All Reviews, bulk skip and Send to review: another reason, written in the Note.',
+  },
+  spotCheck: {
+    id: 'common.reviewStatus.reason.spotCheck',
+    defaultMessage: 'Spot check',
+    description: 'A reason in the Reason list of Send to review: a finished document is checked at random.',
+  },
+  suspectedExtractionError: {
+    id: 'common.reviewStatus.reason.suspectedExtractionError',
+    defaultMessage: 'Suspected extraction error',
+    description: 'A reason in the Reason list of Send to review: a value extracted from the document looks wrong.',
+  },
+  downstreamQuery: {
+    id: 'common.reviewStatus.reason.downstreamQuery',
+    defaultMessage: 'Customer or downstream query',
+    description: 'A reason in the Reason list of Send to review: a customer or a downstream system asked about the document.',
+  },
+});
+
+/**
  * Why a legacy review is finished without anyone checking it (Skip All Reviews).
  * The server accepts only these: `SKIP_ALL_REASONS` in
  * `lib/idp_common_pkg/idp_common/review_queues/statuses.py`, asserted equal by
  * `review-status.skipAllReasons.test.ts`.
  */
 export const SKIP_ALL_REASONS: readonly string[] = [
-  'Extracted values look correct',
-  'Review not needed for this document',
-  'Duplicate document',
-  'Other (see note)',
-];
+  fixedReasonMessages.valuesLookCorrect,
+  fixedReasonMessages.reviewNotNeeded,
+  fixedReasonMessages.duplicateDocument,
+  fixedReasonMessages.otherSeeNote,
+].map((d) => String(d.defaultMessage));
 
 /**
  * Why a finished production document is sent to a review queue by hand (Send to
@@ -139,11 +190,11 @@ export const SKIP_ALL_REASONS: readonly string[] = [
  * `review-status.skipAllReasons.test.ts`.
  */
 export const SEND_TO_REVIEW_REASONS: readonly string[] = [
-  'Spot check',
-  'Suspected extraction error',
-  'Customer or downstream query',
-  'Other (see note)',
-];
+  fixedReasonMessages.spotCheck,
+  fixedReasonMessages.suspectedExtractionError,
+  fixedReasonMessages.downstreamQuery,
+  fixedReasonMessages.otherSeeNote,
+].map((d) => String(d.defaultMessage));
 
 /** The reason (and note) recorded with a document's latest Skip All Reviews, if any. */
 export const lastSkipAllReason = (history: unknown): { reason: string; note?: string } | null => {
@@ -153,11 +204,12 @@ export const lastSkipAllReason = (history: unknown): { reason: string; note?: st
   return { reason: entry.reason as string, note: typeof entry.note === 'string' ? entry.note : undefined };
 };
 
-/** Why editing is off on the document page while it is in a review queue. */
-export const inReviewQueueEditReason = (canWorkReviewQueues: boolean): string =>
-  canWorkReviewQueues
-    ? 'This document is in a review queue. Choose Edit to work on it there.'
-    : 'This document is in a review queue. An Admin, Annotator or Reviewer reviews it there.';
+/**
+ * Why editing is off on the document page while it is in a review queue: in the UI's
+ * language with `intl`, the English source text without.
+ */
+export const inReviewQueueEditReason = (canWorkReviewQueues: boolean, intl?: IntlShape): string =>
+  labelOf(canWorkReviewQueues ? messages.inReviewQueueCanWork : messages.inReviewQueueCannotWork, intl);
 
 export interface StateView {
   label: string;
@@ -219,11 +271,27 @@ const stateMessages = defineMessages<Record<QueueItemStateValue, NoMessageValues
   },
 });
 
-const messages = defineMessages<{ unknownState: NoMessageValues }>({
+const messages = defineMessages<{
+  unknownState: NoMessageValues;
+  inReviewQueueCanWork: NoMessageValues;
+  inReviewQueueCannotWork: NoMessageValues;
+}>({
   unknownState: {
     id: 'common.reviewStatus.state.unknown',
     defaultMessage: 'Unknown',
     description: 'State label of a review queue item when no state is known for it.',
+  },
+  inReviewQueueCanWork: {
+    id: 'common.reviewStatus.inReviewQueue.canWork',
+    defaultMessage: 'This document is in a review queue. Choose Edit to work on it there.',
+    description:
+      "Why an action of the document page is unavailable while the document waits in a review queue, for a user who works review queues: the page's Edit button opens its queue item.",
+  },
+  inReviewQueueCannotWork: {
+    id: 'common.reviewStatus.inReviewQueue.cannotWork',
+    defaultMessage: 'This document is in a review queue. An Admin, Annotator or Reviewer reviews it there.',
+    description:
+      'Why an action of the document page is unavailable while the document waits in a review queue, for a user who does not work review queues.',
   },
 });
 
@@ -252,3 +320,18 @@ export const reviewItemStateView = (state: string | null | undefined, intl?: Int
   state != null && isQueueItemState(state)
     ? { label: labelOf(stateMessages[state], intl), type: STATE_TYPES[state] }
     : { label: state ?? labelOf(messages.unknownState, intl), type: 'info' };
+
+/** Each fixed reason's message, by the English source text the server accepts and stores. */
+const fixedReasonByText: ReadonlyMap<string, TypedMessageDescriptor<NoMessageValues>> = new Map(
+  Object.values(fixedReasonMessages).map((d) => [String(d.defaultMessage), d]),
+);
+
+/**
+ * How a reason reads in the reason dialog: one of the server's fixed reasons in the UI's
+ * language with `intl` (its English source text without); any other reason, such as a
+ * queue's own skip reasons, as stored.
+ */
+export const fixedReasonLabel = (reason: string, intl?: IntlShape): string => {
+  const message = fixedReasonByText.get(reason);
+  return message ? labelOf(message, intl) : reason;
+};

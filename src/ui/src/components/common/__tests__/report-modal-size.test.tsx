@@ -9,6 +9,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,6 +35,12 @@ import DocumentReportDialog from '../../document-actions/DocumentReportDialog';
 
 const modalSize = () => screen.getByTestId('modal').getAttribute('data-size');
 const noop = () => undefined;
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 describe('Reports dialog width', () => {
   afterEach(cleanup);
@@ -67,6 +74,7 @@ describe('Reports dialog width', () => {
         displayed={{ objectKey: 'doc.pdf', evaluationReportUri: 's3://b/e.json' }}
         onDismiss={noop}
       />,
+      { wrapper: English },
     );
     expect(modalSize()).toBe('max');
   });
