@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 199,
-    "findings": 5366
+    "files": 195,
+    "findings": 5267
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -166,16 +166,12 @@
     "src/ui/src/components/pages-panel/PageTextEditorModal.tsx": 1,
     "src/ui/src/components/pricing-layout/PricingLayout.tsx": 77,
     "src/ui/src/components/pricing-layout/tools-panel.tsx": 9,
-    "src/ui/src/components/review-queues/AssignModal.tsx": 10,
     "src/ui/src/components/review-queues/MyQueuesPage.tsx": 1,
     "src/ui/src/components/review-queues/MyTasksPage.tsx": 1,
-    "src/ui/src/components/review-queues/QueueAnnotatorsTable.tsx": 10,
     "src/ui/src/components/review-queues/QueueDefinitionModal.tsx": 4,
-    "src/ui/src/components/review-queues/QueueProgress.tsx": 1,
     "src/ui/src/components/review-queues/QueuesPage.tsx": 3,
-    "src/ui/src/components/review-queues/ReviewQueuePage.tsx": 47,
-    "src/ui/src/components/review-queues/SupervisorModals.tsx": 18,
-    "src/ui/src/components/review-queues/use-supervisor-actions.tsx": 18,
+    "src/ui/src/components/review-queues/ReviewQueuePage.tsx": 4,
+    "src/ui/src/components/review-queues/use-supervisor-actions.tsx": 1,
     "src/ui/src/components/sections-panel/SectionsPanel.tsx": 33,
     "src/ui/src/components/step-function-flow/FlowDiagram.tsx": 9,
     "src/ui/src/components/step-function-flow/StepDetails.tsx": 25,

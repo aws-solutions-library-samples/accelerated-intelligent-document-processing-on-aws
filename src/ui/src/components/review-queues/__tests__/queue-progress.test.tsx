@@ -11,13 +11,20 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import QueueProgress, { progressPercent } from '../QueueProgress';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('Queue Progress', () => {
   it('is titled Queue Progress, and says what it counts', () => {
-    render(<QueueProgress count={12} total={40} countLabel="assigned or in progress" description="Work underway" />);
+    render(<QueueProgress count={12} total={40} countLabel="underway" description="Work underway" />, { wrapper: English });
     const container = createWrapper(document.body).findContainer()!;
     expect(container.findHeader()!.getElement().textContent).toBe('Queue Progress');
     const bar = createWrapper(document.body).findProgressBar()!;
@@ -26,7 +33,7 @@ describe('Queue Progress', () => {
   });
 
   it('takes about half the panel, with a bar that is nearly square at the corners', () => {
-    render(<QueueProgress count={1} total={2} countLabel="completed" description="d" />);
+    render(<QueueProgress count={1} total={2} countLabel="completed" description="d" />, { wrapper: English });
     const bar = createWrapper(document.body).findProgressBar()!.getElement();
     const wrapper = bar.parentElement as HTMLElement;
     expect(wrapper.style.width).toBe('50%');

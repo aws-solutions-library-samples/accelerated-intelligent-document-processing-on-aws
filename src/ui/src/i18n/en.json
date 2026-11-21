@@ -4895,6 +4895,82 @@
     "defaultMessage": "Select finished documents that are not in review",
     "description": "Why the Send to review confirm button is disabled: no selected document can be sent."
   },
+  "reviewQueues.annotatorsTable.column.annotator": {
+    "defaultMessage": "Annotator",
+    "description": "Column header of a queue's Annotators table: the Annotator's e-mail address."
+  },
+  "reviewQueues.annotatorsTable.column.assigned": {
+    "defaultMessage": "Assigned documents",
+    "description": "Column header of a queue's Annotators table: how many of the queue's documents are assigned to the Annotator."
+  },
+  "reviewQueues.annotatorsTable.description": {
+    "defaultMessage": "The Annotators who work this queue, and the documents assigned to each.",
+    "description": "Description under the heading of a queue's Annotators table, on the queue's page."
+  },
+  "reviewQueues.annotatorsTable.empty": {
+    "defaultMessage": "No Annotators are listed on this queue. Add them in Settings.",
+    "description": "Shown in a queue's Annotators table when the queue lists no Annotator. Settings names the queue page's Settings button."
+  },
+  "reviewQueues.annotatorsTable.find": {
+    "defaultMessage": "Find Annotators",
+    "description": "Placeholder and screen-reader label of the text filter of a queue's Annotators table."
+  },
+  "reviewQueues.annotatorsTable.loading": {
+    "defaultMessage": "Loading Annotators",
+    "description": "Shown in a queue's Annotators table while it loads. Annotator is a user role."
+  },
+  "reviewQueues.annotatorsTable.notListed": {
+    "defaultMessage": "{email} (not listed)",
+    "description": "An Annotator in a queue's Annotators table who is no longer listed on the queue but still holds some of its items. {email} is the Annotator's e-mail address."
+  },
+  "reviewQueues.annotatorsTable.notListedHint": {
+    "defaultMessage": "No longer listed in this queue's Eligible Annotators; still holds its items",
+    "description": "Tooltip of an Annotator in a queue's Annotators table who was taken off the queue's list but still holds some of its items. \"Eligible Annotators\" names a field of the queue's Settings dialog."
+  },
+  "reviewQueues.annotatorsTable.title": {
+    "defaultMessage": "Annotators",
+    "description": "Heading of a queue's Annotators table, on the queue's page. Annotator is a user role."
+  },
+  "reviewQueues.assignModal.annotator": {
+    "defaultMessage": "Annotator",
+    "description": "Label of the Assign to Annotator dialog's field that chooses the Annotator, by e-mail address. Annotator is a user role."
+  },
+  "reviewQueues.assignModal.assign": {
+    "defaultMessage": "Assign",
+    "description": "Button of the Assign to Annotator dialog that assigns the items to the chosen Annotator."
+  },
+  "reviewQueues.assignModal.bodyCount": {
+    "defaultMessage": "Assign {count, plural, one {# item} other {# items}} to an Annotator. They find it in Home › Tasks and are told in their Inbox.",
+    "description": "Body of the Assign to Annotator dialog for several items. {count} is how many. \"Home › Tasks\" is the page path where the Annotator works them; Inbox is the page of their messages."
+  },
+  "reviewQueues.assignModal.bodyDocument": {
+    "defaultMessage": "Assign {document} to an Annotator. They find it in Home › Tasks and are told in their Inbox.",
+    "description": "Body of the Assign to Annotator dialog for one item. {document} is its file name. \"Home › Tasks\" is the page path where the Annotator works the item; Inbox is the page of their messages."
+  },
+  "reviewQueues.assignModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Assign to Annotator dialog that closes it without assigning."
+  },
+  "reviewQueues.assignModal.empty": {
+    "defaultMessage": "No Annotators are listed on this queue. Add them under Eligible Annotators in the queue's Settings.",
+    "description": "Shown in the Annotator list of the Assign to Annotator dialog when the queue lists no other Annotator. \"Eligible Annotators\" names a field of the queue's Settings dialog."
+  },
+  "reviewQueues.assignModal.loading": {
+    "defaultMessage": "Loading Annotators",
+    "description": "Shown in the Annotator list of the Assign to Annotator dialog while the Annotators are loading."
+  },
+  "reviewQueues.assignModal.placeholder": {
+    "defaultMessage": "Choose an Annotator",
+    "description": "Placeholder of the Annotator field of the Assign to Annotator dialog."
+  },
+  "reviewQueues.assignModal.required": {
+    "defaultMessage": "Choose an Annotator.",
+    "description": "Error under the Annotator field of the Assign to Annotator dialog when the user assigns without choosing one."
+  },
+  "reviewQueues.assignModal.title": {
+    "defaultMessage": "Assign to Annotator",
+    "description": "Title of the dialog that assigns the selected review items to an Annotator. Annotator is a user role."
+  },
   "reviewQueues.myQueues.column.items": {
     "defaultMessage": "Items",
     "description": "Column header of the Home › Queues table: how many items the queue holds."
@@ -5003,6 +5079,110 @@
     "defaultMessage": "Select items to assign them to an Annotator or unassign them. More actions moves them to another queue, removes them from the queues or skips their reviews. Edit opens an item without changing its assignment.",
     "description": "Description under the Items table header of a review queue, for an Admin. \"More actions\" and \"Edit\" name the table's menu and row action."
   },
+  "reviewQueues.queuePage.annotatorDescription": {
+    "defaultMessage": "Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.",
+    "description": "Description under the Documents table header of a review queue, for an Annotator. \"Claim\" and \"Next item\" name the buttons above the table; \"Home › Tasks\" is the page path where the Annotator works the items they hold."
+  },
+  "reviewQueues.queuePage.assignTo": {
+    "defaultMessage": "Assign to…",
+    "description": "Button above an Admin's view of a review queue's Documents table that assigns the selected items to an Annotator (opens a dialog). The count of assignable items is appended in parentheses."
+  },
+  "reviewQueues.queuePage.claim": {
+    "defaultMessage": "Claim",
+    "description": "Button above an Annotator's view of a review queue's Documents table, and item of a row's menu, that assigns the items to the Annotator. The count of selected items waiting for review is appended to the button in parentheses."
+  },
+  "reviewQueues.queuePage.claimAssignedTo": {
+    "defaultMessage": "Assigned to {annotator}",
+    "description": "Why the Claim item of a review item's row menu is disabled: another person holds it. {annotator} is that Annotator's e-mail address, or the Documents table's word for the reader (You) when it is theirs but not yet claimed."
+  },
+  "reviewQueues.queuePage.claimAssignedToYou": {
+    "defaultMessage": "This item is assigned to you",
+    "description": "Why the Claim item of a review item's row menu is disabled: the reader already holds the item."
+  },
+  "reviewQueues.queuePage.claimFailed": {
+    "defaultMessage": "Couldn't claim {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Annotator claimed review items on a queue's page and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.queuePage.claimNext.capReached": {
+    "defaultMessage": "You hold as many items from this queue as you may. Finish or skip one first.",
+    "description": "Error after an Annotator chose Next item on a review queue's page while already holding as many of the queue's items as it allows one person."
+  },
+  "reviewQueues.queuePage.claimNext.contended": {
+    "defaultMessage": "Other Annotators claimed the waiting items first. Try again.",
+    "description": "Error after an Annotator chose Next item on a review queue's page and other Annotators claimed every waiting item first."
+  },
+  "reviewQueues.queuePage.claimNext.empty": {
+    "defaultMessage": "No item in this queue is waiting to be claimed.",
+    "description": "Error after an Annotator chose Next item on a review queue's page and no item of the queue was waiting."
+  },
+  "reviewQueues.queuePage.claimNext.none": {
+    "defaultMessage": "No item was claimed.",
+    "description": "Error after an Annotator chose Next item on a review queue's page and the server claimed nothing, for a reason the page does not know."
+  },
+  "reviewQueues.queuePage.claimNotWaiting": {
+    "defaultMessage": "This item is not waiting for review",
+    "description": "Why the Claim item of a review item's row menu is disabled: the item is not waiting in its queue."
+  },
+  "reviewQueues.queuePage.claimed": {
+    "defaultMessage": "Claimed {name}. Work it in Home › Tasks.",
+    "description": "Notice after an Annotator claimed one review item, or the next one, on a queue's page. {name} is its file name. \"Home › Tasks\" is the page path where the Annotator works the items they hold."
+  },
+  "reviewQueues.queuePage.claimedCount": {
+    "defaultMessage": "Claimed {count, plural, one {# item. Work it} other {# items. Work them}} in Home › Tasks.",
+    "description": "Notice after an Annotator claimed several selected review items on a queue's page. {count} is how many of them were claimed. \"Home › Tasks\" is the page path where the Annotator works the items they hold."
+  },
+  "reviewQueues.queuePage.defaultDescription": {
+    "defaultMessage": "Production review queue.",
+    "description": "Description under a production review queue's name on its page, when the queue has no description of its own."
+  },
+  "reviewQueues.queuePage.documentsTitle": {
+    "defaultMessage": "Documents",
+    "description": "Title of a review queue's table of documents, on the queue's page."
+  },
+  "reviewQueues.queuePage.keyMetrics": {
+    "defaultMessage": "Key Metrics",
+    "description": "Heading of the panel of counts on a review queue's page."
+  },
+  "reviewQueues.queuePage.loadError": {
+    "defaultMessage": "Couldn't load this queue",
+    "description": "Header of the error on a review queue's page when the queue could not be loaded at all."
+  },
+  "reviewQueues.queuePage.loadMore": {
+    "defaultMessage": "Load more",
+    "description": "Button under a review queue's Documents table that loads its next page of items."
+  },
+  "reviewQueues.queuePage.loading": {
+    "defaultMessage": "Loading…",
+    "description": "Shown in the Key Metrics of a review queue's page while the queue loads."
+  },
+  "reviewQueues.queuePage.metric.annotators": {
+    "defaultMessage": "Annotators",
+    "description": "Label in the Key Metrics of a review queue's page, for an Admin: how many Annotators the queue lists. Annotator is a user role."
+  },
+  "reviewQueues.queuePage.metric.assigned": {
+    "defaultMessage": "Assigned",
+    "description": "Label in the Key Metrics of a review queue's page: how many of its items are assigned to an Annotator."
+  },
+  "reviewQueues.queuePage.metric.assignedToYou": {
+    "defaultMessage": "Assigned to you",
+    "description": "Label in the Key Metrics of a review queue's page, for an Annotator: how many of its items the reader holds."
+  },
+  "reviewQueues.queuePage.metric.inProgress": {
+    "defaultMessage": "In Progress",
+    "description": "Label in the Key Metrics of a review queue's page, for an Admin: how many of its items an Annotator has started."
+  },
+  "reviewQueues.queuePage.metric.oldestWaiting": {
+    "defaultMessage": "Oldest waiting",
+    "description": "Label in the Key Metrics of a review queue's page, for an Annotator: how long ago the item waiting longest entered the queue."
+  },
+  "reviewQueues.queuePage.metric.pending": {
+    "defaultMessage": "Pending",
+    "description": "Label in the Key Metrics of a review queue's page: how many of its items no one is assigned to yet."
+  },
+  "reviewQueues.queuePage.metric.priority": {
+    "defaultMessage": "Priority",
+    "description": "Label in the Key Metrics of a review queue's page, for an Admin: the queue's priority number."
+  },
   "reviewQueues.queuePage.moreActions": {
     "defaultMessage": "More actions",
     "description": "Menu button in the header of a review queue's Items table, holding the queue and skip actions for the selected items."
@@ -5011,17 +5191,49 @@
     "defaultMessage": "Move…",
     "description": "More actions item that moves the selected items to another review queue (opens a dialog). The count of selected items is appended in parentheses."
   },
+  "reviewQueues.queuePage.nextItem": {
+    "defaultMessage": "Next item",
+    "description": "Button above an Annotator's view of a review queue's Documents table that claims the queue's next waiting item."
+  },
   "reviewQueues.queuePage.noOtherQueue": {
     "defaultMessage": "There is no other queue",
     "description": "Why the Move… item is disabled: there is no other review queue to move items to."
+  },
+  "reviewQueues.queuePage.notDefined": {
+    "defaultMessage": "This queue is not defined in Review Management.",
+    "description": "Shown in the Key Metrics of a review queue's page, for an Admin, when the queue has no definition. \"Review Management\" names the Review Studio page that lists the queues."
+  },
+  "reviewQueues.queuePage.notListed": {
+    "defaultMessage": "This queue does not list you as an Annotator.",
+    "description": "Shown in the Key Metrics of a review queue's page when the reader is not one of the queue's Annotators."
+  },
+  "reviewQueues.queuePage.progressDescription": {
+    "defaultMessage": "The share of this queue's documents an Annotator is working on",
+    "description": "Description under the Queue Progress bar of a production review queue's page. Annotator is a user role."
   },
   "reviewQueues.queuePage.queueGroup": {
     "defaultMessage": "Queue",
     "description": "Group heading in the More actions menu of a review queue: moving or removing the selected items."
   },
+  "reviewQueues.queuePage.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button on a review queue's page that reloads the queue, and its screen-reader label."
+  },
   "reviewQueues.queuePage.removeFromQueue": {
     "defaultMessage": "Remove from queue…",
     "description": "More actions item that takes the selected items out of the review queues (opens a dialog). The count of removable items is appended in parentheses."
+  },
+  "reviewQueues.queuePage.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the load warning or error on a review queue's page that loads the queue again."
+  },
+  "reviewQueues.queuePage.saved": {
+    "defaultMessage": "Saved the queue {name}.",
+    "description": "Notice after an Admin saved a review queue's settings from its page. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuePage.selectAssigned": {
+    "defaultMessage": "Select assigned items",
+    "description": "Tooltip of the disabled Unassign button above a review queue's Documents table: select assigned items first."
   },
   "reviewQueues.queuePage.selectToMove": {
     "defaultMessage": "Select items to move",
@@ -5030,6 +5242,14 @@
   "reviewQueues.queuePage.selectToRemove": {
     "defaultMessage": "Select items waiting for review or assigned",
     "description": "Why the Remove from queue… item is disabled: no selected item is waiting for review or assigned."
+  },
+  "reviewQueues.queuePage.selectWaiting": {
+    "defaultMessage": "Select items waiting for review",
+    "description": "Tooltip of the disabled Assign to… or Claim button above a review queue's Documents table: select items first."
+  },
+  "reviewQueues.queuePage.settings": {
+    "defaultMessage": "Settings",
+    "description": "Button on a review queue's page that opens the queue's Settings dialog. Admin only."
   },
   "reviewQueues.queuePage.skipAllReviews": {
     "defaultMessage": "Skip All Reviews",
@@ -5050,6 +5270,26 @@
   "reviewQueues.queuePage.skipResultsHeader": {
     "defaultMessage": "Skip All Reviews results",
     "description": "Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline."
+  },
+  "reviewQueues.queuePage.stale": {
+    "defaultMessage": "Showing the last loaded queue",
+    "description": "Header of the warning on a review queue's page when reloading the queue failed and the items loaded before are still shown."
+  },
+  "reviewQueues.queuePage.unassign": {
+    "defaultMessage": "Unassign",
+    "description": "Button above an Admin's view of a review queue's Documents table that takes the selected items back from their Annotators (opens a dialog). The count of assigned items is appended in parentheses."
+  },
+  "reviewQueues.queueProgress.completed": {
+    "defaultMessage": "{count} of {total, plural, one {# document} other {# documents}} completed",
+    "description": "Text beside the Queue Progress bar of a Test Studio queue. {count} is how many of the queue's {total} documents are completed."
+  },
+  "reviewQueues.queueProgress.title": {
+    "defaultMessage": "Queue Progress",
+    "description": "Heading of the panel with a bar showing how far a review queue's documents have got, on a queue's page."
+  },
+  "reviewQueues.queueProgress.underway": {
+    "defaultMessage": "{count} of {total, plural, one {# document} other {# documents}} assigned or in progress",
+    "description": "Text beside the Queue Progress bar of a production review queue. {count} is how many of the queue's {total} documents an Annotator holds, started or not."
   },
   "reviewQueues.queueSettings.annotators.empty": {
     "defaultMessage": "No Annotator users. Add one in User Management.",
@@ -5554,6 +5794,150 @@
   "reviewQueues.reviewHistory.title": {
     "defaultMessage": "Review history ({count})",
     "description": "Header of the dialog listing a review item's history. {count} is the number of events."
+  },
+  "reviewQueues.supervisorActions.assign": {
+    "defaultMessage": "Assign…",
+    "description": "Row menu item of a waiting review item that assigns it to an Annotator (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.assignFailed": {
+    "defaultMessage": "Couldn't assign {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin assigned review items and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.assigned": {
+    "defaultMessage": "Assigned {count, plural, one {# item} other {# items}} to {email}.",
+    "description": "Notice after an Admin assigned review items. {count} is how many were assigned and {email} is the Annotator's e-mail address."
+  },
+  "reviewQueues.supervisorActions.group": {
+    "defaultMessage": "Admin",
+    "description": "Group heading in a review item's row menu on a queue's page, holding the actions only an Admin has. Admin is a user role."
+  },
+  "reviewQueues.supervisorActions.move": {
+    "defaultMessage": "Move to another queue…",
+    "description": "Row menu item of a review item that moves it to another review queue (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.moveFailed": {
+    "defaultMessage": "Couldn't move {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin moved review items to another queue and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.moved": {
+    "defaultMessage": "Moved {count, plural, one {# item} other {# items}} to {queue}.",
+    "description": "Notice after an Admin moved review items to another queue. {count} is how many and {queue} is the queue's name, as stored."
+  },
+  "reviewQueues.supervisorActions.noOtherQueue": {
+    "defaultMessage": "There is no other queue",
+    "description": "Why the Move to another queue… item of a review item's row menu is disabled: there is no other review queue."
+  },
+  "reviewQueues.supervisorActions.notAssigned": {
+    "defaultMessage": "This item is not assigned",
+    "description": "Why the Unassign item of a review item's row menu is disabled."
+  },
+  "reviewQueues.supervisorActions.notWaiting": {
+    "defaultMessage": "This item is not waiting for review",
+    "description": "Why the Assign… or Remove from queue… item of a review item's row menu is disabled: the item is neither waiting nor assigned."
+  },
+  "reviewQueues.supervisorActions.reassign": {
+    "defaultMessage": "Reassign…",
+    "description": "Row menu item of an assigned review item that assigns it to another Annotator (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.remove": {
+    "defaultMessage": "Remove from queue…",
+    "description": "Row menu item of a review item that takes it out of review (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.removeFailed": {
+    "defaultMessage": "Couldn't remove {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin removed review items from review and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.removed": {
+    "defaultMessage": "Removed {count, plural, one {# item} other {# items}} from review.",
+    "description": "Notice after an Admin took review items out of review. {count} is how many."
+  },
+  "reviewQueues.supervisorActions.unassign": {
+    "defaultMessage": "Unassign",
+    "description": "Row menu item of an assigned review item that takes it back from its Annotator (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.unassignFailed": {
+    "defaultMessage": "Couldn't unassign {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin unassigned review items and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.unassigned": {
+    "defaultMessage": "Unassigned {count, plural, one {# item} other {# items}}.",
+    "description": "Notice after an Admin took review items back from their Annotators. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Unassign, Move to another queue and Remove from queue dialogs that closes the dialog without acting."
+  },
+  "reviewQueues.supervisorModals.chooseQueue": {
+    "defaultMessage": "Choose a queue",
+    "description": "Placeholder of the Target queue field of the Move to another queue dialog."
+  },
+  "reviewQueues.supervisorModals.move": {
+    "defaultMessage": "Move",
+    "description": "Button of the Move to another queue dialog that moves the items to the chosen queue."
+  },
+  "reviewQueues.supervisorModals.moveMany": {
+    "defaultMessage": "Move {count, plural, one {# item} other {# items}} to another queue. An assignment is removed; drafts are kept.",
+    "description": "Body of the Move to another queue dialog for several items. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.moveOne": {
+    "defaultMessage": "Move {document} to another queue. An assignment is removed; drafts are kept.",
+    "description": "Body of the Move to another queue dialog for one item. {document} is its file name."
+  },
+  "reviewQueues.supervisorModals.moveTitle": {
+    "defaultMessage": "Move to another queue",
+    "description": "Title of the dialog that moves review items to another review queue."
+  },
+  "reviewQueues.supervisorModals.noOtherQueue": {
+    "defaultMessage": "There is no other queue to move to.",
+    "description": "Shown in the Target queue list of the Move to another queue dialog when there is no other review queue."
+  },
+  "reviewQueues.supervisorModals.note": {
+    "defaultMessage": "Note",
+    "description": "Label of the Remove from queue dialog's field for an optional note about why the items are removed."
+  },
+  "reviewQueues.supervisorModals.noteDescription": {
+    "defaultMessage": "Optional. Kept in the item's history.",
+    "description": "Description of the Note field of the Remove from queue dialog."
+  },
+  "reviewQueues.supervisorModals.queueRequired": {
+    "defaultMessage": "Choose a queue.",
+    "description": "Error under the Target queue field of the Move to another queue dialog when the user moves without choosing one."
+  },
+  "reviewQueues.supervisorModals.remove": {
+    "defaultMessage": "Remove",
+    "description": "Button of the Remove from queue dialog that takes the items out of review."
+  },
+  "reviewQueues.supervisorModals.removeMany": {
+    "defaultMessage": "Remove {count, plural, one {# item} other {# items}} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.",
+    "description": "Body of the Remove from queue dialog for several items. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.removeOne": {
+    "defaultMessage": "Remove {document} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.",
+    "description": "Body of the Remove from queue dialog for one item. {document} is its file name."
+  },
+  "reviewQueues.supervisorModals.removeTitle": {
+    "defaultMessage": "Remove from queue",
+    "description": "Title of the dialog that takes review items out of review."
+  },
+  "reviewQueues.supervisorModals.targetQueue": {
+    "defaultMessage": "Target queue",
+    "description": "Label of the Move to another queue dialog's field that chooses the review queue to move the items to."
+  },
+  "reviewQueues.supervisorModals.unassign": {
+    "defaultMessage": "Unassign",
+    "description": "Title of the dialog that takes review items back from their Annotators, and its button that does it. The items stay in their queue, assigned to no one."
+  },
+  "reviewQueues.supervisorModals.unassignMany": {
+    "defaultMessage": "Take {count, plural, one {# item} other {# items}} back from their Annotators. They stay in their queue, unassigned; drafts are kept and the Annotators are told.",
+    "description": "Body of the Unassign dialog for several items. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.unassignOne": {
+    "defaultMessage": "Take {document} back from {annotator}. It stays in {queue}, unassigned; the draft is kept and the Annotator is told.",
+    "description": "Body of the Unassign dialog for one item. {document} is its file name, {annotator} the e-mail address of the Annotator it is assigned to, and {queue} the id of its review queue."
+  },
+  "reviewQueues.supervisorModals.unassignOneNoAnnotator": {
+    "defaultMessage": "Take {document} back from its Annotator. It stays in {queue}, unassigned; the draft is kept and the Annotator is told.",
+    "description": "Body of the Unassign dialog for one item whose Annotator is not known. {document} is its file name and {queue} the id of its review queue."
   },
   "reviewQueues.taskContext.confidence": {
     "defaultMessage": "Confidence {score}, threshold {threshold}",
