@@ -1,11 +1,815 @@
 {
+  "agentChat.bedrockError.details": {
+    "defaultMessage": "Details: {details}",
+    "description": "Line in the error card's technical details. {details} is the error text of the AI model service, as it arrives."
+  },
+  "agentChat.bedrockError.errorType": {
+    "defaultMessage": "Error Type: {type}",
+    "description": "Line in the error card's technical details. {type} is the error's code, such as rate_limit, as it arrives."
+  },
+  "agentChat.bedrockError.retries": {
+    "defaultMessage": "(After {count, plural, one {# retry attempt} other {# retry attempts}})",
+    "description": "Shown beside the title of the Agent Chat error card. {count} is how many times the request was retried before the error."
+  },
+  "agentChat.bedrockError.retryAttempts": {
+    "defaultMessage": "Retry Attempts: {count}",
+    "description": "Line in the error card's technical details. {count} is how many times the request was retried."
+  },
+  "agentChat.bedrockError.technicalDetails": {
+    "defaultMessage": "Technical Details",
+    "description": "Header of the expandable section of the Agent Chat error card that shows the technical details."
+  },
+  "agentChat.bedrockError.title.accessDenied": {
+    "defaultMessage": "Access Denied",
+    "description": "Title of the Agent Chat error card when the AI model service refused access."
+  },
+  "agentChat.bedrockError.title.default": {
+    "defaultMessage": "Service Error",
+    "description": "Title of the Agent Chat error card for any other error from the AI model service."
+  },
+  "agentChat.bedrockError.title.modelUnavailable": {
+    "defaultMessage": "AI Model Unavailable",
+    "description": "Title of the Agent Chat error card when the AI model is not available."
+  },
+  "agentChat.bedrockError.title.quotaExceeded": {
+    "defaultMessage": "Usage Quota Exceeded",
+    "description": "Title of the Agent Chat error card when the account's usage quota for the AI model service is used up."
+  },
+  "agentChat.bedrockError.title.rateLimit": {
+    "defaultMessage": "Rate Limit Exceeded",
+    "description": "Title of the Agent Chat error card when the AI model service refused the request because too many were sent."
+  },
+  "agentChat.bedrockError.title.serviceUnavailable": {
+    "defaultMessage": "Service Temporarily Unavailable",
+    "description": "Title of the Agent Chat error card when the AI model service is temporarily unavailable."
+  },
+  "agentChat.bedrockError.title.timeout": {
+    "defaultMessage": "Request Timeout",
+    "description": "Title of the Agent Chat error card when the request to the AI model service timed out."
+  },
+  "agentChat.bedrockError.title.validationError": {
+    "defaultMessage": "Request Validation Error",
+    "description": "Title of the Agent Chat error card when the AI model service rejected the request as invalid."
+  },
+  "agentChat.bedrockError.whatYouCanDo": {
+    "defaultMessage": "What you can do:",
+    "description": "Heading above the suggestions in the Agent Chat error card. The suggestions are shown as they arrive."
+  },
+  "agentChat.history.button": {
+    "defaultMessage": "Load previous chat",
+    "description": "Button that opens the list of previous Agent Chat sessions."
+  },
+  "agentChat.history.deleteAriaLabel": {
+    "defaultMessage": "Delete chat session: {title}",
+    "description": "Screen-reader label of the button that deletes a previous session from the Agent Chat history. {title} is the session title, cut to its first 50 characters."
+  },
+  "agentChat.history.empty": {
+    "defaultMessage": "No previous chat sessions found",
+    "description": "The only entry of the Agent Chat history list when the user has no previous session."
+  },
+  "agentChat.history.selected": {
+    "defaultMessage": "Selected chat",
+    "description": "Label of the Agent Chat history button when the selected session has no title to show."
+  },
+  "agentChat.history.sessionMeta": {
+    "defaultMessage": "{date} • {count, plural, one {# message} other {# messages}}",
+    "description": "Line under the title of a previous session in the Agent Chat history list. {date} is when the session was last used; {count} is how many messages it holds."
+  },
+  "agentChat.history.unknownDate": {
+    "defaultMessage": "Unknown date",
+    "description": "Shown in place of the date of a previous Agent Chat session when the date cannot be read."
+  },
+  "agentChat.history.untitled": {
+    "defaultMessage": "Untitled Chat",
+    "description": "Shown in the Agent Chat history list in place of the title of a session that has none."
+  },
+  "agentChat.layout.agentThinking": {
+    "defaultMessage": "{agentName} - Thinking...",
+    "description": "Heading of the section that shows an agent working in the Agent Chat, while it works. {agentName} is the name of the agent."
+  },
+  "agentChat.layout.analysisFailed": {
+    "defaultMessage": "Document analysis failed",
+    "description": "Heading of the error under the Quick Start message box when discovery of the attached documents failed."
+  },
+  "agentChat.layout.attachDocuments": {
+    "defaultMessage": "Attach documents",
+    "description": "Screen-reader label of the paper-clip button that attaches example documents to a Quick Start message."
+  },
+  "agentChat.layout.chip.addDocumentType": {
+    "defaultMessage": "Add a new document type to my existing configuration",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.capabilities": {
+    "defaultMessage": "What capabilities do you have?",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.classificationPipeline": {
+    "defaultMessage": "Explain how the document classification pipeline works in the IDP accelerator",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.insuranceClaims": {
+    "defaultMessage": "Help me set up IDP for processing auto insurance claims",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.invoices": {
+    "defaultMessage": "I have invoices with vendor, amount, and due date — get me started",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.paystubs": {
+    "defaultMessage": "Bootstrap a config for employee paystubs",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.recentDocumentsTable": {
+    "defaultMessage": "Can you make a table of the documents uploaded in the last three days?",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.recentErrors": {
+    "defaultMessage": "Analyze recent errors in document processing",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.clearChat": {
+    "defaultMessage": "Clear chat",
+    "description": "Button under the chat that clears the conversation and starts a new one."
+  },
+  "agentChat.layout.documentsAnalyzed": {
+    "defaultMessage": "Documents analyzed",
+    "description": "Shown under the Quick Start message box once discovery of the attached documents has finished."
+  },
+  "agentChat.layout.documentsAttached": {
+    "defaultMessage": "{count, plural, one {# document attached — send your message to analyze it.} other {# documents attached — send your message to analyze them.}}",
+    "description": "Note under the Quick Start message box once documents are attached and before the message is sent."
+  },
+  "agentChat.layout.enableCodeIntelligence": {
+    "defaultMessage": "Enable Code Intelligence Agent",
+    "description": "Checkbox under the Agent Chat input that lets the chat use the Code Intelligence Agent, the name of an optional agent."
+  },
   "agentChat.layout.enableExternalMcpAgents": {
     "defaultMessage": "Enable External MCP agents",
     "description": "Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers."
   },
+  "agentChat.layout.errorContent": {
+    "defaultMessage": "Error: {error}",
+    "description": "Shown in the Agent Chat in place of an answer that failed. {error} is the server's error, in English."
+  },
+  "agentChat.layout.files.errorIcon": {
+    "defaultMessage": "Error",
+    "description": "Screen-reader label of the error icon next to an attached document."
+  },
+  "agentChat.layout.files.remove": {
+    "defaultMessage": "Remove file {index, number}",
+    "description": "Screen-reader label of the button that removes an attached document. {index} is the position of the file in the list, from 1."
+  },
+  "agentChat.layout.files.showFewer": {
+    "defaultMessage": "Show fewer",
+    "description": "Button that collapses the list of attached documents under the Quick Start message box."
+  },
+  "agentChat.layout.files.showMore": {
+    "defaultMessage": "Show more",
+    "description": "Button that expands the list of attached documents under the Quick Start message box."
+  },
+  "agentChat.layout.loadingHistory": {
+    "defaultMessage": "Loading chat history...",
+    "description": "Shown over the Agent Chat messages while a previous conversation loads."
+  },
+  "agentChat.layout.newSessionNotice": {
+    "defaultMessage": "Started a new conversation. Code Intelligence and External MCP agents are not used in a conversation that includes Analytics or Error Analyzer results.",
+    "description": "Notice above the Agent Chat after turning on an optional agent started a new conversation. Code Intelligence, External MCP, Analytics and Error Analyzer are agent names."
+  },
+  "agentChat.layout.placeholder": {
+    "defaultMessage": "Ask me anything about documents, errors, or IDP code base",
+    "description": "Placeholder of the Agent Chat message box. IDP is the name of the solution."
+  },
+  "agentChat.layout.placeholderQuickStart": {
+    "defaultMessage": "Describe the documents you want to process, or attach examples to get started",
+    "description": "Placeholder of the Quick Start message box, where the user describes or attaches example documents."
+  },
+  "agentChat.layout.quickStartHint": {
+    "defaultMessage": "Quick Start helps you author a configuration for your document type. Describe your documents or attach examples to get started.",
+    "description": "Hint under the Quick Start message box."
+  },
+  "agentChat.layout.sampleOpenFailed": {
+    "defaultMessage": "Could not open sample",
+    "description": "Error next to a sample-document link in a Quick Start answer when the sample could not be opened."
+  },
+  "agentChat.layout.stepWithDocuments": {
+    "defaultMessage": "{step} ({count, plural, one {# doc} other {# docs}})",
+    "description": "Progress of the discovery of the documents attached in Quick Start. {step} is the current step as reported, possibly in English; the count is the number of documents."
+  },
+  "agentChat.layout.suggestedPrompts": {
+    "defaultMessage": "Suggested prompts",
+    "description": "Screen-reader name of the group of suggested prompts shown on the empty chat."
+  },
   "agentChat.layout.thirdPartyNotice": {
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
+  },
+  "agentChat.layout.titleChat": {
+    "defaultMessage": "IDP Agent Companion Chat",
+    "description": "Heading of the Agent Chat page. IDP is the name of the solution; Agent Companion Chat is the name of the chat feature."
+  },
+  "agentChat.layout.titleQuickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Heading of the chat while it runs Quick Start, which drafts a configuration for a document type."
+  },
+  "agentChat.layout.viewDiscovery": {
+    "defaultMessage": "View full discovery details",
+    "description": "Link under the Quick Start message box to the page of the finished discovery job."
+  },
+  "agentChat.layout.welcome": {
+    "defaultMessage": "Welcome to <span>{name}</span>",
+    "description": "Greeting on the empty chat. {name} is Quick Start or Agent Companion Chat; the text inside <span> is shown in the accent colour."
+  },
+  "agentChat.layout.welcomeChat": {
+    "defaultMessage": "Agent Companion Chat",
+    "description": "Name shown in the greeting of the empty Agent Chat (\"Welcome to Agent Companion Chat\"). Agent Companion Chat is the name of the chat feature."
+  },
+  "agentChat.layout.welcomeQuickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Name shown in the greeting of the empty Quick Start chat (\"Welcome to Quick Start\")."
+  },
+  "agentChat.layout.welcomeQuickStartIntro": {
+    "defaultMessage": "Describe the documents you want to process and I'll help you set up a configuration — no prior setup needed.",
+    "description": "Paragraph under the greeting of the empty Quick Start chat. \"I\" is the Quick Start assistant."
+  },
+  "agentChat.layout.working": {
+    "defaultMessage": "Working on your request… this can take a minute.",
+    "description": "Shown in the Agent Chat under the last message while the agent prepares its answer."
+  },
+  "agentChat.quickStartUpload.analyzing": {
+    "defaultMessage": "Analyzing document",
+    "description": "Progress step under the Quick Start input while one attached document is analyzed, until the server reports its own step."
+  },
+  "agentChat.quickStartUpload.discoveryFailed": {
+    "defaultMessage": "Document discovery failed",
+    "description": "Error under the Quick Start input when discovery of the attached documents failed and the server gave no reason."
+  },
+  "agentChat.quickStartUpload.packaging": {
+    "defaultMessage": "Packaging documents",
+    "description": "Progress step under the Quick Start input while the attached documents are packaged for upload."
+  },
+  "agentChat.quickStartUpload.uploadFailed": {
+    "defaultMessage": "Upload failed",
+    "description": "Error under the Quick Start input when uploading the attached documents failed with no error message."
+  },
+  "agentChat.quickStartWidget.close": {
+    "defaultMessage": "Close",
+    "description": "Screen-reader label of the button that closes the floating assistant panel."
+  },
+  "agentChat.quickStartWidget.dialogAriaLabel": {
+    "defaultMessage": "Assistant",
+    "description": "Screen-reader name of the floating assistant panel that holds Quick Start and the Agent Companion Chat."
+  },
+  "agentChat.quickStartWidget.minimize": {
+    "defaultMessage": "Minimize",
+    "description": "Screen-reader label of the button that minimizes the floating assistant panel."
+  },
+  "agentChat.quickStartWidget.openAriaLabel": {
+    "defaultMessage": "Open Quick Start",
+    "description": "Screen-reader label of the round launcher button that opens the floating Quick Start panel."
+  },
+  "agentChat.quickStartWidget.resize": {
+    "defaultMessage": "Resize",
+    "description": "Screen-reader label of the corner handle that resizes the floating assistant panel."
+  },
+  "agentChat.quickStartWidget.titleChat": {
+    "defaultMessage": "Agent Companion Chat",
+    "description": "Title of the floating assistant panel while it runs the Agent Companion Chat. Agent Companion Chat is the name of the chat feature."
+  },
+  "agentChat.quickStartWidget.titleQuickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Title of the floating assistant panel while it runs Quick Start, which drafts a configuration for a document type."
+  },
+  "agentChat.session.accessDenied": {
+    "defaultMessage": "Access denied: {error}. Check your role permissions.",
+    "description": "Error above the Agent Chat messages when the user's role may not use the chat. {error} is the server's explanation, in English."
+  },
+  "agentChat.session.chartTitle": {
+    "defaultMessage": "Chart",
+    "description": "Title above a chart in an Agent Chat answer when the agent's chart has no title of its own."
+  },
+  "agentChat.session.connectionLost": {
+    "defaultMessage": "Connection to chat service lost. Please refresh the page.",
+    "description": "Error above the Agent Chat messages when the connection that delivers the answers fails."
+  },
+  "agentChat.session.generating": {
+    "defaultMessage": "Generating final result...",
+    "description": "Placeholder shown in the Agent Chat while the agent prepares a table or chart answer. The answer replaces it."
+  },
+  "agentChat.session.loadFailed": {
+    "defaultMessage": "Failed to load chat session. Please try again.",
+    "description": "Error above the Agent Chat messages when a previous conversation could not be loaded."
+  },
+  "agentChat.session.sendFailed": {
+    "defaultMessage": "Failed to send message. Please try again.",
+    "description": "Error above the Agent Chat messages when a message could not be sent and the server gave no reason."
+  },
+  "agentChat.tool.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the dialog showing a tool's input and output."
+  },
+  "agentChat.tool.codeLabel.fromPython": {
+    "defaultMessage": "JSON (converted from Python)",
+    "description": "Label above a tool's input or output that arrived as Python data and is shown as JSON. JSON and Python are format names."
+  },
+  "agentChat.tool.codeLabel.pythonDict": {
+    "defaultMessage": "JSON (Python dict)",
+    "description": "Label above a tool's input or output that arrived as a Python dictionary and is shown as JSON. JSON and Python are format names."
+  },
+  "agentChat.tool.detailsTitle": {
+    "defaultMessage": "{toolName} Details",
+    "description": "Title of the dialog that shows a tool's input and output. {toolName} is the tool's name, as the agent reports it."
+  },
+  "agentChat.tool.executing": {
+    "defaultMessage": "Executing tool...",
+    "description": "Shown in the Execution Details tab of the tool dialog while the tool runs."
+  },
+  "agentChat.tool.logs.events": {
+    "defaultMessage": "Log Events",
+    "description": "Heading above the log events a CloudWatch log search found, grouped by log group."
+  },
+  "agentChat.tool.logs.filterPattern": {
+    "defaultMessage": "Filter Pattern:",
+    "description": "Label before the CloudWatch filter pattern of the log search, such as ERROR, shown as it arrives."
+  },
+  "agentChat.tool.logs.groupEvents": {
+    "defaultMessage": "{logGroup} ({count, plural, one {# event} other {# events}})",
+    "description": "Heading of one CloudWatch log group in the search results. {logGroup} is its name; {count} is how many events it holds."
+  },
+  "agentChat.tool.logs.groupsSearched": {
+    "defaultMessage": "Log Groups Searched:",
+    "description": "Label before the count of CloudWatch log groups searched, shown as \"searched / found\"."
+  },
+  "agentChat.tool.logs.noEvents": {
+    "defaultMessage": "No {filterPattern} events found in the searched time period.",
+    "description": "Shown when the CloudWatch log search found nothing. {filterPattern} is the filter pattern searched for, such as ERROR, as it arrives."
+  },
+  "agentChat.tool.logs.stack": {
+    "defaultMessage": "Stack:",
+    "description": "Label before the name of the CloudFormation stack whose logs were searched. The name is shown as it arrives."
+  },
+  "agentChat.tool.logs.summary": {
+    "defaultMessage": "Search Summary",
+    "description": "Heading of the summary of a CloudWatch log search, in an Agent Chat tool's details."
+  },
+  "agentChat.tool.logs.totalEvents": {
+    "defaultMessage": "Total Events Found:",
+    "description": "Label before the number of log events the CloudWatch log search found."
+  },
+  "agentChat.tool.noExecutionDetails": {
+    "defaultMessage": "No execution details available",
+    "description": "Shown in the Execution Details tab of the tool dialog when the tool has no input to show."
+  },
+  "agentChat.tool.noResults": {
+    "defaultMessage": "No results available yet",
+    "description": "Shown in the Results tab of the tool dialog before the tool has returned anything."
+  },
+  "agentChat.tool.processingResults": {
+    "defaultMessage": "Processing results...",
+    "description": "Shown in the Results tab of the tool dialog while the tool's results are read."
+  },
+  "agentChat.tool.status.completed": {
+    "defaultMessage": "Completed",
+    "description": "Status of a tool an Agent Chat agent uses: the tool returned its results."
+  },
+  "agentChat.tool.status.executing": {
+    "defaultMessage": "Executing...",
+    "description": "Status of a tool an Agent Chat agent uses: the tool is running."
+  },
+  "agentChat.tool.status.executionCompleted": {
+    "defaultMessage": "Execution completed",
+    "description": "Status of a tool an Agent Chat agent uses: the tool ran and has no results yet."
+  },
+  "agentChat.tool.status.processingResults": {
+    "defaultMessage": "Processing results...",
+    "description": "Status of a tool an Agent Chat agent uses: the tool's results are being read."
+  },
+  "agentChat.tool.status.starting": {
+    "defaultMessage": "Starting...",
+    "description": "Status of a tool an Agent Chat agent uses: the tool has not started yet."
+  },
+  "agentChat.tool.tab.execution": {
+    "defaultMessage": "Execution Details",
+    "description": "Tab of the tool dialog that shows the input the agent gave the tool."
+  },
+  "agentChat.tool.tab.results": {
+    "defaultMessage": "Results",
+    "description": "Tab of the tool dialog that shows what the tool returned."
+  },
+  "agentChat.tool.viewDetails": {
+    "defaultMessage": "View Details",
+    "description": "Button beside the name of a tool an Agent Chat agent used. It opens the tool input and output."
+  },
+  "agents.jobStatus.completed": {
+    "defaultMessage": "Processing complete",
+    "description": "Status of the agents' job on the agents page: the agents have answered."
+  },
+  "agents.jobStatus.errorLabel": {
+    "defaultMessage": "Error:",
+    "description": "Bold label before an error on the agents page. The error text after it is shown as it arrives."
+  },
+  "agents.jobStatus.failed": {
+    "defaultMessage": "Processing failed",
+    "description": "Status of the agents' job on the agents page: the job failed."
+  },
+  "agents.jobStatus.pending": {
+    "defaultMessage": "Job created, waiting to start processing",
+    "description": "Status of the agents' job on the agents page: the job exists and has not started yet."
+  },
+  "agents.jobStatus.processing": {
+    "defaultMessage": "Processing your query",
+    "description": "Status of the agents' job on the agents page: the agents are working on the question."
+  },
+  "agents.page.fetchAfterCompletionFailed": {
+    "defaultMessage": "Failed to fetch job details after completion",
+    "description": "Error on the agents page when the agents' job finished but its result could not be read."
+  },
+  "agents.page.fetchFailed": {
+    "defaultMessage": "Failed to fetch job details: {error}",
+    "description": "Error on the agents page when reading the finished job's result failed. {error} is the error's own text, as it arrives, or the unknown-error text."
+  },
+  "agents.page.invalidNotification": {
+    "defaultMessage": "Received invalid completion notification. Check console logs for details.",
+    "description": "Error on the agents page when the notice that the agents' job finished could not be read."
+  },
+  "agents.page.jobFailed": {
+    "defaultMessage": "Job processing failed",
+    "description": "Error on the agents page when the agents' job failed and the server sent no reason."
+  },
+  "agents.page.submitFailed": {
+    "defaultMessage": "Failed to submit query",
+    "description": "Error on the agents page when the question could not be sent and the server sent no reason."
+  },
+  "agents.page.submitting": {
+    "defaultMessage": "Submitting your query...",
+    "description": "Shown under a spinner on the agents page while the question is being sent."
+  },
+  "agents.page.subscriptionError": {
+    "defaultMessage": "Subscription error: {error}",
+    "description": "Error on the agents page when following the agents' job failed. {error} is the error's own text, as it arrives, or the unknown-error text."
+  },
+  "agents.page.subscriptionSetupFailed": {
+    "defaultMessage": "Failed to set up job status subscription: {error}",
+    "description": "Error on the agents page when following the agents' job could not start. {error} is the error's own text, as it arrives, or the unknown-error text."
+  },
+  "agents.page.title": {
+    "defaultMessage": "Agent Analysis",
+    "description": "Heading of the agents page, where the user puts a question about the documents to the selected agents."
+  },
+  "agents.page.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Shown in the errors of the agents page in place of an error's own text when the error has none."
+  },
+  "agents.plot.combinedData": {
+    "defaultMessage": "Combined Data",
+    "description": "Name of the one data series a pie or doughnut chart shows when it adds up several series that have no names."
+  },
+  "agents.plot.debugInfo": {
+    "defaultMessage": "Debug Information",
+    "description": "Expandable section under a chart error that shows the chart's data and options."
+  },
+  "agents.plot.defaultTitle": {
+    "defaultMessage": "Chart",
+    "description": "Heading of an agent's chart when the chart has no title."
+  },
+  "agents.plot.invalidData": {
+    "defaultMessage": "Invalid chart data structure",
+    "description": "Shown in place of an agent's chart when its data has no data series."
+  },
+  "agents.plot.invalidLabels": {
+    "defaultMessage": "Invalid or missing chart labels",
+    "description": "Shown in place of an agent's chart when its data has no labels."
+  },
+  "agents.plot.renderError": {
+    "defaultMessage": "Error rendering {chartType} chart",
+    "description": "Shown in place of an agent's chart when it cannot be drawn. {chartType} is the chart type code, in lower case and as is (for example bar or pie)."
+  },
+  "agents.plot.type.bar": {
+    "defaultMessage": "Bar Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.type.doughnut": {
+    "defaultMessage": "Doughnut Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.type.line": {
+    "defaultMessage": "Line Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.type.pie": {
+    "defaultMessage": "Pie Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.typePlaceholder": {
+    "defaultMessage": "Select chart type",
+    "description": "Placeholder of the chart type picker above an agent's chart."
+  },
+  "agents.plot.unknownLabel": {
+    "defaultMessage": "Unknown",
+    "description": "Tooltip of a pie or doughnut chart slice that has no label, when its value cannot be shown."
+  },
+  "agents.queryInput.agentsHeading": {
+    "defaultMessage": "Select from available agents",
+    "description": "Heading above the list of agents the user can put the question to, on the agents page."
+  },
+  "agents.queryInput.clear": {
+    "defaultMessage": "Clear question",
+    "description": "Button that clears the question and the results on the agents page."
+  },
+  "agents.queryInput.completed": {
+    "defaultMessage": "Completed",
+    "description": "Status after the date of a previous question on the agents page when the agents' job finished."
+  },
+  "agents.queryInput.deleteAriaLabel": {
+    "defaultMessage": "Delete query: {query}",
+    "description": "Screen-reader label of the button that deletes a previous question on the agents page. {query} is the question, as typed, cut to its first 50 characters."
+  },
+  "agents.queryInput.deselectAll": {
+    "defaultMessage": "Deselect All Agents",
+    "description": "Button under the list of agents on the agents page that clears the selection, shown when every agent is selected."
+  },
+  "agents.queryInput.historyButton": {
+    "defaultMessage": "Select a previous question",
+    "description": "Button that opens the list of previous questions on the agents page."
+  },
+  "agents.queryInput.historySelected": {
+    "defaultMessage": "Selected question",
+    "description": "Label of the previous-questions button on the agents page when the selected question has no text to show."
+  },
+  "agents.queryInput.loadingAgents": {
+    "defaultMessage": "Loading agents...",
+    "description": "Shown in the list of agents on the agents page while the list loads."
+  },
+  "agents.queryInput.mcp.addingBody": {
+    "defaultMessage": "You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate custom tools, APIs, and services specific to your organization's needs without any code changes or redeployments.",
+    "description": "Paragraph in the custom MCP agents dialog, under \"Adding Custom Agents\". AWS Secrets Manager is a product name."
+  },
+  "agents.queryInput.mcp.addingTitle": {
+    "defaultMessage": "Adding Custom Agents",
+    "description": "Heading in the custom MCP agents dialog."
+  },
+  "agents.queryInput.mcp.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the custom MCP agents dialog."
+  },
+  "agents.queryInput.mcp.learnMoreBody": {
+    "defaultMessage": "For detailed setup instructions and examples, see the <link>Custom MCP Agent Documentation</link>",
+    "description": "Last paragraph of the custom MCP agents dialog. The text inside <link> links to the custom MCP agent documentation."
+  },
+  "agents.queryInput.mcp.learnMoreTitle": {
+    "defaultMessage": "Learn More",
+    "description": "Heading in the custom MCP agents dialog, above the link to the documentation."
+  },
+  "agents.queryInput.mcp.title": {
+    "defaultMessage": "Custom MCP Agents",
+    "description": "Title of the dialog on the agents page that explains custom MCP agents."
+  },
+  "agents.queryInput.mcp.whatBody": {
+    "defaultMessage": "Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your document analysis workflow.",
+    "description": "Paragraph in the custom MCP agents dialog, under \"What are MCP Agents?\"."
+  },
+  "agents.queryInput.mcp.whatTitle": {
+    "defaultMessage": "What are MCP Agents?",
+    "description": "Heading in the custom MCP agents dialog."
+  },
+  "agents.queryInput.mcpButton": {
+    "defaultMessage": "NEW: Integrate your own systems with MCP!",
+    "description": "Button on the agents page that explains custom MCP agents. A rocket emoji is shown before it."
+  },
+  "agents.queryInput.noAgents": {
+    "defaultMessage": "No agents available",
+    "description": "Shown in the list of agents on the agents page when the deployment has no agents."
+  },
+  "agents.queryInput.noHistory": {
+    "defaultMessage": "No previous questions found",
+    "description": "The only entry of the previous-questions list on the agents page when the user has asked none."
+  },
+  "agents.queryInput.noQuery": {
+    "defaultMessage": "No query",
+    "description": "Shown in place of a previous question on the agents page when the question has no text."
+  },
+  "agents.queryInput.placeholder": {
+    "defaultMessage": "Enter your question here...",
+    "description": "Placeholder of the question box on the agents page when the first selected agent has no sample question to show instead."
+  },
+  "agents.queryInput.placeholderNoAgent": {
+    "defaultMessage": "Select at least one available agent to get started",
+    "description": "Placeholder of the question box on the agents page while no agent is selected."
+  },
+  "agents.queryInput.questionLabel": {
+    "defaultMessage": "Enter your question for the agent",
+    "description": "Label of the text box in which the user types the question for the agents."
+  },
+  "agents.queryInput.sampleQueries": {
+    "defaultMessage": "Sample Queries:",
+    "description": "Heading above an agent's sample questions, in the tooltip of an agent on the agents page."
+  },
+  "agents.queryInput.selectAll": {
+    "defaultMessage": "Select All Agents",
+    "description": "Button under the list of agents on the agents page that selects every agent."
+  },
+  "agents.queryInput.submit": {
+    "defaultMessage": "Submit question",
+    "description": "Button that sends the question to the selected agents."
+  },
+  "agents.queryInput.submitting": {
+    "defaultMessage": "Submitting...",
+    "description": "Label of the submit button on the agents page while the question is being sent."
+  },
+  "agents.queryInput.unknownDate": {
+    "defaultMessage": "Unknown date",
+    "description": "Shown in place of the date of a previous question on the agents page when the date cannot be read."
+  },
+  "agents.queryInput.unknownStatus": {
+    "defaultMessage": "Unknown status",
+    "description": "Status after the date of a previous question on the agents page when the job's status is missing."
+  },
+  "agents.result.debugInfo": {
+    "defaultMessage": "Debug Information:",
+    "description": "Heading above the raw data of an agent result of a type the UI does not know."
+  },
+  "agents.result.noPlot": {
+    "defaultMessage": "No plot data available",
+    "description": "Shown in place of an agent's chart result when the result holds no chart."
+  },
+  "agents.result.noTable": {
+    "defaultMessage": "No table data available",
+    "description": "Shown in place of an agent's table result when the result holds no table."
+  },
+  "agents.result.noText": {
+    "defaultMessage": "No text data available",
+    "description": "Shown in place of an agent's text result when the result holds no text."
+  },
+  "agents.result.rawResponse": {
+    "defaultMessage": "Raw Response",
+    "description": "Heading above an agent result of a type the UI does not know, shown as raw data."
+  },
+  "agents.result.responseType": {
+    "defaultMessage": "Response type: <strong>{type}</strong>",
+    "description": "Notice above an agent's results. {type} is the result type the agent returned (plotData, table or text), in bold and as is, or the word for an unknown type."
+  },
+  "agents.result.resultsFor": {
+    "defaultMessage": "Results for: <i>{query}</i>",
+    "description": "Heading of an agent's results. {query} is the question the agent answered, in italics and as it was sent."
+  },
+  "agents.result.unknownType": {
+    "defaultMessage": "Unknown response type: {type}",
+    "description": "Warning above an agent result of a type the UI does not know. {type} is the type the agent returned, as is, or \"undefined\" when it returned none."
+  },
+  "agents.result.unknownTypeName": {
+    "defaultMessage": "Unknown",
+    "description": "Shown as the result type in the notice above an agent's results when the agent returned no type."
+  },
+  "agents.table.empty.body": {
+    "defaultMessage": "No table data to display.",
+    "description": "Text under the heading in an agent's result table when it has no rows."
+  },
+  "agents.table.empty.title": {
+    "defaultMessage": "No data available",
+    "description": "Bold heading in an agent's result table when it has no rows."
+  },
+  "agents.table.loading": {
+    "defaultMessage": "Loading table data",
+    "description": "Shown in an agent's result table while its rows load."
+  },
+  "agents.table.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the settings of an agent's result table without applying them."
+  },
+  "agents.table.preferences.columnsGroup": {
+    "defaultMessage": "Main table properties",
+    "description": "Label of the group that lists the table's columns in the column choice of an agent's result table."
+  },
+  "agents.table.preferences.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Button that applies the settings of an agent's result table."
+  },
+  "agents.table.preferences.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Title of the page size choice in the settings of an agent's result table."
+  },
+  "agents.table.preferences.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# row} other {# rows}}",
+    "description": "A page size option in the settings of an agent's result table. {count} is the number of rows per page."
+  },
+  "agents.table.preferences.title": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the settings dialog of an agent's result table, and the label of the button that opens it."
+  },
+  "agents.table.preferences.visibleContent": {
+    "defaultMessage": "Select visible content",
+    "description": "Title of the column choice in the settings of an agent's result table."
+  },
+  "agents.table.title": {
+    "defaultMessage": "Table Results",
+    "description": "Heading of an agent's table result."
+  },
+  "agents.text.title": {
+    "defaultMessage": "Text Response",
+    "description": "Heading of an agent's text result."
+  },
+  "agents.thoughtProcess.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the SQL, code or schema dialog."
+  },
+  "agents.thoughtProcess.codeTitle": {
+    "defaultMessage": "Python Code",
+    "description": "Title of the dialog that shows the Python code the agent ran."
+  },
+  "agents.thoughtProcess.copy": {
+    "defaultMessage": "Copy to Clipboard",
+    "description": "Button in the SQL, code and schema dialogs that copies the text shown."
+  },
+  "agents.thoughtProcess.databaseInfoRetrieved": {
+    "defaultMessage": "Database schema information was retrieved by the agent",
+    "description": "Note that the agent read the database schema, kept with that step of the agent thought process."
+  },
+  "agents.thoughtProcess.description": {
+    "defaultMessage": "Real-time agent conversation",
+    "description": "Description under the agent thought process heading."
+  },
+  "agents.thoughtProcess.noCode": {
+    "defaultMessage": "No Python code available",
+    "description": "Shown in the code dialog when there is no code to show."
+  },
+  "agents.thoughtProcess.noContent": {
+    "defaultMessage": "'<No content>'",
+    "description": "Shown in the agent thought process for a message with no content. The apostrophes keep the angle brackets as text; keep them."
+  },
+  "agents.thoughtProcess.noSchema": {
+    "defaultMessage": "No database information available",
+    "description": "Shown in the schema dialog when there is no schema reference to show."
+  },
+  "agents.thoughtProcess.noSql": {
+    "defaultMessage": "No SQL query available",
+    "description": "Shown in the SQL dialog when there is no query to show."
+  },
+  "agents.thoughtProcess.noTextContent": {
+    "defaultMessage": "'<No text content>'",
+    "description": "Shown in the agent thought process for a message with no text. The apostrophes keep the angle brackets as text; keep them."
+  },
+  "agents.thoughtProcess.role.assistant": {
+    "defaultMessage": "Assistant",
+    "description": "Role name above a message the agent wrote, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.exception": {
+    "defaultMessage": "Exception",
+    "description": "Role name above an error the agent ran into, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.throttling": {
+    "defaultMessage": "Throttling",
+    "description": "Role name above a notice that the model service throttled the agent, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.tool": {
+    "defaultMessage": "Tool",
+    "description": "Role name above a tool step, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.unknown": {
+    "defaultMessage": "Unknown",
+    "description": "Role name above a message that has no role, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.user": {
+    "defaultMessage": "User",
+    "description": "Role name above a message the user sent, in the agent thought process."
+  },
+  "agents.thoughtProcess.schemaTitle": {
+    "defaultMessage": "Database Schema Information",
+    "description": "Title of the dialog that shows the database schema reference."
+  },
+  "agents.thoughtProcess.sqlTitle": {
+    "defaultMessage": "SQL Query",
+    "description": "Title of the dialog that shows the SQL query the agent ran."
+  },
+  "agents.thoughtProcess.thinking": {
+    "defaultMessage": "Agent is thinking...",
+    "description": "Shown at the end of the agent thought process while the agent works."
+  },
+  "agents.thoughtProcess.title": {
+    "defaultMessage": "Agent Thought Process",
+    "description": "Heading of the panel that lists the agent's messages and steps while it works."
+  },
+  "agents.thoughtProcess.toolRequest": {
+    "defaultMessage": "Tool request initiated for tool: {toolName}",
+    "description": "Text of a tool step in the agent thought process. {toolName} is the tool's technical name, as is."
+  },
+  "agents.thoughtProcess.unknownTool": {
+    "defaultMessage": "unknown",
+    "description": "Tool name shown on a tool step of the agent thought process when the agent named no tool."
+  },
+  "agents.thoughtProcess.viewCode": {
+    "defaultMessage": "View Code",
+    "description": "Button on a code step of the agent thought process that shows the Python code the agent ran."
+  },
+  "agents.thoughtProcess.viewInfo": {
+    "defaultMessage": "View Info",
+    "description": "Button on the schema step of the agent thought process that shows the database schema reference."
+  },
+  "agents.thoughtProcess.viewSql": {
+    "defaultMessage": "View SQL",
+    "description": "Button on a query step of the agent thought process that shows the SQL query the agent ran."
+  },
+  "agents.thoughtProcess.waiting": {
+    "defaultMessage": "Waiting for agent to start...",
+    "description": "Shown in the agent thought process before the agent's first message."
   },
   "appLayout.ariaLabels.navigation": {
     "defaultMessage": "Side navigation",
@@ -162,6 +966,18 @@
   "capacityPlanning.quotaNotRead.header": {
     "defaultMessage": "Some Bedrock quotas could not be read",
     "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
+  },
+  "common.createIssueButton.label": {
+    "defaultMessage": "Create GitHub issue",
+    "description": "Text and screen-reader label of the menu button under an Agent Chat answer that opens a pre-filled GitHub issue form."
+  },
+  "common.createIssueButton.reportBug": {
+    "defaultMessage": "Report a bug",
+    "description": "Item of the Create GitHub issue menu under an Agent Chat answer: opens a pre-filled GitHub bug report in a new tab."
+  },
+  "common.createIssueButton.requestFeature": {
+    "defaultMessage": "Request a feature",
+    "description": "Item of the Create GitHub issue menu under an Agent Chat answer: opens a pre-filled GitHub feature request in a new tab."
   },
   "common.dateRangeFields.bothDatesRequired": {
     "defaultMessage": "Both start and end dates are required.",
@@ -506,6 +1322,86 @@
   "documentPanel.callerAttributes.label": {
     "defaultMessage": "Attributes",
     "description": "Label of the document detail field listing the key-value attributes the caller attached at upload."
+  },
+  "documents.chat.accessDenied": {
+    "defaultMessage": "Access denied: {error}.",
+    "description": "Error in the document chat panel when the user may not chat with the document. {error} is the reason the server gave, in English."
+  },
+  "documents.chat.connectionLost": {
+    "defaultMessage": "Chat connection lost. Please refresh the page.",
+    "description": "Error in the document chat panel when its live connection to the chat drops."
+  },
+  "documents.chat.empty": {
+    "defaultMessage": "To start chatting to this document, enter your message below.",
+    "description": "Text of the document chat panel before the first message."
+  },
+  "documents.chat.errorFallback": {
+    "defaultMessage": "An error occurred.",
+    "description": "Chat reply shown when the reply failed and the chat gave no reason."
+  },
+  "documents.chat.message.label": {
+    "defaultMessage": "Your message",
+    "description": "Label of the text box in which the user types a message to the document chat."
+  },
+  "documents.chat.model.description": {
+    "defaultMessage": "Default from configuration profile \"{profile}\". Choose a larger-context model if the document is very long.",
+    "description": "Hint under the chat model picker. {profile} is the name of the configuration profile that processed the document."
+  },
+  "documents.chat.model.descriptionNoList": {
+    "defaultMessage": "Default model from configuration profile \"{profile}\". (Model list not available — using configured default.)",
+    "description": "Hint beside the chat model name when the configuration lists no models. {profile} is the name of the configuration profile."
+  },
+  "documents.chat.model.empty": {
+    "defaultMessage": "No models available",
+    "description": "Shown in the chat model picker when it has no models."
+  },
+  "documents.chat.model.label": {
+    "defaultMessage": "Model",
+    "description": "Label of the model picker in the document chat panel."
+  },
+  "documents.chat.model.pending": {
+    "defaultMessage": "(pending)",
+    "description": "Shown in place of the chat model name while no default model is known yet."
+  },
+  "documents.chat.model.placeholder": {
+    "defaultMessage": "Select a chat model",
+    "description": "Placeholder of the chat model picker."
+  },
+  "documents.chat.send": {
+    "defaultMessage": "Send",
+    "description": "Button that sends the typed message to the document chat."
+  },
+  "documents.chat.sendFailed": {
+    "defaultMessage": "Failed to send message. Please try again.",
+    "description": "Error in the document chat panel when a message could not be sent and gave no reason."
+  },
+  "documents.chat.status.callingModel": {
+    "defaultMessage": "Querying model…",
+    "description": "Status of a document chat request while the model is queried."
+  },
+  "documents.chat.status.complete": {
+    "defaultMessage": "Done",
+    "description": "Status of a document chat request whose reply is complete."
+  },
+  "documents.chat.status.error": {
+    "defaultMessage": "Error",
+    "description": "Status of a document chat request that failed."
+  },
+  "documents.chat.status.loadingDocument": {
+    "defaultMessage": "Loading document text…",
+    "description": "Status of a document chat request while the document text loads."
+  },
+  "documents.chat.status.queued": {
+    "defaultMessage": "Queued…",
+    "description": "Status of a document chat request waiting to start."
+  },
+  "documents.chat.status.streaming": {
+    "defaultMessage": "Streaming response…",
+    "description": "Status of a document chat request while the reply streams in."
+  },
+  "documents.chat.title": {
+    "defaultMessage": "Chat With the Document",
+    "description": "Heading of the chat panel on the document page."
   },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
@@ -1351,6 +2247,90 @@
     "defaultMessage": "Get started with GenAI IDP",
     "description": "Title of the guided tour of the console. \"GenAI IDP\" is the product name and may stay as it is in the translation."
   },
+  "helpPanel.agentChat.description": {
+    "defaultMessage": "Description:",
+    "description": "Label above an agent's description in the Agent Chat help panel. The description shows as the agent registry sends it."
+  },
+  "helpPanel.agentChat.docsAgentChat": {
+    "defaultMessage": "Agent Companion Chat",
+    "description": "Documentation link in the Agent Chat help panel: the page about the Agent Companion Chat."
+  },
+  "helpPanel.agentChat.docsCustomMcp": {
+    "defaultMessage": "Custom MCP Agents",
+    "description": "Documentation link in the Agent Chat help panel: the page about adding your own MCP agents."
+  },
+  "helpPanel.agentChat.docsMcpServer": {
+    "defaultMessage": "MCP Server",
+    "description": "Documentation link in the Agent Chat help panel: the page about the solution's MCP server."
+  },
+  "helpPanel.agentChat.empty": {
+    "defaultMessage": "No agents available",
+    "description": "Shown in the Agent Chat help panel when the deployment has no agents."
+  },
+  "helpPanel.agentChat.insertSampleQuery": {
+    "defaultMessage": "Insert sample query: {query}",
+    "description": "Screen-reader label of a sample-question button in the Agent Chat help panel, which puts the question into the chat input. {query} is the question, as the agent registry sends it."
+  },
+  "helpPanel.agentChat.intro": {
+    "defaultMessage": "Ask questions about IDP and get answers about the code, features, and more. See available agents below for capabilities.",
+    "description": "First paragraph of the Agent Chat help panel, above the list of agents. IDP is the name of the solution."
+  },
+  "helpPanel.agentChat.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.loadFailed": {
+    "defaultMessage": "Failed to load available agents",
+    "description": "Error in the Agent Chat help panel when the list of agents could not be loaded."
+  },
+  "helpPanel.agentChat.loading": {
+    "defaultMessage": "Loading agents...",
+    "description": "Shown in the Agent Chat help panel while the list of agents loads."
+  },
+  "helpPanel.agentChat.mcp.addingBody": {
+    "defaultMessage": "You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate custom tools, APIs, and services specific to your organization's needs without any code changes or redeployments.",
+    "description": "Paragraph in the custom MCP agents dialog of the Agent Chat help panel, under \"Adding Custom Agents\". AWS Secrets Manager is a product name."
+  },
+  "helpPanel.agentChat.mcp.addingTitle": {
+    "defaultMessage": "Adding Custom Agents",
+    "description": "Heading in the custom MCP agents dialog of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.mcp.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the custom MCP agents dialog of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.mcp.learnMoreBody": {
+    "defaultMessage": "For detailed setup instructions and examples, see the <link>Custom MCP Agent Documentation</link>",
+    "description": "Last paragraph of the custom MCP agents dialog of the Agent Chat help panel. The text inside <link> links to the custom MCP agent documentation."
+  },
+  "helpPanel.agentChat.mcp.learnMoreTitle": {
+    "defaultMessage": "Learn More",
+    "description": "Heading in the custom MCP agents dialog of the Agent Chat help panel, above the link to the documentation."
+  },
+  "helpPanel.agentChat.mcp.title": {
+    "defaultMessage": "Custom MCP Agents",
+    "description": "Title of the dialog, opened from the Agent Chat help panel, that explains custom MCP agents."
+  },
+  "helpPanel.agentChat.mcp.whatBody": {
+    "defaultMessage": "Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your document analysis workflow.",
+    "description": "Paragraph in the custom MCP agents dialog of the Agent Chat help panel, under \"What are MCP Agents?\"."
+  },
+  "helpPanel.agentChat.mcp.whatTitle": {
+    "defaultMessage": "What are MCP Agents?",
+    "description": "Heading in the custom MCP agents dialog of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.mcpButton": {
+    "defaultMessage": "NEW: Integrate your own systems with MCP!",
+    "description": "Button in the Agent Chat help panel that explains custom MCP agents. A rocket emoji is shown before it."
+  },
+  "helpPanel.agentChat.sampleQueries": {
+    "defaultMessage": "Sample Queries:",
+    "description": "Label above an agent's sample questions in the Agent Chat help panel. Each question is a button that puts it into the chat input."
+  },
+  "helpPanel.agentChat.title": {
+    "defaultMessage": "Available Agents",
+    "description": "Heading of the Agent Chat help panel, which lists the agents the chat can use."
+  },
   "helpPanel.documents.docsCircuitBreaker": {
     "defaultMessage": "Circuit Breaker",
     "description": "Documentation link in the Documents help panel: the page about the circuit breaker that pauses processing."
@@ -1434,6 +2414,54 @@
   "helpPanel.feedback.viewIssues": {
     "defaultMessage": "View existing issues",
     "description": "Link in the feedback block that opens the list of GitHub issues of the project in a new tab."
+  },
+  "helpPanel.knowledgeBase.docsKnowledgeBase": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Documentation link in the Knowledge Base help panel: the page about the document knowledge base."
+  },
+  "helpPanel.knowledgeBase.feature1": {
+    "defaultMessage": "Ask questions about documents in your knowledge base",
+    "description": "First item of the features list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.feature2": {
+    "defaultMessage": "Get responses with citations to source documents",
+    "description": "Second item of the features list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.feature3": {
+    "defaultMessage": "Follow document links to view original source material",
+    "description": "Third item of the features list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.features": {
+    "defaultMessage": "Features",
+    "description": "Heading above the list of features in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.intro": {
+    "defaultMessage": "Query your document collection using natural language, powered by Amazon Bedrock Knowledge Bases.",
+    "description": "First paragraph of the Knowledge Base help panel. \"Amazon Bedrock Knowledge Bases\" is an AWS service name and stays as it is."
+  },
+  "helpPanel.knowledgeBase.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tip1": {
+    "defaultMessage": "Be specific in your questions to get more accurate answers",
+    "description": "First item of the tips list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tip2": {
+    "defaultMessage": "Questions are context-aware — you can ask follow-up questions",
+    "description": "Second item of the tips list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tip3": {
+    "defaultMessage": "Results are based on indexed document content",
+    "description": "Third item of the tips list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tips": {
+    "defaultMessage": "Tips",
+    "description": "Heading above the list of tips in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.title": {
+    "defaultMessage": "Document Knowledge Base Query",
+    "description": "Heading of the help panel of the Knowledge Base page."
   },
   "helpPanel.upload.details": {
     "defaultMessage": "Details",
@@ -1682,6 +2710,38 @@
   "inbox.navLink.unread": {
     "defaultMessage": "{count, plural, one {unread} other {unread}}",
     "description": "Read by screen readers after the count badge of the Inbox link, as in \"3 unread\". {count} is the number of unread messages; the badge itself shows the number."
+  },
+  "knowledgeBase.query.intro": {
+    "defaultMessage": "Ask a question below.",
+    "description": "Text of the Knowledge Base page before the first question."
+  },
+  "knowledgeBase.query.introDisabled": {
+    "defaultMessage": "Document Knowledge Base queries are not enabled. Document Knowledge Base is set to DISABLED for this GenAIIDP deployment.",
+    "description": "Text of the Knowledge Base page when the deployment has no knowledge base. Keep DISABLED (the deployment setting value) and GenAIIDP (the product name) as they are."
+  },
+  "knowledgeBase.query.placeholder": {
+    "defaultMessage": "Enter a question to query your document knowledge base.",
+    "description": "Placeholder of the question box on the Knowledge Base page."
+  },
+  "knowledgeBase.query.placeholderDisabled": {
+    "defaultMessage": "Document Knowledge Base is set to DISABLED for this GenAIIDP deployment.",
+    "description": "Placeholder of the question box when the deployment has no knowledge base. Keep DISABLED (the deployment setting value) and GenAIIDP (the product name) as they are."
+  },
+  "knowledgeBase.query.queryAction": {
+    "defaultMessage": "query the knowledge base",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the knowledge base cannot be queried."
+  },
+  "knowledgeBase.query.question": {
+    "defaultMessage": "Q: {question}",
+    "description": "Bold label above each answer on the Knowledge Base page. {question} is the question as the user typed it."
+  },
+  "knowledgeBase.query.submit": {
+    "defaultMessage": "Submit",
+    "description": "Button that sends the typed question to the knowledge base."
+  },
+  "knowledgeBase.query.title": {
+    "defaultMessage": "Documents Knowledge Base Query Tool",
+    "description": "Heading of the Knowledge Base page."
   },
   "mcp.configuration.adminOnly": {
     "defaultMessage": "MCP Configuration is available to Admin users only.",

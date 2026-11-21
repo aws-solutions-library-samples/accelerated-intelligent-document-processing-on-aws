@@ -16,9 +16,11 @@ export const SESSION_DATA_RESULTS_EVENT = 'session_data_results';
 /** Stream event: the turn moved to a new session; content is JSON {sessionId}. */
 export const SESSION_REPLACED_EVENT = 'session_replaced';
 
-/** Shown when opting in started a new session. */
-export const NEW_SESSION_NOTICE =
-  'Started a new conversation. Code Intelligence and External MCP agents are not used in a conversation that includes Analytics or Error Analyzer results.';
+/**
+ * The `sessionNotice` value stored when opting in started a new session: a token, not text.
+ * The chat page words it in the UI language where it renders the notice.
+ */
+export const NEW_SESSION_NOTICE = 'new-session';
 
 export type OptInKey = 'enableCodeIntelligence' | 'enableExternalMcpAgents';
 
