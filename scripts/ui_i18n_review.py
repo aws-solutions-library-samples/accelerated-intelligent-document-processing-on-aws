@@ -28,6 +28,14 @@ point, so after the first batch they are billed at the cache-read rate. The mode
 answers through one tool (``TOOL_NAME``) with, per entry, the problems it sees,
 each from a fixed list (``PROBLEMS``), a short reason and its own translation.
 
+ONE TRANSLATION RUN
+-------------------
+``--provenance PATH`` takes the provenance file a ``make ui-i18n-translate`` run
+wrote (under ``test-reports/ui-i18n-translate/``) and reviews only the entries that
+run wrote. Each carries that run's back-translation, when it was asked for, as
+evidence: a back-translation whose meaning differs from the English points at a
+meaning problem, though the model judges the translation itself.
+
 THE ANSWER IS DATA
 ------------------
 An answer is checked before anything in it is counted: it must come through the
@@ -83,6 +91,8 @@ USAGE
 -----
     python3 scripts/ui_i18n_review.py --locale fr-CA --dry-run
     python3 scripts/ui_i18n_review.py --locale fr-CA --region ca-central-1 --profile <name> --limit 40
+    python3 scripts/ui_i18n_review.py --locale fr-CA --region ca-central-1 --profile <name> \\
+        --provenance test-reports/ui-i18n-translate/fr-CA-<stamp>.json
 """
 
 from __future__ import annotations
@@ -90,6 +100,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import html
 import io
 import json
 import re
@@ -369,6 +380,7 @@ class Entry:
     description: str
     translation: str
     terms: list[str]
+    back_translation: list[str] = field(default_factory=list)
     outcome: str = "skipped"
     problems: list[str] = field(default_factory=list)
     reason: str = ""
@@ -384,6 +396,8 @@ class Entry:
         }
         if self.terms:
             item["glossaryTerms"] = self.terms
+        if self.back_translation:
+            item["backTranslation"] = self.back_translation
         return item
 
     @property
@@ -400,13 +414,101 @@ class Plan:
     problems: list[str]
     stale: list[str]
     translated: int
+    not_in_catalog: int = 0
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """What one run of the translation tool (``make ui-i18n-translate``) recorded: the
+    entries it wrote, and the back-translations it was asked for."""
+
+    source: Path
+    date: str | None
+    terminology_sha256: str | None
+    #: The message that run wrote, per entry.
+    written: dict[str, str]
+    #: One text per plural or select branch, only for entries with every branch's.
+    back_translations: dict[str, list[str]]
+
+    def back_translation(self, entry_id: str, translation: str) -> list[str]:
+        """The run's back-translation, if the catalog still holds what that run wrote: an
+        entry edited since is judged without evidence about its older text."""
+        if self.written.get(entry_id) != translation:
+            return []
+        return self.back_translations.get(entry_id, [])
+
+
+def branch_texts(sentences: Any) -> list[str] | None:
+    """One back-translation per branch, in order, or None when any branch lacks one (the
+    translation tool records none when its cap or an AWS error stopped it), so that a
+    text is never read against the wrong branch. A branch with nothing to translate,
+    such as a bare ``#``, was never sent and stands for itself."""
+    if not isinstance(sentences, list) or not sentences:
+        return None
+    texts = []
+    for sentence in sentences:
+        if not isinstance(sentence, dict):
+            return None
+        if sentence.get("sent") is None and isinstance(sentence.get("answer"), str):
+            texts.append(plain_text(sentence["answer"]))
+        elif isinstance(sentence.get("backTranslation"), str):
+            texts.append(plain_text(sentence["backTranslation"]))
+        else:
+            return None
+    return texts
+
+
+def plain_text(answer: str) -> str:
+    """A back-translation as text: the translation tool sends and receives HTML, with
+    every argument in a ``<span>``."""
+    return html.unescape(re.sub(r"</?span\b[^>]*>", "", answer))
+
+
+def read_provenance(path: Path, locale: str) -> Provenance:
+    """Refuses a file that is not a translation run's provenance for ``locale``."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ToolError(f"{path.name} could not be read: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        raise ToolError(f"{path.name} is not the provenance file of a translation run")
+    if data.get("targetLanguage") != locale:
+        raise ToolError(
+            f"{path.name} records a run for {data.get('targetLanguage')!r}, not {locale}"
+        )
+    written: dict[str, str] = {}
+    back_translations: dict[str, list[str]] = {}
+    for entry in data["entries"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            raise ToolError(f"{path.name} holds an entry without an id")
+        if not isinstance(entry.get("message"), str):
+            continue  # that run left it out, so the screen shows the English
+        written[entry["id"]] = entry["message"]
+        texts = branch_texts(entry.get("sentences"))
+        if texts:
+            back_translations[entry["id"]] = texts
+    terminology = data.get("terminology")
+    return Provenance(
+        source=path,
+        date=data.get("date") if isinstance(data.get("date"), str) else None,
+        terminology_sha256=terminology.get("sha256")
+        if isinstance(terminology, dict)
+        else None,
+        written=written,
+        back_translations=back_translations,
+    )
 
 
 def plan_review(
-    layout: Layout, locale: str, glossary: Glossary | None, limit: int | None
+    layout: Layout,
+    locale: str,
+    glossary: Glossary | None,
+    limit: int | None,
+    provenance: Provenance | None = None,
 ) -> Plan:
     """The entries to send: every entry of ``<locale>.json`` the build accepts and whose
-    English has not changed since it was translated, in id order."""
+    English has not changed since it was translated, in id order; with a provenance
+    file, only the entries that translation run wrote, with its back-translations."""
     path = layout.catalog(locale)
     if not path.is_file():
         raise ToolError(
@@ -428,6 +530,8 @@ def plan_review(
         source, translated = english.get(entry_id), catalog[entry_id]
         if entry_id in left_out or not isinstance(source, dict):
             continue
+        if provenance is not None and entry_id not in provenance.written:
+            continue
         message = source["defaultMessage"]
         entries.append(
             Entry(
@@ -436,6 +540,11 @@ def plan_review(
                 description=str(source.get("description") or ""),
                 translation=translated["message"],
                 terms=glossary.terms_in(message) if glossary else [],
+                back_translation=provenance.back_translation(
+                    entry_id, translated["message"]
+                )
+                if provenance
+                else [],
             )
         )
     kept = entries if limit is None else entries[:limit]
@@ -447,6 +556,7 @@ def plan_review(
         problems=list(coverage.get("problems") or []),
         stale=stale,
         translated=len(entries),
+        not_in_catalog=len(set(provenance.written) - set(catalog)) if provenance else 0,
     )
 
 
@@ -512,7 +622,10 @@ def instructions(locale: str, glossary: Glossary | None) -> str:
         "configurations, and chat with agents.\n\n"
         "Each message you are given has an id, the English source in ICU MessageFormat, "
         "a description by the developer of where it appears, the current translation, "
-        "and the glossary terms its English uses.\n\n"
+        "and the glossary terms its English uses. Some also carry backTranslation: the "
+        "translation machine-translated back into English, one text per plural or select "
+        "branch. It is evidence only: a back-translation whose meaning differs from the "
+        "English points at a meaning problem, but judge the translation itself.\n\n"
         "For each message:\n"
         "1. Judge the current translation against the English and the rules below. List "
         "each problem you find as one of these names, or none when the translation is "
@@ -812,6 +925,13 @@ def report_markdown(record: dict[str, Any]) -> str:
         f"{counts['disagreement']} disagreements). "
         f"Cost US${record['cost']['usd']:.2f} of the US${record['cost']['maxUsd']:.2f} cap.",
     ]
+    provenance = record.get("provenance")
+    if provenance:
+        lines += [
+            "",
+            f"Only the entries written by the translation run of {provenance['date']} "
+            f"(`{cell(provenance['path'])}`).",
+        ]
     if record["stopped"]:
         lines += ["", f"**The run stopped early:** {record['stopped']}."]
     disagreements = [e for e in record["entries"] if e["outcome"] == "disagreement"]
@@ -910,6 +1030,12 @@ def main(argv: list[str] | None = None, *, layout: Layout | None = None) -> int:
         metavar="DIR",
         help="where to write report.json and report.md (default under test-reports/ui-i18n-review/)",
     )
+    parser.add_argument(
+        "--provenance",
+        type=Path,
+        metavar="PATH",
+        help="review only the entries one make ui-i18n-translate run wrote, with its back-translations",
+    )
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit < 1:
         parser.error("--limit takes a whole number from 1")
@@ -946,8 +1072,17 @@ def review_catalog(layout: Layout, args: argparse.Namespace) -> int:
     )
     if glossary is None:
         print(f"  no {layout.relative(glossary_path)}: reviewing without a glossary")
+    provenance = (
+        read_provenance(args.provenance, args.locale) if args.provenance else None
+    )
 
-    plan = plan_review(layout, args.locale, glossary, args.limit)
+    plan = plan_review(layout, args.locale, glossary, args.limit, provenance)
+    if plan.not_in_catalog:
+        print(
+            f"  {plan.not_in_catalog} entr{'y' if plan.not_in_catalog == 1 else 'ies'} "
+            f"that run wrote {'is' if plan.not_in_catalog == 1 else 'are'} no longer in "
+            f"{args.locale}.json"
+        )
     prefix = instructions(args.locale, glossary)
     batches = make_batches(plan.entries)
     estimate = estimate_usd(rates, prefix, batches)
@@ -998,6 +1133,15 @@ def review_catalog(layout: Layout, args: argparse.Namespace) -> int:
             "sha256": glossary.sha256,
             "terms": len(glossary.rows),
         },
+        "provenance": None
+        if provenance is None
+        else {
+            "path": layout.relative(provenance.source),
+            "date": provenance.date,
+            "terminologySha256": provenance.terminology_sha256,
+            "written": len(provenance.written),
+            "notInCatalog": plan.not_in_catalog,
+        },
         "translated": plan.translated,
         "reviewed": counts["same"] + counts["same-meaning"] + counts["disagreement"],
         "counts": counts,
@@ -1019,6 +1163,7 @@ def review_catalog(layout: Layout, args: argparse.Namespace) -> int:
                 "description": entry.description,
                 "translation": entry.translation,
                 "glossaryTerms": entry.terms,
+                "backTranslation": entry.back_translation,
                 "outcome": entry.outcome,
                 "problems": entry.problems,
                 "reason": entry.reason,

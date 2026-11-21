@@ -981,3 +981,244 @@ def test_end_to_end_the_build_parity_check_decides_what_is_sent(tmp_path, monkey
     assert record["invalid"] == ["nav.greeting"]
     assert record["stale"] == ["nav.upload"]
     assert any("missing argument(s) {name}" in p for p in record["invalidProblems"])
+
+
+# --- one translation run's provenance ------------------------------------------------
+
+
+def _span(slot: int, text: str) -> str:
+    return f'<span translate="no" data-ph="{slot}">{text}</span>'
+
+
+def _provenance(entries: list[dict[str, Any]], locale: str = "fr-CA") -> dict[str, Any]:
+    """A provenance file as `make ui-i18n-translate` writes it."""
+    return {
+        "engine": "Amazon Translate",
+        "operation": "TranslateText",
+        "region": "ca-central-1",
+        "sourceLanguage": "en",
+        "targetLanguage": locale,
+        "formality": "FORMAL",
+        "terminology": {
+            "name": "idp-ui-fr-CA",
+            "sha256": "ab" * 32,
+            "glossary": "src/ui/src/i18n/glossary.fr-CA.csv",
+            "terms": 2,
+        },
+        "date": "2030-01-02T03:04:05Z",
+        "characters": {"translated": 60, "backTranslated": 70},
+        "backTranslationError": None,
+        "entries": entries,
+    }
+
+
+PROVENANCE_ENTRIES = [
+    {
+        "id": "nav.count",
+        "english": EN["nav.count"]["defaultMessage"],
+        "stale": False,
+        "sentences": [
+            {
+                "sent": f"{_span(0, '#')} document",
+                "answer": f"{_span(0, '#')} document",
+                "appliedTerms": [],
+                "backTranslation": f"{_span(0, '#')} document",
+            },
+            {
+                "sent": f"{_span(0, '#')} documents",
+                "answer": f"{_span(0, '#')} documents",
+                "appliedTerms": [],
+                "backTranslation": f"{_span(0, '#')} documents",
+            },
+        ],
+        "message": FR_TEXT["nav.count"],
+    },
+    {
+        "id": "nav.greeting",
+        "english": "Hello {name}",
+        "stale": False,
+        "sentences": [
+            {
+                "sent": f"Hello {_span(0, '{name}')}",
+                "answer": f"Bonjour {_span(0, '{name}')}",
+                "appliedTerms": [],
+                "backTranslation": f"Good day {_span(0, '{name}')} &amp; welcome",
+            }
+        ],
+        "message": "Bonjour {name}",
+    },
+    {
+        "id": "nav.upload",
+        "english": "Upload documents",
+        "stale": False,
+        "sentences": [
+            {
+                "sent": "Upload documents",
+                "answer": "Téléverser des documents",
+                "appliedTerms": [],
+            }
+        ],
+        "message": "Téléverser des documents",
+    },
+    {
+        # Left out by that run: the screen shows the English, so nothing to review.
+        "id": "nav.queue",
+        "english": "Open the Review Queue",
+        "stale": False,
+        "sentences": [
+            {"sent": "Open the Review Queue", "answer": "Ouvrir", "appliedTerms": []}
+        ],
+        "errors": ["nav.queue: the answer lost span(s) 0"],
+    },
+    {
+        # Written by that run, gone from the catalog since.
+        "id": "nav.gone",
+        "english": "Gone",
+        "stale": False,
+        "sentences": [{"sent": "Gone", "answer": "Parti", "appliedTerms": []}],
+        "message": "Parti",
+    },
+]
+
+
+def _with_provenance(tmp_path: Path, record: Any) -> Path:
+    path = tmp_path / "provenance.json"
+    path.write_text(
+        record if isinstance(record, str) else json.dumps(record), encoding="utf-8"
+    )
+    return path
+
+
+def test_a_provenance_file_narrows_the_review_to_the_entries_its_run_wrote(
+    tmp_path, monkeypatch, capsys
+):
+    layout, _ = _tree(tmp_path, monkeypatch)
+    client = FakeBedrock()
+    _use_client(monkeypatch, client)
+    path = _with_provenance(tmp_path, _provenance(PROVENANCE_ENTRIES))
+
+    assert _run(layout, tmp_path, "--provenance", str(path)) == 0
+
+    assert [item["id"] for item in sent(client.requests[0])] == [
+        "nav.count",
+        "nav.greeting",
+        "nav.upload",
+    ]
+    assert (
+        "1 entry that run wrote is no longer in fr-CA.json" in capsys.readouterr().out
+    )
+
+
+def test_back_translations_reach_the_model_as_plain_text(tmp_path, monkeypatch):
+    layout, _ = _tree(tmp_path, monkeypatch)
+    client = FakeBedrock()
+    _use_client(monkeypatch, client)
+    path = _with_provenance(tmp_path, _provenance(PROVENANCE_ENTRIES))
+
+    assert _run(layout, tmp_path, "--provenance", str(path)) == 0
+
+    by_id = {item["id"]: item for item in sent(client.requests[0])}
+    assert by_id["nav.greeting"]["backTranslation"] == ["Good day {name} & welcome"]
+    assert by_id["nav.count"]["backTranslation"] == ["# document", "# documents"]
+    assert "backTranslation" not in by_id["nav.upload"]
+    assert "It is evidence only" in client.requests[0]["system"][0]["text"]
+
+
+def test_the_report_records_the_provenance(tmp_path, monkeypatch):
+    layout, _ = _tree(tmp_path, monkeypatch)
+    _use_client(monkeypatch, FakeBedrock())
+    path = _with_provenance(tmp_path, _provenance(PROVENANCE_ENTRIES))
+
+    assert _run(layout, tmp_path, "--provenance", str(path)) == 0
+
+    record = _report(tmp_path)
+    assert record["provenance"] == {
+        "path": "provenance.json",
+        "date": "2030-01-02T03:04:05Z",
+        "terminologySha256": "ab" * 32,
+        "written": 4,
+        "notInCatalog": 1,
+    }
+    greeting = next(e for e in record["entries"] if e["id"] == "nav.greeting")
+    assert greeting["backTranslation"] == ["Good day {name} & welcome"]
+    markdown = (tmp_path / "out" / "report.md").read_text(encoding="utf-8")
+    assert (
+        "Only the entries written by the translation run of 2030-01-02T03:04:05Z "
+        "(`provenance.json`)." in markdown
+    )
+
+
+def test_a_branch_without_a_back_translation_drops_the_entrys_evidence(
+    tmp_path, monkeypatch
+):
+    entries = json.loads(json.dumps(PROVENANCE_ENTRIES))
+    entries[0]["sentences"][1]["backTranslation"] = None  # the cap stopped it there
+    layout, _ = _tree(tmp_path, monkeypatch)
+    client = FakeBedrock()
+    _use_client(monkeypatch, client)
+    path = _with_provenance(tmp_path, _provenance(entries))
+
+    assert _run(layout, tmp_path, "--provenance", str(path)) == 0
+
+    by_id = {item["id"]: item for item in sent(client.requests[0])}
+    assert "backTranslation" not in by_id["nav.count"]
+    assert by_id["nav.greeting"]["backTranslation"] == ["Good day {name} & welcome"]
+
+
+def test_a_branch_never_sent_stands_for_itself():
+    texts = MODULE.branch_texts(
+        [
+            {"sent": None, "answer": _span(0, "#")},
+            {
+                "sent": f"{_span(0, '#')} items",
+                "answer": f"{_span(0, '#')} éléments",
+                "backTranslation": f"{_span(0, '#')} elements",
+            },
+        ]
+    )
+    assert texts == ["#", "# elements"]
+
+
+def test_an_entry_edited_since_that_run_is_reviewed_without_its_old_evidence(
+    tmp_path, monkeypatch
+):
+    texts = dict(FR_TEXT, **{"nav.greeting": "Bonjour, {name}"})
+    layout, _ = _tree(tmp_path, monkeypatch, fr=_fr(texts))
+    client = FakeBedrock()
+    _use_client(monkeypatch, client)
+    path = _with_provenance(tmp_path, _provenance(PROVENANCE_ENTRIES))
+
+    assert _run(layout, tmp_path, "--provenance", str(path)) == 0
+
+    by_id = {item["id"]: item for item in sent(client.requests[0])}
+    assert by_id["nav.greeting"]["translation"] == "Bonjour, {name}"
+    assert "backTranslation" not in by_id["nav.greeting"]
+    assert by_id["nav.count"]["backTranslation"] == ["# document", "# documents"]
+
+
+@pytest.mark.parametrize(
+    "record, reason",
+    [
+        (
+            _provenance(PROVENANCE_ENTRIES, locale="fr"),
+            "records a run for 'fr', not fr-CA",
+        ),
+        ("{not json", "provenance.json could not be read"),
+        (
+            {"targetLanguage": "fr-CA"},
+            "is not the provenance file of a translation run",
+        ),
+        (_provenance([{"message": "x"}]), "holds an entry without an id"),
+    ],
+    ids=["another locale", "not JSON", "no entries", "an entry without an id"],
+)
+def test_a_file_that_is_no_provenance_of_this_locale_is_refused(
+    tmp_path, monkeypatch, capsys, record, reason
+):
+    layout, _ = _tree(tmp_path, monkeypatch)
+    _no_client(monkeypatch)
+    path = _with_provenance(tmp_path, record)
+
+    argv = ["--locale", "fr-CA", "--dry-run", "--provenance", str(path)]
+    assert MODULE.main(argv, layout=layout) == 2
+    assert reason in capsys.readouterr().err
