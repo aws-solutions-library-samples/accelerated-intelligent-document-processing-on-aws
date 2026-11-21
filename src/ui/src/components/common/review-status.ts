@@ -4,6 +4,7 @@
 // The UI's one declaration of review and legacy HITL status values, mirroring
 // lib/idp_common_pkg/idp_common/review_queues/statuses.py.
 import type { StatusIndicatorProps } from '@cloudscape-design/components';
+import { defineMessages, type IntlShape, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 export const ReviewStatus = {
   IN_REVIEW: 'in_review',
@@ -163,16 +164,91 @@ export interface StateView {
   type: StatusIndicatorProps.Type;
 }
 
-const STATE_VIEWS: Record<string, StateView> = {
-  [QueueItemState.HOLDING]: { label: 'Preparing', type: 'pending' },
-  [QueueItemState.OPEN]: { label: 'Waiting', type: 'pending' },
-  [QueueItemState.CLAIMED]: { label: 'Claimed', type: 'in-progress' },
-  [QueueItemState.FINALIZING]: { label: 'Finalizing', type: 'loading' },
-  [QueueItemState.COMPLETE]: { label: 'Complete', type: 'success' },
-  [QueueItemState.REJECTED]: { label: 'Rejected', type: 'stopped' },
-  [QueueItemState.FINALIZE_FAILED]: { label: 'Finalize failed', type: 'error' },
-  [QueueItemState.WITHDRAWN]: { label: 'Withdrawn', type: 'stopped' },
+/**
+ * One label per queue item state the backend writes (`QueueItemState` in
+ * idp_common/review_queues/statuses.py); scripts/tests/test_review_status_ui_parity.py
+ * checks the two lists match.
+ */
+const stateMessages = defineMessages<Record<QueueItemStateValue, NoMessageValues>>({
+  HOLDING: {
+    id: 'common.reviewStatus.state.holding',
+    defaultMessage: 'Preparing',
+    description:
+      "State of a review queue item that is being prepared and is not yet waiting for review. Shown in a queue's Documents table and on the item's edit page.",
+  },
+  OPEN: {
+    id: 'common.reviewStatus.state.open',
+    defaultMessage: 'Waiting',
+    description:
+      "State of a review queue item waiting in its queue for an Annotator to claim it or an Admin to assign it. Shown in a queue's Documents table and on the item's edit page.",
+  },
+  CLAIMED: {
+    id: 'common.reviewStatus.state.claimed',
+    defaultMessage: 'Claimed',
+    description:
+      "State of a review queue item an Annotator holds. Shown on the item's edit page; the work tables say Assigned for it instead.",
+  },
+  FINALIZING: {
+    id: 'common.reviewStatus.state.finalizing',
+    defaultMessage: 'Finalizing',
+    description:
+      "State of a review queue item whose review is done and whose result is being applied to the document. Shown in a queue's Documents table and on the item's edit page.",
+  },
+  COMPLETE: {
+    id: 'common.reviewStatus.state.complete',
+    defaultMessage: 'Complete',
+    description: "State of a review queue item whose review is done. Shown in a queue's Documents table and on the item's edit page.",
+  },
+  REJECTED: {
+    id: 'common.reviewStatus.state.rejected',
+    defaultMessage: 'Rejected',
+    description:
+      "State of a review queue item whose document a reviewer rejected. Shown in a queue's Documents table and on the item's edit page.",
+  },
+  FINALIZE_FAILED: {
+    id: 'common.reviewStatus.state.finalizeFailed',
+    defaultMessage: 'Finalize failed',
+    description:
+      "State of a review queue item whose review is done but whose result could not be applied to the document yet; it is retried. Shown in a queue's Documents table and on the item's edit page.",
+  },
+  WITHDRAWN: {
+    id: 'common.reviewStatus.state.withdrawn',
+    defaultMessage: 'Withdrawn',
+    description:
+      "State of a review queue item taken out of review without a result, for example because its document was processed again. Shown in a queue's Documents table and on the item's edit page.",
+  },
+});
+
+const messages = defineMessages<{ unknownState: NoMessageValues }>({
+  unknownState: {
+    id: 'common.reviewStatus.state.unknown',
+    defaultMessage: 'Unknown',
+    description: 'State label of a review queue item when no state is known for it.',
+  },
+});
+
+/** The StatusIndicator type of each queue item state (Cloudscape's names, not text). */
+const STATE_TYPES: Record<QueueItemStateValue, StatusIndicatorProps.Type> = {
+  [QueueItemState.HOLDING]: 'pending',
+  [QueueItemState.OPEN]: 'pending',
+  [QueueItemState.CLAIMED]: 'in-progress',
+  [QueueItemState.FINALIZING]: 'loading',
+  [QueueItemState.COMPLETE]: 'success',
+  [QueueItemState.REJECTED]: 'stopped',
+  [QueueItemState.FINALIZE_FAILED]: 'error',
+  [QueueItemState.WITHDRAWN]: 'stopped',
 };
 
-export const reviewItemStateView = (state: string | null | undefined): StateView =>
-  STATE_VIEWS[state ?? ''] ?? { label: state ?? 'Unknown', type: 'info' };
+const isQueueItemState = (state: string): state is QueueItemStateValue => Object.hasOwn(stateMessages, state);
+
+const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: IntlShape): string =>
+  intl ? intl.formatMessage(message) : String(message.defaultMessage);
+
+/**
+ * A queue item state's label and StatusIndicator type. The label is in the UI's language with
+ * `intl`; without it, the English source text. A state the UI does not know is shown as stored.
+ */
+export const reviewItemStateView = (state: string | null | undefined, intl?: IntlShape): StateView =>
+  state != null && isQueueItemState(state)
+    ? { label: labelOf(stateMessages[state], intl), type: STATE_TYPES[state] }
+    : { label: state ?? labelOf(messages.unknownState, intl), type: 'info' };

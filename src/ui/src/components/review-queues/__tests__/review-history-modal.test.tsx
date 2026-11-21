@@ -6,8 +6,15 @@
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 import ReviewHistoryModal, { entryDetails, eventLabel } from '../ReviewHistoryModal';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const HISTORY = [
   { at: '2026-10-20T09:00:00.000Z', event: 'claimed', actor: 'ann@example.com', details: null },
@@ -21,7 +28,7 @@ const HISTORY = [
 
 describe('ReviewHistoryModal', () => {
   it('shows a skip with its reason and note, newest first', () => {
-    render(<ReviewHistoryModal history={HISTORY} onDismiss={() => undefined} />);
+    render(<ReviewHistoryModal history={HISTORY} onDismiss={() => undefined} />, { wrapper: English });
     expect(screen.getByText('Review history (2)')).toBeInTheDocument();
     const rows = screen.getAllByRole('row').slice(1);
     expect(within(rows[0]).getByText('Skipped')).toBeInTheDocument();

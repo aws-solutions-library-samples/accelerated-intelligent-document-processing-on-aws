@@ -42,7 +42,7 @@ import { QueueItemState } from '../common/review-status';
 import { claimItem, claimNextItem, documentName, fetchMyReviewQueues, fetchQueueItems, fetchQueuesOverview } from './review-api';
 import QueueDefinitionModal from './QueueDefinitionModal';
 import { listAnnotatorEmails, listReviewQueues } from './reviewer-assignment';
-import { fromReviewItem } from './work-items';
+import { fromReviewItem, workItemView } from './work-items';
 import BulkSkipModal from '../review-bulk/BulkSkipModal';
 import type { BulkSkipMode } from '../review-bulk/BulkSkipModal';
 import BulkResultsModal from '../review-bulk/BulkResultsModal';
@@ -308,6 +308,8 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   /** An Annotator's row menu entry: Claim, for an item waiting for review. */
   const claimMenuItems = (item: WorkItem) => {
     const claimable = !!item.reviewItem && isClaimable(item.reviewItem);
+    // The assignee as the table shows it: "You" for the caller's item, else the Annotator's e-mail.
+    const { assignee } = workItemView(item, intl);
     return [
       {
         id: 'claim',
@@ -317,8 +319,8 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
           ? undefined
           : item.assignedToMe
             ? 'This item is assigned to you'
-            : item.assignedTo
-              ? `Assigned to ${item.assignedTo}`
+            : assignee
+              ? `Assigned to ${assignee}`
               : 'This item is not waiting for review',
       },
     ];

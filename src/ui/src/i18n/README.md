@@ -157,7 +157,7 @@ Every displayed date, time and amount goes through the helpers, and so does near
 number. What remains on `toFixed` or `toLocaleString` is either technical (exports,
 parse-backs, text comparisons, debug timings, chart data) or one of the exceptions named here:
 the test-run comparison's colour-graded cells and its field-metrics string, which are parsed
-back; the sentence builders in `promptCacheModel.ts` and `review-api.ts`, converted with their
+back; the sentence builders in `promptCacheModel.ts`, converted with their
 screens; and the capacity planner's quota strings, a follow-up. The comparison screen's CSV test
 pins an export beside its localized cell.
 
