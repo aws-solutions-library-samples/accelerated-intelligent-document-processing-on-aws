@@ -1804,6 +1804,21 @@ ui-i18n-translate: ## Draft the missing and stale entries of src/ui/src/i18n/<LO
 	@# targets (issue #1447).
 	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_translate.py --locale $(LOCALE) $(UI_I18N_TRANSLATE_ARGS)'
 
+# A DEVELOPER TOOL, NOT A GATE: it calls Amazon Bedrock with the developer's own AWS
+# credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
+# `fastlint` or `lint-cicd`, and its name matches none of the check shapes
+# test_ci_gate_parity.py classifies by. It changes no catalog: it reviews
+# src/ui/src/i18n/<LOCALE>.json and writes a report under test-reports/ for a person
+# to act on. Flags go through UI_I18N_REVIEW_ARGS: start with
+# `make ui-i18n-review LOCALE=fr-CA UI_I18N_REVIEW_ARGS=--dry-run`, then e.g.
+# `UI_I18N_REVIEW_ARGS="--region ca-central-1 --profile <name> --limit 40"`.
+UI_I18N_REVIEW_ARGS ?=
+ui-i18n-review: ## Review src/ui/src/i18n/<LOCALE>.json with a Bedrock model and write a report, using your AWS credentials (LOCALE=fr-CA; UI_I18N_REVIEW_ARGS=--dry-run first) (issue #1770)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-review LOCALE=fr-CA$(NC)"; exit 2; fi
+	@# It runs node out of src/ui/node_modules (the coverage worker), so it takes the
+	@# same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_review.py --locale $(LOCALE) $(UI_I18N_REVIEW_ARGS)'
+
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
 	@$(UI_DEPS_LOCK) 'npm run codegen'

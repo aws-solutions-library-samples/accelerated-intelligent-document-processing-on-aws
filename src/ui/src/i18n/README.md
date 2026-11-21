@@ -394,6 +394,35 @@ a drafted catalog is committed only in the change that enables its language.
 - **Exit status.** 0 when every entry was written (or a dry run), 1 when something needs a person (an answer
   refused, a message that cannot be split, a back-translation stopped), 2 when nothing was written.
 
+## Reviewing a translation
+
+`make ui-i18n-review LOCALE=fr-CA` ([`ui_i18n_review.py`](../../../../scripts/ui_i18n_review.py)) has a Bedrock model
+review the entries of `<locale>.json` and writes `report.md` and `report.json` under `test-reports/ui-i18n-review/`.
+It changes no catalog: a person reads the report and decides. Like the drafting tool, it is a developer tool run with
+your own AWS credentials. Start with `UI_I18N_REVIEW_ARGS=--dry-run`, which prints the entries, the batches and the
+estimated cost and calls nothing; a real run needs `--region` (and `--profile` for a named profile).
+
+- **What is reviewed.** Every entry the build accepts and whose English has not changed since it was translated.
+  The coverage report's invalid and stale entries are listed in the report and never sent. `--provenance <file>`
+  narrows the review to the entries one `make ui-i18n-translate` run wrote, with that run's back-translations as
+  evidence.
+- **What the model is asked.** The locale's rules and the whole glossary come first, then, per entry, the English, its
+  `description`, the translation and the glossary terms its English uses. The model answers through one tool with the
+  problems it sees (meaning, glossary, register, regional, grammar, typography), a short reason and its own
+  translation. Arguments, plurals, tags and spacing before punctuation are checked by code and kept out of its brief.
+- **What the report says.** Each entry is `same` (no problem, same wording), `same-meaning` (no problem, worded
+  otherwise: the current translation stands) or `disagreement` (a person decides, with the model's suggestion beside
+  it). An answer that is not well formed is listed as unreviewed and never counted. The agreement figure is the share
+  of reviewed entries with no problem. A suggestion you take is copied into `<locale>.json` by hand, where
+  `make check-ui-i18n-catalog` checks it.
+- **Model and cost.** The default model is `us.anthropic.claude-opus-5-5`; `--model` takes another inference profile
+  of it that has a price in `config_library/pricing.yaml`. The run refuses to start above `--max-usd` (US$20 by
+  default) and stops before any batch that could take it past the cap.
+- **Permissions.** `bedrock:InvokeModel` on the inference profile and on the foundation model in each Region the
+  profile routes to.
+- **Exit status.** 0 when the report covers every entry (or a dry run within the cap), 1 when it is partial (the
+  cap, an AWS error or unusable answers, each listed), 2 when no report was written.
+
 ## Testing
 
 - **Rendering another locale**: [`renderWithIntl`](../test-utils/renderWithIntl.tsx) (and
