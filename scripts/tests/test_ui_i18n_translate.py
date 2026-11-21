@@ -58,17 +58,42 @@ def source_hash(text: str) -> str:
 class FakeTranslate:
     """Stands in for a boto3 Translate client: records requests, answers through ``reply``."""
 
-    def __init__(self, reply=lambda text: text, formality: str | None = "FORMAL"):
+    def __init__(
+        self,
+        reply=lambda text: text,
+        formality: str | None = "FORMAL",
+        held_description: str | None = None,
+        applied_terms: list[dict[str, str]] | None = None,
+    ):
         self.reply = reply
         self.formality = formality
+        self.held_description = held_description
+        self.applied_terms = applied_terms
         self.requests: list[dict[str, Any]] = []
+        self.imports: list[dict[str, Any]] = []
 
     def translate_text(self, **request):
         self.requests.append(request)
         response: dict[str, Any] = {"TranslatedText": self.reply(request["Text"])}
-        if self.formality:
+        if self.formality and request["TargetLanguageCode"] != "en":
             response["AppliedSettings"] = {"Formality": self.formality}
+        if self.applied_terms and request.get("TerminologyNames"):
+            response["AppliedTerminologies"] = [
+                {"Name": request["TerminologyNames"][0], "Terms": self.applied_terms}
+            ]
         return response
+
+    def get_terminology(self, **request):
+        if self.held_description is None:
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "none"}},
+                "GetTerminology",
+            )
+        return {"TerminologyProperties": {"Description": self.held_description}}
+
+    def import_terminology(self, **request):
+        self.imports.append(request)
+        return {}
 
 
 def _use_client(monkeypatch, client) -> list[tuple[str, str | None]]:
@@ -386,6 +411,10 @@ class TempCatalog(MODULE.Layout):
     def catalog_dir(self) -> Path:
         return self.directory
 
+    @property
+    def provenance_dir(self) -> Path:
+        return self.directory / "provenance"
+
 
 EN = {
     "nav.upload": {"defaultMessage": "Upload documents", "description": "Button"},
@@ -506,3 +535,420 @@ def test_end_to_end_a_broken_answer_is_left_out_and_the_catalog_still_compiles(
     assert "nav.greeting: the answer lost span(s) 0" in capsys.readouterr().out
     check = _check_catalog(layout, "fr-CA")
     assert check.returncode == 0, check.stdout + check.stderr
+
+
+# --- the glossary, the provenance file and the back-translation ----------------------
+
+GLOSSARY = (
+    "en,fr-CA,note\n"
+    "Amazon Bedrock,Amazon Bedrock,Product name.\n"
+    'review queue,file d’attente de révision,"Noun phrase, never a verb."\n'
+    "settings,paramètres,Noun.\n"
+)
+TERMINOLOGY_DATA = (
+    "en,fr-CA\n"
+    "Amazon Bedrock,Amazon Bedrock\n"
+    "review queue,file d’attente de révision\n"
+    "settings,paramètres\n"
+).encode("utf-8")
+TERMINOLOGY_SHA = hashlib.sha256(TERMINOLOGY_DATA).hexdigest()
+
+
+def _with_glossary(layout, text: str = GLOSSARY) -> None:
+    layout.glossary("fr-CA").write_text(text, encoding="utf-8")
+
+
+def test_the_glossary_is_imported_without_its_note_and_named_in_every_request(
+    tmp_path, monkeypatch, capsys
+):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    _with_glossary(layout)
+    client = FakeTranslate()
+    _use_client(monkeypatch, client)
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+
+    assert client.imports == [
+        {
+            "Name": "idp-ui-fr-CA",
+            "MergeStrategy": "OVERWRITE",
+            "Description": f"sha256:{TERMINOLOGY_SHA}",
+            "TerminologyData": {
+                "File": TERMINOLOGY_DATA,
+                "Format": "CSV",
+                "Directionality": "UNI",
+            },
+        }
+    ]
+    assert [request["TerminologyNames"] for request in client.requests] == [
+        ["idp-ui-fr-CA"]
+    ]
+    assert f"terminology idp-ui-fr-CA imported (sha256 {TERMINOLOGY_SHA[:12]})" in (
+        capsys.readouterr().out
+    )
+
+
+def test_an_unchanged_glossary_is_not_imported_again(tmp_path, monkeypatch):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    _with_glossary(layout)
+    client = FakeTranslate(held_description=f"sha256:{TERMINOLOGY_SHA}")
+    _use_client(monkeypatch, client)
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+    assert client.imports == []
+
+
+def test_a_changed_glossary_is_imported_again(tmp_path, monkeypatch):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    _with_glossary(layout)
+    client = FakeTranslate(held_description="sha256:" + "0" * 64)
+    _use_client(monkeypatch, client)
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+    assert len(client.imports) == 1
+
+
+@pytest.mark.parametrize(
+    "text, reason",
+    [
+        (
+            "en,fr,note\nsettings,paramètres,Noun.\n",
+            "the header must start with en,fr-CA",
+        ),
+        (
+            "en,fr-CA,note\nsettings,,Noun.\n",
+            "glossary.fr-CA.csv:2: a term needs its English",
+        ),
+    ],
+    ids=["another locale's header", "an empty target"],
+)
+def test_a_malformed_glossary_is_a_tool_error(
+    tmp_path, monkeypatch, capsys, text, reason
+):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    _with_glossary(layout, text)
+    _no_client(monkeypatch)
+
+    assert MODULE.main(["--locale", "fr-CA", "--dry-run"], layout=layout) == 2
+    assert reason in capsys.readouterr().err
+
+
+def test_without_a_glossary_the_run_names_no_terminology(tmp_path, monkeypatch, capsys):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    client = FakeTranslate()
+    _use_client(monkeypatch, client)
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+    assert "TerminologyNames" not in client.requests[0]
+    assert "running without a terminology" in capsys.readouterr().out
+
+
+def test_multi_word_terms_keep_the_glossary_case():
+    terminology = MODULE.Terminology(
+        name="idp-ui-fr-CA",
+        pairs=(
+            ("review queue", "file d’attente de révision"),
+            ("settings", "paramètres"),
+        ),
+        source=Path("glossary.fr-CA.csv"),
+    )
+    keep = MODULE.keep_glossary_case
+    assert keep("Ouvrez la File D’Attente De Révision", terminology) == (
+        "Ouvrez la File d’attente de révision"
+    )
+    assert keep("dans la file d’attente de révision", terminology) == (
+        "dans la file d’attente de révision"
+    )
+    assert (
+        keep("FILE D’ATTENTE DE RÉVISION", terminology) == "FILE D’ATTENTE DE RÉVISION"
+    )
+    assert keep("Paramètres Avancés", terminology) == "Paramètres Avancés"
+    assert keep("Ouvrez la File D’Attente De Révision", None) == (
+        "Ouvrez la File D’Attente De Révision"
+    )
+
+
+def test_the_written_message_keeps_the_glossary_case(tmp_path, monkeypatch):
+    def join(request):
+        return [{"id": "a.one", "message": "File D’Attente De Révision {name}"}]
+
+    layout, _ = _canned_tree(
+        tmp_path, monkeypatch, _plan([_entry("a.one", "Review Queue")]), join=join
+    )
+    _with_glossary(layout)
+    _use_client(monkeypatch, FakeTranslate())
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+    written = json.loads(layout.catalog("fr-CA").read_text(encoding="utf-8"))
+    assert written["a.one"]["message"] == "File d’attente de révision {name}"
+
+
+def test_the_provenance_file_records_the_run_outside_the_catalog(tmp_path, monkeypatch):
+    plan = _plan([_entry("a.one", "Open the review queue")])
+    layout, _ = _canned_tree(tmp_path, monkeypatch, plan)
+    _with_glossary(layout)
+    terms = [{"SourceText": "review queue", "TargetText": "file d’attente de révision"}]
+    _use_client(
+        monkeypatch,
+        FakeTranslate(reply=lambda text: "Ouvrir la file", applied_terms=terms),
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "now",
+        lambda: MODULE.datetime(2030, 1, 2, 3, 4, 5, tzinfo=MODULE.timezone.utc),
+    )
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+
+    path = layout.provenance_dir / "fr-CA-20300102T030405Z.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert {key: record[key] for key in record if key != "entries"} == {
+        "engine": "Amazon Translate",
+        "operation": "TranslateText",
+        "region": "ca-central-1",
+        "sourceLanguage": "en",
+        "targetLanguage": "fr-CA",
+        "formality": "FORMAL",
+        "terminology": {
+            "name": "idp-ui-fr-CA",
+            "sha256": TERMINOLOGY_SHA,
+            "glossary": "src/ui/src/i18n/glossary.fr-CA.csv",
+            "terms": 3,
+        },
+        "date": "2030-01-02T03:04:05Z",
+        "characters": {"translated": 21, "backTranslated": 0},
+        "backTranslationError": None,
+    }
+    assert record["entries"] == [
+        {
+            "id": "a.one",
+            "english": "Open the review queue",
+            "stale": False,
+            "sentences": [
+                {
+                    "sent": "Open the review queue",
+                    "answer": "Ouvrir la file",
+                    "appliedTerms": [
+                        {
+                            "source": "review queue",
+                            "target": "file d’attente de révision",
+                        }
+                    ],
+                }
+            ],
+            "message": "Ouvrir la file",
+        }
+    ]
+    catalog = json.loads(layout.catalog("fr-CA").read_text(encoding="utf-8"))
+    assert catalog == {
+        "a.one": {"message": "Ouvrir la file", "sourceHash": "0123456789abcdef"}
+    }
+
+
+def test_back_translation_goes_to_the_provenance_without_register_or_terminology(
+    tmp_path, monkeypatch
+):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    _with_glossary(layout)
+    client = FakeTranslate(
+        reply=lambda text: "Bonjour" if text == "Hello" else "Good day"
+    )
+    _use_client(monkeypatch, client)
+    provenance = tmp_path / "run.json"
+
+    argv = ["--locale", "fr-CA", "--region", "ca-central-1", "--back-translate"]
+    assert MODULE.main([*argv, "--provenance", str(provenance)], layout=layout) == 0
+
+    assert client.requests[1] == {
+        "Text": "Bonjour",
+        "SourceLanguageCode": "fr-CA",
+        "TargetLanguageCode": "en",
+    }
+    record = json.loads(provenance.read_text(encoding="utf-8"))
+    assert record["entries"][0]["sentences"][0]["backTranslation"] == "Good day"
+    assert record["characters"] == {"translated": 5, "backTranslated": 7}
+
+
+def test_back_translation_counts_against_the_cap_before_and_during_the_run(
+    tmp_path, monkeypatch, capsys
+):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    long_answer = "Bonjour à toutes et à tous"
+    client = FakeTranslate(reply=lambda text: long_answer if text == "Hello" else "Hi")
+    _use_client(monkeypatch, client)
+    provenance = tmp_path / "run.json"
+    argv = ["--locale", "fr-CA", "--region", "ca-central-1", "--back-translate"]
+
+    # Hello is 5 characters; the estimate adds 30 percent more for the answer: 5 + 6.
+    assert MODULE.main([*argv, "--max-chars", "10"], layout=layout) == 2
+    assert "11 characters is over --max-chars 10" in capsys.readouterr().err
+
+    # The run starts, but the real answer is longer than estimated: it is not sent back.
+    assert (
+        MODULE.main(
+            [*argv, "--max-chars", "11", "--provenance", str(provenance)], layout=layout
+        )
+        == 0
+    )
+    assert len(client.requests) == 1
+    record = json.loads(provenance.read_text(encoding="utf-8"))
+    assert record["entries"][0]["sentences"][0]["backTranslation"] is None
+
+
+def test_a_failed_back_translation_keeps_the_paid_for_answers(
+    tmp_path, monkeypatch, capsys
+):
+    plan = _plan([_entry("a.one", "Hello"), _entry("a.two", "Bye")])
+    layout, _ = _canned_tree(tmp_path, monkeypatch, plan)
+
+    class Throttled(FakeTranslate):
+        def translate_text(self, **request):
+            if request["TargetLanguageCode"] == "en":
+                raise ClientError(
+                    {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+                    "TranslateText",
+                )
+            return super().translate_text(**request)
+
+    _use_client(monkeypatch, Throttled(reply=lambda text: "Bonjour"))
+    provenance = tmp_path / "run.json"
+    argv = ["--locale", "fr-CA", "--region", "ca-central-1", "--back-translate"]
+
+    assert MODULE.main([*argv, "--provenance", str(provenance)], layout=layout) == 1
+
+    written = json.loads(layout.catalog("fr-CA").read_text(encoding="utf-8"))
+    assert set(written) == {"a.one", "a.two"}
+    record = json.loads(provenance.read_text(encoding="utf-8"))
+    assert "ThrottlingException" in record["backTranslationError"]
+    assert record["characters"]["backTranslated"] == 0
+    assert "the back-translation stopped on an AWS error" in capsys.readouterr().out
+
+
+def test_a_provenance_path_under_src_is_refused_before_any_call(
+    tmp_path, monkeypatch, capsys
+):
+    layout, calls = _canned_tree(
+        tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")])
+    )
+    _no_client(monkeypatch)
+    inside = layout.catalog_dir / "provenance.json"
+
+    argv = [
+        "--locale",
+        "fr-CA",
+        "--region",
+        "ca-central-1",
+        "--provenance",
+        str(inside),
+    ]
+    assert MODULE.main(argv, layout=layout) == 2
+
+    assert "is under src/, which ships" in capsys.readouterr().err
+    assert calls == []
+
+
+def test_a_provenance_file_that_cannot_be_written_leaves_the_catalog_alone(
+    tmp_path, monkeypatch, capsys
+):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    _use_client(monkeypatch, FakeTranslate())
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+
+    argv = ["--locale", "fr-CA", "--region", "ca-central-1"]
+    assert (
+        MODULE.main([*argv, "--provenance", str(blocker / "run.json")], layout=layout)
+        == 2
+    )
+
+    assert "the provenance file could not be written, so the catalog was not" in (
+        capsys.readouterr().err
+    )
+    assert not layout.catalog("fr-CA").exists()
+
+
+def test_a_terminology_error_other_than_not_found_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([_entry("a.one", "Hello")]))
+    _with_glossary(layout)
+
+    class NoAccess(FakeTranslate):
+        def get_terminology(self, **request):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}},
+                "GetTerminology",
+            )
+
+    client = NoAccess()
+    _use_client(monkeypatch, client)
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 2
+    )
+
+    assert "AccessDeniedException" in capsys.readouterr().err
+    assert client.imports == [] and client.requests == []
+    assert not layout.catalog("fr-CA").exists()
+
+
+def test_an_empty_glossary_is_a_tool_error_and_a_byte_order_mark_is_not(
+    tmp_path, monkeypatch, capsys
+):
+    layout, _ = _canned_tree(tmp_path, monkeypatch, _plan([]))
+    _no_client(monkeypatch)
+
+    _with_glossary(layout, "en,fr-CA,note\n")
+    assert MODULE.main(["--locale", "fr-CA", "--dry-run"], layout=layout) == 2
+    assert "the glossary has no terms" in capsys.readouterr().err
+
+    _with_glossary(layout, "\ufeff" + GLOSSARY)
+    assert MODULE.main(["--locale", "fr-CA", "--dry-run"], layout=layout) == 0
+
+
+def test_terms_match_whole_words_either_apostrophe_and_the_longest_term_first():
+    terminology = MODULE.Terminology(
+        name="idp-ui-fr-CA",
+        pairs=(
+            ("inbox", "boîte de réception"),
+            ("reviewer inbox", "boîte de réception du réviseur"),
+            ("queue", "file d’attente"),
+            ("review studio documents", "documents du Studio de révision"),
+            ("Review Studio", "Studio de révision"),
+        ),
+        source=Path("glossary.fr-CA.csv"),
+    )
+    keep = MODULE.keep_glossary_case
+    # Inside a longer word: left alone.
+    assert keep("Le Profile D’Attente", terminology) == "Le Profile D’Attente"
+    # Translate's straight apostrophe is matched too, and the glossary's spelling restored.
+    assert keep("La File D'Attente", terminology) == "La File d’attente"
+    # A longer term wins over the shorter one inside it, and is rewritten once.
+    assert keep("Boîte De Réception Du Réviseur", terminology) == (
+        "Boîte de réception du réviseur"
+    )
+    assert keep("les Documents Du Studio De Révision", terminology) == (
+        "les Documents du Studio de révision"
+    )
+    assert (
+        keep("dans le studio de révision", terminology) == "dans le studio de révision"
+    )

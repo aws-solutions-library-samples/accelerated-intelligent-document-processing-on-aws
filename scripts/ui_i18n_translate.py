@@ -19,6 +19,19 @@ tag as a numbered span whose content it translates. ``TranslateText`` runs from
 ``en`` to the locale with the formal register where the locale has one
 (``FORMALITY``); a result that does not report that register is refused.
 
+THE GLOSSARY
+------------
+``src/ui/src/i18n/glossary.<locale>.csv`` (``en,<locale>,note``) is imported as the
+custom terminology ``idp-ui-<locale>`` and named in every request. Translate reads
+every column after the first as a target language, so only the first two are
+imported; the note is for the people reviewing the French. The terminology is
+re-imported only when the imported text changed (its SHA-256 is kept in the
+terminology's description), and that hash is the terminology version the run
+records. Translate gives a term the capitals of the English it matched, word by
+word, so a Title Case label would get every word of a French term capitalized;
+the run puts each multi-word term back in the glossary's own case, keeping only
+the first letter's.
+
 WHAT IT WRITES
 --------------
 The worker rebuilds each answer into an ICU message and judges it with the parity
@@ -28,25 +41,37 @@ names it with the reason. Entries the coverage report calls ``invalid`` or ``dea
 are listed and left as they are: the catalog gate already fails on them, and fixing
 one is a person's call. The catalog is written sorted by id, two-space JSON.
 
+Every run that calls Translate also writes a provenance file, before the catalog
+and never under ``src/`` (by default under the gitignored
+``test-reports/ui-i18n-translate/``): the engine, the
+Region, the register, the terminology name and hash, the date, and per entry what
+was sent, what came back, the terms Translate applied and, with
+``--back-translate``, Translate's translation of the answer back into English. The
+shipped catalog records none of it. A later review step reads this file.
+
 WHAT IT COSTS
 -------------
 Translate bills characters sent. Before any call the run counts the characters of
-every sentence it will send and refuses to start when the total is over
+every sentence it will send (with ``--back-translate``, plus an allowance for the
+longer answers sent back) and refuses to start when the total is over
 ``--max-chars`` (by default about five US dollars at the standard rate,
-``PRICE_PER_CHARACTER_USD``). ``--dry-run`` prints the plan and the estimate and
-calls nothing; ``--limit N`` takes the first N pending entries, for a small trial.
-It runs with the developer's own AWS credentials (``--profile``, or the usual AWS
-environment) in the Region named by ``--region``; nothing in a deployed stack calls
-it, and it needs no IAM change to the solution.
+``PRICE_PER_CHARACTER_USD``); the back-translation also stops at the cap.
+``--dry-run`` prints the plan and the estimate and calls nothing; ``--limit N``
+takes the first N pending entries, for a small trial. It runs with the developer's
+own AWS credentials (``--profile``, or the usual AWS environment) in the Region
+named by ``--region``; nothing in a deployed stack calls it, and it needs no IAM
+change to the solution.
 
 An AWS error stops the run before anything is written, so a run that fails on its
 first call (credentials, permissions, Region) costs nothing.
 
 Exit codes:
     0 — every pending entry was written (or ``--dry-run`` printed the plan)
-    1 — some entries need a person: the engine's answer was refused (the rest were
-        written), or a message cannot be split for an engine (listed either way)
-    2 — nothing was written: usage, a missing toolchain, a worker or AWS error, or the cap
+    1 — something needs a person: the engine's answer was refused (the rest were
+        written), a message cannot be split for an engine, or the back-translation
+        stopped on an AWS error (the catalog and the provenance file are written)
+    2 — nothing was written: usage, a missing toolchain, a worker or AWS error during
+        the translation, a provenance file that cannot be written, or the cap
 
 USAGE
 -----
@@ -57,10 +82,15 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
+import io
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +106,10 @@ PRICE_PER_CHARACTER_USD = 15 / 1_000_000
 
 #: The default cap on characters sent in one run: about five US dollars at that rate.
 DEFAULT_MAX_CHARS = 333_333
+
+#: How much longer than the English an answer is assumed to be when a back-translation is
+#: estimated before the run: French runs 15 to 30 percent longer.
+BACK_TRANSLATION_GROWTH = 1.3
 
 #: Indirection for the tests, which replace it rather than running node.
 run = subprocess.run
@@ -108,8 +142,15 @@ class Layout:
         """The installed package the worker parses and prints ICU with."""
         return self.ui_root / "node_modules" / "@formatjs" / "icu-messageformat-parser"
 
+    @property
+    def provenance_dir(self) -> Path:
+        return self.repo_root / "test-reports" / "ui-i18n-translate"
+
     def catalog(self, locale: str) -> Path:
         return self.catalog_dir / f"{locale}.json"
+
+    def glossary(self, locale: str) -> Path:
+        return self.catalog_dir / f"glossary.{locale}.csv"
 
     def relative(self, path: Path) -> str:
         """``path`` as the messages name it: relative to the repository root."""
@@ -143,6 +184,119 @@ def call_worker(layout: Layout, args: list[str], request: Any = None) -> Any:
         raise ToolError(f"the worker printed no JSON ({exc})") from None
 
 
+# --- the glossary --------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Terminology:
+    """The glossary as Translate imports it: two columns, the note dropped."""
+
+    name: str
+    pairs: tuple[tuple[str, str], ...]
+    source: Path
+
+    @property
+    def data(self) -> bytes:
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\n")
+        writer.writerow(["en", self.name.removeprefix("idp-ui-")])
+        writer.writerows(self.pairs)
+        return out.getvalue().encode("utf-8")
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.data).hexdigest()
+
+
+def read_glossary(path: Path, locale: str) -> Terminology:
+    """The glossary's first two columns. Refuses a header other than ``en,<locale>,…``, an
+    empty cell, or no terms at all. A byte-order mark (a spreadsheet's export) is ignored."""
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    if not rows or rows[0][:2] != ["en", locale]:
+        raise ToolError(f"{path.name}: the header must start with en,{locale}")
+    pairs = []
+    for number, row in enumerate(rows[1:], start=2):
+        if len(row) < 2 or not row[0].strip() or not row[1].strip():
+            raise ToolError(
+                f"{path.name}:{number}: a term needs its English and its {locale}"
+            )
+        pairs.append((row[0], row[1]))
+    if not pairs:
+        raise ToolError(f"{path.name}: the glossary has no terms")
+    return Terminology(name=f"idp-ui-{locale}", pairs=tuple(pairs), source=path)
+
+
+def is_not_found(exc: BaseException) -> bool:
+    """Whether an AWS error says the named resource does not exist."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    return (response.get("Error") or {}).get("Code") == "ResourceNotFoundException"
+
+
+def ensure_terminology(client: Any, terminology: Terminology) -> bool:
+    """Import the glossary unless Translate already holds this exact text. True when it imported."""
+    description = f"sha256:{terminology.sha256}"
+    try:
+        held = client.get_terminology(
+            Name=terminology.name, TerminologyDataFormat="CSV"
+        )
+        if (held.get("TerminologyProperties") or {}).get("Description") == description:
+            return False
+    except Exception as exc:
+        if not is_not_found(exc):
+            raise
+    client.import_terminology(
+        Name=terminology.name,
+        MergeStrategy="OVERWRITE",
+        Description=description,
+        TerminologyData={
+            "File": terminology.data,
+            "Format": "CSV",
+            "Directionality": "UNI",
+        },
+    )
+    return True
+
+
+def _term_key(text: str) -> str:
+    """A term as matched: case and apostrophe style do not matter."""
+    return text.replace("'", "’").casefold()
+
+
+def keep_glossary_case(message: str, terminology: Terminology | None) -> str:
+    """Undo Translate's word-by-word capitals on a multi-word term: keep the glossary's case,
+    and only the first letter's case of what Translate wrote. All-capital text is left alone.
+
+    One pass over the message with every multi-word term, longest first, whole words only,
+    so a term inside a longer one is rewritten once, as part of the longer one."""
+    if terminology is None:
+        return message
+    targets = {
+        _term_key(target): target for _, target in terminology.pairs if " " in target
+    }
+    if not targets:
+        return message
+    alternatives = sorted(targets.values(), key=len, reverse=True)
+    pattern = "|".join(
+        re.escape(target).replace("’", "['’]") for target in alternatives
+    )
+
+    def restore(match: re.Match[str]) -> str:
+        found = match.group(0)
+        target = targets.get(_term_key(found))
+        if target is None or found.isupper():
+            return found
+        first = target[0].upper() if found[0].isupper() else target[0].lower()
+        return first + target[1:]
+
+    return re.sub(rf"(?<!\w)(?:{pattern})(?!\w)", restore, message, flags=re.IGNORECASE)
+
+
+# --- the plan and the calls ----------------------------------------------------------
+
+
 def sentences_to_send(plan: dict[str, Any]) -> list[str]:
     """The HTML of every sentence the plan sends, in order (sentences with nothing to translate are kept as they are)."""
     return [
@@ -173,21 +327,29 @@ def describe_plan(plan: dict[str, Any], characters: int) -> list[str]:
     return lines
 
 
-def translate(client: Any, html: str, locale: str) -> str:
-    """One sentence through ``TranslateText``; refuses an answer without the locale's register."""
+def translate(
+    client: Any,
+    html: str,
+    source: str,
+    target: str,
+    terminology: Terminology | None = None,
+) -> dict[str, Any]:
+    """One sentence through ``TranslateText``; refuses an answer without the target's register."""
     request: dict[str, Any] = {
         "Text": html,
-        "SourceLanguageCode": "en",
-        "TargetLanguageCode": locale,
+        "SourceLanguageCode": source,
+        "TargetLanguageCode": target,
     }
-    formality = FORMALITY.get(locale)
+    formality = FORMALITY.get(target)
     if formality:
         request["Settings"] = {"Formality": formality}
+    if terminology is not None:
+        request["TerminologyNames"] = [terminology.name]
     response = client.translate_text(**request)
     applied = (response.get("AppliedSettings") or {}).get("Formality")
     if formality and applied != formality:
         raise ToolError(
-            f"Translate answered without the {formality} register for {locale} "
+            f"Translate answered without the {formality} register for {target} "
             f"(AppliedSettings: {applied!r}); nothing was written"
         )
     text = response.get("TranslatedText")
@@ -195,23 +357,76 @@ def translate(client: Any, html: str, locale: str) -> str:
         raise ToolError(
             "Translate answered without TranslatedText; nothing was written"
         )
-    return text
+    return {
+        "text": text,
+        "terms": [
+            {"source": term.get("SourceText"), "target": term.get("TargetText")}
+            for applied_terminology in response.get("AppliedTerminologies") or []
+            for term in applied_terminology.get("Terms") or []
+        ],
+    }
 
 
-def answer_plan(client: Any, plan: dict[str, Any]) -> list[dict[str, Any]]:
-    """The join request: every pending entry with one answer per sentence."""
+def answer_plan(
+    client: Any, plan: dict[str, Any], terminology: Terminology | None
+) -> list[dict[str, Any]]:
+    """Every pending entry with one answer per sentence, and what was sent and received for it."""
     entries = []
     for entry in plan["pending"]:
-        answers = [
-            translate(client, sentence["html"], plan["locale"])
-            if sentence["translate"]
-            else sentence["html"]
-            for sentence in entry["sentences"]
-        ]
+        sentences = []
+        for sentence in entry["sentences"]:
+            if not sentence["translate"]:
+                sentences.append({"sent": None, "answer": sentence["html"]})
+                continue
+            answer = translate(
+                client, sentence["html"], "en", plan["locale"], terminology
+            )
+            sentences.append(
+                {
+                    "sent": sentence["html"],
+                    "answer": answer["text"],
+                    "appliedTerms": answer["terms"],
+                }
+            )
         entries.append(
-            {"id": entry["id"], "english": entry["english"], "answers": answers}
+            {
+                "id": entry["id"],
+                "english": entry["english"],
+                "stale": entry["stale"],
+                "sentences": sentences,
+            }
         )
     return entries
+
+
+def back_translate(
+    client: Any,
+    entries: list[dict[str, Any]],
+    locale: str,
+    budget: int,
+    errors: tuple[type[BaseException], ...],
+) -> tuple[int, str | None]:
+    """Translate each answer back into English, for the review. Skips an answer that would take
+    the run past its budget; stops at the first AWS error, since the forward answers are already
+    paid for and must still be written. Returns the characters sent and that error, if any."""
+    sent = 0
+    error: str | None = None
+    for entry in entries:
+        for sentence in entry["sentences"]:
+            if sentence["sent"] is None:
+                continue
+            sentence["backTranslation"] = None
+            if error is not None or sent + len(sentence["answer"]) > budget:
+                continue
+            try:
+                sentence["backTranslation"] = translate(
+                    client, sentence["answer"], locale, "en"
+                )["text"]
+            except (ToolError, *errors) as exc:
+                error = str(exc)
+                continue
+            sent += len(sentence["answer"])
+    return sent, error
 
 
 def write_catalog(path: Path, catalog: dict[str, Any]) -> None:
@@ -238,6 +453,11 @@ def aws_errors() -> tuple[type[BaseException], ...]:
     from botocore.exceptions import BotoCoreError, ClientError
 
     return (BotoCoreError, ClientError)
+
+
+def now() -> datetime:
+    """The run's timestamp; a function so the tests can fix it."""
+    return datetime.now(timezone.utc)
 
 
 def main(argv: list[str] | None = None, *, layout: Layout | None = None) -> int:
@@ -270,6 +490,17 @@ def main(argv: list[str] | None = None, *, layout: Layout | None = None) -> int:
         metavar="N",
         help=f"refuse to start when the run would send more characters (default {DEFAULT_MAX_CHARS:,})",
     )
+    parser.add_argument(
+        "--back-translate",
+        action="store_true",
+        help="also translate each answer back into English, into the provenance file",
+    )
+    parser.add_argument(
+        "--provenance",
+        type=Path,
+        metavar="PATH",
+        help="where to write the provenance file (default under test-reports/ui-i18n-translate/)",
+    )
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit < 1:
         parser.error("--limit takes a whole number from 1")
@@ -286,21 +517,59 @@ def main(argv: list[str] | None = None, *, layout: Layout | None = None) -> int:
         return 2
 
 
+def provenance_path(
+    layout: Layout, args: argparse.Namespace, started: datetime
+) -> Path:
+    """Where the run's provenance goes: never under ``src/``, which ships."""
+    path = args.provenance or layout.provenance_dir / (
+        f"{args.locale}-{started.strftime('%Y%m%dT%H%M%SZ')}.json"
+    )
+    if path.resolve().is_relative_to((layout.repo_root / "src").resolve()):
+        raise ToolError(
+            f"--provenance {layout.relative(path)} is under src/, which ships; "
+            f"the provenance stays out of it"
+        )
+    return path
+
+
+def write_provenance(path: Path, record: dict[str, Any]) -> None:
+    text = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise ToolError(
+            f"the provenance file could not be written, so the catalog was not: {exc}"
+        ) from None
+
+
 def translate_catalog(layout: Layout, args: argparse.Namespace) -> int:
     if not layout.parser_package.is_dir():
         raise ToolError(
             f"{layout.relative(layout.parser_package)} is missing; run make setup-node first"
         )
+    started = now()
+    provenance = provenance_path(layout, args, started)
+    glossary_path = layout.glossary(args.locale)
+    terminology = (
+        read_glossary(glossary_path, args.locale) if glossary_path.is_file() else None
+    )
+    if terminology is None:
+        print(f"  no {layout.relative(glossary_path)}: running without a terminology")
+
     plan_args = ["plan", str(layout.catalog_dir), args.locale]
     if args.limit is not None:
         plan_args += ["--limit", str(args.limit)]
     plan = call_worker(layout, plan_args)
     characters = sum(len(html) for html in sentences_to_send(plan))
-    for line in describe_plan(plan, characters):
+    estimate = characters + (
+        round(characters * BACK_TRANSLATION_GROWTH) if args.back_translate else 0
+    )
+    for line in describe_plan(plan, estimate):
         print(line)
-    if characters > args.max_chars:
+    if estimate > args.max_chars:
         raise ToolError(
-            f"{characters:,} characters is over --max-chars {args.max_chars:,}; "
+            f"{estimate:,} characters is over --max-chars {args.max_chars:,}; "
             f"take fewer entries with --limit, or raise the cap"
         )
     if args.dry_run:
@@ -316,12 +585,38 @@ def translate_catalog(layout: Layout, args: argparse.Namespace) -> int:
         ) from None
     try:
         client = make_client(args.region, args.profile)
-        entries = answer_plan(client, plan)
+        imported = (
+            ensure_terminology(client, terminology)
+            if terminology is not None
+            else False
+        )
+        entries = answer_plan(client, plan, terminology)
     except errors as exc:
         raise ToolError(
             f"Translate refused the run, so nothing was written: {exc}"
         ) from None
-    results = call_worker(layout, ["join", args.locale], {"entries": entries})[
+    if terminology is not None:
+        state = "imported" if imported else "unchanged"
+        print(
+            f"  terminology {terminology.name} {state} (sha256 {terminology.sha256[:12]})"
+        )
+    back_sent, back_error = (
+        back_translate(
+            client, entries, args.locale, args.max_chars - characters, errors
+        )
+        if args.back_translate
+        else (0, None)
+    )
+
+    request = [
+        {
+            "id": entry["id"],
+            "english": entry["english"],
+            "answers": [sentence["answer"] for sentence in entry["sentences"]],
+        }
+        for entry in entries
+    ]
+    results = call_worker(layout, ["join", args.locale], {"entries": request})[
         "results"
     ]
 
@@ -331,21 +626,58 @@ def translate_catalog(layout: Layout, args: argparse.Namespace) -> int:
     if any(result.get("id") not in hashes for result in results):
         raise ToolError("the worker answered for an entry the plan did not hold")
     refused = [result for result in results if "message" not in result]
+    by_id = {entry["id"]: entry for entry in entries}
     for result in results:
+        entry = by_id[result["id"]]
         if "message" in result:
+            message = keep_glossary_case(result["message"], terminology)
             catalog[result["id"]] = {
-                "message": result["message"],
+                "message": message,
                 "sourceHash": hashes[result["id"]],
             }
+            entry["message"] = message
+        else:
+            entry["errors"] = result["errors"]
+
+    write_provenance(
+        provenance,
+        {
+            "engine": "Amazon Translate",
+            "operation": "TranslateText",
+            "region": args.region,
+            "sourceLanguage": "en",
+            "targetLanguage": args.locale,
+            "formality": FORMALITY.get(args.locale),
+            "terminology": None
+            if terminology is None
+            else {
+                "name": terminology.name,
+                "sha256": terminology.sha256,
+                "glossary": layout.relative(terminology.source),
+                "terms": len(terminology.pairs),
+            },
+            "date": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "characters": {"translated": characters, "backTranslated": back_sent},
+            "backTranslationError": back_error,
+            "entries": entries,
+        },
+    )
     write_catalog(path, catalog)
+
     written = len(results) - len(refused)
     print(
-        f"✅ wrote {written} entr{'y' if written == 1 else 'ies'} to {layout.relative(path)}"
+        f"✅ wrote {written} entr{'y' if written == 1 else 'ies'} to {layout.relative(path)}; "
+        f"provenance in {layout.relative(provenance)}"
     )
     for result in refused:
         for error in result["errors"]:
             print(f"  left out (English shown): {error}")
-    return 1 if refused or plan["unsplittable"] else 0
+    if back_error:
+        print(
+            f"  the back-translation stopped on an AWS error, so the provenance lacks "
+            f"some of it: {back_error}"
+        )
+    return 1 if refused or plan["unsplittable"] or back_error else 0
 
 
 if __name__ == "__main__":
