@@ -171,6 +171,8 @@ pins an export beside its localized cell.
 | [`validate-message.mjs`](../../scripts/i18n/validate-message.mjs) | The per-message parity check: both texts parse as ICU (every plural/select needs `other`), the same argument names, each shared argument keeps its kind (plural, selectordinal, select, or plain), the same rich-text tag names. Plural branch keys are not compared, since languages have different categories |
 | [`check-catalog.mjs`](../../scripts/i18n/check-catalog.mjs) | CLI over `compileCatalog` for one locale; what the gate runs |
 | [`loadCatalog.ts`](loadCatalog.ts) | `loadCatalog(locale)`: `en` → a frozen empty table with no import; otherwise `loaders[locale]()`, the lazy chunk |
+| [`glossary.fr-CA.csv`](glossary.fr-CA.csv) | The `fr-CA` terms, `en,fr-CA,note`: names and nouns the translation draft must use. Not a catalog (the build reads only `<locale>.json`); see [Drafting a translation](#drafting-a-translation) |
+| [`translate-segments.mjs`](../../scripts/i18n/translate-segments.mjs) | What a translation engine is shown of a message and how its answer becomes ICU again; the Node half of `make ui-i18n-translate` |
 
 `make check-ui-i18n-catalog` ([`check_ui_i18n_catalog.py`](../../../../scripts/check_ui_i18n_catalog.py))
 replays the `i18n:extract` script from `package.json` into a temporary file, by path out of
@@ -360,6 +362,37 @@ percentage. Every English id lands in exactly one of translated, missing, stale 
 advisory: exit 0 for any report, 2 only for a tool error (no `en.json`, malformed JSON, a
 `--locale` with no file); it is in none of `lint`, `fastlint` or `lint-cicd`. `en-XA` is never a
 candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in release notes.
+
+## Drafting a translation
+
+`make ui-i18n-translate LOCALE=fr-CA` ([`ui_i18n_translate.py`](../../../../scripts/ui_i18n_translate.py) over
+[`translate-segments.mjs`](../../scripts/i18n/translate-segments.mjs)) drafts, with Amazon Translate, the entries of
+`<locale>.json` that the coverage report calls missing or stale, and writes them with their `sourceHash`. It is a
+developer tool, run with your own AWS credentials: no CI job runs it and no deployed stack calls it. Start with
+`UI_I18N_TRANSLATE_ARGS=--dry-run`, which prints the entries, the characters and the estimated cost and calls
+nothing; a real run needs `--region` (and `--profile` for a named profile), and `--limit N` takes a small batch first.
+A `<locale>.json` in this directory turns that language on in the switcher (`availableLocales` is file presence), so
+a drafted catalog is committed only in the change that enables its language.
+
+- **What Translate sees.** Never ICU. Every plural and select is hoisted so each branch is a whole sentence, sent as
+  HTML with arguments and `#` in `translate="no"` spans and rich-text tags as spans. The answer is rebuilt into ICU
+  and must pass the parity check the build applies; otherwise the entry is left out (English shown) and named.
+- **Register and typography.** `fr-CA` is asked for the formal register, and an answer without it is refused. The
+  rebuilt text gets the typographic apostrophe, no space before `;`, `?` and `!`, a no-break space before a colon that
+  ends a phrase, and « » quotation marks.
+- **The glossary.** [`glossary.fr-CA.csv`](glossary.fr-CA.csv) is imported as the custom terminology `idp-ui-fr-CA`,
+  its first two columns only, again whenever they change. Translate applies a term wherever its English occurs, so
+  the file holds names and nouns that are safe in every context, never verbs. A multi-word term matched in Title Case
+  English is put back in the glossary's own case. A new screen's new term goes in the same change as the screen.
+- **Cost.** Translate bills the characters sent. The run refuses to start above `--max-chars` (by default about
+  US$5 at the standard rate); a full `fr-CA` pass is far below it.
+- **Provenance.** Each run writes what it sent and received, the terms Translate applied, the terminology hash and,
+  with `--back-translate`, each answer translated back into English, under `test-reports/ui-i18n-translate/`. The
+  catalog records none of it. Review the French before committing it.
+- **Permissions.** `translate:TranslateText`, `translate:GetTerminology` and `translate:ImportTerminology` in the
+  Region you pass.
+- **Exit status.** 0 when every entry was written (or a dry run), 1 when something needs a person (an answer
+  refused, a message that cannot be split, a back-translation stopped), 2 when nothing was written.
 
 ## Testing
 

@@ -1788,6 +1788,22 @@ ui-i18n-coverage: ## Report translation coverage for each locale catalog present
 	@# report); in CI that is an error. Exit 2 only when no report could be made.
 	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
 
+# A DEVELOPER TOOL, NOT A GATE: it calls Amazon Translate with the developer's own
+# AWS credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
+# `fastlint` or `lint-cicd`, and its name matches none of the check shapes
+# test_ci_gate_parity.py classifies by. It writes the missing and stale entries of
+# src/ui/src/i18n/<LOCALE>.json (review and commit them) and a provenance file under
+# test-reports/. Flags go through UI_I18N_TRANSLATE_ARGS: start with
+# `make ui-i18n-translate LOCALE=fr-CA UI_I18N_TRANSLATE_ARGS=--dry-run`, then e.g.
+# `UI_I18N_TRANSLATE_ARGS="--region ca-central-1 --profile <name> --limit 20"`.
+LOCALE ?=
+UI_I18N_TRANSLATE_ARGS ?=
+ui-i18n-translate: ## Draft the missing and stale entries of src/ui/src/i18n/<LOCALE>.json with Amazon Translate, using your AWS credentials (LOCALE=fr-CA; UI_I18N_TRANSLATE_ARGS=--dry-run first) (issue #1770)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-translate LOCALE=fr-CA$(NC)"; exit 2; fi
+	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
+	@# targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_translate.py --locale $(LOCALE) $(UI_I18N_TRANSLATE_ARGS)'
+
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
 	@$(UI_DEPS_LOCK) 'npm run codegen'
