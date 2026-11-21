@@ -5051,6 +5051,382 @@
     "defaultMessage": "Skip All Reviews results",
     "description": "Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline."
   },
+  "reviewQueues.queueSettings.annotators.empty": {
+    "defaultMessage": "No Annotator users. Add one in User Management.",
+    "description": "Shown in the Eligible Annotators list when there is no Annotator user. User Management is the name of a page."
+  },
+  "reviewQueues.queueSettings.annotators.label": {
+    "defaultMessage": "Eligible Annotators",
+    "description": "Label of the Queue Settings dialog's field for the Annotators who work the queue. Annotator is a user role."
+  },
+  "reviewQueues.queueSettings.annotators.loading": {
+    "defaultMessage": "Loading Annotators",
+    "description": "Shown in the Eligible Annotators list while the Annotator users load."
+  },
+  "reviewQueues.queueSettings.annotators.placeholder": {
+    "defaultMessage": "None (Admins and Reviewers only)",
+    "description": "Placeholder of the Eligible Annotators list when no Annotator is chosen. Admin and Reviewer are user roles."
+  },
+  "reviewQueues.queueSettings.annotators.productionDescription": {
+    "defaultMessage": "The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items.",
+    "description": "Description of the Eligible Annotators field for a production queue. Annotator and Reviewer are user roles; Home › Queues is the navigation path to a page."
+  },
+  "reviewQueues.queueSettings.annotators.testSetDescription": {
+    "defaultMessage": "The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. Reviewers work every test set their configuration-profile scope admits without being listed, and claim their own items.",
+    "description": "Description of the Eligible Annotators field for a Test Studio queue. Annotator and Reviewer are user roles; Home › Queues is the navigation path to a page."
+  },
+  "reviewQueues.queueSettings.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Queue Settings dialog that closes it without saving."
+  },
+  "reviewQueues.queueSettings.changed.body": {
+    "defaultMessage": "Another Admin saved this queue after you opened it, so your changes were not saved. Reload the queue to see its current settings, then make your changes again. Reloading replaces what you have entered here.",
+    "description": "Body of the Queue Settings dialog's changed-queue warning. Admin is a user role."
+  },
+  "reviewQueues.queueSettings.changed.reload": {
+    "defaultMessage": "Reload queue",
+    "description": "Button of the Queue Settings dialog's changed-queue warning that fills the form from the queue as stored now."
+  },
+  "reviewQueues.queueSettings.changed.title": {
+    "defaultMessage": "This queue was changed by someone else",
+    "description": "Header of the warning in the Queue Settings dialog when a save was refused because another Admin saved the queue first."
+  },
+  "reviewQueues.queueSettings.create": {
+    "defaultMessage": "Create",
+    "description": "Button of the queue dialog that creates the queue."
+  },
+  "reviewQueues.queueSettings.createTitle": {
+    "defaultMessage": "Create Queue",
+    "description": "Title of the queue dialog when it creates a production review queue."
+  },
+  "reviewQueues.queueSettings.defaultQueueNote": {
+    "defaultMessage": "Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.",
+    "description": "Note at the top of the Default queue's Settings dialog. HITL (human in the loop) is the name of a configuration setting."
+  },
+  "reviewQueues.queueSettings.description.label": {
+    "defaultMessage": "Description",
+    "description": "Label of the Queue Settings dialog's field for the queue's description."
+  },
+  "reviewQueues.queueSettings.enabled.description": {
+    "defaultMessage": "When off, no documents are added to this queue.",
+    "description": "Description of the Enabled switch. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.enabled.label": {
+    "defaultMessage": "Enabled",
+    "description": "Label of the Queue Settings dialog's switch that turns a production queue on or off."
+  },
+  "reviewQueues.queueSettings.enabled.off": {
+    "defaultMessage": "Disabled",
+    "description": "Text beside the Enabled switch of the Queue Settings dialog when the switch is off."
+  },
+  "reviewQueues.queueSettings.enabled.on": {
+    "defaultMessage": "Enabled",
+    "description": "Text beside the Enabled switch of the Queue Settings dialog when the switch is on."
+  },
+  "reviewQueues.queueSettings.example": {
+    "defaultMessage": "e.g. {example}",
+    "description": "Placeholder of the Queue id and Name fields: an example of what to type. {example} is the example, shown as it is, so the example id stays a valid id."
+  },
+  "reviewQueues.queueSettings.goneQueue": {
+    "defaultMessage": "This queue no longer exists. It may have been deleted. Close this dialog.",
+    "description": "Error in the Queue Settings dialog's changed-queue warning when Reload queue finds the queue gone."
+  },
+  "reviewQueues.queueSettings.id.description": {
+    "defaultMessage": "Used in links. It cannot be changed later.",
+    "description": "Description of the Queue id field. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.id.label": {
+    "defaultMessage": "Queue id",
+    "description": "Label of the Queue Settings dialog's field for the queue's id."
+  },
+  "reviewQueues.queueSettings.idRule": {
+    "defaultMessage": "Lowercase letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit (up to 64 characters).",
+    "description": "Error under the Queue id field when the id breaks the rule. The three quoted characters are the only punctuation an id may hold: keep them as they are."
+  },
+  "reviewQueues.queueSettings.idTaken": {
+    "defaultMessage": "A queue with this id already exists.",
+    "description": "Error under the Queue id field when another queue already has that id."
+  },
+  "reviewQueues.queueSettings.name.description": {
+    "defaultMessage": "Shown to Admins and Annotators.",
+    "description": "Description of the Name field. Admin and Annotator are user roles. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.name.label": {
+    "defaultMessage": "Name",
+    "description": "Label of the Queue Settings dialog's field for the queue's name."
+  },
+  "reviewQueues.queueSettings.nameRequired": {
+    "defaultMessage": "Enter a name.",
+    "description": "Error under the Name field of the Queue Settings dialog when it is empty."
+  },
+  "reviewQueues.queueSettings.priority.constraint": {
+    "defaultMessage": "A whole number. For information: orders the queues and Next item. Kept for when there is more than one queue; with only the Default queue it changes nothing yet.",
+    "description": "Text under the Priority field. Next item is the label of a button; Default is the name of a queue."
+  },
+  "reviewQueues.queueSettings.priority.description": {
+    "defaultMessage": "Higher numbers are worked first.",
+    "description": "Description of the Priority field. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.priority.label": {
+    "defaultMessage": "Priority",
+    "description": "Label of the Queue Settings dialog's field for the queue's priority, a whole number."
+  },
+  "reviewQueues.queueSettings.priorityWhole": {
+    "defaultMessage": "Enter a whole number.",
+    "description": "Error under the Priority field of the Queue Settings dialog when it is not a whole number."
+  },
+  "reviewQueues.queueSettings.reasonRequired": {
+    "defaultMessage": "Enter at least one reason.",
+    "description": "Error under the Skip reasons field of the Queue Settings dialog when an existing queue would have none."
+  },
+  "reviewQueues.queueSettings.save": {
+    "defaultMessage": "Save",
+    "description": "Button of the Queue Settings dialog that saves the queue's settings."
+  },
+  "reviewQueues.queueSettings.settingsTitle": {
+    "defaultMessage": "Queue Settings: {name}",
+    "description": "Title of the Queue Settings dialog. {name} is the queue's or the test set's name, as stored."
+  },
+  "reviewQueues.queueSettings.skipReasons.constraint": {
+    "defaultMessage": "Leave empty to use the default reasons.",
+    "description": "Text under the Skip reasons field when a queue is being created."
+  },
+  "reviewQueues.queueSettings.skipReasons.description": {
+    "defaultMessage": "An Annotator who gives an item back unfinished chooses one; it is kept in the item's review history. One per line.",
+    "description": "Description of the Skip reasons field. Annotator is a user role."
+  },
+  "reviewQueues.queueSettings.skipReasons.label": {
+    "defaultMessage": "Skip reasons",
+    "description": "Label of the Queue Settings dialog's field for the reasons an Annotator can give when handing an item back."
+  },
+  "reviewQueues.queueSettings.testSetNote": {
+    "defaultMessage": "This Test Studio queue is the test set {name}; its documents come from the set.",
+    "description": "Note at the top of a Test Studio queue's Settings dialog. {name} is the test set's name, as stored."
+  },
+  "reviewQueues.queueSettings.timeLimit.constraint": {
+    "defaultMessage": "For information: one reminder is sent, and the item stays assigned (assignments don't expire). 1 to {max}.",
+    "description": "Text under the Time limit field. {max} is the longest time limit allowed, in minutes."
+  },
+  "reviewQueues.queueSettings.timeLimit.description": {
+    "defaultMessage": "When an assigned item's Annotator is reminded.",
+    "description": "Description of the Time limit field. Annotator is a user role. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.timeLimit.label": {
+    "defaultMessage": "Time limit (minutes)",
+    "description": "Label of the Queue Settings dialog's field for how long an assigned item may wait before its Annotator is reminded."
+  },
+  "reviewQueues.queueSettings.timeLimitRange": {
+    "defaultMessage": "Enter a whole number of minutes from 1 to {max}.",
+    "description": "Error under the Time limit field of the Queue Settings dialog. {max} is the longest time limit allowed, in minutes."
+  },
+  "reviewQueues.queueSettings.tooManyReasons": {
+    "defaultMessage": "Keep it to {max} reasons.",
+    "description": "Error under the Skip reasons field of the Queue Settings dialog. {max} is how many reasons a queue may have."
+  },
+  "reviewQueues.queuesPage.column.actions": {
+    "defaultMessage": "Actions",
+    "description": "Header of the Review Management queue tables' last column, read only by screen readers: each row's menu."
+  },
+  "reviewQueues.queuesPage.column.annotators": {
+    "defaultMessage": "Annotators",
+    "description": "Column header of the Review Management queue tables: how many Annotators the queue lists. Annotator is a user role."
+  },
+  "reviewQueues.queuesPage.column.assigned": {
+    "defaultMessage": "Assigned",
+    "description": "Column header of the Review Management queue tables: how many of its items are assigned, started or not."
+  },
+  "reviewQueues.queuesPage.column.items": {
+    "defaultMessage": "Items",
+    "description": "Column header of the Review Management queue tables: how many items the queue holds."
+  },
+  "reviewQueues.queuesPage.column.pending": {
+    "defaultMessage": "Pending",
+    "description": "Column header of the Review Management queue tables: how many of its items no one is assigned to yet."
+  },
+  "reviewQueues.queuesPage.column.queue": {
+    "defaultMessage": "Queue",
+    "description": "Column header of the Review Management queue tables: the queue's name, as a link to its page."
+  },
+  "reviewQueues.queuesPage.confirmDelete": {
+    "defaultMessage": "Delete the queue {name} ({id})? This can't be undone.",
+    "description": "Body of the Delete queue dialog for a queue that holds no items. {name} is the queue's name and {id} its id, as stored."
+  },
+  "reviewQueues.queuesPage.confirmDeleteMoving": {
+    "defaultMessage": "Delete the queue {name} ({id})? This can't be undone. {count, plural, one {# item} other {# items}} will move to the Default queue.",
+    "description": "Body of the Delete queue dialog for a queue that holds items. {name} is the queue's name and {id} its id, as stored; {count} is how many items it holds. Default is the name of the queue they move to."
+  },
+  "reviewQueues.queuesPage.countedAt": {
+    "defaultMessage": "Counted {time}",
+    "description": "Tooltip of a Test Studio queue's count in Review Management: when it was counted. {time} is a date and time, already formatted."
+  },
+  "reviewQueues.queuesPage.defaultNotDeletable": {
+    "defaultMessage": "The default queue can't be deleted",
+    "description": "Why the Delete item of the Default queue's menu in Review Management is disabled."
+  },
+  "reviewQueues.queuesPage.deleteDialog.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Delete queue dialog that closes it without deleting."
+  },
+  "reviewQueues.queuesPage.deleteDialog.delete": {
+    "defaultMessage": "Delete",
+    "description": "Button of the Delete queue dialog that deletes the queue."
+  },
+  "reviewQueues.queuesPage.deleteDialog.title": {
+    "defaultMessage": "Delete queue",
+    "description": "Title of the dialog that confirms deleting a production queue."
+  },
+  "reviewQueues.queuesPage.deleted": {
+    "defaultMessage": "Deleted the queue {name}.",
+    "description": "Notice after an Admin deleted a queue that held no items. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuesPage.deletedMoved": {
+    "defaultMessage": "Deleted the queue {name}; its items moved to the Default queue.",
+    "description": "Notice after an Admin deleted a queue that held items. {name} is the queue's name, as stored; Default is the name of the queue its items moved to."
+  },
+  "reviewQueues.queuesPage.description": {
+    "defaultMessage": "Set up the Default review queue and list the Annotators who work it.",
+    "description": "Description under the Review Management heading. Default is the name of a queue; Annotator is a user role."
+  },
+  "reviewQueues.queuesPage.empty": {
+    "defaultMessage": "No queues found. The Default queue is created automatically; reload the page.",
+    "description": "Shown in the Production Queues table of Review Management when no queue is listed. Default is the name of a queue."
+  },
+  "reviewQueues.queuesPage.finalizing": {
+    "defaultMessage": "An item in this queue is being completed. Try again in a minute.",
+    "description": "Error in the Delete queue dialog when the server refused the delete because one of the queue's items is being completed."
+  },
+  "reviewQueues.queuesPage.menu.delete": {
+    "defaultMessage": "Delete",
+    "description": "Item of a production queue's menu in Review Management that deletes the queue."
+  },
+  "reviewQueues.queuesPage.menu.settings": {
+    "defaultMessage": "Settings",
+    "description": "Item of a queue's menu in Review Management that opens the queue's Settings dialog."
+  },
+  "reviewQueues.queuesPage.menu.view": {
+    "defaultMessage": "View",
+    "description": "Item of a queue's menu in Review Management that opens the queue's page."
+  },
+  "reviewQueues.queuesPage.noAnnotators": {
+    "defaultMessage": "No Annotators listed",
+    "description": "Tooltip of the Annotators count in a Review Management table when the queue lists no Annotator. Annotator is a user role."
+  },
+  "reviewQueues.queuesPage.notDefined": {
+    "defaultMessage": "This queue is not defined",
+    "description": "Why the Settings or Delete item of a queue's menu in Review Management is disabled: the queue still holds items but has no definition."
+  },
+  "reviewQueues.queuesPage.notDefinedNote": {
+    "defaultMessage": "Not defined — move its items to a defined queue",
+    "description": "Note under a queue's name in the Production Queues table when the queue holds items but has no definition."
+  },
+  "reviewQueues.queuesPage.preparing": {
+    "defaultMessage": "Preparing…",
+    "description": "Shown in a Test Studio queue's count cell in Review Management while the test set's summaries are built."
+  },
+  "reviewQueues.queuesPage.production.description": {
+    "defaultMessage": "System-wide queues for processed documents. When HITL is enabled in a document's configuration and the Default queue is enabled, a document that raised confidence alerts arrives in the Default queue.",
+    "description": "Description of the Production Queues table. HITL (human in the loop) is the name of a configuration setting; Default is the name of a queue."
+  },
+  "reviewQueues.queuesPage.production.find": {
+    "defaultMessage": "Find queues",
+    "description": "Placeholder of the Production Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.production.findAriaLabel": {
+    "defaultMessage": "Find production queues",
+    "description": "Screen-reader label of the Production Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.production.loadError": {
+    "defaultMessage": "Couldn't load the review queues",
+    "description": "Header of the error in Review Management when the production queues could not be loaded at all."
+  },
+  "reviewQueues.queuesPage.production.loading": {
+    "defaultMessage": "Loading queues",
+    "description": "Shown in the Production Queues table while the queues load."
+  },
+  "reviewQueues.queuesPage.production.stale": {
+    "defaultMessage": "Showing the last loaded queues",
+    "description": "Header of the warning in Review Management when refreshing the production queues failed but earlier ones are still shown."
+  },
+  "reviewQueues.queuesPage.production.title": {
+    "defaultMessage": "Production Queues",
+    "description": "Title of the Review Management table of production queues, where processed documents are routed."
+  },
+  "reviewQueues.queuesPage.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button in Review Management that reloads the queue table shown."
+  },
+  "reviewQueues.queuesPage.refreshAriaLabel": {
+    "defaultMessage": "Refresh queues",
+    "description": "Screen-reader label of the Refresh button in Review Management."
+  },
+  "reviewQueues.queuesPage.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of a Review Management load warning or error that loads the queues again."
+  },
+  "reviewQueues.queuesPage.rowActions": {
+    "defaultMessage": "Actions for {name}",
+    "description": "Screen-reader label of a queue's menu button in Review Management. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuesPage.saved": {
+    "defaultMessage": "Saved the queue {name}.",
+    "description": "Notice after an Admin saved a production queue's settings in Review Management. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuesPage.savedTestSet": {
+    "defaultMessage": "Saved the queue settings of {name}.",
+    "description": "Notice after an Admin saved a Test Studio queue's settings in Review Management. {name} is the test set's name, as stored."
+  },
+  "reviewQueues.queuesPage.savedTestSetFallback": {
+    "defaultMessage": "Saved the queue settings of the test set.",
+    "description": "Notice after an Admin saved a Test Studio queue's settings in Review Management, when the test set's name is not known."
+  },
+  "reviewQueues.queuesPage.testSets.description": {
+    "defaultMessage": "Each test set is a queue of documents whose ground truth needs confirming. Open one to assign its documents.",
+    "description": "Description of the Test Studio Queues table in Review Management."
+  },
+  "reviewQueues.queuesPage.testSets.find": {
+    "defaultMessage": "Find test sets",
+    "description": "Placeholder of the Test Studio Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.testSets.findAriaLabel": {
+    "defaultMessage": "Find Test Studio queues",
+    "description": "Screen-reader label of the Test Studio Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.testSets.loadError": {
+    "defaultMessage": "Couldn't load the test sets",
+    "description": "Header of the error in Review Management when the Test Studio queues (one per test set) could not be loaded at all."
+  },
+  "reviewQueues.queuesPage.testSets.loading": {
+    "defaultMessage": "Loading Test Studio queues",
+    "description": "Shown in the Test Studio Queues table while the queues load. Test Studio is a product area name."
+  },
+  "reviewQueues.queuesPage.testSets.preparing": {
+    "defaultMessage": "Preparing {count, plural, one {# test set} other {# test sets}}…",
+    "description": "Status beside the Test Studio Queues table's title while test sets' summaries are built. {count} is how many test sets."
+  },
+  "reviewQueues.queuesPage.testSets.stale": {
+    "defaultMessage": "Showing the last loaded test sets",
+    "description": "Header of the warning in Review Management when refreshing the Test Studio queues failed but earlier ones are still shown."
+  },
+  "reviewQueues.queuesPage.testSets.title": {
+    "defaultMessage": "Test Studio Queues",
+    "description": "Title of the Review Management table of Test Studio queues, one per test set. Test Studio is a product area name."
+  },
+  "reviewQueues.queuesPage.title": {
+    "defaultMessage": "Review Management",
+    "description": "Heading of the Review Management page of Review Studio, where Admins set up and watch the review queues."
+  },
+  "reviewQueues.queuesPage.view.label": {
+    "defaultMessage": "Queues to show",
+    "description": "Screen-reader label of the Review Management switch between the Production and the Test Studio queue tables."
+  },
+  "reviewQueues.queuesPage.view.production": {
+    "defaultMessage": "Production",
+    "description": "Option of the Review Management switch that shows the production queues, where processed documents are routed."
+  },
+  "reviewQueues.queuesPage.view.testStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Option of the Review Management switch that shows the Test Studio queues, one per test set. Test Studio is a product area name."
+  },
   "reviewQueues.reasons.blueprintConfidence": {
     "defaultMessage": "Blueprint confidence: {score, number, ::.00} < {threshold, number, ::.00}",
     "description": "Chip text of a review reason for a section whose matched Bedrock Data Automation blueprint has a confidence below the review threshold. Also the Top reason column of a work list. {score} is the blueprint's confidence and {threshold} the threshold, both from 0 to 1 with two decimals."
@@ -5234,6 +5610,94 @@
   "reviewQueues.taskContext.title": {
     "defaultMessage": "Review Reason",
     "description": "Heading of the panel above the editor of a review item that lists why the document is in review, one chip per reason."
+  },
+  "reviewQueues.toolsPanel.annotators": {
+    "defaultMessage": "<b>Annotators</b> (Admin): each listed Annotator, with the documents assigned to them.",
+    "description": "Queue info panel, \"On this page\" item. <b>Annotators</b> is the title of a panel of the page, shown in bold; \"(Admin)\" says only Admins see it."
+  },
+  "reviewQueues.toolsPanel.assignmentExpiry": {
+    "defaultMessage": "An assignment does not expire. After the queue's time limit, the Annotator is reminded once.",
+    "description": "Queue info panel, \"Assignments\" item. Annotator is a user role."
+  },
+  "reviewQueues.toolsPanel.assignmentsHeading": {
+    "defaultMessage": "Assignments",
+    "description": "Sub-heading in the Queue info panel, above the notes on how assignments work."
+  },
+  "reviewQueues.toolsPanel.documentsTable": {
+    "defaultMessage": "The documents table: sort by <b>Annotator</b> to see each person's work. Select documents to assign, unassign, move or claim them; open one to edit it.",
+    "description": "Queue info panel, \"On this page\" item. <b>Annotator</b> is the header of a column of the table, shown in bold."
+  },
+  "reviewQueues.toolsPanel.keyMetrics": {
+    "defaultMessage": "<b>Key Metrics</b>: pending, assigned and in-progress counts, and the queue's Annotators and priority.",
+    "description": "Queue info panel, \"On this page\" item. <b>Key Metrics</b> is the title of a panel of the page, shown in bold."
+  },
+  "reviewQueues.toolsPanel.linkHumanReview": {
+    "defaultMessage": "Human review",
+    "description": "Label of a \"Learn more\" link to the Human review documentation page."
+  },
+  "reviewQueues.toolsPanel.linkReviewQueues": {
+    "defaultMessage": "Review queues",
+    "description": "Label of a \"Learn more\" link to the Review queues documentation page."
+  },
+  "reviewQueues.toolsPanel.linkTestStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Label of a \"Learn more\" link to the Test Studio documentation page. Test Studio is a product area name."
+  },
+  "reviewQueues.toolsPanel.managementIntro": {
+    "defaultMessage": "Every review queue in one place: the Production queues documents are routed to, and one Test Studio queue per test set. The <b>Production | Test Studio</b> switch chooses which table is shown.",
+    "description": "Opening paragraph of the Review Management info panel. <b>Production | Test Studio</b> names the switch above the tables, in bold: its two options."
+  },
+  "reviewQueues.toolsPanel.managementTitle": {
+    "defaultMessage": "Review Management",
+    "description": "Title of the info panel of Review Studio › Review Management (the review queues an Admin sets up)."
+  },
+  "reviewQueues.toolsPanel.onThisPage": {
+    "defaultMessage": "On this page",
+    "description": "Sub-heading in the Queue info panel, above the list of what the page shows and does."
+  },
+  "reviewQueues.toolsPanel.productionHeading": {
+    "defaultMessage": "Production queues",
+    "description": "Sub-heading in the Review Management info panel, above the notes on production queues."
+  },
+  "reviewQueues.toolsPanel.productionOpen": {
+    "defaultMessage": "Open a queue to assign its documents to Annotators, unassign them, move them or remove them from review.",
+    "description": "Review Management info panel, \"Production queues\" item. Annotator is a user role."
+  },
+  "reviewQueues.toolsPanel.productionRouting": {
+    "defaultMessage": "A document whose fields raised confidence alerts goes to the Default queue, when HITL is enabled in its configuration.",
+    "description": "Review Management info panel, \"Production queues\" item. Default is the name of a queue; HITL (human in the loop) is the name of a configuration setting."
+  },
+  "reviewQueues.toolsPanel.productionSettings": {
+    "defaultMessage": "<b>Settings</b> sets a queue's name, priority, time limit, eligible Annotators and Enabled switch. A saved change shows at once.",
+    "description": "Review Management info panel, \"Production queues\" item. <b>Settings</b> is the label of a menu item, shown in bold; Enabled is the label of a switch."
+  },
+  "reviewQueues.toolsPanel.queueIntro": {
+    "defaultMessage": "One queue's documents and the Annotators who work them.",
+    "description": "Opening paragraph of the Queue info panel. Annotator is a user role."
+  },
+  "reviewQueues.toolsPanel.queueProgress": {
+    "defaultMessage": "<b>Queue Progress</b>: on a Production queue, the documents assigned or in progress (a finished document leaves the queue); on a Test Studio queue, the documents completed.",
+    "description": "Queue info panel, \"On this page\" item. <b>Queue Progress</b> is the title of a panel of the page, shown in bold."
+  },
+  "reviewQueues.toolsPanel.queueTitle": {
+    "defaultMessage": "Queue",
+    "description": "Title of the info panel of a review queue's page, Production or Test Studio."
+  },
+  "reviewQueues.toolsPanel.skip": {
+    "defaultMessage": "Skip gives a document back to the queue, unassigned and not finished; its saved work is kept.",
+    "description": "Queue info panel, \"Assignments\" item. Skip is the label of a button."
+  },
+  "reviewQueues.toolsPanel.testStudioAnnotators": {
+    "defaultMessage": "List Annotators in its settings; they claim documents or an Admin assigns them.",
+    "description": "Review Management info panel, \"Test Studio queues\" item. Annotator and Admin are user roles."
+  },
+  "reviewQueues.toolsPanel.testStudioHeading": {
+    "defaultMessage": "Test Studio queues",
+    "description": "Sub-heading in the Review Management info panel, above the notes on Test Studio queues. Test Studio is a product area name."
+  },
+  "reviewQueues.toolsPanel.testStudioSets": {
+    "defaultMessage": "Each test set is a queue: its documents are the labels to check before they become ground truth.",
+    "description": "Review Management info panel, \"Test Studio queues\" item."
   },
   "reviewQueues.workItem.alerts": {
     "defaultMessage": "{count, plural, one {# confidence alert} other {# confidence alerts}}",
