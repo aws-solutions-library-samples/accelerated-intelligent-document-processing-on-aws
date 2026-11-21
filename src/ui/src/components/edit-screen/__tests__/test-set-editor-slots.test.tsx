@@ -16,6 +16,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import userEvent from '@testing-library/user-event';
 import React, { useState } from 'react';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
@@ -65,6 +66,12 @@ const SECTIONS: TestSetDocumentSectionRef[] = [
   { sectionId: '1', baselineKey: 'ts1/baseline/p.pdf/sections/1/result.json', documentClass: 'Invoice', pageIndices: [0, 1] },
   { sectionId: '2', baselineKey: 'ts1/baseline/p.pdf/sections/2/result.json', documentClass: 'W2', pageIndices: [2] },
 ];
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 /**
  * The edit page's wiring of the slots, without the rest of the page. `afterChange` is the
@@ -180,7 +187,7 @@ beforeEach(() => {
 
 describe('the Test Studio slots', () => {
   it('show 0-based page indices as 1-based pages, on the board and in the pages field, and save them 0-based', async () => {
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     // [0, 1] on disk is "1, 2" on screen.
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
@@ -200,7 +207,7 @@ describe('the Test Studio slots', () => {
   it('offer Re-extract after a class change, and run it only on request', async () => {
     // The saved grouping comes back with section 1 (first page 1, formerly Invoice) as W2.
     answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
-    render(<Harness afterChange={[{ ...SECTIONS[0], documentClass: 'W2', pageIndices: [0, 1, 2] }]} />);
+    render(<Harness afterChange={[{ ...SECTIONS[0], documentClass: 'W2', pageIndices: [0, 1, 2] }]} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     await mergeAndSave();
@@ -246,7 +253,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
 
   it('offers Re-extract for the open section only, says why, and runs it only on request', async () => {
     answer(TWO_SAVED);
-    render(<Harness afterChange={TWO_AFTER} />);
+    render(<Harness afterChange={TWO_AFTER} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     expect(await screen.findByText('Fields still reflect the previous class')).toBeInTheDocument();
@@ -268,7 +275,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
       { sectionId: '1', documentClass: 'Invoice', pageIndices: [0, 1] },
       { sectionId: '2', documentClass: 'Invoice', pageIndices: [2] },
     ]);
-    render(<Harness afterChange={[SECTIONS[0], { ...SECTIONS[1], documentClass: 'Invoice' }]} />);
+    render(<Harness afterChange={[SECTIONS[0], { ...SECTIONS[1], documentClass: 'Invoice' }]} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     const second = createWrapper(document.body).findModal()!.findContent().findAllSelects()[1];
@@ -290,7 +297,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
 
   it('does not let a caller who may not change the class re-extract a section', async () => {
     answer(TWO_SAVED);
-    const { rerender } = render(<Harness afterChange={TWO_AFTER} />);
+    const { rerender } = render(<Harness afterChange={TWO_AFTER} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
@@ -306,7 +313,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
     graphql.mockImplementation((args: { query: string }) =>
       args.query === 'reextractTestSetDocument' ? Promise.reject(new Error('the run failed')) : answered(args),
     );
-    render(<Harness afterChange={TWO_AFTER} />);
+    render(<Harness afterChange={TWO_AFTER} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
@@ -329,7 +336,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
       }
       return answered(args);
     });
-    render(<Harness afterChange={TWO_AFTER} />);
+    render(<Harness afterChange={TWO_AFTER} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
@@ -345,7 +352,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
   it('says an authored section keeps its values when re-extracted', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: { total: '1' } });
     answer(TWO_SAVED);
-    render(<Harness afterChange={TWO_AFTER} />);
+    render(<Harness afterChange={TWO_AFTER} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     expect(await screen.findByText(/this section has authored ground truth, so its field values are kept/)).toBeInTheDocument();
@@ -353,7 +360,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
 
   it('does not show the merge explanation on a single-section document', async () => {
     answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
-    render(<Harness afterChange={[{ ...SECTIONS[0], documentClass: 'W2', pageIndices: [0, 1, 2] }]} />);
+    render(<Harness afterChange={[{ ...SECTIONS[0], documentClass: 'W2', pageIndices: [0, 1, 2] }]} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     await mergeAndSave();
@@ -366,7 +373,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
 
   it('on a single-section document, re-extracts the whole document, without a sectionId', async () => {
     answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
-    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />);
+    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     const button = await screen.findByRole('button', { name: /^Re-extract$/ });
@@ -384,7 +391,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
       { sectionId: '1', documentClass: 'W2', pageIndices: [0, 1] },
       { sectionId: '2', documentClass: 'Invoice', pageIndices: [2] },
     ]);
-    render(<Harness sections={ONE_ALL} />);
+    render(<Harness sections={ONE_ALL} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     expect(await screen.findByText('Fields still reflect the previous class')).toBeInTheDocument();
@@ -399,7 +406,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
       { sectionId: '1', documentClass: 'W2', pageIndices: [0, 1] },
       { sectionId: '2', documentClass: 'Invoice', pageIndices: [2] },
     ]);
-    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />);
+    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     expect(await screen.findByRole('button', { name: /^Re-extract$/ })).toBeInTheDocument();
@@ -414,7 +421,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
       { ...SECTIONS[0], documentClass: 'W2', pageIndices: [0, 1] },
       { ...SECTIONS[1], documentClass: 'Invoice', pageIndices: [2] },
     ];
-    render(<Harness sections={ONE_ALL} afterChange={split} />);
+    render(<Harness sections={ONE_ALL} afterChange={split} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
@@ -423,7 +430,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
 
   it('points an empty classed section at the per-section Re-extract on a multi-section document', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: {} });
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     expect(await screen.findByText(/No field values for this section/i)).toBeInTheDocument();
     expect(screen.getByText(/To have the model populate it/)).toHaveTextContent(
       're-extracts this section only and leaves the others as they are',
@@ -432,7 +439,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
 
   it('points an empty classed section at Re-extract on a single-section document', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: {} });
-    render(<Harness sections={ONE_ALL} />);
+    render(<Harness sections={ONE_ALL} />, { wrapper: English });
     expect(await screen.findByText(/No field values for this section/i)).toBeInTheDocument();
     expect(screen.getByText(/To have the model populate it/)).toHaveTextContent('choose Re-extract');
     expect(screen.getByText(/To have the model populate it/)).not.toHaveTextContent('this section only');
@@ -450,6 +457,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
           { ...SECTIONS[1], pageIndices: [1, 2] },
         ]}
       />,
+      { wrapper: English },
     );
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
@@ -464,7 +472,7 @@ describe('a class change on a document with more than one section (#1672, #1699)
 
 describe('regrouping in the Test Studio slots', () => {
   it('names the sections whose pages moved, and does not re-extract on its own', async () => {
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     await mergeAndSave();
@@ -474,13 +482,13 @@ describe('regrouping in the Test Studio slots', () => {
   });
 
   it('has no Class label dropdown: a section is reclassified in Edit Page Grouping', async () => {
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     expect(screen.queryByText('Class label')).not.toBeInTheDocument();
   });
 
   it('states that field values and provenance survive, before anything is saved', async () => {
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     expect(screen.getByText(/provenance and the edit history are all kept/)).toBeInTheDocument();
@@ -496,7 +504,7 @@ const withBaseline = (baseline: Record<string, unknown>) => {
 describe('a Test Studio section with no field values', () => {
   it('explains an empty result instead of rendering a bare heading', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0] }, inference_result: {} });
-    render(<Harness sections={ONE_SECTION} />);
+    render(<Harness sections={ONE_SECTION} />, { wrapper: English });
     expect(await screen.findByText(/No field values for this section/i)).toBeInTheDocument();
     expect(await screen.findByText(/extraction ran but produced no fields/i)).toBeInTheDocument();
     expect(screen.queryByText('Document Data')).not.toBeInTheDocument();
@@ -504,13 +512,13 @@ describe('a Test Studio section with no field values', () => {
 
   it('names re-grouping as the other way a classified section gets here', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0] }, inference_result: {} });
-    render(<Harness sections={ONE_SECTION} />);
+    render(<Harness sections={ONE_SECTION} />, { wrapper: English });
     expect(await screen.findByText(/re-grouped/i)).toBeInTheDocument();
   });
 
   it('blames the missing class when there is one, and says re-extracting will not help', async () => {
     withBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
-    render(<Harness sections={ONE_SECTION} />);
+    render(<Harness sections={ONE_SECTION} />, { wrapper: English });
     expect(await screen.findByText(/no document class/i)).toBeInTheDocument();
     expect(screen.getByText(/no schema to extract against/i)).toBeInTheDocument();
     expect(screen.getByText(/re-extracting before that will not produce anything/i)).toBeInTheDocument();
@@ -519,7 +527,7 @@ describe('a Test Studio section with no field values', () => {
 
   it('points an unclassified section at Edit Page Grouping, which is offered', async () => {
     withBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
-    render(<Harness sections={ONE_SECTION} />);
+    render(<Harness sections={ONE_SECTION} />, { wrapper: English });
     expect(await screen.findByText(/Set its class in Edit Page Grouping first/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit Page Grouping' })).toBeEnabled();
     expect(screen.queryByText('Class label')).not.toBeInTheDocument();
@@ -527,19 +535,19 @@ describe('a Test Studio section with no field values', () => {
 
   it('still distinguishes a missing result from an empty one', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0] } });
-    render(<Harness sections={ONE_SECTION} />);
+    render(<Harness sections={ONE_SECTION} />, { wrapper: English });
     expect(await screen.findByText(/no inference_result at all/i)).toBeInTheDocument();
   });
 
   it('points at the other sections when the document has more than one', async () => {
     withBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     expect(await screen.findByText(/Other sections of this document may still have values/i)).toBeInTheDocument();
   });
 
   it('says nothing about other sections on a single-section document', async () => {
     withBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
-    render(<Harness sections={ONE_SECTION} />);
+    render(<Harness sections={ONE_SECTION} />, { wrapper: English });
     await waitFor(() => expect(screen.getByText(/No field values for this section/i)).toBeInTheDocument());
     expect(screen.queryByText(/Other sections of this document/i)).not.toBeInTheDocument();
   });
@@ -553,6 +561,7 @@ describe('a Test Studio section with no field values', () => {
           { sectionId: '2', baselineKey: 'ts1/baseline/p.pdf/sections/2/result.json', documentClass: 'Invoice', pageIndices: [1] },
         ]}
       />,
+      { wrapper: English },
     );
     await waitFor(() => expect(screen.getByText(/No field values for this section/i)).toBeInTheDocument());
     const select = createWrapper(document.body)
@@ -565,7 +574,7 @@ describe('a Test Studio section with no field values', () => {
 
   it('renders the fields normally when there are any', async () => {
     withBaseline({ split_document: { page_indices: [0] }, inference_result: { total: '10.00' } });
-    render(<Harness sections={ONE_SECTION} />);
+    render(<Harness sections={ONE_SECTION} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('10.00')).toBeInTheDocument());
     expect(screen.queryByText(/No field values for this section/i)).not.toBeInTheDocument();
   });
@@ -582,7 +591,7 @@ describe('the note a finished re-extract leaves (#1728)', () => {
   /** Reclassify section 1, re-extract it, and wait until the editor has re-read it. */
   const reextractSectionOne = async () => {
     answer(TWO_SAVED);
-    render(<Harness afterChange={TWO_AFTER} />);
+    render(<Harness afterChange={TWO_AFTER} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
@@ -623,7 +632,7 @@ describe('the note a finished re-extract leaves (#1728)', () => {
   it("re-reads the section only after the page has re-read its refs, since the write-back deleted the section's draft (D34)", async () => {
     const gate: { promise: Promise<void> | null } = { promise: null };
     answer(TWO_SAVED);
-    render(<Harness afterChange={TWO_AFTER} changedGate={gate} />);
+    render(<Harness afterChange={TWO_AFTER} changedGate={gate} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
@@ -669,7 +678,7 @@ describe('the note a finished re-extract leaves (#1728)', () => {
     withBaseline({ ...BASELINE, labelSource: 'draft-machine' });
     const ONE_ALL: TestSetDocumentSectionRef[] = [{ ...SECTIONS[0], pageIndices: [0, 1, 2] }];
     answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
-    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />);
+    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     await userEvent.click(await screen.findByRole('button', { name: /^Re-extract$/ }));
@@ -680,7 +689,7 @@ describe('the note a finished re-extract leaves (#1728)', () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: { total: '1' } });
     const ONE_ALL: TestSetDocumentSectionRef[] = [{ ...SECTIONS[0], pageIndices: [0, 1, 2] }];
     answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
-    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />);
+    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />, { wrapper: English });
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     await reclassifyFirstAndSave();
     await userEvent.click(await screen.findByRole('button', { name: /^Re-extract$/ }));
@@ -775,12 +784,12 @@ describe.each([
         pageIndices,
         baselineKey: `ts1/baseline/p.pdf/sections/${sectionId}/result.json`,
       }));
-    let view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
+    let view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />, { wrapper: English });
     return {
       reload: async () => {
         view.unmount();
         onChanged.mockReset();
-        view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
+        view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />, { wrapper: English });
         await settle();
       },
       /** Change what the server stores behind the editor's back, as another tab or release would. */

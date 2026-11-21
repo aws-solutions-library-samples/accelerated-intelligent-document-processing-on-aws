@@ -336,17 +336,24 @@ re-measure it, and the figures will shrink as the conversion PRs land):
    constructor are excluded callees): those messages reach users through `.message` paths that
    the stable-error-code work addresses separately.
 3. **Single lowercase tokens** (`[a-z][a-zA-Z0-9]*`, about 1,300 strings such as `'error'`,
-   `'link'`, `'primary'`) are treated as technical. The one known user-facing miss is the wizard's
-   `optional: 'optional'` in [`CreateTestSetWizard.tsx`](../components/test-studio/CreateTestSetWizard.tsx).
+   `'link'`, `'primary'`) are treated as technical. Some of them are user-facing, such as the
+   wizard's `optional: 'optional'` in [`CreateTestSetWizard.tsx`](../components/test-studio/CreateTestSetWizard.tsx),
+   and the conversion PRs find the others by reading each screen.
    To re-measure: remove that pattern from `WORDS` in `eslint.i18n.config.js`, run
    `npm run i18n:lint`, and count the findings it adds (then restore the pattern: the gate pins
    the configuration's hash).
 4. **Object literals keyed by enum-like names.** `LEAF_KEYS` excludes keys matching `[A-Z_-]+` and
    the plugin skips the whole value under an excluded key, so a map keyed `CLOSED`/`HALF_OPEN`/`OPEN`
-   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing
-   (`CircuitBreakerPanel.tsx`'s state labels, `TestSets.tsx`'s type badges). To re-measure: remove
-   that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, diff against
-   the committed run, restore it.
+   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing (the
+   circuit-breaker panel's state labels, since converted, and `TestSets.tsx`'s type badges). To
+   re-measure: remove that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run
+   `npm run i18n:lint`, diff against the committed run, restore it.
+5. **Words that contain a slash.** The `WORDS` pattern for MIME types and slash paths
+   (`[\w.+-]+/[\w.+/-]+`) also skips user-facing words with a slash: **109 findings in 19 files**
+   when this entry was added (`N/A` 95, `Service/Api` 6, `YYYY/MM/DD` 5, `Class/Type` 2,
+   `Docs/Hour` 1). The conversion PRs convert them with their screens. To re-measure: remove that
+   pattern from `WORDS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, count the findings it
+   adds, then restore it (the gate pins the configuration's hash).
 
 ## Coverage
 
@@ -446,11 +453,10 @@ is a committed follow-up right after `fr-CA` ships; the rest is optional later);
 invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
 headers and generated report headings; the relative-time literal "just now", the unit suffixes
-on durations and sizes (`s`, `m`, `KB`, `MB`), the English `%` placement on integer percents
-built in template strings (`${progressPct}%`) and the stored ISO timestamps the document page
-shows as submitted and completed times, until their screens convert; extension UIs built
-before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
-until they carry stable codes; and document data, always. The remaining PRs of the series (the
-screens area by area, review tooling, enabling `fr-CA`, Cognito
-persistence, the configuration editor, error codes, agent-convention docs) are listed in
+on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on integer percents
+built in template strings (`${progressPct}%`), until their screens convert; extension UIs that do
+not translate their own text, and feature `displayName`s; backend error texts until they carry
+stable codes; and document data, always. The remaining PRs of the series (the screens area by area,
+review tooling, enabling `fr-CA`, Cognito persistence, the configuration editor, error codes,
+agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).

@@ -1,6 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { defineMessages, type NoMessageValues } from 'react-intl';
+
 /**
  * Extract a human-readable error message from whatever shape Amplify / AppSync
  * threw at us.
@@ -154,8 +156,16 @@ export function isNetworkError(err: unknown): boolean {
  * X. Please try again." and fixing one of them would have left the others giving
  * advice that cannot work.
  */
-export const FILE_ACCESS_DENIED_MESSAGE =
-  'You do not have permission to view this file. If your account is new, ask an administrator to assign it a role.';
+export const fileAccessMessages = defineMessages<{ denied: NoMessageValues }>({
+  denied: {
+    id: 'common.fileAccess.denied',
+    defaultMessage: 'You do not have permission to view this file. If your account is new, ask an administrator to assign it a role.',
+    description: 'Shown where a file or page image could not be loaded because the user lacks permission to read it.',
+  },
+});
+
+/** The same message in English, written once: the export manifest records it, and the viewers not yet translated show it. */
+export const FILE_ACCESS_DENIED_MESSAGE = String(fileAccessMessages.denied.defaultMessage);
 
 export function describeApiError(err: unknown, action: string): string {
   if (isAuthorizationError(err)) {
