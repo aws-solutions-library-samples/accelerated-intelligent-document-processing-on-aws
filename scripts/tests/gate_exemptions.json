@@ -3183,6 +3183,17 @@
         "scripts/ux_runner/tool_profiles.py::EXPERT_ALLOWED_TOOLS"
       ]
     },
+    "scripts/ux_runner/tool_profiles.py::SCREEN_REVIEW_ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox the advisory screen review of the translated web UI runs its Claude Code session inside, granting five chrome-devtools-mcp tools that navigate, wait, hover, snapshot and screenshot, and none that gives input",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
+      "reason": "A capability grant, not a gate exemption: it is what a screen-review session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. A subset of EXPERT_ALLOWED_TOOLS with every input tool and the recorder removed, because the review relay's commit guard knows a control only by its English name and these screens are French or pseudo-locale. Closed over DEVTOOLS_TOOLS_AT_PIN: every tool the pinned chrome-devtools-mcp serves is either granted here or denied by name in SCREEN_REVIEW_DISALLOWED_TOOLS, so a tool added by a version bump fails the closure until somebody decides which. Same shape as EXPERT_ALLOWED_TOOLS.",
+      "memberKind": "tool name"
+    },
     "scripts/ux_runner/tool_profiles.py::STORY_ALLOWED_TOOLS": {
       "kind": "capability",
       "turnsOff": "nothing in any gate; it is the sandbox a first-time-user story flow's Claude Code session runs inside, granting the twelve browser tools the ux-story server relays from the pinned chrome-devtools-mcp and the seven tools of the ux-story server itself, all under mcp__ux-story__",
