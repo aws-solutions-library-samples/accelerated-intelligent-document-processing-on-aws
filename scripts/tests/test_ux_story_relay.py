@@ -1795,8 +1795,8 @@ _EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
 #: The edit page's read-only notice, which offers Claim beside the bar's own.
 _EDIT_PAGE = "components/edit-screen/EditPage.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
-#: The edit screen names Process Changes with one shared constant (common/labels.ts).
-_PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
+#: The edit screen names Process Changes with one shared message (common/labels.ts).
+_PROCESS_CHANGES = "sharedLabelMessages.processChanges"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
 _MCP = "components/mcp-configuration/McpConfigurationLayout.tsx"
@@ -2044,7 +2044,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(
             "components/common/ProcessChangesConfirmModal.tsx",
             "Process Changes",
-            source=_PROCESS_CHANGES,
+            source="PROCESS_CHANGES_LABEL",
             inside_dialog=True,
         ),
     ),

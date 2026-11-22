@@ -142,10 +142,26 @@ export const valueSourceLabel = (labelSource?: string | null): ValueSourceLabel 
     : { value: 'Predicted:', changed: 'Your value:', panelTitle: 'Predicted Results' };
 
 /**
- * The edit screen's action that applies the changes: the button, its confirmation, the
- * banner and alert copy, and the help panel all name it with this one label.
+ * Labels named in more than one file. Process Changes is the edit screen's action that
+ * applies the changes: the button, its confirmation, the banner and alert copy, and the
+ * help panel all name it. Next alert is the control that moves the edit screen to the next
+ * low-confidence field.
  */
-export const PROCESS_CHANGES_LABEL = 'Process Changes';
+export const sharedLabelMessages = defineMessages<{ processChanges: NoMessageValues; nextAlert: NoMessageValues }>({
+  processChanges: {
+    id: 'common.labels.processChanges',
+    defaultMessage: 'Process Changes',
+    description: "Name of the edit page's action that saves the changes and processes them.",
+  },
+  nextAlert: {
+    id: 'common.labels.nextAlert',
+    defaultMessage: 'Next alert',
+    description: 'Button that moves to the next field with a confidence alert.',
+  },
+});
+
+/** English, for its readers not translated yet: the edit models, the help panel, ProcessChangesConfirmModal, Test Studio's annotation-edit-flags.ts. */
+export const PROCESS_CHANGES_LABEL = String(sharedLabelMessages.processChanges.defaultMessage);
 
 /**
  * Opening a test set's ground truth for editing, the same on the Test Sets list and the
@@ -153,5 +169,5 @@ export const PROCESS_CHANGES_LABEL = 'Process Changes';
  */
 export const EDIT_GROUND_TRUTH_LABEL = 'Edit ground truth';
 
-/** The control that moves the edit screen to the next low-confidence field. */
-export const NEXT_ALERT_LABEL = 'Next alert';
+/** English, for test-set-item-edit-model.tsx, which is not translated yet. */
+export const NEXT_ALERT_LABEL = String(sharedLabelMessages.nextAlert.defaultMessage);

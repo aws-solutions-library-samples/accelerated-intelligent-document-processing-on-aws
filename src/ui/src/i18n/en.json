@@ -471,9 +471,25 @@
     "defaultMessage": "You do not have permission to view this file. If your account is new, ask an administrator to assign it a role.",
     "description": "Shown where a file or page image could not be loaded because the user lacks permission to read it."
   },
+  "common.infoLink.info": {
+    "defaultMessage": "Info",
+    "description": "Link beside the Documents table's title that opens the help panel."
+  },
+  "common.labels.nextAlert": {
+    "defaultMessage": "Next alert",
+    "description": "Button that moves to the next field with a confidence alert."
+  },
+  "common.labels.processChanges": {
+    "defaultMessage": "Process Changes",
+    "description": "Name of the edit page's action that saves the changes and processes them."
+  },
   "common.learnMoreLinks.heading": {
     "defaultMessage": "Learn more",
     "description": "Heading of the footer of an info (help) panel, above a list of links into the product documentation."
+  },
+  "common.loadState.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the error the edit page or the document page shows when its document, or the review item, could not be read: it tries the read again."
   },
   "common.notifications.dismiss": {
     "defaultMessage": "Dismiss message",
@@ -4891,6 +4907,90 @@
     "defaultMessage": "Viewing a previous version (read-only). Extraction results and page text shown below reflect this version's output.",
     "description": "Notice shown while the document page shows a previous version."
   },
+  "editScreen.bar.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the edit page's action bar that discards the unsaved changes and leaves the page."
+  },
+  "editScreen.bar.cancelAriaLabel": {
+    "defaultMessage": "Cancel and discard changes",
+    "description": "Screen-reader name of the edit page's Cancel button, which says what Cancel does to unsaved changes."
+  },
+  "editScreen.bar.cancelHint": {
+    "defaultMessage": "Discard your unsaved changes and leave",
+    "description": "Hover text of Cancel while it is available."
+  },
+  "editScreen.bar.claim": {
+    "defaultMessage": "Claim",
+    "description": "Button of the edit page's action bar that assigns the item to the user, for an Annotator viewing an unassigned item."
+  },
+  "editScreen.bar.claimHint": {
+    "defaultMessage": "Assign this item to you, then work it here or from Home › Tasks",
+    "description": "Hover text of Claim. \"Home › Tasks\", the page of the review items assigned to the user, is named by its breadcrumb trail."
+  },
+  "editScreen.bar.moreActions": {
+    "defaultMessage": "More Actions",
+    "description": "Menu of the edit page's action bar that holds Use As Evaluation Baseline."
+  },
+  "editScreen.bar.processingReport": {
+    "defaultMessage": "Processing Report",
+    "description": "Item of the edit page's Reports menu, and the title of the dialog it opens, which shows how the open section was extracted."
+  },
+  "editScreen.bar.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button of the edit page's action bar that reads the document again."
+  },
+  "editScreen.bar.reports": {
+    "defaultMessage": "Reports",
+    "description": "Menu of the edit page's action bar that holds History, Summary and Processing Report."
+  },
+  "editScreen.bar.save": {
+    "defaultMessage": "Save",
+    "description": "Button of the edit page's action bar that saves the changes without finishing."
+  },
+  "editScreen.bar.skip": {
+    "defaultMessage": "Skip",
+    "description": "Button of the edit page's action bar that gives the item back to its queue, and the confirm button of the dialog that asks why."
+  },
+  "editScreen.bar.skipHint": {
+    "defaultMessage": "Give this item back to its queue, unassigned and not finished.",
+    "description": "Hover text of Skip while it is available."
+  },
+  "editScreen.bar.summary": {
+    "defaultMessage": "Summary",
+    "description": "Item of the edit page's Reports menu that opens the document's summary report."
+  },
+  "editScreen.bar.useAsBaseline": {
+    "defaultMessage": "Use As Evaluation Baseline",
+    "description": "Item of the edit page's More Actions menu that copies the finished document's results into its evaluation baseline."
+  },
+  "editScreen.bar.viewEdit": {
+    "defaultMessage": "Edit",
+    "description": "Option of the edit page's Edit | View switch that shows the Document Editor."
+  },
+  "editScreen.bar.viewSource": {
+    "defaultMessage": "View",
+    "description": "Option of the edit page's Edit | View switch that shows the source document."
+  },
+  "editScreen.bar.viewSwitch": {
+    "defaultMessage": "Edit the document or view its source",
+    "description": "Screen-reader name of the Edit | View switch, first in the edit page's action bar."
+  },
+  "editScreen.discard.body": {
+    "defaultMessage": "The changes you made since the last save are lost. Anything already saved is kept.",
+    "description": "Text of the dialog the edit page shows before an action, such as Cancel or Refresh, loses unsaved changes."
+  },
+  "editScreen.discard.cancel.confirm": {
+    "defaultMessage": "Discard and leave",
+    "description": "Confirm button of the dialog that asks before Cancel loses unsaved changes: it discards them and leaves the edit page."
+  },
+  "editScreen.discard.cancel.header": {
+    "defaultMessage": "Discard your unsaved changes?",
+    "description": "Title of the dialog the edit page shows when Cancel would lose unsaved changes."
+  },
+  "editScreen.discard.keepEditing": {
+    "defaultMessage": "Keep editing",
+    "description": "Button of the dialog that asks before unsaved changes are lost: it closes the dialog and keeps the changes."
+  },
   "editScreen.documentStatus.bdaRegroup": {
     "defaultMessage": "Page grouping cannot be changed for a document processed with Bedrock Data Automation (BDA). Field values can still be edited.",
     "description": "Why Edit Page Grouping is unavailable for a document processed with Bedrock Data Automation (BDA), the name of an AWS service."
@@ -4911,6 +5011,74 @@
     "defaultMessage": "Available when processing finishes",
     "description": "Why an action about a document, or its direct edit, is unavailable while the document is still processing."
   },
+  "editScreen.fieldEdits.appliesTo.baseline": {
+    "defaultMessage": "Baseline",
+    "description": "Applies to cell of History › Field Edits on the edit page: the edit changed the section's evaluation baseline."
+  },
+  "editScreen.fieldEdits.appliesTo.prediction": {
+    "defaultMessage": "Prediction",
+    "description": "Applies to cell of History › Field Edits on the edit page: the edit changed the section's extracted values."
+  },
+  "editScreen.fieldEdits.column.appliesTo": {
+    "defaultMessage": "Applies to",
+    "description": "Column header of History › Field Edits on the edit page, shown when an edit changed the evaluation baseline: which values the edit changed."
+  },
+  "editScreen.fieldEdits.column.by": {
+    "defaultMessage": "By",
+    "description": "Column header of History › Field Edits on the edit page: who saved the edit."
+  },
+  "editScreen.fieldEdits.column.field": {
+    "defaultMessage": "Field",
+    "description": "Column header of History › Field Edits on the edit page: the path of the field that was changed."
+  },
+  "editScreen.fieldEdits.column.from": {
+    "defaultMessage": "From",
+    "description": "Column header of History › Field Edits on the edit page: the field's value before the edit."
+  },
+  "editScreen.fieldEdits.column.to": {
+    "defaultMessage": "To",
+    "description": "Column header of History › Field Edits on the edit page: the field's value after the edit."
+  },
+  "editScreen.fieldEdits.column.when": {
+    "defaultMessage": "When",
+    "description": "Column header of History › Field Edits on the edit page: when the edit was saved."
+  },
+  "editScreen.fieldEdits.empty.noEdits": {
+    "defaultMessage": "No field has been edited in this section yet.",
+    "description": "Shown in History › Field Edits on the edit page when no field of the open section has been edited."
+  },
+  "editScreen.fieldEdits.empty.noSection": {
+    "defaultMessage": "Open a section to see its field edits.",
+    "description": "Shown in History › Field Edits on the edit page while no section is open."
+  },
+  "editScreen.fieldEdits.emptyValue": {
+    "defaultMessage": "(empty)",
+    "description": "From or To cell of History › Field Edits on the edit page when the field had no value."
+  },
+  "editScreen.fieldEdits.unknownEditor": {
+    "defaultMessage": "Unknown",
+    "description": "By cell of History › Field Edits on the edit page when the saved edit names nobody."
+  },
+  "editScreen.history.tab.fieldEdits": {
+    "defaultMessage": "Field Edits",
+    "description": "Tab of the edit page's History dialog that lists every saved change to the open section's fields."
+  },
+  "editScreen.history.tab.reviewActivity": {
+    "defaultMessage": "Review Activity",
+    "description": "Tab of the edit page's History dialog that lists who claimed, was assigned, skipped or completed the item, and why."
+  },
+  "editScreen.page.claim": {
+    "defaultMessage": "Claim",
+    "description": "Button in the edit page's notice that the fields are read-only, which assigns the item to the user so it can be edited."
+  },
+  "editScreen.page.refreshDiscard.confirm": {
+    "defaultMessage": "Discard and reload",
+    "description": "Confirm button of the dialog that asks before Refresh loses unsaved changes: it discards them and reads the document again."
+  },
+  "editScreen.page.refreshDiscard.header": {
+    "defaultMessage": "Discard your changes and reload?",
+    "description": "Title of the dialog the edit page shows when Refresh would lose unsaved changes."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
@@ -4922,6 +5090,70 @@
   "editScreen.reviewActivity.section": {
     "defaultMessage": "Section {sectionId}",
     "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
+  },
+  "editScreen.shared.backToDocuments": {
+    "defaultMessage": "Back to Documents",
+    "description": "Link after the edit page's or the document page's message about a missing or unreadable document, back to the Documents list."
+  },
+  "editScreen.shared.backToTasks": {
+    "defaultMessage": "Back to Tasks",
+    "description": "Link after the edit page's message about a missing or unreadable document, back to Home › Tasks, for a user whose only role is Annotator."
+  },
+  "editScreen.shared.couldNotOpenDocument": {
+    "defaultMessage": "Couldn't open this document",
+    "description": "Heading of the error the edit page or the document page shows when its document could not be read."
+  },
+  "editScreen.shared.documentCouldNotLoad": {
+    "defaultMessage": "The document could not be loaded.",
+    "description": "Fallback text of the error the edit page or the document page shows when its document could not be read: used when the server gave no reason."
+  },
+  "editScreen.shared.documentEditor": {
+    "defaultMessage": "Document Editor",
+    "description": "Title of the edit page's Document Editor panel."
+  },
+  "editScreen.shared.documentNotFound": {
+    "defaultMessage": "Document not found",
+    "description": "Heading of the warning the edit page or the document page shows when its document no longer exists."
+  },
+  "editScreen.shared.history": {
+    "defaultMessage": "History",
+    "description": "Item of the edit page's Reports menu, and the title of the dialog it opens, which lists the open section's field edits and the item's review activity."
+  },
+  "editScreen.shared.loadingDocument": {
+    "defaultMessage": "Loading document…",
+    "description": "Shown beside a spinner while the edit page or the document page reads its document."
+  },
+  "editScreen.shared.working": {
+    "defaultMessage": "Working…",
+    "description": "Why the edit page's buttons, in its action bar and Edit Page Grouping, are unavailable while an action runs."
+  },
+  "editScreen.states.documentFailed.body": {
+    "defaultMessage": "{error} {backLink}",
+    "description": "Text of the error the edit page or the document page shows when its document could not be read. {error} is the reason the server gave, as it sent it, or a sentence saying the document could not be loaded; {backLink} is a link back to the Documents list or to Home › Tasks."
+  },
+  "editScreen.states.documentMissing.body": {
+    "defaultMessage": "This document no longer exists. {backLink}",
+    "description": "Text of the warning the edit page or the document page shows when its document no longer exists. {backLink} is a link back to the Documents list or to Home › Tasks."
+  },
+  "editScreen.states.itemFailed.action": {
+    "defaultMessage": "load the review item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when the edit page could not read the review queue item of its document."
+  },
+  "editScreen.states.itemFailed.header": {
+    "defaultMessage": "Couldn't open this review item",
+    "description": "Heading of the error the edit page shows when the review queue item of its document could not be read."
+  },
+  "editScreen.states.notAMember.body": {
+    "defaultMessage": "Only the Annotators listed on this item's queue can open it. The queues that list you are in {queuesLink}.",
+    "description": "Text of the warning the edit page shows to an Annotator who is not listed on the review queue of the item. {queuesLink} is a link to Home › Queues, the page of the queues that list the user."
+  },
+  "editScreen.states.notAMember.header": {
+    "defaultMessage": "You can't open this review item",
+    "description": "Heading of the warning the edit page shows to an Annotator who is not listed on the review queue of the item."
+  },
+  "editScreen.states.notAMember.queuesLink": {
+    "defaultMessage": "Home › Queues",
+    "description": "Text of the link to the page of the queues that list the user, named by its breadcrumb trail, inside the warning to an Annotator who cannot open a review item."
   },
   "guidedTour.i18n.closeAnnotation": {
     "defaultMessage": "Close annotation",
