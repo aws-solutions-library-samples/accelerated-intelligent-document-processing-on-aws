@@ -252,6 +252,36 @@ dates (`2026-10-30 17 h 40 min 05 s` against `10/30/2026, 5:40:05 PM`) shows onl
   file and the generated catalog would be ambiguous). Unflagged, such a file compiles as an
   ordinary translation.
 
+### Reviewing translated screens
+
+`make ai-ux-translation-review STACK=<name>` looks at the signed-in UI in `fr-CA`, then in `en-XA`,
+and reports what only a rendered screen shows: English left on a French screen, text that bypasses
+the catalog, text cut off by its layout, a term wrong for its place, a placeholder shown raw, and
+house-style typography. Whether each message means what its English means is the catalog review's
+question, not this one's.
+
+- **What the UI must hold.** `fr-CA` needs `fr-CA.json` in this directory when the UI is built;
+  `en-XA` needs a flagged build (above: the `src/ui/.pseudo-locale` marker for a deployed stack,
+  `IDP_UI_PSEUDO_LOCALE=1` for a local build). Point the review at a test stack deployed that way
+  (its web URL is the default, or `WEB_URL=`), or at a local build made with the stack's
+  `.env.production.local`, as `BUILD_DIR=`, which is served at `http://localhost:3000`. A locale
+  the build lacks fails alone, saying so, and the next one still runs.
+- **How it runs.** In the UX runner's Docker image, each locale in its own confined, signed-in
+  Chrome, as the MR UX test runs. The harness switches the language as the UI records a user's
+  choice (`idp-locale`, then a reload) and waits until the screen shows it. The model may only
+  navigate, wait, hover, snapshot and screenshot: the commit guard recognises a control by its
+  English name, so on these screens a click could not be checked. Dialogs and menus that need a
+  click are not reviewed.
+- **Cost.** Bedrock (`us.anthropic.claude-opus-5-5`, in `ca-central-1` unless `AWS_REGION` is
+  set) on your own AWS credentials, within `MAX_USD` (default 40): each session may spend nine
+  tenths of an even share of what is left. The fr-CA glossary is `GLOSSARY=` (default
+  `glossary.fr-CA.csv` here); `LOCALE=en-XA` reviews the pseudo-locale alone.
+- **Output.** `test-reports/ux-translation-review/<time>-review/`: `findings.md` (a table per
+  locale, each finding linked to its screenshot), `findings.json`, `run.json` and `screens/`.
+  There is no video: the recorder renders only the review stack `idp-ux-nightly`. The findings are
+  the model's claims for a person to adjudicate, and the screenshots are not redacted, so review a
+  stack that holds sample data only.
+
 ## The string-debt gate
 
 The tree carries thousands of hardcoded English strings. Rather than a lint rule that would be red
