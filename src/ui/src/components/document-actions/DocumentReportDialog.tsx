@@ -66,9 +66,7 @@ const DocumentReportDialog = ({ report, displayed, onDismiss }: DocumentReportDi
       <MarkdownReport
         reportUri={displayed.ruleValidationResultUri ?? ''}
         documentId={objectKey}
-        // English on purpose: MarkdownReport splices its title into English loading and error
-        // sentences, and fetches the report again whenever the title changes.
-        title={String(messages.ruleValidationSummary.defaultMessage)}
+        report="ruleValidation"
         emptyMessage={intl.formatMessage(messages.ruleValidationEmpty)}
       />
     </ReportModal>

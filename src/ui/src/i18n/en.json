@@ -527,6 +527,10 @@
     "defaultMessage": "just now",
     "description": "Relative time of something less than 45 seconds old, where older times read \"5 minutes ago\" or \"yesterday\"."
   },
+  "common.reportModal.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes a report dialog opened from the Reports menu of the document page or the edit page."
+  },
   "common.reviewStatus.inReviewQueue.canWork": {
     "defaultMessage": "This document is in a review queue. Choose Edit to work on it there.",
     "description": "Why an action of the document page is unavailable while the document waits in a review queue, for a user who works review queues: the page's Edit button opens its queue item."
@@ -598,6 +602,14 @@
   "common.reviewStatus.state.withdrawn": {
     "defaultMessage": "Withdrawn",
     "description": "State of a review queue item taken out of review without a result, for example because its document was processed again. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.summaryReport.empty": {
+    "defaultMessage": "Summary report not available for this document",
+    "description": "Text of the Document Summary dialog when the document has no summary report."
+  },
+  "common.summaryReport.title": {
+    "defaultMessage": "Document Summary",
+    "description": "Title of the dialog that shows the document's summary, opened from Reports › Summary on the document page or the edit page."
   },
   "common.table.filterCount": {
     "defaultMessage": "{count, plural, one {# match} other {# matches}}",
@@ -1902,6 +1914,62 @@
   "documents.malwareScan.threat.labelNamed": {
     "defaultMessage": "Threat found: {threat}",
     "description": "Malware-scan verdict of a quarantined document; {threat} is the threat name the scanner reported."
+  },
+  "documents.markdownReport.evaluation.binary": {
+    "defaultMessage": "This file contains binary content that cannot be viewed in the evaluation report.",
+    "description": "Shown in the Evaluation Report dialog when the markdown file of the evaluation report holds binary content instead of text."
+  },
+  "documents.markdownReport.evaluation.failed": {
+    "defaultMessage": "Failed to load evaluation report. Please try again.",
+    "description": "Shown in the Evaluation Report dialog when the markdown version of the evaluation report could not be loaded. A missing permission has a message of its own."
+  },
+  "documents.markdownReport.evaluation.loading": {
+    "defaultMessage": "Loading evaluation report...",
+    "description": "Shown in the Evaluation Report dialog while the markdown version of the evaluation report loads."
+  },
+  "documents.markdownReport.ruleValidation.binary": {
+    "defaultMessage": "This file contains binary content that cannot be viewed in the rule validation summary.",
+    "description": "Shown in the Rule Validation Summary dialog when the document's rule validation summary file holds binary content instead of text."
+  },
+  "documents.markdownReport.ruleValidation.failed": {
+    "defaultMessage": "Failed to load rule validation summary. Please try again.",
+    "description": "Shown in the Rule Validation Summary dialog when the document's rule validation summary could not be loaded. A missing permission has a message of its own."
+  },
+  "documents.markdownReport.ruleValidation.loading": {
+    "defaultMessage": "Loading rule validation summary...",
+    "description": "Shown in the Rule Validation Summary dialog while the document's rule validation summary loads."
+  },
+  "documents.markdownReport.summary.binary": {
+    "defaultMessage": "This file contains binary content that cannot be viewed in the document summary.",
+    "description": "Shown in the Document Summary dialog when the document's summary file holds binary content instead of text."
+  },
+  "documents.markdownReport.summary.failed": {
+    "defaultMessage": "Failed to load document summary. Please try again.",
+    "description": "Shown in the Document Summary dialog when the document's summary could not be loaded. A missing permission has a message of its own."
+  },
+  "documents.markdownReport.summary.loading": {
+    "defaultMessage": "Loading document summary...",
+    "description": "Shown in the Document Summary dialog while the document's summary loads."
+  },
+  "documents.markdownViewer.download": {
+    "defaultMessage": "Download",
+    "description": "Button in the toolbar of a report shown as markdown: downloads the report as a Markdown (.md) file."
+  },
+  "documents.markdownViewer.expandDetails": {
+    "defaultMessage": "Expand Details",
+    "description": "Toggle button in the toolbar of an evaluation report shown as markdown. When it is on, every collapsible details block of the report is open; when it is off, they are closed."
+  },
+  "documents.markdownViewer.noContent": {
+    "defaultMessage": "No content to display",
+    "description": "Shown in the page text dialog's rendered markdown view when the page's text is empty."
+  },
+  "documents.markdownViewer.print": {
+    "defaultMessage": "Print",
+    "description": "Button in the toolbar of a report shown as markdown: opens the report in a new window and prints it."
+  },
+  "documents.markdownViewer.unmatchedItems": {
+    "defaultMessage": "Unmatched Items",
+    "description": "Toggle button in the toolbar of an evaluation report shown as markdown. When it is on, the rows whose values matched are hidden, so only the unmatched items show."
   },
   "documents.pageImage.alt": {
     "defaultMessage": "Page {page}",

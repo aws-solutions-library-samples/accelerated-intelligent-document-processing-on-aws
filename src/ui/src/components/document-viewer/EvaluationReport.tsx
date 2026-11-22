@@ -580,7 +580,7 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
         <MarkdownReport
           reportUri={reportUri}
           documentId={documentId}
-          title="Evaluation Report"
+          report="evaluation"
           emptyMessage="Evaluation report not available for this document"
         />
       </SpaceBetween>
