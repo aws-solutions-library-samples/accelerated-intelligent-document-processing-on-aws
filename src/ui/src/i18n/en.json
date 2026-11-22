@@ -471,6 +471,30 @@
     "defaultMessage": "You do not have permission to view this file. If your account is new, ask an administrator to assign it a role.",
     "description": "Shown where a file or page image could not be loaded because the user lacks permission to read it."
   },
+  "common.geometry.highlight": {
+    "defaultMessage": "Highlight {field} on the page image",
+    "description": "Screen-reader label of the button beside a field of the edit page's section editor that highlights the field on the page image. {field} is the field's name, as the document holds it."
+  },
+  "common.geometry.noData": {
+    "defaultMessage": "No bounding box recorded — the assessment step skipped this field.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: nothing was recorded about the field."
+  },
+  "common.geometry.noValue": {
+    "defaultMessage": "No value extracted, so no bounding box.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: the model returned no value for it."
+  },
+  "common.geometry.noneProduced": {
+    "defaultMessage": "No field in this section has a bounding box.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: no field of the open section has one."
+  },
+  "common.geometry.unmatched": {
+    "defaultMessage": "Value not found in the page text, so no bounding box.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: its value was not found in the page's text."
+  },
+  "common.geometry.why": {
+    "defaultMessage": "Why {field} has no bounding box",
+    "description": "Screen-reader label of the button beside a field of the edit page's section editor that shows why the field has no bounding box on the page image. {field} is the field's name, as the document holds it."
+  },
   "common.infoLink.info": {
     "defaultMessage": "Info",
     "description": "Link beside the Documents table's title that opens the help panel."
@@ -482,6 +506,26 @@
   "common.labels.processChanges": {
     "defaultMessage": "Process Changes",
     "description": "Name of the edit page's action that saves the changes and processes them."
+  },
+  "common.labels.valueSource.groundTruth": {
+    "defaultMessage": "Ground truth:",
+    "description": "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is a test set's ground truth."
+  },
+  "common.labels.valueSource.groundTruthPanel": {
+    "defaultMessage": "Ground truth",
+    "description": "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are a test set's ground truth."
+  },
+  "common.labels.valueSource.predicted": {
+    "defaultMessage": "Predicted:",
+    "description": "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is the model's prediction."
+  },
+  "common.labels.valueSource.predictedPanel": {
+    "defaultMessage": "Predicted Results",
+    "description": "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are the model's predictions."
+  },
+  "common.labels.valueSource.yourValue": {
+    "defaultMessage": "Your value:",
+    "description": "Label before a field's value in the Visual Editor tab of the edit page's section editor, once the user has changed the value."
   },
   "common.learnMoreLinks.heading": {
     "defaultMessage": "Learn more",
@@ -2422,6 +2466,186 @@
   "documents.fileViewer.previewAlt": {
     "defaultMessage": "Document preview",
     "description": "Alternative text of an image document in the source view."
+  },
+  "documents.formField.baselineEdited": {
+    "defaultMessage": "✏️ Baseline Edited",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor, once the user has changed the field's evaluation baseline value."
+  },
+  "documents.formField.confidence": {
+    "defaultMessage": "Confidence: {confidence}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor: the model's confidence in the value. {confidence} is a percentage, already formatted."
+  },
+  "documents.formField.confidenceWithThreshold": {
+    "defaultMessage": "Confidence: {confidence} / Threshold: {threshold}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor: the model's confidence in the value, and the confidence the field needs. {confidence} and {threshold} are percentages, already formatted."
+  },
+  "documents.formField.copyBaselineToPredicted": {
+    "defaultMessage": "Copy baseline value to predicted",
+    "description": "Screen-reader label of the button beside a field's evaluation baseline value in the Visual Editor tab of the edit page's section editor that copies it into the field's value."
+  },
+  "documents.formField.copyPredictedToBaseline": {
+    "defaultMessage": "Copy predicted value to baseline",
+    "description": "Screen-reader label of the button beside a field's value in the Visual Editor tab of the edit page's section editor that copies the value into the evaluation baseline."
+  },
+  "documents.formField.coverage": {
+    "defaultMessage": "{located} of {total, plural, one {# field} other {# fields}} have a bounding box",
+    "description": "Under the heading of the open section's fields in the Visual Editor tab of the edit page's section editor: how many of the section's fields have a bounding box on the page image. {located} and {total} are numbers of fields."
+  },
+  "documents.formField.coverageInSection": {
+    "defaultMessage": "{located} of {total, plural, one {# field} other {# fields}} have a bounding box in this section",
+    "description": "Under the heading of the open section's fields in the Visual Editor tab of the edit page's section editor, while the Show fields menu leaves some fields out: how many of the whole section's fields have a bounding box on the page image. {located} and {total} are numbers of fields."
+  },
+  "documents.formField.edited": {
+    "defaultMessage": "✏️ Edited",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor, once the user has changed the field's value."
+  },
+  "documents.formField.editedNoConfidence": {
+    "defaultMessage": "Edited — the model's confidence no longer applies",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor, in place of the model's confidence, once the user has changed the value."
+  },
+  "documents.formField.evalScore": {
+    "defaultMessage": "Eval Score: {score}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's evaluation score. {score} is a percentage, already formatted."
+  },
+  "documents.formField.evalScoreWithReason": {
+    "defaultMessage": "Eval Score: {score} - {reason}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is."
+  },
+  "documents.formField.expectedBaseline": {
+    "defaultMessage": "Expected (baseline):",
+    "description": "Label before a field's evaluation baseline value in the Visual Editor tab of the edit page's section editor while Show Evaluation is on."
+  },
+  "documents.formField.groupScore": {
+    "defaultMessage": "Group Score: {score}",
+    "description": "Under a group's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the group's evaluation score. {score} is a percentage, already formatted."
+  },
+  "documents.formField.groupScoreWithReason": {
+    "defaultMessage": "Group Score: {score} - {reason}",
+    "description": "Under a group's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the group's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is."
+  },
+  "documents.formField.itemCount": {
+    "defaultMessage": "{label} ({count, plural, one {# item} other {# items}})",
+    "description": "Heading of a list in the Visual Editor tab of the edit page's section editor: its name and how many items it holds. {label} is the list field's name, as the document holds it (followed by its confidence in parentheses when the results give one)."
+  },
+  "documents.formField.listScore": {
+    "defaultMessage": "List Score: {score}",
+    "description": "Under a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the list's evaluation score. {score} is a percentage, already formatted."
+  },
+  "documents.formField.listScoreWithReason": {
+    "defaultMessage": "List Score: {score} - {reason}",
+    "description": "Under a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the list's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is."
+  },
+  "documents.formField.match": {
+    "defaultMessage": "✓ Match",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on, when the field's value agrees with the evaluation baseline."
+  },
+  "documents.formField.method": {
+    "defaultMessage": "Method: {method}",
+    "description": "Under a field's name or a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the evaluation method. {method} is the method's name, shown as is."
+  },
+  "documents.formField.mismatch": {
+    "defaultMessage": "⚠ Mismatch",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on, when the field's value differs from the evaluation baseline."
+  },
+  "documents.formField.nullPlaceholder": {
+    "defaultMessage": "null (enter value to change)",
+    "description": "Placeholder of the input of a field whose value is null, in the Visual Editor tab of the edit page's section editor. null is the JSON value, kept as is."
+  },
+  "documents.formField.rootHeading": {
+    "defaultMessage": "Document Data",
+    "description": "Heading of the open section's fields in the Visual Editor tab of the edit page's section editor."
+  },
+  "documents.formField.weight": {
+    "defaultMessage": "Weight: {weight}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's weight in the evaluation. {weight} is a number, already formatted."
+  },
+  "documents.jsonEditor.cannotFormat": {
+    "defaultMessage": "Cannot format: {detail}",
+    "description": "Error in a panel of the JSON Editor tab of the edit page's section editor when Format cannot read the panel's text as JSON. {detail} is the JSON parser's own message, shown as is."
+  },
+  "documents.jsonEditor.copied": {
+    "defaultMessage": "✓ Copied",
+    "description": "Shown beside a panel's title in the JSON Editor tab of the edit page's section editor for two seconds after its JSON was copied."
+  },
+  "documents.jsonEditor.copyBaseline": {
+    "defaultMessage": "Copy baseline JSON",
+    "description": "Screen-reader label of the button that copies the evaluation baseline panel's JSON, in the JSON Editor tab of the edit page's section editor."
+  },
+  "documents.jsonEditor.copyPrediction": {
+    "defaultMessage": "Copy prediction JSON",
+    "description": "Screen-reader label of the button that copies the values panel's JSON, in the JSON Editor tab of the edit page's section editor."
+  },
+  "documents.jsonEditor.expectedBaseline": {
+    "defaultMessage": "Expected (Baseline)",
+    "description": "Title of the evaluation baseline panel in the JSON Editor tab of the edit page's section editor."
+  },
+  "documents.jsonEditor.format": {
+    "defaultMessage": "Format",
+    "description": "Button above a panel of the JSON Editor tab of the edit page's section editor that lays out the panel's JSON with indentation."
+  },
+  "documents.jsonEditor.invalidJson": {
+    "defaultMessage": "Invalid JSON: {detail}",
+    "description": "Error in a panel of the JSON Editor tab of the edit page's section editor when the panel's text is not valid JSON. {detail} is the JSON parser's own message, shown as is."
+  },
+  "documents.jsonEditor.lines": {
+    "defaultMessage": "{count, plural, one {# line} other {# lines}}",
+    "description": "Badge in the header of a panel of the JSON Editor tab of the edit page's section editor. {count} is the number of lines of the panel's text."
+  },
+  "documents.jsonEditor.noBaseline": {
+    "defaultMessage": "No baseline data available",
+    "description": "Placeholder of the evaluation baseline panel's text area in the JSON Editor tab of the edit page's section editor, when it is empty."
+  },
+  "documents.jsonEditor.noBaselineBody": {
+    "defaultMessage": "Baseline data is not available for this section. Use \"Use as Evaluation Baseline\" to create baseline data from current predictions.",
+    "description": "Text under No Baseline Data in the JSON Editor tab of the edit page's section editor. The quoted name is the More Actions item that copies the document's results into its evaluation baseline."
+  },
+  "documents.jsonEditor.noBaselineTitle": {
+    "defaultMessage": "No Baseline Data",
+    "description": "Heading in the evaluation baseline panel of the JSON Editor tab of the edit page's section editor when the panel is on and the open section has no baseline."
+  },
+  "documents.jsonEditor.noPrediction": {
+    "defaultMessage": "No prediction data available",
+    "description": "Placeholder of the values panel's text area in the JSON Editor tab of the edit page's section editor, when it is empty."
+  },
+  "documents.jsonEditor.section.documentClass": {
+    "defaultMessage": "Classification result",
+    "description": "Description of the document_class option of the section picker in the JSON Editor tab of the edit page's section editor (document_class is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.editHistory": {
+    "defaultMessage": "Edit history",
+    "description": "Description of the _editHistory option of the section picker in the JSON Editor tab of the edit page's section editor (_editHistory is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.explainabilityInfo": {
+    "defaultMessage": "Confidence & bounding boxes",
+    "description": "Description of the explainability_info option of the section picker in the JSON Editor tab of the edit page's section editor (explainability_info is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.inferenceResult": {
+    "defaultMessage": "Extracted data",
+    "description": "Description of the inference_result option of the section picker in the JSON Editor tab of the edit page's section editor (inference_result is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.metadata": {
+    "defaultMessage": "Document metadata",
+    "description": "Description of the metadata option of the section picker in the JSON Editor tab of the edit page's section editor (metadata is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.splitDocument": {
+    "defaultMessage": "Splitting info",
+    "description": "Description of the split_document option of the section picker in the JSON Editor tab of the edit page's section editor (split_document is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.selectSections": {
+    "defaultMessage": "Select JSON sections",
+    "description": "Placeholder of the picker, in the JSON Editor tab of the edit page's section editor, that chooses which parts of the JSON to show."
+  },
+  "documents.jsonEditor.showEvaluation": {
+    "defaultMessage": "Show Evaluation",
+    "description": "Toggle in the JSON Editor tab of the edit page's section editor; when on, the evaluation baseline's JSON shows beside the values."
+  },
+  "documents.jsonEditor.titleEditor": {
+    "defaultMessage": "<strong>JSON Editor</strong> - View and edit the raw JSON data.",
+    "description": "Line at the top of the JSON Editor tab of the edit page's section editor when the section can be edited. The <strong> tags mark the bold name."
+  },
+  "documents.jsonEditor.titleViewer": {
+    "defaultMessage": "<strong>JSON Viewer</strong> - View the raw JSON data.",
+    "description": "Line at the top of the JSON Editor tab of the edit page's section editor when the section is read-only. The <strong> tags mark the bold name."
   },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
@@ -5090,6 +5314,130 @@
   "editScreen.reviewActivity.section": {
     "defaultMessage": "Section {sectionId}",
     "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
+  },
+  "editScreen.sectionEditor.baselineHint": {
+    "defaultMessage": "This document has an evaluation baseline. Turn on <b>Show Evaluation</b> to compare every field against it, not just the class.",
+    "description": "Hint in the Visual Editor tab of the edit page's section editor while Show Evaluation is off and the document has an evaluation baseline. <b>Show Evaluation</b> names the toggle in the editor's header."
+  },
+  "editScreen.sectionEditor.comparison.body": {
+    "defaultMessage": "Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores and reasons.",
+    "description": "Text of the note in the Visual Editor tab of the edit page's section editor while Show Evaluation is on."
+  },
+  "editScreen.sectionEditor.comparison.header": {
+    "defaultMessage": "Evaluation Comparison Mode",
+    "description": "Heading of the note in the Visual Editor tab of the edit page's section editor while Show Evaluation is on."
+  },
+  "editScreen.sectionEditor.editPageGrouping": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Button in the header of the edit page's section editor that opens the Edit Page Grouping dialog, which groups the document's pages into sections."
+  },
+  "editScreen.sectionEditor.fieldLink.copied": {
+    "defaultMessage": "Field link copied",
+    "description": "Shown after Copy link to field, in the edit page's section editor, copied the link."
+  },
+  "editScreen.sectionEditor.fieldLink.copy": {
+    "defaultMessage": "Copy link to field",
+    "description": "Button in the Visual Editor tab of the edit page's section editor that copies a link to the selected field."
+  },
+  "editScreen.sectionEditor.fieldLink.copyFailed": {
+    "defaultMessage": "Could not copy the field link",
+    "description": "Shown after Copy link to field, in the edit page's section editor, could not copy the link."
+  },
+  "editScreen.sectionEditor.fieldLink.description": {
+    "defaultMessage": "Copies a link that opens this document with <b>{path}</b> selected. Share it when you need a second opinion on a value.",
+    "description": "Text under Ask someone about this field in the Visual Editor tab of the edit page's section editor. {path} is the selected field's path in the document's results (such as LineItems[0].Rate), shown as is."
+  },
+  "editScreen.sectionEditor.fieldLink.label": {
+    "defaultMessage": "Ask someone about this field",
+    "description": "Label above the button in the Visual Editor tab of the edit page's section editor that copies a link to the selected field."
+  },
+  "editScreen.sectionEditor.filter.alerts": {
+    "defaultMessage": "Confidence alerts only",
+    "description": "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: the fields whose confidence is below their threshold."
+  },
+  "editScreen.sectionEditor.filter.all": {
+    "defaultMessage": "All fields",
+    "description": "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: every field."
+  },
+  "editScreen.sectionEditor.filter.evalMismatches": {
+    "defaultMessage": "Evaluation mismatches only",
+    "description": "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: the fields that differ from the evaluation baseline."
+  },
+  "editScreen.sectionEditor.filterAriaLabel": {
+    "defaultMessage": "Show fields: {filter}",
+    "description": "Screen-reader name of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows. {filter} is the current choice, as the menu shows it."
+  },
+  "editScreen.sectionEditor.filterNeedsEvaluation": {
+    "defaultMessage": "Turn on Show Evaluation first",
+    "description": "Why the Evaluation mismatches only choice of the edit page's section editor is unavailable. Show Evaluation is the toggle beside the menu."
+  },
+  "editScreen.sectionEditor.loadFailed": {
+    "defaultMessage": "Failed to load ground truth: {error}",
+    "description": "Error in the edit page's section editor when the open section's results could not be read. {error} is the server's error text, shown as is."
+  },
+  "editScreen.sectionEditor.loadingSection": {
+    "defaultMessage": "Loading the section…",
+    "description": "Shown beside a spinner in the edit page's section editor while the open section's results are read."
+  },
+  "editScreen.sectionEditor.noGeometry": {
+    "defaultMessage": "No field geometry available for this baseline — bounding-box highlighting is disabled.",
+    "description": "Note under the page images of the edit page's section editor when the open section's results hold no explainability_info, so no field can be highlighted on the page images."
+  },
+  "editScreen.sectionEditor.noValues.empty": {
+    "defaultMessage": "This section has an empty result: extraction ran but produced no fields.",
+    "description": "Text of the note in the edit page's section editor when the open section's results hold an empty inference_result."
+  },
+  "editScreen.sectionEditor.noValues.header": {
+    "defaultMessage": "No field values for this section",
+    "description": "Heading of the note in the Visual Editor tab of the edit page's section editor when the open section's results hold no field."
+  },
+  "editScreen.sectionEditor.noValues.missing": {
+    "defaultMessage": "This section has no inference_result at all.",
+    "description": "Text of the note in the edit page's section editor when the open section's results hold no inference_result. inference_result is the results' JSON key, kept as is."
+  },
+  "editScreen.sectionEditor.renderingPages": {
+    "defaultMessage": "Rendering document pages…",
+    "description": "Shown beside a spinner in the edit page's section editor while the document's page images load."
+  },
+  "editScreen.sectionEditor.saveFailed": {
+    "defaultMessage": "Failed to save: {error}",
+    "description": "Error in the edit page's section editor when the open section could not be saved. {error} is the server's error text, shown as is."
+  },
+  "editScreen.sectionEditor.sectionAriaLabel": {
+    "defaultMessage": "Section: {section}",
+    "description": "Screen-reader name of the Section menu in the header of the edit page's section editor. {section} is the open section's name, as the menu shows it."
+  },
+  "editScreen.sectionEditor.sectionFallback": {
+    "defaultMessage": "Section",
+    "description": "Text of the Section menu's button in the header of the edit page's section editor when the document lists no section."
+  },
+  "editScreen.sectionEditor.sectionTab": {
+    "defaultMessage": "Section {sectionId} ({documentClass})",
+    "description": "A section's name in the Section menu of the edit page's section editor, and on the menu's button. {sectionId} is the section's id and {documentClass} its document class, as the document holds them."
+  },
+  "editScreen.sectionEditor.sectionTabNoClass": {
+    "defaultMessage": "Section {sectionId} (no class)",
+    "description": "A section's name in the Section menu of the edit page's section editor, and on the menu's button, for a section with no document class. {sectionId} is the section's id."
+  },
+  "editScreen.sectionEditor.showEvaluation": {
+    "defaultMessage": "Show Evaluation",
+    "description": "Toggle in the header of the edit page's section editor that compares every field with the document's evaluation baseline."
+  },
+  "editScreen.sectionEditor.switchDiscardConfirm": {
+    "defaultMessage": "You have unsaved ground truth changes. Discard them and switch sections?",
+    "description": "Confirmation the browser shows when the user picks another section in the Section menu of the edit page's section editor with unsaved edits."
+  },
+  "editScreen.sectionEditor.tab.json": {
+    "defaultMessage": "JSON Editor",
+    "description": "Tab of the edit page's section editor that shows the open section's results as raw JSON."
+  },
+  "editScreen.sectionEditor.tab.visual": {
+    "defaultMessage": "Visual Editor",
+    "description": "Tab of the edit page's section editor that shows the open section's fields as a form."
+  },
+  "editScreen.sectionEditor.unsavedChanges": {
+    "defaultMessage": "You have unsaved changes. Leave this document and discard them?",
+    "description": "Confirmation the browser shows when the user follows a link in the app away from the edit page with unsaved edits in its section editor."
   },
   "editScreen.shared.backToDocuments": {
     "defaultMessage": "Back to Documents",

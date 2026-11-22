@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useMemo } from 'react';
 import type { AppLayoutProps, PaginationProps } from '@cloudscape-design/components';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 
 /**
  * The AppLayout aria labels every page layout passes, declared here and not per layout so
@@ -132,14 +132,61 @@ export interface ValueSourceLabel {
   panelTitle: string;
 }
 
+const valueSourceMessages = defineMessages<{
+  predicted: NoMessageValues;
+  groundTruth: NoMessageValues;
+  yourValue: NoMessageValues;
+  predictedPanel: NoMessageValues;
+  groundTruthPanel: NoMessageValues;
+}>({
+  predicted: {
+    id: 'common.labels.valueSource.predicted',
+    defaultMessage: 'Predicted:',
+    description:
+      "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is the model's prediction.",
+  },
+  groundTruth: {
+    id: 'common.labels.valueSource.groundTruth',
+    defaultMessage: 'Ground truth:',
+    description:
+      "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is a test set's ground truth.",
+  },
+  yourValue: {
+    id: 'common.labels.valueSource.yourValue',
+    defaultMessage: 'Your value:',
+    description:
+      "Label before a field's value in the Visual Editor tab of the edit page's section editor, once the user has changed the value.",
+  },
+  predictedPanel: {
+    id: 'common.labels.valueSource.predictedPanel',
+    defaultMessage: 'Predicted Results',
+    description:
+      "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are the model's predictions.",
+  },
+  groundTruthPanel: {
+    id: 'common.labels.valueSource.groundTruthPanel',
+    defaultMessage: 'Ground truth',
+    description:
+      "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are a test set's ground truth.",
+  },
+});
+
 /**
  * The value labels for a document's values: model predictions (no label source), or
  * test-set ground truth (any label source: draft, reviewed, synthetic or uploaded).
  */
-export const valueSourceLabel = (labelSource?: string | null): ValueSourceLabel =>
+export const valueSourceLabel = (intl: IntlShape, labelSource?: string | null): ValueSourceLabel =>
   labelSource
-    ? { value: 'Ground truth:', changed: 'Your value:', panelTitle: 'Ground truth' }
-    : { value: 'Predicted:', changed: 'Your value:', panelTitle: 'Predicted Results' };
+    ? {
+        value: intl.formatMessage(valueSourceMessages.groundTruth),
+        changed: intl.formatMessage(valueSourceMessages.yourValue),
+        panelTitle: intl.formatMessage(valueSourceMessages.groundTruthPanel),
+      }
+    : {
+        value: intl.formatMessage(valueSourceMessages.predicted),
+        changed: intl.formatMessage(valueSourceMessages.yourValue),
+        panelTitle: intl.formatMessage(valueSourceMessages.predictedPanel),
+      };
 
 /**
  * Labels named in more than one file. Process Changes is the edit screen's action that
