@@ -42,7 +42,7 @@ Properties it is built around
    it, ``<html lang>`` and a translated sidebar both, before the model starts. A
    build without the locale fails that locale, by name, and the next one runs.
 4. **Spend is capped once and counted twice.** ``--max-usd`` is the run's cap
-   (D-8: $40). Each session may spend nine tenths of an even share of what is left,
+   (US$40 by default). Each session may spend nine tenths of an even share of what is left,
    because ``claude`` checks its budget between turns; its cost is the larger of
    ``claude``'s own figure and its tokens priced at
    ``ai_ux_test_stories.MODEL_RATES``, and a model with no rates there is refused.

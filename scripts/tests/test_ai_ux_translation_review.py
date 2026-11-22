@@ -52,7 +52,7 @@ UI_ENV_TEXT = (
 )
 GLOSSARY = "en,fr-CA,note\nupload,téléverser,Verb.\n"
 TARGET = {"id": "T1", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/T1"}
-FACTS = signin.PageFacts("idp-fr-test", "0.6.16", "2026-11-21", (1600, 1000, 1.0), None)
+FACTS = signin.PageFacts("idp-fr-test", "0.6.16", "2030-01-02", (1600, 1000, 1.0), None)
 USAGE = {"input_tokens": 1000, "output_tokens": 1000}
 
 
@@ -353,7 +353,7 @@ def test_each_locale_runs_in_its_own_confined_browser_in_order(
     assert record["locales"][0]["page"] == {
         "stack": "idp-fr-test",
         "version": "0.6.16",
-        "build": "2026-11-21",
+        "build": "2030-01-02",
     }
 
 
