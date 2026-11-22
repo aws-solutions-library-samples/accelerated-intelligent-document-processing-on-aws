@@ -1683,6 +1683,546 @@
     "defaultMessage": "Preparing download…",
     "description": "Shown under the export progress bar while the download links are being prepared."
   },
+  "documents.evaluationReport.allMetrics.description": {
+    "defaultMessage": "Every figure the run recorded, with the rating the report applies to it",
+    "description": "Description under the All metrics heading in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.allMetrics.extraction": {
+    "defaultMessage": "Document extraction",
+    "description": "Heading of the metrics table of the document's extraction, under All metrics in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.allMetrics.extractionEmpty": {
+    "defaultMessage": "No extraction metrics recorded",
+    "description": "Shown in the metrics table of the document's extraction, under All metrics in Reports › Evaluation Report on the document page, when the evaluation recorded none."
+  },
+  "documents.evaluationReport.allMetrics.header": {
+    "defaultMessage": "All metrics",
+    "description": "Heading of the metrics tables of the whole document in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.allMetrics.split": {
+    "defaultMessage": "Document split classification",
+    "description": "Heading of the metrics table of the document's split and classification, under All metrics in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.backToSummary": {
+    "defaultMessage": "Back to evaluation summary",
+    "description": "Button above the evaluation report shown as markdown in Reports › Evaluation Report on the document page, after Markdown report was chosen: goes back to the scores and tables."
+  },
+  "documents.evaluationReport.band.bad": {
+    "defaultMessage": "Poor",
+    "description": "Rating of a score in Reports › Evaluation Report on the document page, beside a headline score and in the Rating column of a metrics table. The worst of four: a score under 50%, or an error rate above 50%."
+  },
+  "documents.evaluationReport.band.fair": {
+    "defaultMessage": "Good",
+    "description": "Rating of a score in Reports › Evaluation Report on the document page, beside a headline score and in the Rating column of a metrics table. The second of four: a score from 70% to under 90%, or an error rate above 10% up to 30%."
+  },
+  "documents.evaluationReport.band.good": {
+    "defaultMessage": "Excellent",
+    "description": "Rating of a score in Reports › Evaluation Report on the document page, beside a headline score and in the Rating column of a metrics table. The best of four: a score of 90% or more, or an error rate of 10% or less."
+  },
+  "documents.evaluationReport.band.poor": {
+    "defaultMessage": "Fair",
+    "description": "Rating of a score in Reports › Evaluation Report on the document page, beside a headline score and in the Rating column of a metrics table. The third of four: a score from 50% to under 70%, or an error rate above 30% up to 50%."
+  },
+  "documents.evaluationReport.documentNotScored.body": {
+    "defaultMessage": "No section had an extractable schema, so accuracy figures would be meaningless and are omitted.",
+    "description": "Text of the notice in Reports › Evaluation Report on the document page when no section of the document could be scored, and the evaluation recorded no reason."
+  },
+  "documents.evaluationReport.documentNotScored.bodyWithReason": {
+    "defaultMessage": "No section had an extractable schema ({reason}), so accuracy figures would be meaningless and are omitted.",
+    "description": "Text of the notice in Reports › Evaluation Report on the document page when no section of the document could be scored. {reason} is the reason the evaluation recorded, as it writes it."
+  },
+  "documents.evaluationReport.documentNotScored.header": {
+    "defaultMessage": "This document was not scored",
+    "description": "Heading of a notice in Reports › Evaluation Report on the document page when no section of the document could be scored."
+  },
+  "documents.evaluationReport.excluded.classColumn": {
+    "defaultMessage": "Classification",
+    "description": "Column header of the table of sections the evaluation skipped, in Reports › Evaluation Report on the document page: the section's class."
+  },
+  "documents.evaluationReport.excluded.description": {
+    "defaultMessage": "Skipped by evaluation and not counted in the figures above",
+    "description": "Description under the heading of the sections the evaluation skipped, in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.excluded.explanation": {
+    "defaultMessage": "A section is excluded when its class is marked <code>{key}</code>, or when the class defines no extractable attributes in the evaluation schema.",
+    "description": "Explanation above the table of sections the evaluation skipped, in Reports › Evaluation Report on the document page. {key} is the schema setting that marks a class, x-aws-idp-exclude-from-processing, shown as code."
+  },
+  "documents.evaluationReport.excluded.header": {
+    "defaultMessage": "{count, plural, one {# section not evaluated} other {# sections not evaluated}}",
+    "description": "Heading of the sections the evaluation skipped, in Reports › Evaluation Report on the document page. {count} is how many sections it skipped."
+  },
+  "documents.evaluationReport.excluded.pagesColumn": {
+    "defaultMessage": "Pages",
+    "description": "Column header of the table of sections the evaluation skipped, in Reports › Evaluation Report on the document page: the section's pages."
+  },
+  "documents.evaluationReport.excluded.reasonColumn": {
+    "defaultMessage": "Exclusion reason",
+    "description": "Column header of the table of sections the evaluation skipped, in Reports › Evaluation Report on the document page: why the evaluation skipped the section, as it writes it."
+  },
+  "documents.evaluationReport.excluded.sectionColumn": {
+    "defaultMessage": "Section",
+    "description": "Column header of the table of sections the evaluation skipped, in Reports › Evaluation Report on the document page: the section's id."
+  },
+  "documents.evaluationReport.excludedReason": {
+    "defaultMessage": "excluded",
+    "description": "Exclusion reason of a section the evaluation skipped, in the sections not evaluated of Reports › Evaluation Report on the document page, when the evaluation recorded no reason."
+  },
+  "documents.evaluationReport.executionTime": {
+    "defaultMessage": "Evaluation took {executionTime}.",
+    "description": "Last line of Reports › Evaluation Report on the document page. {executionTime} is how long the document's evaluation ran, such as 12.3 s or 2 min 5 s."
+  },
+  "documents.evaluationReport.fields.aggregateScore": {
+    "defaultMessage": "{score} (aggregate)",
+    "description": "Score of a field whose score is computed over the comparisons nested under it, in a field table of Reports › Evaluation Report on the document page. {score} is the score, with three decimals."
+  },
+  "documents.evaluationReport.fields.compare": {
+    "defaultMessage": "compare",
+    "description": "Shown in the Method column of a field table in Reports › Evaluation Report on the document page for a comparison that has a reason but no recorded method; choosing it shows the reason."
+  },
+  "documents.evaluationReport.fields.confidenceColumn": {
+    "defaultMessage": "Confidence",
+    "description": "Column header of a section's field table in Reports › Evaluation Report on the document page: the confidence of the extracted value, with its threshold when there is one."
+  },
+  "documents.evaluationReport.fields.empty": {
+    "defaultMessage": "No fields",
+    "description": "Shown in a section's field table in Reports › Evaluation Report on the document page when the section has no fields."
+  },
+  "documents.evaluationReport.fields.expectedColumn": {
+    "defaultMessage": "Expected",
+    "description": "Column header of a section's field table in Reports › Evaluation Report on the document page: the field's expected value."
+  },
+  "documents.evaluationReport.fields.extractedColumn": {
+    "defaultMessage": "Extracted",
+    "description": "Column header of a section's field table in Reports › Evaluation Report on the document page: the value extraction produced."
+  },
+  "documents.evaluationReport.fields.fieldColumn": {
+    "defaultMessage": "Field",
+    "description": "Column header of a section's field table in Reports › Evaluation Report on the document page: the field's name."
+  },
+  "documents.evaluationReport.fields.hideNested": {
+    "defaultMessage": "Hide nested comparisons for {name}",
+    "description": "Accessible label of the button that closes a field's open row in a field table of Reports › Evaluation Report on the document page, hiding the comparisons nested under the field. {name} is the field's name."
+  },
+  "documents.evaluationReport.fields.match": {
+    "defaultMessage": "match",
+    "description": "Badge on a row of a field table in Reports › Evaluation Report on the document page: the extracted value matched the expected one."
+  },
+  "documents.evaluationReport.fields.methodColumn": {
+    "defaultMessage": "Method",
+    "description": "Column header of a section's field table in Reports › Evaluation Report on the document page: the comparison method used, named as the evaluation names it."
+  },
+  "documents.evaluationReport.fields.mismatch": {
+    "defaultMessage": "mismatch",
+    "description": "Badge on a row of a field table in Reports › Evaluation Report on the document page: the extracted value did not match the expected one."
+  },
+  "documents.evaluationReport.fields.pairedWith": {
+    "defaultMessage": "paired with {path}",
+    "description": "Note under the name of a nested comparison in a field table of Reports › Evaluation Report on the document page, when the extracted value it was compared with is at another path, as when list items were matched out of order. {path} is that path, relative to the field."
+  },
+  "documents.evaluationReport.fields.scoreColumn": {
+    "defaultMessage": "Score",
+    "description": "Column header of a section's field table in Reports › Evaluation Report on the document page: the comparison's score."
+  },
+  "documents.evaluationReport.fields.showNested": {
+    "defaultMessage": "Show nested comparisons for {name}",
+    "description": "Accessible label of the button that opens a field's row in a field table of Reports › Evaluation Report on the document page, showing the comparisons nested under the field. {name} is the field's name."
+  },
+  "documents.evaluationReport.fields.weightColumn": {
+    "defaultMessage": "Weight",
+    "description": "Column header of a section's field table in Reports › Evaluation Report on the document page: the field's weight in the weighted score."
+  },
+  "documents.evaluationReport.fix.addConfiguration": {
+    "defaultMessage": "Add a configuration for ''{className}'' in the evaluation config",
+    "description": "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class. {className} is the section's document class; the quotes around it stay."
+  },
+  "documents.evaluationReport.fix.addConfigurationNoClass": {
+    "defaultMessage": "Add a configuration for 'this class' in the evaluation config",
+    "description": "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class, when the section has no class. The quoted words stand for the class."
+  },
+  "documents.evaluationReport.fix.addNestedProperty": {
+    "defaultMessage": "Add at least one property to the nested object named above, or remove it from the schema",
+    "description": "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because a nested object in its class's schema has no properties. The error above the steps names the object."
+  },
+  "documents.evaluationReport.fix.checkTruncation": {
+    "defaultMessage": "Check whether the response was truncated (raise max_tokens) or wrapped in commentary",
+    "description": "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its extraction result could not be read as JSON. max_tokens is a configuration setting's name, written as is."
+  },
+  "documents.evaluationReport.fix.compareBaseline": {
+    "defaultMessage": "Compare the baseline (expected) values against the class schema — the types disagree",
+    "description": "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its baseline values do not have the types its class's schema expects. Baseline values are the expected values the extraction is compared with."
+  },
+  "documents.evaluationReport.fix.fixBaseline": {
+    "defaultMessage": "Fix the baseline data, or widen the schema field type, and re-run the evaluation",
+    "description": "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its baseline values do not have the types its class's schema expects."
+  },
+  "documents.evaluationReport.fix.matchClassName": {
+    "defaultMessage": "Ensure the document class name matches exactly (case-insensitive)",
+    "description": "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class."
+  },
+  "documents.evaluationReport.fix.openExtractionOutput": {
+    "defaultMessage": "Open the section's extraction output — the model's response was not parseable JSON",
+    "description": "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its extraction result could not be read as JSON. JSON is a data format's name."
+  },
+  "documents.evaluationReport.fix.provideBaseline": {
+    "defaultMessage": "Or provide baseline data when evaluating, so a configuration can be generated",
+    "description": "Third How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class. Baseline data is the expected values the extraction is compared with."
+  },
+  "documents.evaluationReport.fix.rerunEvaluation": {
+    "defaultMessage": "Re-run the evaluation",
+    "description": "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because a nested object in its class's schema has no properties."
+  },
+  "documents.evaluationReport.fix.rerunExtraction": {
+    "defaultMessage": "Re-run extraction for this document, then re-evaluate",
+    "description": "Third How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its extraction result could not be read as JSON."
+  },
+  "documents.evaluationReport.fix.rerunOnceValid": {
+    "defaultMessage": "Re-run the evaluation once the schema is valid",
+    "description": "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because of another error in the evaluation schema of its class."
+  },
+  "documents.evaluationReport.fix.reviewSchema": {
+    "defaultMessage": "Review the evaluation schema for ''{className}'' against the error above",
+    "description": "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because of another error in the evaluation schema of its class, which is shown above the steps. {className} is the section's document class; the quotes around it stay."
+  },
+  "documents.evaluationReport.fix.reviewSchemaNoClass": {
+    "defaultMessage": "Review the evaluation schema for 'this class' against the error above",
+    "description": "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because of another error in the evaluation schema of its class, which is shown above the steps, when the section has no class. The quoted words stand for the class."
+  },
+  "documents.evaluationReport.help.arrayMatching": {
+    "defaultMessage": "Array-level matching",
+    "description": "Heading under How scores are computed in Reports › Evaluation Report on the document page: how lists are compared."
+  },
+  "documents.evaluationReport.help.date": {
+    "defaultMessage": "<b>{method}</b> — compares resolved dates, not surface form (<code>2024-01-05</code> equals <code>January 5, 2024</code>); ranges and day-first via <code>{key}</code>.",
+    "description": "Explains a comparison method under How scores are computed in Reports › Evaluation Report on the document page. {method} is its name as the evaluation writes it, Date, in bold. The two dates in <code> are examples of one date written two ways, which a translation may write as its language writes dates. {key} is the schema setting, x-aws-idp-evaluation-method-config, shown as code."
+  },
+  "documents.evaluationReport.help.exact": {
+    "defaultMessage": "<b>{method}</b> — character-for-character match. IDs, codes.",
+    "description": "Explains a comparison method under How scores are computed in Reports › Evaluation Report on the document page. {method} is its name as the evaluation writes it, Exact, in bold."
+  },
+  "documents.evaluationReport.help.fieldMethods": {
+    "defaultMessage": "Field-level comparison methods",
+    "description": "Heading under How scores are computed in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.help.fuzzy": {
+    "defaultMessage": "<b>{method}</b> / <b>{other}</b> — string similarity against a threshold. Names, addresses, minor variations.",
+    "description": "Explains two comparison methods under How scores are computed in Reports › Evaluation Report on the document page. {method} and {other} are their names as the evaluation writes them, Fuzzy and Levenshtein, in bold."
+  },
+  "documents.evaluationReport.help.graded": {
+    "defaultMessage": "<b>Graded packet score</b> — a softer companion to the exact-match figures: <b>clustering</b> (V-measure and Rand index) rewards pages grouped together correctly even when a section is not reproduced exactly, and <b>ordering</b> rewards pages kept in sequence within their section.",
+    "description": "Explains a split metric under How scores are computed in Reports › Evaluation Report on the document page. The bold parts are the metric's name and the names of its two parts; V-measure and Rand index are names of clustering metrics."
+  },
+  "documents.evaluationReport.help.hungarian": {
+    "defaultMessage": "<b>{method}</b> — optimal one-to-one pairing between the expected and extracted lists; each pair is then compared field by field, which is what the expandable rows above show. Configured with <code>{key}</code> on the array.",
+    "description": "Explains a list matching method under How scores are computed in Reports › Evaluation Report on the document page. {method} is its name as the evaluation writes it, Hungarian, in bold; {key} is the schema setting that selects it, x-aws-idp-evaluation-method: \"HUNGARIAN\", shown as code."
+  },
+  "documents.evaluationReport.help.llm": {
+    "defaultMessage": "<b>{method}</b> — a Bedrock model judges the pair with reasoning, configured under <code>{key}</code>. Nested objects, semantic equivalence.",
+    "description": "Explains a comparison method under How scores are computed in Reports › Evaluation Report on the document page. {method} is its name as the evaluation writes it, LLM, in bold. Bedrock is the name of an AWS service. {key} is the configuration setting, evaluation.llm_method, shown as code."
+  },
+  "documents.evaluationReport.help.llmArrays": {
+    "defaultMessage": "<b>{method} for arrays</b> — judges whether two lists match as a whole.",
+    "description": "Explains a list matching method under How scores are computed in Reports › Evaluation Report on the document page. {method} is the name of the comparison method as the evaluation writes it, LLM; the bold part names the method used on lists."
+  },
+  "documents.evaluationReport.help.numericExact": {
+    "defaultMessage": "<b>{method}</b> — numeric comparison with a tolerance from <code>{key}</code>. Amounts, percentages.",
+    "description": "Explains a comparison method under How scores are computed in Reports › Evaluation Report on the document page. {method} is its name as the evaluation writes it, NumericExact, in bold; {key} is the schema setting that holds the tolerance, x-aws-idp-evaluation-threshold, shown as code."
+  },
+  "documents.evaluationReport.help.pageLevel": {
+    "defaultMessage": "<b>Page-level accuracy</b> — each page's predicted class against its expected class, ignoring how pages were grouped.",
+    "description": "Explains a split metric under How scores are computed in Reports › Evaluation Report on the document page. The bold part is the metric's name."
+  },
+  "documents.evaluationReport.help.semantic": {
+    "defaultMessage": "<b>{method}</b> — embedding similarity against a threshold. Text where meaning matters more than wording.",
+    "description": "Explains a comparison method under How scores are computed in Reports › Evaluation Report on the document page. {method} is its name as the evaluation writes it, Semantic, in bold."
+  },
+  "documents.evaluationReport.help.splitMetrics": {
+    "defaultMessage": "Split metrics",
+    "description": "Heading under How scores are computed in Reports › Evaluation Report on the document page, shown when the document was evaluated against expected sections: the metrics of the document's split into sections."
+  },
+  "documents.evaluationReport.help.splitWithOrder": {
+    "defaultMessage": "<b>Split accuracy (with order)</b> — the same, and the page order must match exactly. The strictest of the three.",
+    "description": "Explains a split metric under How scores are computed in Reports › Evaluation Report on the document page, after the one without order. The bold part is the metric's name."
+  },
+  "documents.evaluationReport.help.splitWithoutOrder": {
+    "defaultMessage": "<b>Split accuracy (without order)</b> — an expected section counts as correct when a predicted section has the same set of pages and the same class.",
+    "description": "Explains a split metric under How scores are computed in Reports › Evaluation Report on the document page. The bold part is the metric's name."
+  },
+  "documents.evaluationReport.help.weighting": {
+    "defaultMessage": "Field weighting",
+    "description": "Heading under How scores are computed in Reports › Evaluation Report on the document page: how field weights count."
+  },
+  "documents.evaluationReport.help.weightingBody": {
+    "defaultMessage": "<code>{key}</code> sets a field's importance (default 1.0). The weighted overall score is Σ(weight × score) / Σ(weight) per section, and the document score is the average across sections. The weight column above shows each field's value.",
+    "description": "Text under Field weighting in How scores are computed of Reports › Evaluation Report on the document page. {key} is the schema setting, x-aws-idp-evaluation-weight, shown as code. The formula gives a section's weighted score."
+  },
+  "documents.evaluationReport.howScores": {
+    "defaultMessage": "How scores are computed",
+    "description": "Heading of the explanation of the comparison methods and the scores, in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.listSize": {
+    "defaultMessage": "{count, plural, one {# item} other {# items}}",
+    "description": "The Expected or Extracted value of a field in Reports › Evaluation Report on the document page when the value is a list; choosing it shows the list. {count} is how many items the list has."
+  },
+  "documents.evaluationReport.loading": {
+    "defaultMessage": "Loading evaluation…",
+    "description": "Shown in Reports › Evaluation Report on the document page while the document's evaluation results load."
+  },
+  "documents.evaluationReport.markdownEmpty": {
+    "defaultMessage": "Evaluation report not available for this document",
+    "description": "Shown in Reports › Evaluation Report on the document page when the document has no evaluation report."
+  },
+  "documents.evaluationReport.markdownReport": {
+    "defaultMessage": "Markdown report",
+    "description": "Button in the header of Reports › Evaluation Report on the document page: shows the evaluation report as generated, a Markdown file, with its own download and print buttons."
+  },
+  "documents.evaluationReport.methods.body": {
+    "defaultMessage": "A surprising score is often a comparison-method question rather than an extraction one. This document used: {methods}.",
+    "description": "Text under Comparison methods used in Reports › Evaluation Report on the document page. {methods} lists the comparison methods the document's evaluation used, named as the evaluation names them and separated by commas."
+  },
+  "documents.evaluationReport.methods.header": {
+    "defaultMessage": "Comparison methods used",
+    "description": "Heading of the list of comparison methods the document's evaluation used, in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.metrics.excluded": {
+    "defaultMessage": "Excluded",
+    "description": "Rating, in a metrics table of Reports › Evaluation Report on the document page, of a metric the evaluation recorded without a value."
+  },
+  "documents.evaluationReport.metrics.metricColumn": {
+    "defaultMessage": "Metric",
+    "description": "Column header of a metrics table in Reports › Evaluation Report on the document page: the metric's name, as the evaluation records it."
+  },
+  "documents.evaluationReport.metrics.notScored": {
+    "defaultMessage": "Not scored",
+    "description": "In a metrics table of Reports › Evaluation Report on the document page: the value of a metric the evaluation recorded without one, and the rating of every metric of a section that was not evaluated."
+  },
+  "documents.evaluationReport.metrics.ratingColumn": {
+    "defaultMessage": "Rating",
+    "description": "Column header of a metrics table in Reports › Evaluation Report on the document page: the metric's rating."
+  },
+  "documents.evaluationReport.metrics.valueColumn": {
+    "defaultMessage": "Value",
+    "description": "Column header of a metrics table in Reports › Evaluation Report on the document page: the metric's value."
+  },
+  "documents.evaluationReport.misclassified.header": {
+    "defaultMessage": "Some pages are not the class ground truth expects",
+    "description": "Heading of a warning in Reports › Evaluation Report on the document page when pages were classified otherwise than the ground truth classifies them."
+  },
+  "documents.evaluationReport.misclassified.hint": {
+    "defaultMessage": "Extraction runs against the assigned class's schema, so the fields for those pages may be wrong even where they look plausible. Correct the class and re-extract before reading the numbers here.",
+    "description": "Note at the end of the warning in Reports › Evaluation Report on the document page about pages classified otherwise than the ground truth classifies them."
+  },
+  "documents.evaluationReport.misclassified.pages": {
+    "defaultMessage": "{count, plural, one {Page} other {Pages}} <b>{pages}</b> classified as <b>{predicted}</b>, but ground truth says <b>{expected}</b>.",
+    "description": "Line of the warning in Reports › Evaluation Report on the document page about pages classified otherwise than the ground truth classifies them. {count} is how many pages the line lists; {pages} lists their numbers, as ranges such as 2-3; {predicted} is the class they were given; {expected} is the class the ground truth gives them. <b> makes a part bold."
+  },
+  "documents.evaluationReport.mismatchesOnly": {
+    "defaultMessage": "Mismatches only",
+    "description": "Toggle in the header of Reports › Evaluation Report on the document page: when it is on, each section's field table lists only the fields that did not match."
+  },
+  "documents.evaluationReport.objectSize": {
+    "defaultMessage": "{count, plural, one {# field} other {# fields}}",
+    "description": "The Expected or Extracted value of a field in Reports › Evaluation Report on the document page when the value is an object; choosing it shows the object. {count} is how many fields the object has."
+  },
+  "documents.evaluationReport.section.allMatched": {
+    "defaultMessage": "Every field in this section matched.",
+    "description": "Shown in place of a section's field table in Reports › Evaluation Report on the document page when Mismatches only is on and every field of the section matched."
+  },
+  "documents.evaluationReport.section.couldNotEvaluate": {
+    "defaultMessage": "This section could not be evaluated for document class {className}.",
+    "description": "Text of the error in a section's results in Reports › Evaluation Report on the document page when the section could not be evaluated and the evaluation recorded no reason. {className} is the section's document class."
+  },
+  "documents.evaluationReport.section.couldNotEvaluateUnknownClass": {
+    "defaultMessage": "This section could not be evaluated for document class unknown.",
+    "description": "Text of the error in a section's results in Reports › Evaluation Report on the document page when the section could not be evaluated and the evaluation recorded neither a reason nor a class."
+  },
+  "documents.evaluationReport.section.header": {
+    "defaultMessage": "Section {sectionId} — {className}",
+    "description": "Heading of a section's results in Reports › Evaluation Report on the document page. {sectionId} is the section's id; {className} is its document class."
+  },
+  "documents.evaluationReport.section.headerUnknownClass": {
+    "defaultMessage": "Section {sectionId} — unknown class",
+    "description": "Heading of a section's results in Reports › Evaluation Report on the document page when the evaluation recorded no class for it. {sectionId} is the section's id."
+  },
+  "documents.evaluationReport.section.howToFix": {
+    "defaultMessage": "How to fix",
+    "description": "Heading of the steps that fix a section's evaluation, in the error in a section's results in Reports › Evaluation Report on the document page when the section could not be evaluated."
+  },
+  "documents.evaluationReport.section.metrics": {
+    "defaultMessage": "Section metrics",
+    "description": "Heading of a section's metrics table in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.section.mismatched": {
+    "defaultMessage": "{count} mismatched",
+    "description": "Shown in parentheses beside a section's heading in Reports › Evaluation Report on the document page, after the section's score and a middle dot. {count} is how many of its fields did not match."
+  },
+  "documents.evaluationReport.section.notEvaluated": {
+    "defaultMessage": "This section was not evaluated",
+    "description": "Heading of an error in a section's results in Reports › Evaluation Report on the document page when the section could not be evaluated."
+  },
+  "documents.evaluationReport.section.notScored": {
+    "defaultMessage": "not scored",
+    "description": "Shown in parentheses beside a section's heading in Reports › Evaluation Report on the document page when the section was not evaluated."
+  },
+  "documents.evaluationReport.section.placeholders": {
+    "defaultMessage": "It contributes zero to every document-level figure above. Its metrics below are placeholders for a section that was never scored, not measurements of a bad extraction.",
+    "description": "Note in the error in a section's results in Reports › Evaluation Report on the document page when the section could not be evaluated."
+  },
+  "documents.evaluationReport.section.skippedFields": {
+    "defaultMessage": "{count, plural, one {# field was excluded from scoring because it could not be validated against the schema. The remaining fields were evaluated normally.} other {# fields were excluded from scoring because they could not be validated against the schema. The remaining fields were evaluated normally.}}",
+    "description": "Warning in a section's results in Reports › Evaluation Report on the document page. {count} is how many of its fields the evaluation left out because their values did not fit the class's schema."
+  },
+  "documents.evaluationReport.split.clustering": {
+    "defaultMessage": "clustering {score}",
+    "description": "Part of the graded packet score line under the Section split analysis table in Reports › Evaluation Report on the document page: the clustering part of that score. {score} is a percentage."
+  },
+  "documents.evaluationReport.split.empty": {
+    "defaultMessage": "No section data available",
+    "description": "Shown in the Section split analysis table of Reports › Evaluation Report on the document page when it has no sections."
+  },
+  "documents.evaluationReport.split.errors": {
+    "defaultMessage": "Doc split errors",
+    "description": "Heading of the errors the document split evaluation reported, in the Section split analysis of Reports › Evaluation Report on the document page. The errors stay as the evaluation writes them."
+  },
+  "documents.evaluationReport.split.expectedClassColumn": {
+    "defaultMessage": "Expected class",
+    "description": "Column header of the Section split analysis table in Reports › Evaluation Report on the document page: the class the ground truth gives the section."
+  },
+  "documents.evaluationReport.split.expectedPagesColumn": {
+    "defaultMessage": "Expected pages",
+    "description": "Column header of the Section split analysis table in Reports › Evaluation Report on the document page: the pages the ground truth puts in the section."
+  },
+  "documents.evaluationReport.split.expectedSectionColumn": {
+    "defaultMessage": "Expected section",
+    "description": "Column header of the Section split analysis table in Reports › Evaluation Report on the document page: the ground truth's section id."
+  },
+  "documents.evaluationReport.split.gradedScore": {
+    "defaultMessage": "Graded packet score {score}",
+    "description": "First part of the line under the Section split analysis table in Reports › Evaluation Report on the document page; the parts after it are joined with a middle dot. {score} is a percentage. Graded packet score is a metric explained under How scores are computed."
+  },
+  "documents.evaluationReport.split.matched": {
+    "defaultMessage": "Matched",
+    "description": "Section match of a row in the Section split analysis of Reports › Evaluation Report on the document page: a predicted section has the same pages and class as the expected section."
+  },
+  "documents.evaluationReport.split.noMatch": {
+    "defaultMessage": "No match",
+    "description": "Section match of a row in the Section split analysis of Reports › Evaluation Report on the document page: no predicted section has the same pages and class as the expected section."
+  },
+  "documents.evaluationReport.split.ordered": {
+    "defaultMessage": "Ordered",
+    "description": "Page order of a row in the Section split analysis of Reports › Evaluation Report on the document page: the section matched with its pages in the expected order."
+  },
+  "documents.evaluationReport.split.ordering": {
+    "defaultMessage": "ordering {score}",
+    "description": "Part of the graded packet score line under the Section split analysis table in Reports › Evaluation Report on the document page: the page-ordering part of that score. {score} is a percentage."
+  },
+  "documents.evaluationReport.split.pageOrderColumn": {
+    "defaultMessage": "Page order",
+    "description": "Column header of the Section split analysis table in Reports › Evaluation Report on the document page: whether the section also matched with its pages in the expected order."
+  },
+  "documents.evaluationReport.split.predictedClassColumn": {
+    "defaultMessage": "Predicted class",
+    "description": "Column header of the Section split analysis table in Reports › Evaluation Report on the document page: the class the processing gave the section."
+  },
+  "documents.evaluationReport.split.predictedPagesColumn": {
+    "defaultMessage": "Predicted pages",
+    "description": "Column header of the Section split analysis table in Reports › Evaluation Report on the document page: the pages the processing put in the section."
+  },
+  "documents.evaluationReport.split.predictedSection": {
+    "defaultMessage": "predicted section {sectionId}",
+    "description": "Note under the predicted class in the Section split analysis of Reports › Evaluation Report on the document page, when the row's predicted section has another id than its expected section, or no expected section. {sectionId} is the predicted section's id."
+  },
+  "documents.evaluationReport.split.randIndex": {
+    "defaultMessage": "Rand index {score}",
+    "description": "Part of the graded packet score line under the Section split analysis table in Reports › Evaluation Report on the document page. Rand index is the name of a clustering metric; {score} is a percentage."
+  },
+  "documents.evaluationReport.split.reordered": {
+    "defaultMessage": "Reordered",
+    "description": "Page order of a row in the Section split analysis of Reports › Evaluation Report on the document page: the section did not match with its pages in the expected order."
+  },
+  "documents.evaluationReport.split.sectionMatchColumn": {
+    "defaultMessage": "Section match",
+    "description": "Column header of the Section split analysis table in Reports › Evaluation Report on the document page: whether a predicted section has the same pages and class as the expected section."
+  },
+  "documents.evaluationReport.split.vMeasure": {
+    "defaultMessage": "V-measure {score}",
+    "description": "Part of the graded packet score line under the Section split analysis table in Reports › Evaluation Report on the document page. V-measure is the name of a clustering metric; {score} is a percentage."
+  },
+  "documents.evaluationReport.splitAnalysis.header": {
+    "defaultMessage": "Section split analysis",
+    "description": "Heading of the table in Reports › Evaluation Report on the document page that pairs each section the ground truth expects with the section the processing predicted."
+  },
+  "documents.evaluationReport.splitAnalysis.unexpected": {
+    "defaultMessage": "{count} unexpected",
+    "description": "Count shown after the unmatched count beside the Section split analysis heading in Reports › Evaluation Report on the document page, joined with a middle dot. {count} is how many predicted sections match no expected section."
+  },
+  "documents.evaluationReport.splitAnalysis.unmatched": {
+    "defaultMessage": "{unmatched} of {expected} unmatched",
+    "description": "Count shown in parentheses beside the Section split analysis heading in Reports › Evaluation Report on the document page. {unmatched} is how many expected sections no predicted section matched; {expected} is how many sections the ground truth expects."
+  },
+  "documents.evaluationReport.tile.classification": {
+    "defaultMessage": "Classification accuracy",
+    "description": "Label of a headline score in Reports › Evaluation Report on the document page: the share of pages classified as the ground truth classifies them."
+  },
+  "documents.evaluationReport.tile.classificationHint": {
+    "defaultMessage": "{correct, number} of {total, plural, one {# page} other {# pages}}",
+    "description": "Note under the Classification accuracy score in Reports › Evaluation Report on the document page. {correct} is how many pages were classified as the ground truth classifies them; {total} is how many pages were compared."
+  },
+  "documents.evaluationReport.tile.extraction": {
+    "defaultMessage": "Extraction accuracy",
+    "description": "Label of a headline score in Reports › Evaluation Report on the document page: how well the extracted fields match the expected values."
+  },
+  "documents.evaluationReport.tile.extractionHint": {
+    "defaultMessage": "{matched, number} of {total, plural, one {# field} other {# fields}} matched",
+    "description": "Note under the Extraction accuracy score in Reports › Evaluation Report on the document page when the score is the share of fields that matched. {matched} is how many fields matched; {total} is how many fields were compared."
+  },
+  "documents.evaluationReport.tile.extractionHintWeighted": {
+    "defaultMessage": "Weighted by field importance · {matched, number} of {total, plural, one {# field} other {# fields}} matched",
+    "description": "Note under the Extraction accuracy score in Reports › Evaluation Report on the document page when the score is weighted by the fields' weights. {matched} is how many fields matched; {total} is how many fields were compared."
+  },
+  "documents.evaluationReport.tile.f1": {
+    "defaultMessage": "F1 score",
+    "description": "Label of a headline score in Reports › Evaluation Report on the document page. F1 score is the name of a metric."
+  },
+  "documents.evaluationReport.tile.f1Hint": {
+    "defaultMessage": "Precision {precision} · Recall {recall}",
+    "description": "Note under the F1 score in Reports › Evaluation Report on the document page. Precision and Recall are the names of the two metrics the F1 score combines; {precision} and {recall} are percentages."
+  },
+  "documents.evaluationReport.tile.split": {
+    "defaultMessage": "Split accuracy",
+    "description": "Label of a headline score in Reports › Evaluation Report on the document page: the share of expected sections that a predicted section matches, pages and class, in any page order."
+  },
+  "documents.evaluationReport.tile.splitHint": {
+    "defaultMessage": "{correct, number} of {total, plural, one {# section} other {# sections}} · in order {score}",
+    "description": "Note under the Split accuracy score in Reports › Evaluation Report on the document page. {correct} is how many expected sections were matched; {total} is how many sections were compared; {score} is the stricter score that also requires the page order to match, a percentage."
+  },
+  "documents.evaluationReport.title": {
+    "defaultMessage": "Evaluation",
+    "description": "Heading of the document's evaluation results in Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.unnamedField": {
+    "defaultMessage": "field {position}",
+    "description": "Field name in a section's field table in Reports › Evaluation Report on the document page, for a field the evaluation recorded without a name. {position} is the field's position in the section, from 1."
+  },
+  "documents.evaluationReport.unnamedItem": {
+    "defaultMessage": "item {position}",
+    "description": "Field name of a nested comparison in a section's field table in Reports › Evaluation Report on the document page, when the evaluation recorded no path for it. {position} is its position under the field, from 1."
+  },
+  "documents.evaluationReport.value.emptyList": {
+    "defaultMessage": "empty list",
+    "description": "Shown in place of an empty list inside a field's list or object value, opened from the field table of Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.value.emptyObject": {
+    "defaultMessage": "empty object",
+    "description": "Shown in place of an empty object inside a field's list or object value, opened from the field table of Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.value.listValue": {
+    "defaultMessage": "List value",
+    "description": "Heading of the popover that shows a field's expected or extracted value when it is a list, in the field table of Reports › Evaluation Report on the document page."
+  },
+  "documents.evaluationReport.value.objectValue": {
+    "defaultMessage": "Object value",
+    "description": "Heading of the popover that shows a field's expected or extracted value when it is an object, in the field table of Reports › Evaluation Report on the document page."
+  },
   "documents.fileViewer.cannotDisplay": {
     "defaultMessage": "Unable to display document.",
     "description": "Shown in the source view when the document cannot be shown."
