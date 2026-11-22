@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 169,
-    "findings": 4884
+    "files": 167,
+    "findings": 4851
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -60,7 +60,6 @@
     "src/ui/src/components/common/geometry-coverage.ts": 5,
     "src/ui/src/components/common/info-link.tsx": 1,
     "src/ui/src/components/common/labels.ts": 6,
-    "src/ui/src/components/common/promptCacheModel.ts": 19,
     "src/ui/src/components/common/section-grouping.ts": 6,
     "src/ui/src/components/common/utilities.ts": 5,
     "src/ui/src/components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx": 83,
@@ -96,8 +95,7 @@
     "src/ui/src/components/document-kb-query-layout/DocumentsQueryLayout.tsx": 8,
     "src/ui/src/components/document-kb-query-layout/tools-panel.tsx": 12,
     "src/ui/src/components/document-list/DocumentList.tsx": 2,
-    "src/ui/src/components/document-panel/EstimatedCostModal.tsx": 2,
-    "src/ui/src/components/document-panel/MeteringTable.tsx": 17,
+    "src/ui/src/components/document-panel/MeteringTable.tsx": 5,
     "src/ui/src/components/document-panel/TroubleshootModal.tsx": 1,
     "src/ui/src/components/document-viewer/EvaluationReport.tsx": 6,
     "src/ui/src/components/document-viewer/FormFieldRenderer.tsx": 64,

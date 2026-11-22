@@ -12,6 +12,7 @@
 
 import { render, screen, within } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../test-utils/renderWithIntl';
@@ -30,6 +31,12 @@ import MeteringTable from '../MeteringTable';
 // 1000 output tokens at 2.0E-6 each: a cost of 0.0020.
 const METERING = { 'Extraction/bedrock/m': { inputTokens: 100, outputTokens: 1000 } };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const rowFor = (unit: string): string => {
   const row = within(screen.getByRole('table'))
     .getAllByRole('row')
@@ -40,7 +47,7 @@ const rowFor = (unit: string): string => {
 
 describe('Estimated Cost table amounts', () => {
   it('reads US$ under en, with no bare $ anywhere in the table', () => {
-    render(<MeteringTable meteringData={METERING} />);
+    render(<MeteringTable meteringData={METERING} />, { wrapper: English });
     const output = rowFor('outputTokens');
     expect(output).toContain('US$0.0020');
     // The unit price is Test Studio's rendering of the same price.
