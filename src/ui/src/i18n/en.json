@@ -3273,147 +3273,595 @@
   },
   "documents.processingIssue.code.assessmentConfidenceOutOfRange": {
     "defaultMessage": "assessment_confidence_out_of_range",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when the model returned confidence values outside the range 0 to 1. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when the model returned confidence values outside the range 0 to 1. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentCoverageIncomplete": {
     "defaultMessage": "assessment_coverage_incomplete",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when some or all of a section's extracted list rows carry no confidence score. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when some or all of a section's extracted list rows carry no confidence score. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentDeadlineReached": {
     "defaultMessage": "assessment_deadline_reached",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when its self-healing stopped early to stay within the Lambda time budget. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when its self-healing stopped early to stay within the Lambda time budget. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentFailedConfidenceUnavailable": {
     "defaultMessage": "assessment_failed_confidence_unavailable",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when it failed for a section: the extracted values were kept but have no confidence scores. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when it failed for a section: the extracted values were kept but have no confidence scores. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentFieldsUnscored": {
     "defaultMessage": "assessment_fields_unscored",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when populated fields of a section carry no confidence score. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when populated fields of a section carry no confidence score. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentGeometryIncomplete": {
     "defaultMessage": "assessment_geometry_incomplete",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when scored fields have no bounding box. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when scored fields have no bounding box. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentIncomplete": {
     "defaultMessage": "assessment_incomplete",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when list rows could not be confidence-scored, so those rows have no confidence. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when list rows could not be confidence-scored, so those rows have no confidence. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentPagesMissing": {
     "defaultMessage": "assessment_pages_missing",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when some of a section's pages are not in the document, so confidence was assessed without their text or image. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when some of a section's pages are not in the document, so confidence was assessed without their text or image. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentRecoveredWithRetries": {
     "defaultMessage": "assessment_recovered_with_retries",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when scores it first lacked were recovered by retrying: rows with smaller batches or a stronger model, fields by asking again. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when scores it first lacked were recovered by retrying: rows with smaller batches or a stronger model, fields by asking again. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentRowTooLarge": {
     "defaultMessage": "assessment_row_too_large",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when a single list row is too large for the confidence model's output, so those rows have no confidence score. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when a single list row is too large for the confidence model's output, so those rows have no confidence score. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentSchemaMismatch": {
     "defaultMessage": "assessment_schema_mismatch",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when extraction returned list data for fields the class schema does not define as lists, so those rows cannot be confidence-scored. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when extraction returned list data for fields the class schema does not define as lists, so those rows cannot be confidence-scored. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentSkippedConfidenceUnavailable": {
     "defaultMessage": "assessment_skipped_confidence_unavailable",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when it did not run for a section that carried nothing to assess, so the section's values have no confidence scores. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when it did not run for a section that carried nothing to assess, so the section's values have no confidence scores. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.assessmentTruncated": {
     "defaultMessage": "assessment_truncated",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when the confidence model truncated its output, so the truncated call scored no rows. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when the confidence model truncated its output, so the truncated call scored no rows. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.classificationConfidenceMissing": {
     "defaultMessage": "classification_confidence_missing",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when confidence was requested but the model's reply gave none for a section, so the section's class has no score. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when confidence was requested but the model's reply gave none for a section, so the section's class has no score. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.classificationFailed": {
     "defaultMessage": "classification_failed",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when it produced no class for some of a section's pages. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when it produced no class for some of a section's pages. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.classificationInvalidClassFallback": {
     "defaultMessage": "classification_invalid_class_fallback",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when the model returned a class outside the configured classes for some pages after every retry, so the configured fallback class was assigned. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when the model returned a class outside the configured classes for some pages after every retry, so the configured fallback class was assigned. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.classificationPageAssignedToNeighbour": {
     "defaultMessage": "classification_page_assigned_to_neighbour",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when the model placed pages in no document, so they were added to the neighbouring document and given its class. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when the model placed pages in no document, so they were added to the neighbouring document and given its class. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.classificationPageNoContent": {
     "defaultMessage": "classification_page_no_content",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when pages had nothing to classify: no usable OCR text and no page image. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when pages had nothing to classify: no usable OCR text and no page image. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.classificationPageOrderNotApplied": {
     "defaultMessage": "classification_page_order_not_applied",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when pages were classified in scan order instead of the order of their printed page numbers. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when pages were classified in scan order instead of the order of their printed page numbers. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionClassNotConfigured": {
     "defaultMessage": "extraction_class_not_configured",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a section's class does not exist in the configuration the document was processed under, so nothing was extracted from the section. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a section's class does not exist in the configuration the document was processed under, so nothing was extracted from the section. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionFailed": {
     "defaultMessage": "extraction_failed",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when extraction failed for a section, including when a content filter withheld the model's reply. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when extraction failed for a section, including when a content filter withheld the model's reply. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionIncomplete": {
     "defaultMessage": "extraction_incomplete",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when it returned no rows for list fields. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when it returned no rows for list fields. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionListFieldNotAList": {
     "defaultMessage": "extraction_list_field_not_a_list",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when list fields came back as something other than a list, so none of their rows is available. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when list fields came back as something other than a list, so none of their rows is available. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionListTruncated": {
     "defaultMessage": "extraction_list_truncated",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when list fields returned fewer rows than the schema's minItems requires, which very likely means the extraction was truncated. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when list fields returned fewer rows than the schema's minItems requires, which very likely means the extraction was truncated. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionMultiInstanceDetected": {
     "defaultMessage": "extraction_multi_instance_detected",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a section contains several separate documents of its class: all were extracted, but only the first is shown as the section's result. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a section contains several separate documents of its class: all were extracted, but only the first is shown as the section's result. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionMultiInstanceSuspected": {
     "defaultMessage": "extraction_multi_instance_suspected",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a section's pages appear to contain more records of its class than extraction returned, so some records are not in the result. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a section's pages appear to contain more records of its class than extraction returned, so some records are not in the result. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionOffSchemaFields": {
     "defaultMessage": "extraction_off_schema_fields",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when it returned fields the class schema does not define, which were dropped before assessment. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when it returned fields the class schema does not define, which were dropped before assessment. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionOutputTruncated": {
     "defaultMessage": "extraction_output_truncated",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when the model's response was cut off before it finished, so the result holds only the part that was emitted. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when the model's response was cut off before it finished, so the result holds only the part that was emitted. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionPartialRowShortfall": {
     "defaultMessage": "extraction_partial_row_shortfall",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a list field holds fewer rows than the section's OCR tables suggest, but at least half of them: a shortfall to confirm rather than a certain loss. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a list field holds fewer rows than the section's OCR tables suggest, but at least half of them: a shortfall to confirm rather than a certain loss. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionRowCountUnverified": {
     "defaultMessage": "extraction_row_count_unverified",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when the section's OCR text holds too few matching table rows to check a list field's row count, so the count is unverified. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when the section's OCR text holds too few matching table rows to check a list field's row count, so the count is unverified. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionRowsBelowOcrEstimate": {
     "defaultMessage": "extraction_rows_below_ocr_estimate",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a list field holds fewer than half the rows the section's OCR tables suggest, so the list is likely truncated. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a list field holds fewer than half the rows the section's OCR tables suggest, so the list is likely truncated. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionSparse": {
     "defaultMessage": "extraction_sparse",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when the share of the schema's fields that were populated is below a threshold: a possible silent extraction loss. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when the share of the schema's fields that were populated is below a threshold: a possible silent extraction loss. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.extractionValidationFailed": {
     "defaultMessage": "extraction_validation_failed",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when schema violations remain in a section's extracted data. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when schema violations remain in a section's extracted data. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.ruleValidationFailed": {
     "defaultMessage": "rule_validation_failed",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by rule validation when it did not complete for a section, so the section has no compliance verdict. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by rule validation when it did not complete for a section, so the section has no compliance verdict. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.ruleValidationNotConsolidated": {
     "defaultMessage": "rule_validation_not_consolidated",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by rule validation when a section was validated but combining the document's results into one compliance decision failed, so no verdict was recorded for it. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by rule validation when a section was validated but combining the document's results into one compliance decision failed, so no verdict was recorded for it. English is the code itself; translate it as a short readable label."
   },
   "documents.processingIssue.code.sectionProcessingFailed": {
     "defaultMessage": "section_processing_failed",
-    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by the collate step when it finds that a section's processing failed, so the section's extracted data should not be treated as complete. English is the code itself; translate it as a short readable label."
+    "description": "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by the collate step when it finds that a section's processing failed, so the section's extracted data should not be treated as complete. English is the code itself; translate it as a short readable label."
+  },
+  "documents.processingReport.details.avgOcrConfidence": {
+    "defaultMessage": "Avg OCR confidence",
+    "description": "Label of the cell, in the table extraction details of the edit page's Processing Report, with the average OCR confidence of the parsed tables, as a percentage."
+  },
+  "documents.processingReport.details.emptyFields": {
+    "defaultMessage": "Empty fields ({count})",
+    "description": "Heading of the expandable list of the schema's fields that got no value, in the field population details of the edit page's Processing Report. {count} is the number listed."
+  },
+  "documents.processingReport.details.errorCounts": {
+    "defaultMessage": "; errors {before} → {after}",
+    "description": "Clause at the end of the escalation sentence in the edit page's Processing Report. {before} is the number of validation errors before escalation and {after} the number after it."
+  },
+  "documents.processingReport.details.escalated": {
+    "defaultMessage": "Escalated to <strong>{model}</strong> ({scope}) — {outcome}{errors}.",
+    "description": "Sentence under Schema Validation & Escalation in the edit page's Processing Report when the section was re-extracted with another model. {model} is that model's id, or the phrase stronger model, shown in bold; {scope} says what was re-extracted; {outcome} says how it ended; {errors} is empty or a clause, starting with a semicolon, with the error counts before and after. <strong> makes the model bold. The backend's own explanation, in English, may follow the sentence."
+  },
+  "documents.processingReport.details.escalationStrongerModel": {
+    "defaultMessage": "stronger model",
+    "description": "Shown in bold in the escalation sentence of the edit page's Processing Report, in place of a model id, when the report does not name the model the section was re-extracted with."
+  },
+  "documents.processingReport.details.estimateNote": {
+    "defaultMessage": "The OCR estimate (~{estimate}) is a pre-extraction guess and may differ from the {rows, plural, one {# row} other {# rows}} actually extracted (the authoritative count, shown in Document Data).",
+    "description": "Note in the table extraction details of the edit page's Processing Report. {estimate} is the number of table rows estimated from the OCR text before extraction; {rows} is the number of list rows the extraction produced. Document Data names the root of the section's extracted data on the same page."
+  },
+  "documents.processingReport.details.formatChecks": {
+    "defaultMessage": "Format checks",
+    "description": "Label of the cell, under Schema Validation & Escalation in the edit page's Processing Report, that says whether schema validation also checked value formats."
+  },
+  "documents.processingReport.details.formatChecksOff": {
+    "defaultMessage": "Off",
+    "description": "Value of the Format checks cell in the edit page's Processing Report: schema validation did not check value formats."
+  },
+  "documents.processingReport.details.formatChecksOn": {
+    "defaultMessage": "On",
+    "description": "Value of the Format checks cell in the edit page's Processing Report: schema validation checked value formats."
+  },
+  "documents.processingReport.details.ocrRows": {
+    "defaultMessage": "Table rows seen in OCR (estimate)",
+    "description": "Label of the cell, in the table extraction details of the edit page's Processing Report, with the number of table rows estimated from the OCR text before extraction."
+  },
+  "documents.processingReport.details.onFailure": {
+    "defaultMessage": "On failure",
+    "description": "Label of the cell, under Schema Validation & Escalation in the edit page's Processing Report, with what the configuration does when schema validation fails; the value is the setting as configured."
+  },
+  "documents.processingReport.details.outcomeRejected": {
+    "defaultMessage": "rejected, original kept",
+    "description": "How escalation ended, in the escalation sentence of the edit page's Processing Report: its result was rejected and the original extraction kept."
+  },
+  "documents.processingReport.details.outcomeResolved": {
+    "defaultMessage": "resolved",
+    "description": "How escalation ended, in the escalation sentence of the edit page's Processing Report: it resolved the validation errors."
+  },
+  "documents.processingReport.details.outcomeStillInvalid": {
+    "defaultMessage": "still invalid",
+    "description": "How escalation ended, in the escalation sentence of the edit page's Processing Report: the data still did not satisfy the schema."
+  },
+  "documents.processingReport.details.parseSuccessRate": {
+    "defaultMessage": "Parse success rate",
+    "description": "Label of the cell, in the table extraction details of the edit page's Processing Report, with the deterministic table parser's success rate, as a percentage."
+  },
+  "documents.processingReport.details.parserNotNeeded": {
+    "defaultMessage": "No large tables detected in the OCR text; the deterministic table parser was not needed.",
+    "description": "Table extraction note in the edit page's Processing Report when the OCR text had no large tables."
+  },
+  "documents.processingReport.details.parserNotUsed": {
+    "defaultMessage": "Large tables were detected but the deterministic table parser was not used for this section.",
+    "description": "Table extraction note, shown as a warning, in the edit page's Processing Report when the OCR text had large tables, the table parser was not used, and the report gives no reason."
+  },
+  "documents.processingReport.details.parserUsed": {
+    "defaultMessage": "The deterministic table parser was used (parses tables from OCR text instead of having the model regenerate every row).",
+    "description": "Table extraction note in the edit page's Processing Report when the deterministic table parser was used for the section."
+  },
+  "documents.processingReport.details.parserWarnings": {
+    "defaultMessage": "Parser warnings ({count})",
+    "description": "Heading of the expandable list of the deterministic table parser's warnings, shown in English as the parser writes them, in the edit page's Processing Report. {count} is the number of warnings."
+  },
+  "documents.processingReport.details.populationBelow": {
+    "defaultMessage": "below {threshold} threshold",
+    "description": "Population status beside a warning icon, after the field population line of the edit page's Processing Report: the populated share is below the configured minimum. {threshold} is that minimum as a percentage, or N/A."
+  },
+  "documents.processingReport.details.populationOk": {
+    "defaultMessage": "OK",
+    "description": "Population status beside a success icon, after the field population line of the edit page's Processing Report: the populated share is not below the configured minimum."
+  },
+  "documents.processingReport.details.populationSummary": {
+    "defaultMessage": "{populated}/{defined} fields populated ({ratio}) ·",
+    "description": "Line of the field population details in the edit page's Processing Report, followed by the population status. {populated} is the number of the schema's fields that got a value and {defined} the number the schema defines; {ratio} is the populated share as a percentage, or N/A."
+  },
+  "documents.processingReport.details.populationTitle": {
+    "defaultMessage": "Field Population (completeness heuristic)",
+    "description": "Heading of the field population details under Details & diagnostics in the edit page's Processing Report: how many of the schema's fields got a value, as an estimate of completeness."
+  },
+  "documents.processingReport.details.rawReport": {
+    "defaultMessage": "Raw processing report (text)",
+    "description": "Heading of the expandable part of Details & diagnostics in the edit page's Processing Report that shows the processing report as the backend wrote it, in English."
+  },
+  "documents.processingReport.details.result": {
+    "defaultMessage": "Result",
+    "description": "Label of the cell with the schema validation result, under Schema Validation & Escalation in the edit page's Processing Report."
+  },
+  "documents.processingReport.details.rootPath": {
+    "defaultMessage": "(root)",
+    "description": "Shown in bold in the list of schema validation errors of the edit page's Processing Report, in place of a field path, when an error has no path: it concerns the extracted data as a whole."
+  },
+  "documents.processingReport.details.rowsParsed": {
+    "defaultMessage": "Rows parsed by tool",
+    "description": "Label of the cell, in the table extraction details of the edit page's Processing Report, with the number of rows the deterministic table parser parsed."
+  },
+  "documents.processingReport.details.scopeFields": {
+    "defaultMessage": "fields: {fields}",
+    "description": "What escalation re-extracted, in brackets in the escalation sentence of the edit page's Processing Report: some of the section's fields. {fields} names them, separated by commas."
+  },
+  "documents.processingReport.details.scopeFullSection": {
+    "defaultMessage": "full section",
+    "description": "What escalation re-extracted, in brackets in the escalation sentence of the edit page's Processing Report: the whole section."
+  },
+  "documents.processingReport.details.scopeNoFields": {
+    "defaultMessage": "fields: none",
+    "description": "What escalation re-extracted, in brackets in the escalation sentence of the edit page's Processing Report: some of the section's fields, of which the report names none."
+  },
+  "documents.processingReport.details.shortfallsTitle": {
+    "defaultMessage": "Completeness Shortfalls",
+    "description": "Heading of the list, under Details & diagnostics in the edit page's Processing Report, of the list fields with fewer items than the schema requires, each with the backend's message in English."
+  },
+  "documents.processingReport.details.tablesTitle": {
+    "defaultMessage": "Table Extraction",
+    "description": "Heading of the table extraction details under Details & diagnostics in the edit page's Processing Report, shown for a section extracted by the agentic method."
+  },
+  "documents.processingReport.details.title": {
+    "defaultMessage": "Details & diagnostics",
+    "description": "Heading of the expandable part of the edit page's Processing Report that holds the details of schema validation, field population, table extraction and completeness, and the raw report."
+  },
+  "documents.processingReport.details.validationTitle": {
+    "defaultMessage": "Schema Validation & Escalation",
+    "description": "Heading of the schema validation details under Details & diagnostics in the edit page's Processing Report. Escalation is the re-extraction of the section, or of its failing fields, with another model."
+  },
+  "documents.processingReport.details.violationCount": {
+    "defaultMessage": "{count, plural, one {# violation} other {# violations}}",
+    "description": "Value of the Result cell beside a warning icon, under Schema Validation & Escalation in the edit page's Processing Report. {count} is the number of validation errors."
+  },
+  "documents.processingReport.details.violations": {
+    "defaultMessage": "Violations ({count})",
+    "description": "Heading of the expandable list of schema validation errors, each a field path and the validator's message, in the edit page's Processing Report. {count} is the number of errors."
+  },
+  "documents.processingReport.issues.fallback": {
+    "defaultMessage": "issue",
+    "description": "Shown in the processing issues of the edit page's Processing Report in place of an issue's code when the issue has neither a code nor a processing stage."
+  },
+  "documents.processingReport.issues.header": {
+    "defaultMessage": "{count, plural, one {# processing issue} other {# processing issues}}",
+    "description": "Heading of the alert in the edit page's Processing Report that lists the open section's processing issues, each with its code and the backend's message. {count} is the number of issues."
+  },
+  "documents.processingReport.issues.rootCause": {
+    "defaultMessage": "Root cause: {rootCause}",
+    "description": "Line under a processing issue's message in the edit page's Processing Report. {rootCause} is the cause the backend recorded, in English."
+  },
+  "documents.processingReport.noSection": {
+    "defaultMessage": "Open a section to see its processing report.",
+    "description": "Shown in the edit page's Processing Report when no section is open."
+  },
+  "documents.processingReport.notAvailable": {
+    "defaultMessage": "Processing report not available",
+    "description": "Shown in place of the edit page's Processing Report when the open section's result records no processing metadata."
+  },
+  "documents.processingReport.outcome.agentic": {
+    "defaultMessage": "Agentic extraction",
+    "description": "Line under the Extraction Outcome heading of the edit page's Processing Report when the section was extracted by the agentic method, without an extraction time."
+  },
+  "documents.processingReport.outcome.agenticTimed": {
+    "defaultMessage": "Agentic extraction · {seconds}s",
+    "description": "Line under the Extraction Outcome heading of the edit page's Processing Report when the section was extracted by the agentic method. {seconds} is how long the extraction took, in seconds with one decimal, such as 12.3; s is the symbol for seconds."
+  },
+  "documents.processingReport.outcome.allClear": {
+    "defaultMessage": "Completed — no issues detected",
+    "description": "Status of the extraction beside a success icon in the Extraction Outcome panel of the edit page's Processing Report: it succeeded, and the report lists no item to review and no processing issue."
+  },
+  "documents.processingReport.outcome.completedToReview": {
+    "defaultMessage": "Completed with {count, plural, one {# item} other {# items}} to review",
+    "description": "Status of the extraction beside a warning icon in the Extraction Outcome panel of the edit page's Processing Report: it succeeded, and the report lists items to review or processing issues. {count} is the number of items to review it lists; it is 0 when only processing issues are listed."
+  },
+  "documents.processingReport.outcome.dataExtracted": {
+    "defaultMessage": "Data extracted",
+    "description": "Label of the cell of the Extraction Outcome panel, in the edit page's Processing Report, that counts the data the extraction produced."
+  },
+  "documents.processingReport.outcome.failed": {
+    "defaultMessage": "Failed",
+    "description": "Status of the extraction beside an error icon in the Extraction Outcome panel of the edit page's Processing Report: the section's result records that parsing the model's output did not succeed."
+  },
+  "documents.processingReport.outcome.fields": {
+    "defaultMessage": "{fields, plural, one {# field} other {# fields}}",
+    "description": "Value of the Data extracted cell in the edit page's Processing Report when the extracted data has no list rows. {fields} is the number of fields with a value, list fields aside."
+  },
+  "documents.processingReport.outcome.lists": {
+    "defaultMessage": "Lists: {lists}",
+    "description": "Line at the foot of the Extraction Outcome panel of the edit page's Processing Report. {lists} names each list field of the extracted data with its row count in brackets, separated by commas, such as holdings (12), fees (3)."
+  },
+  "documents.processingReport.outcome.method": {
+    "defaultMessage": "Method",
+    "description": "Label of the cell of the Extraction Outcome panel, in the edit page's Processing Report, that names the extraction method."
+  },
+  "documents.processingReport.outcome.methodAgentic": {
+    "defaultMessage": "Agentic",
+    "description": "Value of the Method cell in the edit page's Processing Report: the agentic extraction method, without the table parser."
+  },
+  "documents.processingReport.outcome.methodAgenticWithParser": {
+    "defaultMessage": "Agentic + table parser",
+    "description": "Value of the Method cell in the edit page's Processing Report: the agentic extraction method, which also used the deterministic table parser."
+  },
+  "documents.processingReport.outcome.methodStandard": {
+    "defaultMessage": "Standard",
+    "description": "Value of the Method cell in the edit page's Processing Report: the standard, non-agentic extraction method."
+  },
+  "documents.processingReport.outcome.model": {
+    "defaultMessage": "Model",
+    "description": "Label of the cell of the Extraction Outcome panel, in the edit page's Processing Report, that names the model the section was extracted with."
+  },
+  "documents.processingReport.outcome.modelPerClass": {
+    "defaultMessage": "{model} (per-class)",
+    "description": "Value of the Model cell in the edit page's Processing Report when the class's own model override chose the model, not the global extraction model. {model} is the model id, or N/A when the report names none."
+  },
+  "documents.processingReport.outcome.notEnabled": {
+    "defaultMessage": "Not enabled",
+    "description": "Value of the Schema validation cell in the Extraction Outcome panel of the edit page's Processing Report when the section's report records no schema validation."
+  },
+  "documents.processingReport.outcome.rows": {
+    "defaultMessage": "{rows, plural, one {# row} other {# rows}}",
+    "description": "Value of the Data extracted cell in the edit page's Processing Report when the extracted data has list rows and no other field with a value. {rows} is the number of rows across all list fields."
+  },
+  "documents.processingReport.outcome.rowsAndFields": {
+    "defaultMessage": "{rows, plural, one {# row} other {# rows}} + {fields, plural, one {# field} other {# fields}}",
+    "description": "Value of the Data extracted cell in the edit page's Processing Report when the extracted data has list rows and other fields with a value. {rows} is the number of rows across all list fields; {fields} is the number of the other fields with a value."
+  },
+  "documents.processingReport.outcome.schemaValidation": {
+    "defaultMessage": "Schema validation",
+    "description": "Label of the cell of the Extraction Outcome panel, in the edit page's Processing Report, that shows whether the extracted data satisfied the class's schema."
+  },
+  "documents.processingReport.outcome.standard": {
+    "defaultMessage": "Standard extraction",
+    "description": "Line under the Extraction Outcome heading of the edit page's Processing Report when the section was extracted by the standard, non-agentic method, without an extraction time."
+  },
+  "documents.processingReport.outcome.standardTimed": {
+    "defaultMessage": "Standard extraction · {seconds}s",
+    "description": "Line under the Extraction Outcome heading of the edit page's Processing Report when the section was extracted by the standard, non-agentic method. {seconds} is how long the extraction took, in seconds with one decimal, such as 12.3; s is the symbol for seconds."
+  },
+  "documents.processingReport.outcome.title": {
+    "defaultMessage": "Extraction Outcome",
+    "description": "Heading of the first panel of the edit page's Processing Report, which sums up how the open section's extraction went."
+  },
+  "documents.processingReport.outcome.validationIssues": {
+    "defaultMessage": "{count, plural, one {# issue} other {# issues}}",
+    "description": "Value of the Schema validation cell beside a warning icon, in the Extraction Outcome panel of the edit page's Processing Report, when the extracted data did not satisfy the schema. {count} is the number of validation errors."
+  },
+  "documents.processingReport.path.batchEscalation": {
+    "defaultMessage": "; escalated to {model}",
+    "description": "Clause of the confidence assessment sentence in the Processing Path panel of the edit page's Processing Report: rows were escalated to another model. {model} is that model's id."
+  },
+  "documents.processingReport.path.batchSize": {
+    "defaultMessage": "; token-aware batch size {derived} (configured {configured})",
+    "description": "Clause of the confidence assessment sentence in the Processing Path panel of the edit page's Processing Report: the batch size sized from the model's token limits. {derived} is that size; {configured} is the batch size the configuration sets, or n/a."
+  },
+  "documents.processingReport.path.batchSizeUnset": {
+    "defaultMessage": "n/a",
+    "description": "Shown in the batch size clause of the confidence assessment sentence, in the edit page's Processing Report, in place of the configured batch size when the report records none."
+  },
+  "documents.processingReport.path.batchesConcurrent": {
+    "defaultMessage": "Confidence assessment ran in <strong>{batches}</strong> {batches, plural, one {batch} other {batches}} — {concurrency}-way concurrent after a cache-warming call{batchSize}{escalation}.",
+    "description": "Sentence in the Processing Path panel of the edit page's Processing Report when confidence assessment ran batches at the same time. {batches} is the number of batches, shown in bold; {concurrency} is how many ran at once, after a first call that filled the prompt cache. {batchSize} and {escalation} are clauses of this sentence, each empty or starting with a semicolon. <strong> makes the number bold."
+  },
+  "documents.processingReport.path.batchesSequential": {
+    "defaultMessage": "Confidence assessment ran in <strong>{batches}</strong> {batches, plural, one {batch} other {batches}} — sequential{batchSize}{escalation}.",
+    "description": "Sentence in the Processing Path panel of the edit page's Processing Report when confidence assessment ran its batches one after another. {batches} is the number of batches, shown in bold. {batchSize} and {escalation} are clauses of this sentence, each empty or starting with a semicolon. <strong> makes the number bold."
+  },
+  "documents.processingReport.path.confidenceBatch": {
+    "defaultMessage": "Confidence batch (auto)",
+    "description": "Label of the cell of the Processing Path panel, in the edit page's Processing Report, with the number of list rows per confidence assessment batch; auto stands for automatic sizing."
+  },
+  "documents.processingReport.path.confidenceBatchValue": {
+    "defaultMessage": "{size} rows/batch",
+    "description": "Value of the Confidence batch cell in the edit page's Processing Report. {size} is the number of list rows per batch."
+  },
+  "documents.processingReport.path.contextBuffer": {
+    "defaultMessage": "Context buffer",
+    "description": "Label of the cell of the Processing Path panel, in the edit page's Processing Report, with the share of the model's input window that sizing keeps free."
+  },
+  "documents.processingReport.path.contextBufferValue": {
+    "defaultMessage": "{share, number, ::percent} kept free",
+    "description": "Value of the Context buffer cell in the edit page's Processing Report. {share} is that share, as a percentage."
+  },
+  "documents.processingReport.path.modelWindow": {
+    "defaultMessage": "Model window",
+    "description": "Label of the cell of the Processing Path panel, in the edit page's Processing Report, with the input and output token limits of the model the section was sized for."
+  },
+  "documents.processingReport.path.modelWindowValue": {
+    "defaultMessage": "in {input}K / out {output}K",
+    "description": "Value of the Model window cell in the edit page's Processing Report. {input} is the model's input token limit and {output} its output token limit, each in thousands of tokens; K stands for thousand."
+  },
+  "documents.processingReport.path.overrides": {
+    "defaultMessage": "Manual size overrides in effect: {overrides}",
+    "description": "Line in the Processing Path panel of the edit page's Processing Report when the configuration sets sizes by hand. {overrides} is those settings as JSON, shown as written."
+  },
+  "documents.processingReport.path.recovered": {
+    "defaultMessage": "Recovered <strong>{rows}</strong> {rows, plural, one {row} other {rows}}.",
+    "description": "Sentence of the confidence auto-recovery note in the Processing Path panel of the edit page's Processing Report when no row was recovered, by a retry or by escalation. {rows} is that number, 0, shown in bold; <strong> makes it bold."
+  },
+  "documents.processingReport.path.recoveredByBoth": {
+    "defaultMessage": "Recovered <strong>{rows}</strong> {rows, plural, one {row} other {rows}} — {retried} by same-model retry, {escalated} by escalation to {model}.",
+    "description": "Sentence of the confidence auto-recovery note in the Processing Path panel of the edit page's Processing Report. {rows} is the number of rows whose confidence scores were recovered, shown in bold; {retried} is how many of them a retry with the same model recovered; {escalated} is how many were recovered by escalating to a stronger model, and {model} is that model's id, or the phrase a stronger model. <strong> makes the number bold."
+  },
+  "documents.processingReport.path.recoveredByEscalation": {
+    "defaultMessage": "Recovered <strong>{rows}</strong> {rows, plural, one {row} other {rows}}, {escalated} by escalation to {model}.",
+    "description": "Sentence of the confidence auto-recovery note in the Processing Path panel of the edit page's Processing Report. {rows} is the number of rows whose confidence scores were recovered, shown in bold; {escalated} is how many of them were recovered by escalating to a stronger model, and {model} is that model's id, or the phrase a stronger model. <strong> makes the number bold."
+  },
+  "documents.processingReport.path.recoveredByRetry": {
+    "defaultMessage": "Recovered <strong>{rows}</strong> {rows, plural, one {row} other {rows}} — {retried} by same-model retry.",
+    "description": "Sentence of the confidence auto-recovery note in the Processing Path panel of the edit page's Processing Report. {rows} is the number of rows whose confidence scores were recovered, shown in bold; {retried} is how many of them a retry with the same model recovered. <strong> makes the number bold."
+  },
+  "documents.processingReport.path.recoveryAllScored": {
+    "defaultMessage": "All rows scored",
+    "description": "Status beside a success icon in the confidence auto-recovery note of the edit page's Processing Report: every row has a confidence score."
+  },
+  "documents.processingReport.path.recoveryDeadline": {
+    "defaultMessage": "Stopped early on the Lambda wall-clock guard.",
+    "description": "Sentence that ends the confidence auto-recovery note of the edit page's Processing Report when recovery stopped early to stay within the Lambda function's time budget."
+  },
+  "documents.processingReport.path.recoveryLabel": {
+    "defaultMessage": "⚠ Confidence auto-recovery:",
+    "description": "Bold label that starts the note, in the Processing Path panel of the edit page's Processing Report, on how confidence assessment recovered scores it first lacked. ⚠ is a warning sign."
+  },
+  "documents.processingReport.path.recoveryStrongerModel": {
+    "defaultMessage": "a stronger model",
+    "description": "Named in the confidence auto-recovery note of the edit page's Processing Report, in place of a model id, when the report does not name the model the rows were escalated to."
+  },
+  "documents.processingReport.path.recoveryTruncated": {
+    "defaultMessage": "{calls, plural, one {# confidence call} other {# confidence calls}} truncated at the model's output limit (batches split {splits}×).",
+    "description": "Sentence of the confidence auto-recovery note in the Processing Path panel of the edit page's Processing Report. {calls} is the number of confidence assessment calls whose output the model cut off at its output limit; {splits} is how many times a batch was halved and assessed again, and × means times."
+  },
+  "documents.processingReport.path.recoveryUnscored": {
+    "defaultMessage": "{rows, plural, one {# row} other {# rows}} remained unscored",
+    "description": "Status beside an error icon in the confidence auto-recovery note of the edit page's Processing Report. {rows} is the number of rows that still had no confidence score after recovery."
+  },
+  "documents.processingReport.path.shardBudget": {
+    "defaultMessage": "Shard budget (auto)",
+    "description": "Label of the cell of the Processing Path panel, in the edit page's Processing Report, with the token budget and page limit of each shard the section's pages are split into for extraction; auto stands for automatic sizing."
+  },
+  "documents.processingReport.path.shardBudgetValue": {
+    "defaultMessage": "~{budget} tok · {pages} pg/shard",
+    "description": "Value of the Shard budget cell in the edit page's Processing Report. {budget} is a shard's token budget; ~ means about, and tok stands for tokens. {pages} is the most pages a shard holds; pg/shard stands for pages per shard."
+  },
+  "documents.processingReport.path.shardBudgetValueWithOverhead": {
+    "defaultMessage": "~{budget} tok · {pages} pg/shard · after ~{overhead} tok of prompt overhead",
+    "description": "Value of the Shard budget cell in the edit page's Processing Report when the report records the prompt's own size. {budget} is a shard's token budget; ~ means about, and tok stands for tokens. {pages} is the most pages a shard holds; pg/shard stands for pages per shard. {overhead} is the prompt's own size in tokens, about."
+  },
+  "documents.processingReport.path.title": {
+    "defaultMessage": "Processing Path",
+    "description": "Heading of the panel of the edit page's Processing Report that shows how the section was processed: its processing stages, how it was sized, split and batched, and its prompt-cache use."
+  },
+  "documents.processingReport.review.completenessShortfall": {
+    "defaultMessage": "Completeness shortfall",
+    "description": "Name of an item to review in the edit page's Processing Report: list fields of the extracted data have fewer items than the schema requires."
+  },
+  "documents.processingReport.review.completenessShortfallDetail": {
+    "defaultMessage": "Some array fields have fewer items than the schema requires.",
+    "description": "Explanation of the Completeness shortfall item to review in the edit page's Processing Report when the report carries no summary of its own."
+  },
+  "documents.processingReport.review.extractionFailed": {
+    "defaultMessage": "Extraction failed",
+    "description": "Name of an item to review in the edit page's Processing Report, listed when the section's result records that parsing the model's output did not succeed."
+  },
+  "documents.processingReport.review.extractionFailedDetail": {
+    "defaultMessage": "The model output could not be parsed into the expected structure.",
+    "description": "Explanation of the Extraction failed item to review in the edit page's Processing Report."
+  },
+  "documents.processingReport.review.header": {
+    "defaultMessage": "{count, plural, one {# item} other {# items}} to review",
+    "description": "Heading of the alert in the edit page's Processing Report that lists what to review in the open section's extraction. {count} is the number of items it lists."
+  },
+  "documents.processingReport.review.item": {
+    "defaultMessage": "<strong>{label}:</strong> {detail}",
+    "description": "One item of the alert in the edit page's Processing Report that lists what to review. {label} is the item's name, such as Schema validation failed, shown in bold; {detail} explains it. <strong> makes the name bold."
+  },
+  "documents.processingReport.review.noneBody": {
+    "defaultMessage": "Extraction completed and passed all enabled checks.",
+    "description": "Text of the success alert in the edit page's Processing Report when its checks list no item to review."
+  },
+  "documents.processingReport.review.noneHeader": {
+    "defaultMessage": "No issues detected",
+    "description": "Heading of the success alert in the edit page's Processing Report when its checks list no item to review."
+  },
+  "documents.processingReport.review.possibleMissing": {
+    "defaultMessage": "Possible missing data",
+    "description": "Name of an item to review in the edit page's Processing Report: fewer of the schema's fields got a value than the configured minimum share."
+  },
+  "documents.processingReport.review.possibleMissingDetail": {
+    "defaultMessage": "Only {populated}/{defined} schema fields were populated ({ratio}, below the {threshold} threshold) — review for silent extraction loss.",
+    "description": "Explanation of the Possible missing data item to review in the edit page's Processing Report. {populated} is the number of the schema's fields that got a value and {defined} the number the schema defines; {ratio} is the populated share and {threshold} the configured minimum share, each as a percentage, or N/A."
+  },
+  "documents.processingReport.review.requiredBlank": {
+    "defaultMessage": "Required values left blank",
+    "description": "Name of an item to review in the edit page's Processing Report: the extraction agent left values blank because it could not read them."
+  },
+  "documents.processingReport.review.requiredBlankDetail": {
+    "defaultMessage": "{count, plural, one {# required value} other {# required values}} came back null — the extraction agent leaves a cell null rather than guessing when it cannot read it.",
+    "description": "Explanation of the Required values left blank item to review in the edit page's Processing Report when the report names none of the values. {count} is the number of values left blank."
+  },
+  "documents.processingReport.review.requiredBlankDetailSample": {
+    "defaultMessage": "{count, plural, one {# required value} other {# required values}} came back null — the extraction agent leaves a cell null rather than guessing when it cannot read it: {sample}.",
+    "description": "Explanation of the Required values left blank item to review in the edit page's Processing Report when the report names five of the values or fewer. {count} is the number of values left blank; {sample} lists the paths it names, separated by commas."
+  },
+  "documents.processingReport.review.requiredBlankDetailSampleMore": {
+    "defaultMessage": "{count, plural, one {# required value} other {# required values}} came back null — the extraction agent leaves a cell null rather than guessing when it cannot read it: {sample}, ….",
+    "description": "Explanation of the Required values left blank item to review in the edit page's Processing Report when more than five are named. {count} is the number of values left blank; {sample} lists the paths of the first five, separated by commas, and the ellipsis stands for the rest."
+  },
+  "documents.processingReport.review.schemaInvalid": {
+    "defaultMessage": "Schema validation failed",
+    "description": "Name of an item to review in the edit page's Processing Report: fields of the extracted data did not satisfy the class's schema."
+  },
+  "documents.processingReport.review.schemaInvalidDetail": {
+    "defaultMessage": "{count, plural, one {# field} other {# fields}} did not satisfy the schema.",
+    "description": "Explanation of the Schema validation failed item to review in the edit page's Processing Report when the report names no field and no escalation ran. {count} is the number of validation errors."
+  },
+  "documents.processingReport.review.schemaInvalidDetailFields": {
+    "defaultMessage": "{count, plural, one {# field} other {# fields}} did not satisfy the schema: {fields}.",
+    "description": "Explanation of the Schema validation failed item to review in the edit page's Processing Report when no escalation ran. {count} is the number of validation errors; {fields} names the fields that failed, separated by commas."
+  },
+  "documents.processingReport.review.schemaInvalidDetailFieldsResolved": {
+    "defaultMessage": "{count, plural, one {# field} other {# fields}} did not satisfy the schema: {fields} (resolved by escalation).",
+    "description": "Explanation of the Schema validation failed item to review in the edit page's Processing Report when escalation, a re-extraction with another model, resolved the errors. {count} is the number of validation errors; {fields} names the fields that failed, separated by commas."
+  },
+  "documents.processingReport.review.schemaInvalidDetailFieldsStillInvalid": {
+    "defaultMessage": "{count, plural, one {# field} other {# fields}} did not satisfy the schema: {fields} (escalation attempted, still invalid).",
+    "description": "Explanation of the Schema validation failed item to review in the edit page's Processing Report when escalation, a re-extraction with another model, left the data invalid. {count} is the number of validation errors; {fields} names the fields that failed, separated by commas."
+  },
+  "documents.processingReport.review.schemaInvalidDetailResolved": {
+    "defaultMessage": "{count, plural, one {# field} other {# fields}} did not satisfy the schema (resolved by escalation).",
+    "description": "Explanation of the Schema validation failed item to review in the edit page's Processing Report when the report names no field and escalation, a re-extraction with another model, resolved the errors. {count} is the number of validation errors."
+  },
+  "documents.processingReport.review.schemaInvalidDetailStillInvalid": {
+    "defaultMessage": "{count, plural, one {# field} other {# fields}} did not satisfy the schema (escalation attempted, still invalid).",
+    "description": "Explanation of the Schema validation failed item to review in the edit page's Processing Report when the report names no field and escalation, a re-extraction with another model, left the data invalid. {count} is the number of validation errors."
+  },
+  "documents.processingReport.valid": {
+    "defaultMessage": "Valid",
+    "description": "Result of schema validation beside a success icon in the edit page's Processing Report, in the Schema validation cell of the Extraction Outcome panel and in the Result cell under Schema Validation & Escalation: the extracted data satisfied the class's schema."
+  },
+  "documents.processingReport.valueNotAvailable": {
+    "defaultMessage": "N/A",
+    "description": "Shown in the edit page's Processing Report in place of a value the section's report does not record: a percentage, the extraction model, the action taken when schema validation fails, or the table parser's success rate."
   },
   "documents.reprocessModal.bdaNote": {
     "defaultMessage": "<strong>NOTE:</strong> To ensure that BDA project blueprints are aligned with your selected configuration profile, be sure to execute \"Sync To BDA\" for your configuration profile from the View/Edit Configuration page.",

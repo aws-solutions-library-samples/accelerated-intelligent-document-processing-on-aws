@@ -180,217 +180,217 @@ const issueCodeMessages = defineMessages<Record<string, NoMessageValues>>({
     id: 'documents.processingIssue.code.assessmentConfidenceOutOfRange',
     defaultMessage: 'assessment_confidence_out_of_range',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when the model returned confidence values outside the range 0 to 1. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when the model returned confidence values outside the range 0 to 1. English is the code itself; translate it as a short readable label.",
   },
   assessment_coverage_incomplete: {
     id: 'documents.processingIssue.code.assessmentCoverageIncomplete',
     defaultMessage: 'assessment_coverage_incomplete',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when some or all of a section's extracted list rows carry no confidence score. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when some or all of a section's extracted list rows carry no confidence score. English is the code itself; translate it as a short readable label.",
   },
   assessment_deadline_reached: {
     id: 'documents.processingIssue.code.assessmentDeadlineReached',
     defaultMessage: 'assessment_deadline_reached',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when its self-healing stopped early to stay within the Lambda time budget. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when its self-healing stopped early to stay within the Lambda time budget. English is the code itself; translate it as a short readable label.",
   },
   assessment_failed_confidence_unavailable: {
     id: 'documents.processingIssue.code.assessmentFailedConfidenceUnavailable',
     defaultMessage: 'assessment_failed_confidence_unavailable',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when it failed for a section: the extracted values were kept but have no confidence scores. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when it failed for a section: the extracted values were kept but have no confidence scores. English is the code itself; translate it as a short readable label.",
   },
   assessment_fields_unscored: {
     id: 'documents.processingIssue.code.assessmentFieldsUnscored',
     defaultMessage: 'assessment_fields_unscored',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when populated fields of a section carry no confidence score. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when populated fields of a section carry no confidence score. English is the code itself; translate it as a short readable label.",
   },
   assessment_geometry_incomplete: {
     id: 'documents.processingIssue.code.assessmentGeometryIncomplete',
     defaultMessage: 'assessment_geometry_incomplete',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when scored fields have no bounding box. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when scored fields have no bounding box. English is the code itself; translate it as a short readable label.",
   },
   assessment_incomplete: {
     id: 'documents.processingIssue.code.assessmentIncomplete',
     defaultMessage: 'assessment_incomplete',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when list rows could not be confidence-scored, so those rows have no confidence. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when list rows could not be confidence-scored, so those rows have no confidence. English is the code itself; translate it as a short readable label.",
   },
   assessment_pages_missing: {
     id: 'documents.processingIssue.code.assessmentPagesMissing',
     defaultMessage: 'assessment_pages_missing',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when some of a section's pages are not in the document, so confidence was assessed without their text or image. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when some of a section's pages are not in the document, so confidence was assessed without their text or image. English is the code itself; translate it as a short readable label.",
   },
   assessment_recovered_with_retries: {
     id: 'documents.processingIssue.code.assessmentRecoveredWithRetries',
     defaultMessage: 'assessment_recovered_with_retries',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when scores it first lacked were recovered by retrying: rows with smaller batches or a stronger model, fields by asking again. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when scores it first lacked were recovered by retrying: rows with smaller batches or a stronger model, fields by asking again. English is the code itself; translate it as a short readable label.",
   },
   assessment_row_too_large: {
     id: 'documents.processingIssue.code.assessmentRowTooLarge',
     defaultMessage: 'assessment_row_too_large',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when a single list row is too large for the confidence model's output, so those rows have no confidence score. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when a single list row is too large for the confidence model's output, so those rows have no confidence score. English is the code itself; translate it as a short readable label.",
   },
   assessment_schema_mismatch: {
     id: 'documents.processingIssue.code.assessmentSchemaMismatch',
     defaultMessage: 'assessment_schema_mismatch',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when extraction returned list data for fields the class schema does not define as lists, so those rows cannot be confidence-scored. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when extraction returned list data for fields the class schema does not define as lists, so those rows cannot be confidence-scored. English is the code itself; translate it as a short readable label.",
   },
   assessment_skipped_confidence_unavailable: {
     id: 'documents.processingIssue.code.assessmentSkippedConfidenceUnavailable',
     defaultMessage: 'assessment_skipped_confidence_unavailable',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when it did not run for a section that carried nothing to assess, so the section's values have no confidence scores. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when it did not run for a section that carried nothing to assess, so the section's values have no confidence scores. English is the code itself; translate it as a short readable label.",
   },
   assessment_truncated: {
     id: 'documents.processingIssue.code.assessmentTruncated',
     defaultMessage: 'assessment_truncated',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by confidence assessment when the confidence model truncated its output, so the truncated call scored no rows. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when the confidence model truncated its output, so the truncated call scored no rows. English is the code itself; translate it as a short readable label.",
   },
   classification_confidence_missing: {
     id: 'documents.processingIssue.code.classificationConfidenceMissing',
     defaultMessage: 'classification_confidence_missing',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when confidence was requested but the model's reply gave none for a section, so the section's class has no score. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when confidence was requested but the model's reply gave none for a section, so the section's class has no score. English is the code itself; translate it as a short readable label.",
   },
   classification_failed: {
     id: 'documents.processingIssue.code.classificationFailed',
     defaultMessage: 'classification_failed',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when it produced no class for some of a section's pages. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when it produced no class for some of a section's pages. English is the code itself; translate it as a short readable label.",
   },
   classification_invalid_class_fallback: {
     id: 'documents.processingIssue.code.classificationInvalidClassFallback',
     defaultMessage: 'classification_invalid_class_fallback',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when the model returned a class outside the configured classes for some pages after every retry, so the configured fallback class was assigned. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when the model returned a class outside the configured classes for some pages after every retry, so the configured fallback class was assigned. English is the code itself; translate it as a short readable label.",
   },
   classification_page_assigned_to_neighbour: {
     id: 'documents.processingIssue.code.classificationPageAssignedToNeighbour',
     defaultMessage: 'classification_page_assigned_to_neighbour',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when the model placed pages in no document, so they were added to the neighbouring document and given its class. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when the model placed pages in no document, so they were added to the neighbouring document and given its class. English is the code itself; translate it as a short readable label.",
   },
   classification_page_no_content: {
     id: 'documents.processingIssue.code.classificationPageNoContent',
     defaultMessage: 'classification_page_no_content',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when pages had nothing to classify: no usable OCR text and no page image. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when pages had nothing to classify: no usable OCR text and no page image. English is the code itself; translate it as a short readable label.",
   },
   classification_page_order_not_applied: {
     id: 'documents.processingIssue.code.classificationPageOrderNotApplied',
     defaultMessage: 'classification_page_order_not_applied',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by classification when pages were classified in scan order instead of the order of their printed page numbers. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by classification when pages were classified in scan order instead of the order of their printed page numbers. English is the code itself; translate it as a short readable label.",
   },
   extraction_class_not_configured: {
     id: 'documents.processingIssue.code.extractionClassNotConfigured',
     defaultMessage: 'extraction_class_not_configured',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a section's class does not exist in the configuration the document was processed under, so nothing was extracted from the section. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a section's class does not exist in the configuration the document was processed under, so nothing was extracted from the section. English is the code itself; translate it as a short readable label.",
   },
   extraction_failed: {
     id: 'documents.processingIssue.code.extractionFailed',
     defaultMessage: 'extraction_failed',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when extraction failed for a section, including when a content filter withheld the model's reply. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when extraction failed for a section, including when a content filter withheld the model's reply. English is the code itself; translate it as a short readable label.",
   },
   extraction_incomplete: {
     id: 'documents.processingIssue.code.extractionIncomplete',
     defaultMessage: 'extraction_incomplete',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when it returned no rows for list fields. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when it returned no rows for list fields. English is the code itself; translate it as a short readable label.",
   },
   extraction_list_field_not_a_list: {
     id: 'documents.processingIssue.code.extractionListFieldNotAList',
     defaultMessage: 'extraction_list_field_not_a_list',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when list fields came back as something other than a list, so none of their rows is available. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when list fields came back as something other than a list, so none of their rows is available. English is the code itself; translate it as a short readable label.",
   },
   extraction_list_truncated: {
     id: 'documents.processingIssue.code.extractionListTruncated',
     defaultMessage: 'extraction_list_truncated',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when list fields returned fewer rows than the schema's minItems requires, which very likely means the extraction was truncated. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when list fields returned fewer rows than the schema's minItems requires, which very likely means the extraction was truncated. English is the code itself; translate it as a short readable label.",
   },
   extraction_multi_instance_detected: {
     id: 'documents.processingIssue.code.extractionMultiInstanceDetected',
     defaultMessage: 'extraction_multi_instance_detected',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a section contains several separate documents of its class: all were extracted, but only the first is shown as the section's result. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a section contains several separate documents of its class: all were extracted, but only the first is shown as the section's result. English is the code itself; translate it as a short readable label.",
   },
   extraction_multi_instance_suspected: {
     id: 'documents.processingIssue.code.extractionMultiInstanceSuspected',
     defaultMessage: 'extraction_multi_instance_suspected',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a section's pages appear to contain more records of its class than extraction returned, so some records are not in the result. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a section's pages appear to contain more records of its class than extraction returned, so some records are not in the result. English is the code itself; translate it as a short readable label.",
   },
   extraction_off_schema_fields: {
     id: 'documents.processingIssue.code.extractionOffSchemaFields',
     defaultMessage: 'extraction_off_schema_fields',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when it returned fields the class schema does not define, which were dropped before assessment. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when it returned fields the class schema does not define, which were dropped before assessment. English is the code itself; translate it as a short readable label.",
   },
   extraction_output_truncated: {
     id: 'documents.processingIssue.code.extractionOutputTruncated',
     defaultMessage: 'extraction_output_truncated',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when the model's response was cut off before it finished, so the result holds only the part that was emitted. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when the model's response was cut off before it finished, so the result holds only the part that was emitted. English is the code itself; translate it as a short readable label.",
   },
   extraction_partial_row_shortfall: {
     id: 'documents.processingIssue.code.extractionPartialRowShortfall',
     defaultMessage: 'extraction_partial_row_shortfall',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a list field holds fewer rows than the section's OCR tables suggest, but at least half of them: a shortfall to confirm rather than a certain loss. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a list field holds fewer rows than the section's OCR tables suggest, but at least half of them: a shortfall to confirm rather than a certain loss. English is the code itself; translate it as a short readable label.",
   },
   extraction_row_count_unverified: {
     id: 'documents.processingIssue.code.extractionRowCountUnverified',
     defaultMessage: 'extraction_row_count_unverified',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when the section's OCR text holds too few matching table rows to check a list field's row count, so the count is unverified. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when the section's OCR text holds too few matching table rows to check a list field's row count, so the count is unverified. English is the code itself; translate it as a short readable label.",
   },
   extraction_rows_below_ocr_estimate: {
     id: 'documents.processingIssue.code.extractionRowsBelowOcrEstimate',
     defaultMessage: 'extraction_rows_below_ocr_estimate',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when a list field holds fewer than half the rows the section's OCR tables suggest, so the list is likely truncated. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when a list field holds fewer than half the rows the section's OCR tables suggest, so the list is likely truncated. English is the code itself; translate it as a short readable label.",
   },
   extraction_sparse: {
     id: 'documents.processingIssue.code.extractionSparse',
     defaultMessage: 'extraction_sparse',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when the share of the schema's fields that were populated is below a threshold: a possible silent extraction loss. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when the share of the schema's fields that were populated is below a threshold: a possible silent extraction loss. English is the code itself; translate it as a short readable label.",
   },
   extraction_validation_failed: {
     id: 'documents.processingIssue.code.extractionValidationFailed',
     defaultMessage: 'extraction_validation_failed',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by extraction when schema violations remain in a section's extracted data. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by extraction when schema violations remain in a section's extracted data. English is the code itself; translate it as a short readable label.",
   },
   rule_validation_failed: {
     id: 'documents.processingIssue.code.ruleValidationFailed',
     defaultMessage: 'rule_validation_failed',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by rule validation when it did not complete for a section, so the section has no compliance verdict. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by rule validation when it did not complete for a section, so the section has no compliance verdict. English is the code itself; translate it as a short readable label.",
   },
   rule_validation_not_consolidated: {
     id: 'documents.processingIssue.code.ruleValidationNotConsolidated',
     defaultMessage: 'rule_validation_not_consolidated',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by rule validation when a section was validated but combining the document's results into one compliance decision failed, so no verdict was recorded for it. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by rule validation when a section was validated but combining the document's results into one compliance decision failed, so no verdict was recorded for it. English is the code itself; translate it as a short readable label.",
   },
   section_processing_failed: {
     id: 'documents.processingIssue.code.sectionProcessingFailed',
     defaultMessage: 'section_processing_failed',
     description:
-      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table. Raised by the collate step when it finds that a section's processing failed, so the section's extracted data should not be treated as complete. English is the code itself; translate it as a short readable label.",
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by the collate step when it finds that a section's processing failed, so the section's extracted data should not be treated as complete. English is the code itself; translate it as a short readable label.",
   },
 });
 

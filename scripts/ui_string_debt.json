@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 167,
-    "findings": 4851
+    "files": 165,
+    "findings": 4751
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -101,12 +101,10 @@
     "src/ui/src/components/document-viewer/FormFieldRenderer.tsx": 64,
     "src/ui/src/components/document-viewer/JSONEditorTab.tsx": 34,
     "src/ui/src/components/document-viewer/MarkdownViewer.tsx": 6,
-    "src/ui/src/components/document-viewer/ProcessingReportTab.tsx": 99,
     "src/ui/src/components/edit-screen/EditPage.tsx": 5,
     "src/ui/src/components/edit-screen/EditScreen.tsx": 19,
     "src/ui/src/components/edit-screen/EditorHistoryModal.tsx": 4,
     "src/ui/src/components/edit-screen/FieldEditsTable.tsx": 12,
-    "src/ui/src/components/edit-screen/ProcessingReportContent.tsx": 1,
     "src/ui/src/components/edit-screen/SectionEditor.tsx": 32,
     "src/ui/src/components/edit-screen/direct-edit-model.tsx": 34,
     "src/ui/src/components/edit-screen/document-edit-adapter.ts": 1,
