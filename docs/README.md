@@ -9,6 +9,20 @@ SPDX-License-Identifier: MIT-0
 
 This folder contains detailed documentation on various aspects of the GenAI Intelligent Document Processing solution.
 
+## Get Started
+
+- [Get Started](./get-started.md) - From an empty account to processing your own documents in production, step by step
+
+## IDP Fundamentals
+
+- [How Document Processing Works](./idp-fundamentals/index.md) - The five problem sets that take a stack of documents to a database, and how to measure them
+- [Digitization (OCR)](./idp-fundamentals/digitization.md)
+- [Splitting and Section Classification](./idp-fundamentals/splitting-and-classification.md)
+- [Key Information Extraction](./idp-fundamentals/extraction.md)
+- [Confidence Assessment](./idp-fundamentals/confidence-assessment.md)
+- [Rule Validation](./idp-fundamentals/rule-validation.md)
+- [Benchmark Datasets](./idp-fundamentals/benchmark-datasets.md) - The datasets behind the measured results, and what each one measures
+
 ## Core
 
 - [Architecture](./architecture.md) - Detailed component architecture and data flow
