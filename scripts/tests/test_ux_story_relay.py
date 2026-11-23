@@ -2041,11 +2041,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "PauseCircuitBreaker": (
         Shipped(_BREAKER, "Pause processing"),
-        Shipped(_BREAKER, "Pause", source="confirmLabel: 'Pause'"),
+        Shipped(_BREAKER, "Pause", source="defaultMessage: 'Pause'"),
     ),
     "ProbeCircuitBreaker": (
         Shipped(_BREAKER, "Probe recovery"),
-        Shipped(_BREAKER, "Probe", source="confirmLabel: 'Probe'"),
+        Shipped(_BREAKER, "Probe", source="defaultMessage: 'Probe'"),
     ),
     "ProcessChanges": (
         Shipped(
@@ -2100,7 +2100,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "ResumeCircuitBreaker": (
         Shipped(_BREAKER, "Resume processing"),
-        Shipped(_BREAKER, "Resume", source="confirmLabel: 'Resume'"),
+        Shipped(_BREAKER, "Resume", source="defaultMessage: 'Resume'"),
     ),
     "RevokeMcpCredential": (
         Shipped(_MCP, "Revoke", source="'Revoke'", inside_dialog=True),
