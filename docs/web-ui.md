@@ -1023,7 +1023,7 @@ account.
 - document data, always: extracted values, document class names, configuration content and file
   names appear as they were written.
 
-At this release, **2,901 of 2,903** interface messages (**99.9%**) have a French (Canada)
+At this release, **2,903 of 2,903** interface messages (**100%**) have a French (Canada)
 translation; a message without one is shown in English.
 
 Developers: the [i18n README](../src/ui/src/i18n/README.md) explains how a message is declared
