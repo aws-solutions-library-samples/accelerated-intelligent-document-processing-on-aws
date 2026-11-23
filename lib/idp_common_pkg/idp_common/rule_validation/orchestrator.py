@@ -93,6 +93,36 @@ def _normalize_page_reference(page: Any) -> Optional[Tuple[str, Tuple[int, int, 
     return text, (_NON_NUMERIC_PAGE_RANK, 0, text)
 
 
+#: The normalised verdicts of a policy rule.
+VERDICT_PASS = "pass"
+VERDICT_FAIL = "fail"
+VERDICT_NOT_FOUND = "not_found"
+VERDICT_UNKNOWN = "unknown"
+VERDICTS = (VERDICT_PASS, VERDICT_FAIL, VERDICT_NOT_FOUND, VERDICT_UNKNOWN)
+
+#: The three recommendation labels with a fixed meaning, lower-cased.
+_VERDICT_BY_LABEL = {
+    "pass": VERDICT_PASS,
+    "fail": VERDICT_FAIL,
+    "information not found": VERDICT_NOT_FOUND,
+}
+
+
+def normalise_verdict(recommendation: Any) -> str:
+    """A recommendation label as ``pass``, ``fail``, ``not_found`` or ``unknown``.
+
+    ``recommendation`` is free text from ``rule_validation.recommendation_options``,
+    so nothing that acts on a verdict can compare it. Only the three default
+    labels are recognised, ignoring case and surrounding space: ``Pass``,
+    ``Fail`` and ``Information Not Found``. Any other label, a missing one and a
+    response with no recommendation at all (a fact extraction that never got a
+    verdict) read as ``unknown``.
+    """
+    if not isinstance(recommendation, str):
+        return VERDICT_UNKNOWN
+    return _VERDICT_BY_LABEL.get(recommendation.strip().lower(), VERDICT_UNKNOWN)
+
+
 def is_section_results_key(key: str) -> bool:
     """Is ``key`` one of the per-section rule-validation result objects?
 
@@ -241,6 +271,8 @@ class RuleValidationOrchestratorService:
                     rule = response.get("rule", "Unknown rule")
                     supporting_pages = response.get("supporting_pages", [])
                     reasoning = response.get("reasoning", "No reasoning provided")
+                    rule_id = response.get("rule_id")
+                    z3_rule_id = response.get("z3_rule_id")
 
                     rule_stats["total_rules"] += 1
                     total_rules += 1
@@ -279,10 +311,17 @@ class RuleValidationOrchestratorService:
                             all_supporting_pages[text] = sort_key
 
                     # Add rule summary
+                    # `rule_id` is the rule's stable id and `verdict` its
+                    # normalised result: what a routing rule, a hook or a report
+                    # query reads. `rule` and `recommendation` stay as configured,
+                    # for people.
                     rule_stats["rules"].append(
                         {
+                            "rule_id": rule_id,
+                            "z3_rule_id": z3_rule_id,
                             "rule": rule,
                             "recommendation": recommendation,
+                            "verdict": normalise_verdict(recommendation),
                             "supporting_pages": supporting_pages,
                             "reasoning": reasoning,
                         }
@@ -364,6 +403,15 @@ class RuleValidationOrchestratorService:
             else 0.0
         )
 
+        # The same rules counted by normalised verdict, so a reader need not know
+        # the configured labels. Every label lands in exactly one verdict, so the
+        # four counts sum to the rules counted. The label counts above are
+        # unchanged.
+        verdict_counts = dict.fromkeys(VERDICTS, 0)
+        for label, count in counts.items():
+            verdict_counts[normalise_verdict(label)] += count
+        statistics["verdict_counts"] = verdict_counts
+
     def _apply_overall_statistics(
         self,
         summary: Dict[str, Any],
@@ -408,15 +456,20 @@ class RuleValidationOrchestratorService:
             task_metadata = []
 
             for policy_type, rule_content in responses.items():
-                # rule_content is a list of responses, group by rule
+                # rule_content is a list of responses. Group them by the rule's
+                # stable id, so two rules with the same description stay two
+                # rules; a section file written before ids existed has none and
+                # is grouped by the rule text, as it always was.
                 rule_groups = {}
                 for response in rule_content:
-                    rule = response.get("rule", "unknown")
-                    if rule not in rule_groups:
-                        rule_groups[rule] = []
-                    rule_groups[rule].append(response)
+                    group = response.get("rule_id") or response.get("rule", "unknown")
+                    if group not in rule_groups:
+                        rule_groups[group] = []
+                    rule_groups[group].append(response)
 
-                for rule, rule_responses in rule_groups.items():
+                for rule_responses in rule_groups.values():
+                    first = rule_responses[0]
+                    rule = first.get("rule", "unknown")
                     # Skip rules already resolved by Z3 — they have a final verdict
                     if any(r.get("_z3_validated") for r in rule_responses):
                         if policy_type not in final_responses:
@@ -454,7 +507,14 @@ class RuleValidationOrchestratorService:
                         max_tokens=summary_config.max_tokens,
                     )
                     tasks.append(task)
-                    task_metadata.append({"policy_type": policy_type, "rule": rule})
+                    task_metadata.append(
+                        {
+                            "policy_type": policy_type,
+                            "rule": rule,
+                            "rule_id": first.get("rule_id"),
+                            "z3_rule_id": first.get("z3_rule_id"),
+                        }
+                    )
 
             # Execute all tasks in parallel with semaphore control
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -479,9 +539,12 @@ class RuleValidationOrchestratorService:
                     final_responses[policy_type] = []
 
                 if isinstance(result, dict) and result:
-                    # Add policy_type and rule to the result
+                    # Add policy_type, rule and the rule's ids to the result
                     result["policy_type"] = policy_type
                     result["rule"] = rule
+                    result["rule_id"] = metadata["rule_id"]
+                    result["z3_rule_id"] = metadata["z3_rule_id"]
+                    result["verdict"] = normalise_verdict(result.get("recommendation"))
                     final_responses[policy_type].append(result)
 
             return final_responses
@@ -656,10 +719,10 @@ class RuleValidationOrchestratorService:
         defect at its worst rather than an edge of it.
 
         The reachable shape of that case is a **Map over zero sections**. It is not a
-        run whose sections all failed: ``ProcessRuleValidationSections`` carries no
+        run whose sections all failed: ``ValidatePolicyRulesBySection`` carries no
         ``Catch`` and no tolerated-failure setting, and neither does
-        ``RuleValidationStep`` inside it, so one failed iteration fails the Map and
-        ``RuleValidationOrchestration`` never runs at all.
+        ``PolicyRuleValidationStep`` inside it, so one failed iteration fails the Map and
+        ``PolicyRuleConsolidationStep`` never runs at all.
         """
         try:
             if section_uris is None:
@@ -1139,7 +1202,9 @@ class RuleValidationOrchestratorService:
 
         Flow:
         1. Build lookup from config: which rules are Z3 and their rule_ids
-        2. Match responses by (policy_type, rule_description) against the lookup
+        2. Match responses against the lookup by the rule's stable id
+           (``rule_id`` on the response), or by (policy_type, rule_description)
+           for a response written before ids existed
         3. For each Z3 rule: collect facts from all sections
         4. Call LLM to extract typed parameter values from the collected facts
         5. If all required parameters have values: run Z3 solver
@@ -1159,9 +1224,15 @@ class RuleValidationOrchestratorService:
             X_AWS_IDP_VALIDATION_ENGINE,
         )
 
-        # Step 1: Build Z3 rule lookup from config
-        # {(policy_type, rule_description): rule_id}
-        z3_rule_lookup = {}
+        # Step 1: Build the Z3 rule lookups from config.
+        #
+        # By the rule's stable id, `<policy type>.<rule key>`, which a section
+        # response carries as `rule_id`; and by (policy type, description), for
+        # section files written before responses carried an id. Each maps to the
+        # rule's Z3 id.
+        z3_by_policy_rule_id = {}
+        z3_by_description = {}
+        policy_rule_id_by_description = {}
         policy_classes = config.get("policy_classes", [])
         if not policy_classes:
             # Try nested under rule_validation
@@ -1174,43 +1245,63 @@ class RuleValidationOrchestratorService:
             if not policy_type:
                 continue
             rule_properties = policy_class.get("rule_properties", {})
-            for prop in rule_properties.values():
+            for rule_key, prop in rule_properties.items():
                 engine = prop.get(X_AWS_IDP_VALIDATION_ENGINE, "llm")
                 rule_id = prop.get(X_AWS_IDP_RULE_ID)
                 description = prop.get("description")
                 if engine == VALIDATION_ENGINE_Z3 and rule_id and description:
-                    z3_rule_lookup[(policy_type, description)] = rule_id
+                    policy_rule_id = f"{policy_type}.{rule_key}"
+                    z3_by_policy_rule_id[policy_rule_id] = rule_id
+                    z3_by_description.setdefault((policy_type, description), rule_id)
+                    policy_rule_id_by_description.setdefault(
+                        (policy_type, description), policy_rule_id
+                    )
 
-        if not z3_rule_lookup:
+        if not z3_by_policy_rule_id:
             logger.debug("No Z3 rules found in config")
             return all_responses
 
         logger.info(
-            f"Found {len(z3_rule_lookup)} Z3 rules in config: "
-            f"{list(z3_rule_lookup.values())}"
+            f"Found {len(z3_by_policy_rule_id)} Z3 rules in config: "
+            f"{list(z3_by_policy_rule_id.values())}"
         )
 
+        def z3_rule_of(policy_type, response):
+            """``(policy rule id, Z3 rule id)`` when the response is a Z3 rule's."""
+            policy_rule_id = response.get("rule_id")
+            if policy_rule_id:
+                # The response names its rule. A rule that is not a Z3 rule is an
+                # LLM rule even when a Z3 rule has the same description.
+                z3_rule_id = z3_by_policy_rule_id.get(policy_rule_id)
+                return (policy_rule_id, z3_rule_id) if z3_rule_id else None
+            key = (policy_type, response.get("rule", ""))
+            if key in z3_by_description:
+                return policy_rule_id_by_description[key], z3_by_description[key]
+            return None
+
         # Step 2: Match responses against the Z3 lookup
-        # Group by (policy_type, rule_id) to avoid collisions across policy types
-        z3_rules_found = {}  # {(policy_type, rule_id): {"policy_type": ..., "rule": ..., "responses": [...]}}
+        # Group by (policy_type, policy rule id) to avoid collisions across
+        # policy types and between rules that share a description
+        z3_rules_found = {}
 
         for policy_type, responses in all_responses.items():
             if not isinstance(responses, list):
                 continue
             for response in responses:
-                rule_text = response.get("rule", "")
-                key = (policy_type, rule_text)
-                if key in z3_rule_lookup:
-                    rule_id = z3_rule_lookup[key]
-                    compound_key = (policy_type, rule_id)
-                    if compound_key not in z3_rules_found:
-                        z3_rules_found[compound_key] = {
-                            "policy_type": policy_type,
-                            "rule": rule_text,
-                            "rule_id": rule_id,
-                            "responses": [],
-                        }
-                    z3_rules_found[compound_key]["responses"].append(response)
+                matched = z3_rule_of(policy_type, response)
+                if matched is None:
+                    continue
+                policy_rule_id, rule_id = matched
+                compound_key = (policy_type, policy_rule_id)
+                if compound_key not in z3_rules_found:
+                    z3_rules_found[compound_key] = {
+                        "policy_type": policy_type,
+                        "rule": response.get("rule", ""),
+                        "rule_id": rule_id,
+                        "policy_rule_id": policy_rule_id,
+                        "responses": [],
+                    }
+                z3_rules_found[compound_key]["responses"].append(response)
 
         if not z3_rules_found:
             logger.debug(
@@ -1225,7 +1316,7 @@ class RuleValidationOrchestratorService:
         )
 
         # Step 3: Process each Z3 rule
-        z3_verdicts = {}  # {(policy_type, rule_id): verdict_dict}
+        z3_verdicts = {}  # {(policy_type, policy rule id): verdict_dict}
 
         for compound_key, rule_info in z3_rules_found.items():
             policy_type = rule_info["policy_type"]
@@ -1241,10 +1332,12 @@ class RuleValidationOrchestratorService:
                 section_responses,
                 config,
             )
+            # The verdict names its rule the way every other response does.
+            verdict["rule_id"] = rule_info["policy_rule_id"]
+            verdict["z3_rule_id"] = rule_id
             z3_verdicts[compound_key] = verdict
 
         # Step 4: Update all_responses — replace Z3 rule responses with verdicts
-        # Build a reverse lookup: (policy_type, rule_text) → rule_id for quick matching
         for policy_type in list(all_responses.keys()):
             responses = all_responses[policy_type]
             if not isinstance(responses, list):
@@ -1254,12 +1347,11 @@ class RuleValidationOrchestratorService:
             z3_verdicts_added = set()  # Track which Z3 verdicts we've already added
 
             for response in responses:
-                rule_text = response.get("rule", "")
-                key = (policy_type, rule_text)
+                matched = z3_rule_of(policy_type, response)
 
-                if key in z3_rule_lookup:
-                    rule_id = z3_rule_lookup[key]
-                    compound_key = (policy_type, rule_id)
+                if matched is not None:
+                    policy_rule_id, rule_id = matched
+                    compound_key = (policy_type, policy_rule_id)
                     verdict = z3_verdicts.get(compound_key)
 
                     if verdict is not None:
@@ -1274,7 +1366,9 @@ class RuleValidationOrchestratorService:
                         updated_responses.append(
                             {
                                 "policy_type": policy_type,
-                                "rule": rule_text,
+                                "rule": response.get("rule", ""),
+                                "rule_id": policy_rule_id,
+                                "z3_rule_id": rule_id,
                                 "recommendation": "Information Not Found",
                                 "reasoning": "Z3 engine error: no verdict produced.",
                                 "supporting_pages": [],
@@ -1393,7 +1487,7 @@ tr:hover {
 
         # Title
         doc_id = consolidated_summary.get("document_id", "Document")
-        md_parts.append(f"# Rule Validation Summary: {doc_id}\n\n")
+        md_parts.append(f"# Policy Rule Validation Summary: {doc_id}\n\n")
 
         # A consolidation that failed part way through still has statistics worth
         # showing, but they describe only the rules counted before the failure. Say
@@ -1524,6 +1618,18 @@ tr:hover {
                         .replace(">", "&gt;")
                         .replace('"', "&quot;")
                     )
+                    # The rule's stable id, in parentheses after its text: what a
+                    # routing rule names, so a reader can copy it from the report.
+                    rule_id = rule_item.get("rule_id")
+                    if rule_id:
+                        escaped_rule_id = (
+                            str(rule_id)
+                            .replace("&", "&amp;")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;")
+                            .replace('"', "&quot;")
+                        )
+                        rule = f"{rule} ({escaped_rule_id})"
                     recommendation = rule_item.get("recommendation", "")
                     pages = (
                         ", ".join(map(str, rule_item.get("supporting_pages", [])))
@@ -1538,10 +1644,15 @@ tr:hover {
                         .replace("\n", " ")
                     )
 
-                    # Add status emoji
-                    if recommendation == "Pass":
+                    # Status emoji by the normalised verdict, so "pass" and
+                    # "Pass" read alike. A summary written before verdicts were
+                    # stored has none, and is normalised here.
+                    verdict = rule_item.get("verdict") or normalise_verdict(
+                        recommendation
+                    )
+                    if verdict == VERDICT_PASS:
                         status_icon = "✅"
-                    elif recommendation == "Fail":
+                    elif verdict == VERDICT_FAIL:
                         status_icon = "❌"
                     else:
                         status_icon = "ℹ️"
@@ -1627,13 +1738,18 @@ tr:hover {
         """
         Complete consolidation workflow: load, merge, summarize, and save all results.
 
+        One path for every document: load this run's section results, run the Z3
+        rules across sections, give every other rule its verdict (when an
+        orchestrator is configured), and save. A single-section document takes
+        the same path as a multi-section one, so its rules get real verdicts.
+
         ``section_uris`` is this run's section output list; see
         :meth:`load_section_results` for why passing it matters.
+        ``multiple_sections`` is accepted for callers that pass it and is not
+        read: the verdict pass does not depend on the number of sections.
         """
         try:
-            # Resolved ONCE, here, and used for both the load and the section count.
-            # `_section_keys_from_uris` logs a warning per URI it drops, so calling it
-            # twice reported the same bad URI twice and read as two bad objects.
+            # `_section_keys_from_uris` logs a warning per URI it drops.
             # `load_section_results` passes a bare key through unchanged, so handing
             # it keys rather than URIs is idempotent.
             section_keys = (
@@ -1642,8 +1758,8 @@ tr:hover {
                 else self._section_keys_from_uris(section_uris, document.output_bucket)
             )
 
-            # Load all section results and check if chunking occurred
-            all_responses, chunking_occurred = self.load_section_results(
+            # Load all section results
+            all_responses, _ = self.load_section_results(
                 document.input_key, document.output_bucket, section_keys
             )
 
@@ -1659,83 +1775,18 @@ tr:hover {
                 all_responses, config
             )
 
-            # Determine if summarization is needed: multiple sections OR chunking
-            # occurred. This counts THIS run's sections; the prefix is only listed
-            # when the caller supplied no list, for the same reason as in
-            # `load_section_results` -- a stale object left by a previous run would
-            # otherwise push the count past 1 and route a single-section document
-            # through LLM summarization, which is a cost and latency difference on
-            # top of the wrong verdicts (#1143).
-            if section_keys is None:
-                prefix = f"{document.input_key}/rule_validation/sections/"
-                pattern = f"{prefix}section_*_responses.json"
-                section_files = s3.find_matching_files(document.output_bucket, pattern)
-                num_sections = len(
-                    [f for f in section_files if is_section_results_key(f)]
-                )
-            else:
-                # Counted from the keys the loader actually READ, not from the raw
-                # list. A URI naming another bucket is dropped, so counting the raw
-                # list reads one object and reports two — which takes the LLM
-                # summarization branch for a single-section document. That is the same
-                # defect this change exists to remove, reintroduced on the defensive
-                # path.
-                num_sections = len(
-                    [key for key in section_keys if is_section_results_key(key)]
-                )
-
-            needs_summarization = (num_sections > 1) or chunking_occurred
-
-            if not needs_summarization:
-                logger.info(
-                    f"Single section ({num_sections}) with no chunking - storing results directly"
-                )
-                # For single section with no chunking, just store the section results directly
-                output_uris = self.save_policy_type_responses(
-                    all_responses, document.input_key, document.output_bucket
-                )
-
-                # Generate basic summary without LLM
-                consolidated_summary = self._generate_consolidated_summary(
-                    all_responses
-                )
-                consolidated_summary["document_id"] = document.id
-                summary_output_uri = self.save_consolidated_summary(
-                    consolidated_summary, document.input_key, document.output_bucket
-                )
-
-                # Store consolidated result in document
-                document.rule_validation_result = (
-                    RuleValidationResult.for_consolidation(
-                        document.id, output_uris, summary_output_uri, len(all_responses)
-                    )
-                )
-
-                # Merge summarization metering into document
-                document.metering = utils.merge_metering_data(
-                    document.metering, self.token_metrics
-                )
-
-                return document
-
-            logger.info(
-                f"Summarization needed: {num_sections} sections, chunking_occurred: {chunking_occurred}"
-            )
-
-            # Check if we have multiple sections (for LLM summarization)
-            if multiple_sections is None:
-                # Auto-detect if not provided by Lambda
-                total_sections = sum(
-                    len(responses) if isinstance(responses, list) else 1
-                    for responses in all_responses.values()
-                )
-                multiple_sections = total_sections > len(
-                    all_responses
-                )  # More responses than rule types
-
-            # Always run orchestrator if config exists (fact extraction needs orchestrator)
+            # The verdict pass. A section's responses are fact extractions: what
+            # the document says about each rule, with no verdict. This call gives
+            # each rule its verdict from the facts of every section. It runs for
+            # any number of sections, so a single-section document gets real
+            # verdicts too, at one model call per rule. Rules the solver already
+            # decided above are passed through. Without an orchestrator
+            # configuration the facts are stored as they are, and every rule's
+            # verdict reads as unknown.
             if config.get("rule_validation", {}).get("rule_validation_orchestrator"):
-                logger.info("Running LLM summarization for multiple sections")
+                logger.info(
+                    "Running the verdict pass over the section fact extractions"
+                )
                 all_responses = await self._summarize_responses(all_responses, config)
 
             # Save policy type responses

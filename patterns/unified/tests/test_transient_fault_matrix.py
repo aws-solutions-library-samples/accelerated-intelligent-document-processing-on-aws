@@ -627,7 +627,7 @@ def rule_validation_module():
 
 
 def test_rule_validation(rule_validation_module, rule_config):
-    """RuleValidationStep: the per-rule model calls for one section."""
+    """PolicyRuleValidationStep: the per-rule model calls for one section."""
     module = rule_validation_module
 
     def run(make):
@@ -663,7 +663,7 @@ def orchestration_module():
 
 
 def test_rule_validation_orchestration(orchestration_module, rule_config):
-    """RuleValidationOrchestration: the consolidation model call over two sections'
+    """PolicyRuleConsolidationStep: the consolidation model call over two sections'
     results, which is the only shape that reaches the model (one section is stored
     without one)."""
     module = orchestration_module

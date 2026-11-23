@@ -22,7 +22,7 @@ its confidence, and its location together.
 >
 > - `extraction.confidence.{enabled, mode, model, list_batch_size, image, system_prompt, task_prompt, ...}` — confidence scoring (formerly the top-level `assessment` block).
 > - `extraction.geometry.{mode, task_prompt_bbox}` — field bounding boxes (formerly `assessment.geometry_mode` / `assessment.ground_geometry_in_ocr`).
-> - `hitl.{enabled, confidence_threshold}` — human review routing (top-level).
+> - `hitl.{enabled, confidence_threshold}` — Review Routing: whether documents are held for review, and the confidence threshold (top-level).
 > - Existing pre-v0.6 configs are **migrated automatically on read** — no manual edit is required. See [Granular Assessment Retirement](migration-granular-retirement.md).
 
 ---
@@ -1993,11 +1993,30 @@ A field extraction found no value for raises no confidence alert. With review qu
 a *required* field with no value still sends its document to the Default queue while
 `hitl.route_missing_required_fields` is on (the default); see
 [Absent values and missing required fields](#absent-values-and-missing-required-fields).
-HITL is configured under the top-level `hitl` block in v0.6:
+
+Which documents are reviewed, and in which review queue, is decided by the profile's
+routing rules (see [Review Routing](./review-routing.md)). The built-in routing
+rules are the behaviour described here: a section whose extraction failed, a
+confidence alert, or a missing required field, sends the document to the Default
+queue. They are evaluated only while the
+**Review Routing** switch (`hitl.enabled`) is on, which it is in the profiles a new
+stack creates.
+
+**A section a reviewer confirmed raises no alert.** When a review is completed, each
+section's result records that it was reviewed, and the fields of a confirmed section
+no longer count as confidence alerts or missing required fields for routing, whatever
+their scores; a confirmed section whose extraction had failed no longer counts as a
+failed extraction either. That is why a document whose review was completed is not sent back to
+review by the same low score. Extracting the section again (a reprocess from
+extraction, **Re-extract Sections**) removes the record, and its fields raise alerts
+again.
+
+HITL is configured under the top-level `hitl` block in v0.6, shown in the Web UI as
+**Processing Settings → Review Routing (Optional)**:
 
 ```yaml
 hitl:
-  enabled: true
+  enabled: true                # the Review Routing switch
   confidence_threshold: 0.85   # fields below this are flagged for review
   route_missing_required_fields: true   # review queues: a required field with no value also holds the document
   notifications:
@@ -2013,7 +2032,7 @@ workflow and the review UI, see
 `hitl.notifications` sets how long [Inbox](web-ui.md#inbox) messages are kept and how
 many each user keeps. It is read from the **active** configuration profile, cached
 for about 60 seconds, applies to messages written after a change, and applies
-whether or not `hitl.enabled` is set. When a user goes over the cap, expired
+whether or not Review Routing (`hitl.enabled`) is on. When a user goes over the cap, expired
 messages are removed first, then the oldest read ones, and the oldest unread one
 only when every message is unread. See
 [Inbox message retention](configuration.md#inbox-message-retention) for the full
@@ -2096,12 +2115,12 @@ Each entry has the same shape as a confidence alert (`attributeName`, `confidenc
 carries the total as `MissingRequiredFieldCount`, and the Web UI shows it beside the
 confidence alerts: in Document Details, as a **Missing Required Fields** column in
 the sections table (hover the count for the field names), and as an optional column
-in the document list. In review-queue mode, with HITL enabled, the Default queue on
-and `hitl.route_missing_required_fields` on (the default), each missing required
+in the document list. In review-queue mode, with Review Routing on, the Default queue
+on and `hitl.route_missing_required_fields` on (the default), each missing required
 field is also a review reason, **Missing required: <field>**, so the document is
 held in the Default queue. Turn the setting off (**Configuration** ›
-**Human-in-the-Loop (HITL) Review** › **Review missing required fields**) to keep
-missing required fields informational. Legacy HITL, used while the Default queue is
+**Processing Settings** › **Review Routing (Optional)** › **Review missing required
+fields**) to keep missing required fields informational. Legacy HITL, used while the Default queue is
 off, does not trigger on them.
 
 In the document list, the **Missing Required Fields** column and the **Processing
@@ -2656,12 +2675,19 @@ sensitive information stops with the same reason, and its masked reply is used a
 the answer. In the confidence pass a withheld reply for one batch of list rows
 leaves only those rows unscored; the other batches keep their scores. The call that
 was withheld was still billed, and its tokens are counted in the document's
-metering. With human review enabled
-(`hitl.enabled: true`), the failed section holds the document for review: under
-review queues it is an **Extraction failed** review reason on that section, and in
-legacy HITL mode the section is marked pending review. The section has no fields and
-no confidence scores, so this reason is the only thing that holds it. With human
-review off the document completes; find such documents by the section's **Failed**
+metering. With Review Routing on
+(`hitl.enabled: true`), the failed section holds the document for review. With
+review queues, the built-in routing rule **Failed extractions**
+(`builtin-extraction-failed`, which tests the input `extraction_failed_count`) sends
+the document to the Default queue, and the review item carries an **Extraction
+failed** review reason on that section. A profile whose routing table no longer has
+that routing rule holds the document only when another of its routing rules matches
+it (see [The built-in routing rules](./review-routing.md#the-built-in-routing-rules)).
+When the Default queue is off, the section is marked pending review on the document
+page. The section has no fields and no confidence scores, so it raises no confidence
+alert; the required fields of its class are missing too, which is why the routing
+rule for failed extractions is tried first. With Review Routing off the document
+completes; find such documents by the section's **Failed**
 status, and expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
 handle a block on their own model call the same way: see
 [Classification](./classification.md#pages-classification-could-not-classify) and

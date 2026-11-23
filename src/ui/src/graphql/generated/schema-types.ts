@@ -605,6 +605,9 @@ export type Document = DynamoDbBase & {
   ProcessingIssueCount?: Maybe<Scalars['Int']['output']>;
   ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;
   QueuedTime?: Maybe<Scalars['AWSDateTime']['output']>;
+  ReviewQueue?: Maybe<Scalars['String']['output']>;
+  ReviewQueueName?: Maybe<Scalars['String']['output']>;
+  ReviewRoutedBy?: Maybe<Scalars['AWSJSON']['output']>;
   RuleValidationResult?: Maybe<Scalars['AWSJSON']['output']>;
   RuleValidationResultUri?: Maybe<Scalars['String']['output']>;
   SK: Scalars['ID']['output'];
@@ -1112,7 +1115,7 @@ export type Mutation = {
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
   removeReviewItem?: Maybe<ReviewItem>;
   renewReviewLease?: Maybe<ReviewItem>;
-  reprocessDocument: Scalars['Boolean']['output'];
+  reprocessDocument: ReprocessResult;
   resetTestSetLabels?: Maybe<TestSet>;
   restoreConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   restoreDefaultModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
@@ -1125,6 +1128,7 @@ export type Mutation = {
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
   saveTestSetDocumentSectionDraft?: Maybe<TestSetSectionDraft>;
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
+  sendBackReviewItem: ReprocessDocumentResult;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
   sendToReview?: Maybe<SendToReviewResult>;
@@ -1594,6 +1598,8 @@ export type MutationRenewReviewLeaseArgs = {
 export type MutationReprocessDocumentArgs = {
   objectKeys: Array<Scalars['String']['input']>;
   revision?: InputMaybe<Scalars['Int']['input']>;
+  skipSteps?: InputMaybe<Array<Scalars['String']['input']>>;
+  startStep?: InputMaybe<Scalars['String']['input']>;
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
@@ -1665,6 +1671,13 @@ export type MutationSendAgentChatMessageArgs = {
   prompt: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
   toolMetadata?: InputMaybe<ToolMetadataInput>;
+};
+
+
+export type MutationSendBackReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -1965,6 +1978,7 @@ export type MyReviewQueues = {
   items: ReviewItemPage;
   myClaimCount: Scalars['Int']['output'];
   queues: Array<ReviewQueueSummary>;
+  reviewRoutingEnabled?: Maybe<Scalars['Boolean']['output']>;
 };
 
 export type OpenTestSetAnnotationDraftInput = {
@@ -2004,6 +2018,24 @@ export type PipelineHookInput = {
   point: Scalars['String']['input'];
 };
 
+export type PlannedRun = {
+  mode: Scalars['String']['output'];
+  sections: Array<PlannedSection>;
+  startStep: Scalars['String']['output'];
+  steps: Array<PlannedStep>;
+};
+
+export type PlannedSection = {
+  cause: Scalars['String']['output'];
+  sectionId: Scalars['String']['output'];
+};
+
+export type PlannedStep = {
+  id: Scalars['String']['output'];
+  label: Scalars['String']['output'];
+  state: Scalars['String']['output'];
+};
+
 export type PresignedUploadUrl = {
   fileName: Scalars['String']['output'];
   objectKey: Scalars['String']['output'];
@@ -2028,6 +2060,8 @@ export type PricingResponse = {
 export type ProcessChangesResponse = {
   message?: Maybe<Scalars['String']['output']>;
   processingJobId?: Maybe<Scalars['String']['output']>;
+  startStep?: Maybe<Scalars['String']['output']>;
+  steps?: Maybe<Array<PlannedStep>>;
   success: Scalars['Boolean']['output'];
 };
 
@@ -2063,6 +2097,7 @@ export type Query = {
   checkFeatureEntitlement?: Maybe<FeatureEntitlement>;
   compareDocumentVersions?: Maybe<Scalars['AWSJSON']['output']>;
   compareTestRuns?: Maybe<TestRunComparison>;
+  convertRoutingDmn: RoutingDmnConversion;
   estimateReviewEffort?: Maybe<ReviewEffortEstimate>;
   getAgentChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getAgentJobStatus?: Maybe<AgentJob>;
@@ -2094,7 +2129,11 @@ export type Query = {
   getMyProfile?: Maybe<User>;
   getMyReviewQueues?: Maybe<MyReviewQueues>;
   getPricing?: Maybe<PricingResponse>;
+  getProcessChangesPlan: PlannedRun;
+  getReprocessOptions: Array<ReprocessOption>;
+  getReviewCompletionPlan: ReviewCompletionPlan;
   getReviewItem?: Maybe<ReviewItemDetail>;
+  getReviewQueueReferences: QueueReferencePage;
   getReviewQueuesOverview?: Maybe<ReviewQueuesOverview>;
   getSampleDocumentUrl?: Maybe<SampleDocumentUrl>;
   getStepFunctionExecution?: Maybe<StepFunctionExecutionResponse>;
@@ -2141,7 +2180,7 @@ export type Query = {
   listMyReviewWork?: Maybe<ReviewItemPage>;
   listMyTestSetTasks?: Maybe<Array<TestSetTask>>;
   listReviewQueueItems?: Maybe<ReviewItemPage>;
-  listReviewQueues?: Maybe<Array<ReviewQueueDefinition>>;
+  listReviewQueues: ReviewQueueDefinitionPage;
   listSampleDocuments?: Maybe<SampleDocumentListResponse>;
   listTenants?: Maybe<TenantsResponse>;
   listTestSetQueues?: Maybe<Array<TestSetQueueSummary>>;
@@ -2149,6 +2188,7 @@ export type Query = {
   queryKnowledgeBase?: Maybe<Scalars['String']['output']>;
   resolveConfigPrefixMapping?: Maybe<ConfigAssignmentPreviewResponse>;
   submitAgentQuery?: Maybe<AgentJob>;
+  testRoutingTable: RoutingTestResult;
   validateTestFileName?: Maybe<TestSetValidationResponse>;
   validateTestSetForFinetuning?: Maybe<TestSetValidationResult>;
 };
@@ -2173,6 +2213,13 @@ export type QueryCompareDocumentVersionsArgs = {
 
 export type QueryCompareTestRunsArgs = {
   testRunIds: Array<Scalars['String']['input']>;
+};
+
+
+export type QueryConvertRoutingDmnArgs = {
+  content: Scalars['String']['input'];
+  direction: Scalars['String']['input'];
+  dmnVersion?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2290,8 +2337,33 @@ export type QueryGetMyReviewQueuesArgs = {
 };
 
 
+export type QueryGetProcessChangesPlanArgs = {
+  objectKey: Scalars['String']['input'];
+};
+
+
+export type QueryGetReprocessOptionsArgs = {
+  objectKeys: Array<Scalars['String']['input']>;
+  revision?: InputMaybe<Scalars['Int']['input']>;
+  version?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryGetReviewCompletionPlanArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
+};
+
+
 export type QueryGetReviewItemArgs = {
   objectKey: Scalars['String']['input'];
+};
+
+
+export type QueryGetReviewQueueReferencesArgs = {
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+  queueId: Scalars['String']['input'];
 };
 
 
@@ -2444,6 +2516,12 @@ export type QueryListReviewQueueItemsArgs = {
 };
 
 
+export type QueryListReviewQueuesArgs = {
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+};
+
+
 export type QueryQueryKnowledgeBaseArgs = {
   input: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
@@ -2463,6 +2541,12 @@ export type QuerySubmitAgentQueryArgs = {
 };
 
 
+export type QueryTestRoutingTableArgs = {
+  objectKey: Scalars['String']['input'];
+  routing?: InputMaybe<Scalars['AWSJSON']['input']>;
+};
+
+
 export type QueryValidateTestFileNameArgs = {
   fileName: Scalars['String']['input'];
 };
@@ -2470,6 +2554,19 @@ export type QueryValidateTestFileNameArgs = {
 
 export type QueryValidateTestSetForFinetuningArgs = {
   testSetId: Scalars['ID']['input'];
+};
+
+export type QueueReference = {
+  profile: Scalars['String']['output'];
+  published: Scalars['Boolean']['output'];
+  revision?: Maybe<Scalars['Int']['output']>;
+  ruleId: Scalars['String']['output'];
+  ruleLabel?: Maybe<Scalars['String']['output']>;
+};
+
+export type QueueReferencePage = {
+  items: Array<QueueReference>;
+  nextToken?: Maybe<Scalars['String']['output']>;
 };
 
 export type QuotaRequirement = {
@@ -2528,10 +2625,42 @@ export type ReliabilityBin = {
   observedAccuracy?: Maybe<Scalars['Float']['output']>;
 };
 
+export type ReprocessDocumentResult = {
+  message?: Maybe<Scalars['String']['output']>;
+  objectKey: Scalars['String']['output'];
+  reason?: Maybe<Scalars['String']['output']>;
+  startStep?: Maybe<Scalars['String']['output']>;
+  status: Scalars['String']['output'];
+};
+
+export type ReprocessOption = {
+  defaultStep: Scalars['String']['output'];
+  mode: Scalars['String']['output'];
+  objectKey: Scalars['String']['output'];
+  steps: Array<ReprocessStepOption>;
+};
+
+export type ReprocessResult = {
+  queued: Scalars['Int']['output'];
+  results: Array<ReprocessDocumentResult>;
+};
+
+export type ReprocessStepOption = {
+  available: Scalars['Boolean']['output'];
+  id: Scalars['String']['output'];
+  reason?: Maybe<Scalars['String']['output']>;
+  skippable: Scalars['Boolean']['output'];
+};
+
 export type ReviewBurndownPoint = {
   cutoff?: Maybe<Scalars['Float']['output']>;
   docsReviewed: Scalars['Int']['output'];
   residualErrorPct: Scalars['Float']['output'];
+};
+
+export type ReviewCompletionPlan = {
+  complete: PlannedRun;
+  sendBack: PlannedRun;
 };
 
 export type ReviewDraft = {
@@ -2598,12 +2727,15 @@ export type ReviewItem = {
   objectKey: Scalars['String']['output'];
   ownerEmail?: Maybe<Scalars['String']['output']>;
   priority: Scalars['Int']['output'];
+  processingMode?: Maybe<Scalars['String']['output']>;
   profile: Scalars['String']['output'];
   queue: Scalars['String']['output'];
+  queueName?: Maybe<Scalars['String']['output']>;
   reasonCount: Scalars['Int']['output'];
   reasons: Array<ReviewReason>;
   rejectReason?: Maybe<Scalars['String']['output']>;
   reviewStatus: Scalars['String']['output'];
+  routedBy?: Maybe<ReviewRoutedBy>;
   sections: Array<Scalars['String']['output']>;
   sentToReview?: Maybe<ReviewSendInfo>;
   state: Scalars['String']['output'];
@@ -2628,6 +2760,14 @@ export type ReviewItemDetail = {
 export type ReviewItemPage = {
   items: Array<ReviewItem>;
   nextToken?: Maybe<Scalars['String']['output']>;
+};
+
+export type ReviewPolicyFailure = {
+  name: Scalars['String']['output'];
+  pages: Array<Scalars['Int']['output']>;
+  policy: Scalars['String']['output'];
+  reason: Scalars['String']['output'];
+  ruleId: Scalars['String']['output'];
 };
 
 export type ReviewQueueDefinition = {
@@ -2657,6 +2797,11 @@ export type ReviewQueueDefinitionInput = {
   skipReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
   version?: InputMaybe<Scalars['Int']['input']>;
+};
+
+export type ReviewQueueDefinitionPage = {
+  items: Array<ReviewQueueDefinition>;
+  nextToken?: Maybe<Scalars['String']['output']>;
 };
 
 export type ReviewQueueHealth = {
@@ -2697,6 +2842,19 @@ export type ReviewReason = {
   threshold: Scalars['Float']['output'];
 };
 
+export type ReviewRoutedBy = {
+  fallbackReason?: Maybe<Scalars['String']['output']>;
+  inputs?: Maybe<Scalars['AWSJSON']['output']>;
+  placedQueue?: Maybe<Scalars['String']['output']>;
+  policyFailureCount?: Maybe<Scalars['Int']['output']>;
+  policyFailures?: Maybe<Array<ReviewPolicyFailure>>;
+  reason?: Maybe<Scalars['String']['output']>;
+  reasonSource?: Maybe<Scalars['String']['output']>;
+  ruleId?: Maybe<Scalars['String']['output']>;
+  ruleLabel?: Maybe<Scalars['String']['output']>;
+  tableId?: Maybe<Scalars['String']['output']>;
+};
+
 export type ReviewSectionDetail = {
   documentClass?: Maybe<Scalars['String']['output']>;
   draftRevision?: Maybe<Scalars['Int']['output']>;
@@ -2719,6 +2877,25 @@ export type ReviewSendInfo = {
 export type ReviewerLoad = {
   claimed: Scalars['Int']['output'];
   email: Scalars['String']['output'];
+};
+
+export type RoutingDmnConversion = {
+  routing?: Maybe<Scalars['AWSJSON']['output']>;
+  xml?: Maybe<Scalars['String']['output']>;
+};
+
+export type RoutingTestResult = {
+  decision: Scalars['String']['output'];
+  fallbackReason?: Maybe<Scalars['String']['output']>;
+  inputs?: Maybe<Scalars['AWSJSON']['output']>;
+  matchedRuleId?: Maybe<Scalars['String']['output']>;
+  outcomeKind: Scalars['String']['output'];
+  outcomeQueue?: Maybe<Scalars['String']['output']>;
+  placedQueue?: Maybe<Scalars['String']['output']>;
+  reason?: Maybe<Scalars['String']['output']>;
+  reasonSource?: Maybe<Scalars['String']['output']>;
+  ruleLabel?: Maybe<Scalars['String']['output']>;
+  staleReferences?: Maybe<Array<Scalars['String']['output']>>;
 };
 
 export type SampleDocument = {

@@ -283,7 +283,7 @@ Two tables are created in the ReportingDatabase:
    - Partitioned by date (YYYY-MM-DD format)
 
 2. **rule_validation_details**: Individual rule results with recommendations
-   - Columns: document_id, policy_type, rule, recommendation, reasoning, supporting_pages, validation_date
+   - Columns: document_id, policy_type, rule, recommendation, reasoning, supporting_pages, validation_date, rule_id, verdict
    - Partitioned by date (YYYY-MM-DD format)
 
 ### Agent Companion Chat

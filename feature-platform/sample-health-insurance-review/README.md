@@ -67,6 +67,25 @@ summary's `overall_statistics.recommendation_counts`:
 - any **Fail** → `REVIEW_REQUIRED`
 - otherwise (Information Not Found dominates) → `INSUFFICIENT_DOCUMENTATION`
 
+The hook runs after policy rule validation in every run that reaches that step,
+and stores two more fields with the status: `reviewed` (whether the values the
+run validated are the ones a reviewer confirmed) and `runKind` (what started the
+run, as the dispatcher reports it; `unplanned` when it reports none).
+
+- A document that is held in a review queue reaches the hook twice: in the run
+  that places it in the queue (`reviewed` false), and in the run after the
+  completed review (`runKind` `review_completed`). The second write replaces the
+  first, so the row describes the document after the review.
+- The run after a completed review carries `reviewed` true when it applies the
+  reviewer's corrections to the existing results and validates the corrected
+  values.
+- When that run extracts sections again (the reviewer changed the pages of a
+  section, or a section has no result), it carries `reviewed` false: the newly
+  extracted values are not reviewer-confirmed. The row then holds `runKind`
+  `review_completed` with `reviewed` false.
+- A document whose review is rejected has no second run. It keeps the row written
+  before the review, with `reviewed` false.
+
 ## Config preset
 
 `config-preset/claims-config.yaml` is a **snapshot** of

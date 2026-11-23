@@ -60,6 +60,8 @@ from idp_common.models import (
     Status,
     serialize_issue_list,
 )
+from idp_common.run_plan.models import RunKind, RunPlan
+from idp_common.run_plan.sender import EVENT_DOCUMENT_QUEUED, send_run
 from idp_common.testrun_status import RUN_STATUS_TERMINAL
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -739,21 +741,24 @@ def enforce_tenant_boundary(document, object_key, assignment):
     )
 
 
-def _send_to_queue(document, object_key, event_type="DocumentQueued"):
-    """Hand a document to the processing queue."""
-    doc_json = document.to_json()
-    message = {
-        "QueueUrl": queue_url,
-        "MessageBody": doc_json,
-        "MessageAttributes": {
-            "EventType": {"StringValue": event_type, "DataType": "String"},
-            "ObjectKey": {"StringValue": object_key, "DataType": "String"},
-        },
-    }
+def _send_to_queue(document, object_key, event_type=EVENT_DOCUMENT_QUEUED):
+    """Hand a document to the processing queue, to run from the beginning.
+
+    A new upload, or one the malware gate admitted. The body is the document's
+    JSON: a document that has not been processed has no pages or sections to
+    store elsewhere.
+    """
     logger.info(f"Sending document to SQS queue: {object_key}")
-    response = sqs.send_message(**message)
-    logger.info(f"SQS response: {response}")
-    return response
+    message_id = send_run(
+        sqs,
+        queue_url,
+        document=document,
+        plan=RunPlan(kind=RunKind.NEW_UPLOAD, start="beginning"),
+        event_type=event_type,
+        working_bucket=None,
+    )
+    logger.info(f"SQS message id: {message_id}")
+    return message_id
 
 
 def _purge_stale_outputs(output_bucket, object_key):

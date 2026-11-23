@@ -122,13 +122,21 @@ flowchart LR
 > the redaction. The redacted copy is processed as its own document and fires the
 > hook normally.
 
-> **HITL documents fire the hook twice**: with Human-in-the-Loop review enabled,
+> **Documents in a review queue fire the hook once, after the review**: a
+> document that a [routing rule](review-routing.md) holds for review ends its first
+> run with status `HITL_IN_PROGRESS`, and your hook is **not** invoked for that run.
+> It is invoked when the run after the review completes, with the reviewed results.
+> A document whose review ends in **Reject** (`REJECTED`) does not fire the hook.
+
+> **Documents reviewed outside a review queue fire the hook twice**: when review
+> is enabled in the configuration while the Default review queue is disabled (see
+> [When the Default queue is off](human-review.md#when-the-default-queue-is-off)),
 > the workflow completes while review is pending (so the hook fires with
 > `hitl_status: "PendingReview"`), and the document is re-queued after review
 > completes (firing the hook again with the reviewed results). Check
 > `document.hitl_status` — it is `PendingReview` | `InProgress` | `Completed` |
 > `Skipped`, and is **absent** when HITL never triggered — and make your handler
-> idempotent.
+> idempotent. A reprocess of a document fires the hook again as well.
 
 ## Configuration
 

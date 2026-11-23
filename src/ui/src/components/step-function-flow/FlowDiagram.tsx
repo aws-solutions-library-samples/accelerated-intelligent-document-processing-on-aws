@@ -4,16 +4,10 @@
 import React from 'react';
 import { Box, Badge } from '@cloudscape-design/components';
 import './FlowDiagram.css';
+import { isStepDisabled, type StepConfig } from './is-step-disabled';
+import SkippedStatus from './SkippedStatus';
+import { SKIPPED_STATUS } from './skipped-steps';
 import { withWordBreaks } from './word-breaks';
-
-interface StepConfig {
-  summarization?: { enabled?: boolean };
-  // v0.6: confidence enablement lives under extraction.confidence; the slim
-  // assessment carrier still exposes `enabled` for the step itself.
-  extraction?: { confidence?: { enabled?: boolean } };
-  assessment?: { enabled?: boolean };
-  evaluation?: { enabled?: boolean };
-}
 
 interface Step {
   name: string;
@@ -26,6 +20,8 @@ interface Step {
   parentMapName?: string;
   mapIterations?: number;
   mapIterationDetails?: Step[];
+  /** Set on the entry of a step the run plan skipped: why it was not done. */
+  skipNote?: string;
 }
 
 interface FlowDiagramProps {
@@ -39,30 +35,6 @@ interface FlowDiagramProps {
   // active AT PROCESSING TIME, not the stack's current live config.
   mergedConfig?: StepConfig | null;
 }
-
-// Helper function to check if a step is disabled based on configuration
-const isStepDisabled = (stepName: string, config: StepConfig | null): boolean => {
-  if (!config) return false;
-
-  const stepNameLower = stepName.toLowerCase();
-
-  // Check if this is a summarization step
-  if (stepNameLower.includes('summarization') || stepNameLower.includes('summary')) {
-    return config.summarization?.enabled === false;
-  }
-
-  // Check if this is an assessment step
-  if (stepNameLower.includes('assessment') || stepNameLower.includes('assess')) {
-    return (config.extraction?.confidence?.enabled ?? config.assessment?.enabled) === false;
-  }
-
-  // Check if this is an evaluation step
-  if (stepNameLower.includes('evaluation') || stepNameLower.includes('evaluate')) {
-    return config.evaluation?.enabled === false;
-  }
-
-  return false;
-};
 
 const FlowDiagram = ({
   steps = [],
@@ -127,7 +99,9 @@ const FlowDiagram = ({
           // Check if this is a Map state
           const isMapState = step.type === 'Map';
           const mapIterationsForThisStep = mapIterationsByParent[step.name] || [];
-          const stepDisabled = isStepDisabled(step.name, mergedConfig);
+          // A step the run plan skipped is greyed out like a disabled one, and says Skipped.
+          const stepSkipped = step.status === SKIPPED_STATUS;
+          const stepDisabled = !stepSkipped && isStepDisabled(step.name, mergedConfig);
 
           return (
             <React.Fragment key={`main-step-${step.name}-${step.type}-${step.startDate || index}`}>
@@ -135,7 +109,7 @@ const FlowDiagram = ({
               <div
                 className={`flow-step ${getStepStatus(step)} ${selectedStep?.name === step.name ? 'selected' : ''} ${
                   isMapState ? 'map-step' : ''
-                } ${stepDisabled ? 'step-disabled' : ''}`}
+                } ${stepDisabled || stepSkipped ? 'step-disabled' : ''}`}
                 onClick={() => onStepClick(step)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
@@ -144,7 +118,7 @@ const FlowDiagram = ({
                 }}
                 role="button"
                 tabIndex={0}
-                title={stepDisabled ? 'This step was disabled in configuration and performed no processing' : ''}
+                title={stepDisabled ? 'This step was disabled in configuration and performed no processing' : (step.skipNote ?? '')}
               >
                 <div className="step-icon-container">
                   {getStepIcon(step.name, step.type, step.status)}
@@ -156,7 +130,9 @@ const FlowDiagram = ({
                     {stepDisabled && <Badge color="grey">NOT ENABLED</Badge>}
                     {isMapState && step.mapIterations && <Badge color="blue">{step.mapIterations} iterations</Badge>}
                   </div>
-                  <div className={`step-status-text status-text-${step.status.toLowerCase()}`}>{step.status}</div>
+                  <div className={`step-status-text status-text-${step.status.toLowerCase()}`}>
+                    {stepSkipped ? <SkippedStatus /> : step.status}
+                  </div>
                   {step.error && (
                     <div className="step-error-indicator">
                       <span className="error-icon">⚠️</span>

@@ -1,16 +1,22 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// Review Studio › Review Management (Admin): Admins edit the Default queue's settings and see
-// every queue here, or, with the Production | Test Studio switch, the Test Studio queues,
-// one per test set. One table shows at a time, and only it is polled; the choice is in
+// Review Studio › Review Management (Admin): Admins create production queues, edit their
+// settings and see every queue here, or, with the Production | Test Studio switch, the
+// Test Studio queues, one per test set. A configuration profile's routing rules send
+// documents to a production queue by its id. One table shows at a time, and only it is polled; the choice is in
 // the URL (`?view=test`), so Back and the queue pages' breadcrumbs return to it.
+// Routing rules are evaluated only while Review Routing is on and the Default queue is
+// enabled: above the production table, a warning says when Review Routing is off in the
+// active configuration profile, and another when the Default queue is off, each with
+// where it is changed.
 // Open a queue to assign its items to Annotators, unassign, move or remove them.
-// Deleting a queue moves its items to the Default queue.
+// Deleting a queue moves its items to the Default queue; the confirmation lists the routing
+// rules that name the queue, whose documents go to the Default queue from then on.
 import React, { useCallback, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import { useIntl } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { ButtonDropdownProps, TableProps } from '@cloudscape-design/components';
 import {
@@ -36,19 +42,80 @@ import usePolling from '../../hooks/use-polling';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { useFormatters } from '../../i18n/format';
 import { formatDateTime } from '../../utils/date-time';
-import { productionQueuePath, testSetQueuePath } from '../../routes/constants';
+import { CONFIGURATION_PATH, productionQueuePath, testSetQueuePath } from '../../routes/constants';
 import type { ReviewManagementView } from '../../routes/constants';
 import { usePaginationLabels } from '../common/labels';
 import { NoDataState, TableNoMatchState, filterCounterText } from '../common/table';
+import useReviewActionSettings from '../review-bulk/use-review-action-settings';
 import QueueDefinitionModal from './QueueDefinitionModal';
+import { DeleteQueueReferences } from './QueueReferences';
 import type { TestSetQueueTarget } from './QueueDefinitionModal';
 import { fetchQueuesOverview, reviewErrorCode } from './review-api';
 import { deleteReviewQueue, listAnnotatorEmails, listReviewQueues, listTestSetQueues } from './reviewer-assignment';
+import useQueueReferences from './use-queue-references';
 import useSavedQueueDefinitions from './use-saved-queue-definitions';
 
 const logger = new ConsoleLogger('QueuesPage');
 
 export const QUEUES_POLL_INTERVAL_MS = 20_000;
+
+const messages = defineMessages<{
+  pageDescription: NoMessageValues;
+  createQueue: NoMessageValues;
+  productionDescription: NoMessageValues;
+  reviewRoutingOff: { readonly link: MessageTag };
+  defaultQueueOff: NoMessageValues;
+  openDefaultQueueSettings: NoMessageValues;
+  queueCreated: { readonly name: string };
+  queueSaved: { readonly name: string };
+}>({
+  pageDescription: {
+    id: 'reviewQueues.queuesPage.pageDescription',
+    defaultMessage: 'Create and set up the production review queues, and list the Annotators who work them.',
+    description: 'Text under the heading of the Review Management page.',
+  },
+  createQueue: {
+    id: 'reviewQueues.queuesPage.createQueue',
+    defaultMessage: 'Create queue',
+    description: 'Button on the Review Management page that opens the dialog for a new production review queue.',
+  },
+  productionDescription: {
+    id: 'reviewQueues.queuesPage.productionDescription',
+    defaultMessage:
+      "System-wide queues for processed documents. While Review Routing is on in a document's configuration profile and the Default queue is enabled, the routing rules of that profile send the document to the queue a routing rule names. The Default queue receives the documents the built-in routing rules hold, and documents whose queue is missing or disabled.",
+    description:
+      'Text under the heading of the Production Queues table on the Review Management page. Review Routing is the name of a processing step and of its switch in a configuration profile.',
+  },
+  reviewRoutingOff: {
+    id: 'reviewQueues.queuesPage.reviewRoutingOff',
+    defaultMessage:
+      "Review Routing is off in the active configuration profile, so no document is held for review. Turn it on in the profile's Processing Settings, on the <link>Configuration</link> page.",
+    description:
+      'Warning above the Production Queues table on the Review Management page (Admins), when the Review Routing switch of the active configuration profile is off. <link> marks the name of the page it links to; Processing Settings is the name of a tab of that page.',
+  },
+  defaultQueueOff: {
+    id: 'reviewQueues.queuesPage.defaultQueueOff',
+    defaultMessage: 'The Default review queue is off, so routing rules are not evaluated.',
+    description:
+      'Warning above the Production Queues table on the Review Management page (Admins), when the Default review queue is disabled.',
+  },
+  openDefaultQueueSettings: {
+    id: 'reviewQueues.queuesPage.openDefaultQueueSettings',
+    defaultMessage: 'Open Default queue settings',
+    description:
+      'Button in the warning that the Default review queue is off: opens the settings dialog of the Default queue, where it is turned on.',
+  },
+  queueCreated: {
+    id: 'reviewQueues.queuesPage.queueCreated',
+    defaultMessage: 'Created the queue {name}.',
+    description: 'Success notification after a production review queue is created. {name} is the name of the queue.',
+  },
+  queueSaved: {
+    id: 'reviewQueues.queuesPage.queueSaved',
+    defaultMessage: 'Saved the queue {name}.',
+    description: 'Success notification after the settings of a production review queue are saved. {name} is the name of the queue.',
+  },
+});
 
 interface ProductionRow {
   id: string;
@@ -116,13 +183,18 @@ const QueuesPage = (): React.JSX.Element => {
   const [listingTestSets, setListingTestSets] = useState(false);
   const [annotators, setAnnotators] = useState<string[] | null>(null);
   const [annotatorsLoading, setAnnotatorsLoading] = useState(false);
-  const [editing, setEditing] = useState<{ queue: ReviewQueueDefinition } | null>(null);
+  // The Settings dialog of a queue, or the Create queue dialog (no queue).
+  const [editing, setEditing] = useState<{ queue: ReviewQueueDefinition | null } | null>(null);
   const [deleting, setDeleting] = useState<{ queue: { id: string; name: string }; depth: number } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<TestSetQueueTarget | null>(null);
 
   const savedDefinitions = useSavedQueueDefinitions();
+  // Whether Review Routing is on in the active configuration profile; null while unknown.
+  const reviewSettings = useReviewActionSettings();
+  // The routing rules that name the queue about to be deleted, read when the dialog opens.
+  const deletingReferences = useQueueReferences(deleting?.queue.id ?? null);
 
   // Production queues are cheap (two calls) and polled.
   const loadProduction = useCallback(async () => {
@@ -245,7 +317,8 @@ const QueuesPage = (): React.JSX.Element => {
   });
 
   // ------------------------------------------------------------- actions
-  const openEditor = (queue: ReviewQueueDefinition) => {
+  /** Open a queue's Settings, or the Create queue dialog when there is no queue. */
+  const openEditor = (queue: ReviewQueueDefinition | null) => {
     setEditing({ queue });
     void loadAnnotators();
   };
@@ -447,6 +520,13 @@ const QueuesPage = (): React.JSX.Element => {
     },
   ];
 
+  // Routing rules are evaluated only while Review Routing is on and the Default queue is
+  // enabled. Each cause that holds gets its warning; a state that is not known gets none.
+  const defaultQueue = (definitions ?? []).find((d) => d.isDefaultQueue) ?? null;
+  const reviewRoutingOff = reviewSettings.reviewRoutingEnabled === false;
+  const defaultQueueOff = defaultQueue != null && !defaultQueue.enabled;
+  const configurationLink = (chunks: React.ReactNode[]): React.JSX.Element => <Link href={`#${CONFIGURATION_PATH}`}>{chunks}</Link>;
+
   const productionInitial = definitions == null && productionError == null;
   const testSetsInitial = testSetRefs == null && testSetError == null;
   const preparingSets = (testSetRefs ?? []).filter((t) => t.summaryStatus === 'BUILDING').length;
@@ -457,7 +537,7 @@ const QueuesPage = (): React.JSX.Element => {
       header={
         <Header
           variant="h1"
-          description="Set up the Default review queue and list the Annotators who work it."
+          description={intl.formatMessage(messages.pageDescription)}
           actions={
             <SpaceBetween direction="horizontal" size="xs">
               <SegmentedControl
@@ -472,6 +552,12 @@ const QueuesPage = (): React.JSX.Element => {
               <Button iconName="refresh" loading={shownLoading} onClick={() => void refresh()} ariaLabel="Refresh queues">
                 Refresh
               </Button>
+              {/* A new queue is a production queue; a Test Studio queue comes with its test set. */}
+              {view === 'production' && (
+                <Button variant="primary" onClick={() => openEditor(null)}>
+                  {intl.formatMessage(messages.createQueue)}
+                </Button>
+              )}
             </SpaceBetween>
           }
         >
@@ -482,14 +568,33 @@ const QueuesPage = (): React.JSX.Element => {
       <SpaceBetween size="l">
         {view === 'production' && (
           <>
-            {productionError != null && (
-              <Alert
-                type={definitions ? 'warning' : 'error'}
-                header={definitions ? 'Showing the last loaded queues' : "Couldn't load the review queues"}
-                action={<Button onClick={() => void loadProduction()}>Retry</Button>}
-              >
-                {describeApiError(productionError, 'load the review queues')}
-              </Alert>
+            {(productionError != null || reviewRoutingOff || defaultQueueOff) && (
+              <SpaceBetween size="s">
+                {productionError != null && (
+                  <Alert
+                    type={definitions ? 'warning' : 'error'}
+                    header={definitions ? 'Showing the last loaded queues' : "Couldn't load the review queues"}
+                    action={<Button onClick={() => void loadProduction()}>Retry</Button>}
+                  >
+                    {describeApiError(productionError, 'load the review queues')}
+                  </Alert>
+                )}
+                {reviewRoutingOff && (
+                  <Alert type="warning">
+                    <FormattedMessage {...messages.reviewRoutingOff} values={{ link: configurationLink }} />
+                  </Alert>
+                )}
+                {defaultQueueOff && (
+                  <Alert
+                    type="warning"
+                    action={
+                      <Button onClick={() => openEditor(defaultQueue)}>{intl.formatMessage(messages.openDefaultQueueSettings)}</Button>
+                    }
+                  >
+                    {intl.formatMessage(messages.defaultQueueOff)}
+                  </Alert>
+                )}
+              </SpaceBetween>
             )}
             <Table<ProductionRow>
               {...production.collectionProps}
@@ -502,7 +607,7 @@ const QueuesPage = (): React.JSX.Element => {
               header={
                 <Header
                   counter={productionInitial ? undefined : `(${productionRows.length})`}
-                  description="System-wide queues for processed documents. When HITL is enabled in a document's configuration and the Default queue is enabled, a document that raised confidence alerts arrives in the Default queue."
+                  description={intl.formatMessage(messages.productionDescription)}
                 >
                   Production Queues
                 </Header>
@@ -573,7 +678,7 @@ const QueuesPage = (): React.JSX.Element => {
         onDismiss={() => setEditing(null)}
         onSaved={(q) => {
           if (q) {
-            setSuccessMessage(`Saved the queue ${q.name}.`);
+            setSuccessMessage(intl.formatMessage(editing?.queue ? messages.queueSaved : messages.queueCreated, { name: q.name }));
             // Show the saved definition at once, and keep it through reads that still return the old one.
             savedDefinitions.remember(q);
             setDefinitions((defs) => savedDefinitions.apply(defs ?? []));
@@ -602,6 +707,7 @@ const QueuesPage = (): React.JSX.Element => {
         <SpaceBetween size="m">
           {deleteError && <Alert type="error">{deleteError}</Alert>}
           <Box>{deleting ? deleteConfirmText(deleting.queue, deleting.depth) : null}</Box>
+          <DeleteQueueReferences state={deletingReferences} />
         </SpaceBetween>
       </Modal>
       <QueueDefinitionModal

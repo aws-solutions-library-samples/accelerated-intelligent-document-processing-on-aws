@@ -45,6 +45,12 @@ export interface EditDocumentHeader {
   source: { objectKey: string; bucket?: string } | null;
   /** Summary in Reports; omitted = no Summary item. */
   summary?: { reportUri?: string; unavailableReason?: string };
+  /**
+   * Policy Rule Validation Summary in Reports; omitted = no such item. `reportUri` is the
+   * document's policy rule validation report; without one the item stays in the menu,
+   * disabled with `unavailableReason`.
+   */
+  ruleValidation?: { reportUri?: string; unavailableReason?: string };
   /** Offer Processing Report. */
   offerReport: boolean;
   /** After the status: a badge with hover text (Test Studio: the open version's `vN → vM`). */
@@ -60,6 +66,8 @@ export type EditBar = Pick<
   | 'cancelDisabledReason'
   | 'showSkip'
   | 'skipDisabledReason'
+  | 'showReject'
+  | 'rejectDisabledReason'
   | 'showClaim'
   | 'showRegroup'
   | 'regroupDisabledReason'
@@ -136,12 +144,33 @@ export interface EditSkip {
   run: (reason: string, note?: string) => Promise<EditExit>;
 }
 
+/** Reject: end the review with the document rejected, for a reason from the queue's list. */
+export interface EditReject {
+  header: string;
+  reasons: string[];
+  body: React.ReactNode;
+  /** The label of the button that confirms the reason. */
+  confirmLabel: string;
+  run: (reason: string, note?: string) => Promise<EditExit>;
+}
+
+/** Send back: discard the review and process the document again. The server decides where the run starts. */
+export interface EditSendBack {
+  run: (note?: string) => Promise<EditExit>;
+}
+
 /**
  * What Process Changes asks first, after saving the open section's edits: the reprocessing
- * it triggers (direct edit), or the new test-set version it opens (Test Studio, no draft
- * version open yet).
+ * it triggers (direct edit; the dialog shows the steps the server says the run will do,
+ * which it reads for the document on the page), the new test-set version it opens (Test
+ * Studio, no draft version open yet), or how the review ends (a Production item: complete
+ * it, or send the document back). The review's dialog shows what each ending runs, which
+ * it reads for the item: the document's `objectKey` and the `cycleId` of the review it is in.
  */
-export type EditProcessConfirm = { kind: 'reprocess'; bdaMode: boolean } | { kind: 'version' };
+export type EditProcessConfirm =
+  | { kind: 'reprocess' }
+  | { kind: 'version' }
+  | { kind: 'review-completion'; objectKey: string; cycleId: string };
 
 export interface EditProcess {
   /** Ask first; omitted = run at once. */
@@ -169,6 +198,10 @@ export interface EditReady {
   board: EditBoard | null;
   history: { reviewActivity: ReviewActivity; baseline?: Record<string, unknown> | null };
   skip?: EditSkip;
+  /** Production: reject the document. Offered with the bar's Reject. */
+  reject?: EditReject;
+  /** Production: send the document back, from the review-completion dialog. */
+  sendBack?: EditSendBack;
   process: EditProcess;
   /** Resolves the success toast. */
   claim?: () => Promise<string>;

@@ -12,6 +12,8 @@ import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import type { StateView } from '../common/review-status';
 import { documentName, reasonText } from './review-api';
 import { productionWorkItemId, testSetWorkItemId } from './work-item-ids';
+import { policyFailureTotal } from './RoutedBy';
+import type { RoutedByLike } from './RoutedBy';
 
 export type WorkSource = 'production' | 'test-set';
 
@@ -21,13 +23,22 @@ export interface WorkItem {
   source: WorkSource;
   objectKey: string;
   name: string;
-  /** Production: the queue id. Test set: the test set name. */
+  /** Production: the queue id. Test set: the test set id. */
   queue: string;
+  /** Production: the queue's name, when the API reports one. Shown instead of the id. */
+  queueName?: string | null;
   priority: number | null;
   /** Production: when the item entered its queue. Test set: when it was assigned. */
   enqueuedAt: string | null;
+  /** The first alert of the item, in words; `extraReasons` counts the others. */
   reason: string | null;
   extraReasons: number;
+  /** Production: the routing rule that placed the item. It is the reason shown when the item has no other. */
+  routedBy?: RoutedByLike | null;
+  /** Production: the reason the routing rule gives, with the document's values. It is the reason shown when there is one. */
+  routingReason: string | null;
+  /** Production: how many policy rules the document failed. */
+  policyFailureCount: number;
   state: StateView;
   /** The Annotator the item is assigned to ("You" for the caller), or null. */
   assignedTo: string | null;
@@ -50,23 +61,32 @@ const ASSIGNED: StateView = { label: 'Assigned', type: 'in-progress' };
 /** One production review item, as a row whose link opens the edit page with its origin. */
 export const fromReviewItem =
   (from: EditOrigin) =>
-  (item: ReviewItem): WorkItem => ({
-    id: productionWorkItemId(item.objectKey),
-    source: 'production',
-    objectKey: item.objectKey,
-    name: documentName(item.objectKey),
-    queue: `${item.queue}${item.escalated ? ' (escalated)' : ''}`,
-    priority: item.priority,
-    enqueuedAt: item.enqueuedAt,
-    reason: item.reasons[0] ? reasonText(item.reasons[0]) : null,
-    extraReasons: Math.max(item.reasonCount - 1, 0),
-    // The backend state for an item held by its Annotator is CLAIMED; the UI says Assigned.
-    state: item.state === QueueItemState.CLAIMED ? ASSIGNED : reviewItemStateView(item.state),
-    assignedTo: item.isMine ? 'You' : (item.ownerEmail ?? null),
-    assignedToMe: item.isMine && item.state === QueueItemState.CLAIMED,
-    href: documentEditHref(item.objectKey, { from }),
-    reviewItem: item,
-  });
+  (item: ReviewItem): WorkItem => {
+    const escalated = item.escalated ? ' (escalated)' : '';
+    return {
+      id: productionWorkItemId(item.objectKey),
+      source: 'production',
+      objectKey: item.objectKey,
+      name: documentName(item.objectKey),
+      queue: `${item.queue}${escalated}`,
+      queueName: item.queueName ? `${item.queueName}${escalated}` : null,
+      priority: item.priority,
+      enqueuedAt: item.enqueuedAt,
+      reason: item.reasons[0] ? reasonText(item.reasons[0]) : null,
+      extraReasons: Math.max(item.reasonCount - 1, 0),
+      routedBy: item.routedBy
+        ? { ruleId: item.routedBy.ruleId, ruleLabel: item.routedBy.ruleLabel, fallbackReason: item.routedBy.fallbackReason }
+        : null,
+      routingReason: item.routedBy?.reason?.trim() || null,
+      policyFailureCount: policyFailureTotal(item.routedBy),
+      // The backend state for an item held by its Annotator is CLAIMED; the UI says Assigned.
+      state: item.state === QueueItemState.CLAIMED ? ASSIGNED : reviewItemStateView(item.state),
+      assignedTo: item.isMine ? 'You' : (item.ownerEmail ?? null),
+      assignedToMe: item.isMine && item.state === QueueItemState.CLAIMED,
+      href: documentEditHref(item.objectKey, { from }),
+      reviewItem: item,
+    };
+  };
 
 /** One of the caller's assigned Test Studio documents (listMyTestSetTasks). */
 export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
@@ -83,6 +103,8 @@ export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
       ? 'Draft labels to confirm'
       : null,
   extraReasons: 0,
+  routingReason: null,
+  policyFailureCount: 0,
   state: ASSIGNED,
   assignedTo: 'You',
   assignedToMe: true,

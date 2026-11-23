@@ -406,20 +406,22 @@ const DocumentList = (): React.JSX.Element => {
     }
   };
 
-  const handleReprocessConfirm = async (version?: string, revision?: number) => {
+  // Reprocess, from the dialog, which closes when every document was queued and
+  // otherwise lists each document's result.
+  const handleReprocessConfirm = async (version?: string, revision?: number, startStep?: string) => {
     const objectKeys = (collectionProps.selectedItems as MappedDocument[]).map((item) => item.objectKey);
-    logger.debug('Reprocessing documents', objectKeys, 'with version', version, 'r', revision);
+    logger.debug('Reprocessing documents', objectKeys, 'with version', version, 'r', revision, 'from', startStep);
 
     setIsReprocessLoading(true);
     try {
-      const result = await reprocessDocuments(objectKeys, version, revision);
-      logger.debug('Reprocess result', result);
-
-      // Close the modal
-      setIsReprocessModalVisible(false);
+      const results = await reprocessDocuments(objectKeys, version, revision, startStep);
+      logger.debug('Reprocess result', results);
+      // The request failed (it reports why): the selection stays for another try.
+      if (results === false) return null;
 
       // Clear selection after reprocessing
       actions.setSelectedItems([]);
+      return results;
     } finally {
       setIsReprocessLoading(false);
     }

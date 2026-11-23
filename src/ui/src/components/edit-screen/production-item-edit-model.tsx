@@ -2,17 +2,23 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The edit page's model for a production review item: the shared editor over the item's
-// sections, edits autosaved as drafts (and Save), then Process Changes (finish the
-// review; the finalize run applies the corrections and re-runs evaluation and
-// summarization, reusing the document's OCR, classification and extraction) or Skip
-// (give the item back to its queue; the draft is kept). Cancel leaves without
-// finishing. Only the assignee edits. Any Annotator listed on the item's queue can open
-// it read-only, and Claim an unassigned item to work it. An Admin edits an unassigned
-// item directly: the first draft save, or Process Changes, assigns it to them. An item
-// assigned to someone else is view-only for an Admin until they Take over.
+// sections, edits autosaved as drafts (and Save), then Process Changes, which asks how
+// the review ends: complete it (the run that follows applies the corrections and
+// continues from there; a section added or changed by regrouping is extracted again
+// first), or send the document back to be processed again (the corrections and any page
+// regrouping are discarded). The server decides where each run starts, and the dialog
+// shows what it will do. Reject ends the review with the document rejected, and
+// Skip gives the item back to its queue (the draft is kept). Cancel leaves without
+// finishing. The page grouping can be changed during the review, except in BDA mode,
+// where one section cannot be extracted alone. Only the assignee edits. Any Annotator
+// listed on the item's queue can open it read-only, and Claim an unassigned item to work
+// it. An Admin edits an unassigned item directly: the first draft save, or Process
+// Changes, assigns it to them. An item assigned to someone else is view-only for an Admin
+// until they Take over.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Box, Button, Link } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
@@ -24,16 +30,97 @@ import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/cop
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { PROCESS_CHANGES_LABEL } from '../common/labels';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
+import { NO_RULE_VALIDATION_REASON } from '../document-actions/action-reasons';
 import { editActiveHref, editTrail } from '../review-queues/breadcrumbs';
-import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
+import { claimItem, documentName, rejectItem, releaseItem, reviewErrorCode, sendBackItem, takeOverItem } from '../review-queues/review-api';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
 import { productionWorkItemId } from '../review-queues/work-item-ids';
-import type { EditAction } from './EditScreen';
+import type { ProcessingMode } from '../run-plan/run-steps';
+import { BDA_REGROUP_REASON } from './document-edit-status';
+import type { EditAction, ReviewOutcomeAction } from './EditScreen';
 import type { EditModel, EditNavigation } from './edit-model';
 import { AUTOSAVE_MS, useProductionItemEdit } from './production-item-edit-adapter';
 import { useLeavePath } from './use-edit-exit';
 import type { RawDocument } from './use-edit-mode';
 import type { EditorSession } from './use-editor-session';
+
+const messages = defineMessages<{
+  primaryHint: NoMessageValues;
+  rejectHeader: NoMessageValues;
+  rejectBody: NoMessageValues;
+  rejectConfirm: NoMessageValues;
+  noRejectReasons: NoMessageValues;
+  rejected: { readonly name: string };
+  sentBack: { readonly name: string };
+  failedReject: NoMessageValues;
+  failedSendBack: NoMessageValues;
+  regroupConsequence: { readonly b: MessageTag; readonly processChanges: string };
+}>({
+  regroupConsequence: {
+    id: 'editScreen.productionItem.regroupConsequence',
+    defaultMessage:
+      "Moving pages rewrites this document's <b>section grouping</b>. When you choose <b>{processChanges}</b> and complete the review, a section you added or whose pages you changed is <b>extracted again</b>, and the corrections you saved are applied afterwards. The other sections keep their extracted values and your draft edits. A section you remove takes its draft edits with it.",
+    description:
+      'What changing the page grouping of a document under review does, shown in the Edit Page Grouping dialog. <b> marks emphasis. {processChanges} is the label of the Process Changes button.',
+  },
+  primaryHint: {
+    id: 'editScreen.productionItem.primaryHint',
+    defaultMessage: 'Finish the review: complete it with your corrections, or send the document back to be processed again.',
+    description: 'Hover text of Process Changes on a review item. Process Changes opens a dialog with those two endings.',
+  },
+  rejectHeader: {
+    id: 'editScreen.productionItem.rejectHeader',
+    defaultMessage: 'Reject this document',
+    description: 'Header of the dialog that asks why a document under review is rejected.',
+  },
+  rejectBody: {
+    id: 'editScreen.productionItem.rejectBody',
+    defaultMessage:
+      'The review ends and the document is rejected. Its extracted values stay as they were before the review: your corrections are not applied, and evaluation and summarization do not run.',
+    description: 'What rejecting does, in the dialog that asks why a document under review is rejected.',
+  },
+  rejectConfirm: {
+    id: 'editScreen.productionItem.rejectConfirm',
+    defaultMessage: 'Reject',
+    description: 'Button that confirms rejecting a document under review, in the dialog that asks for the reason.',
+  },
+  noRejectReasons: {
+    id: 'editScreen.productionItem.noRejectReasons',
+    defaultMessage: 'This queue lists no reject reasons',
+    description: 'Why Reject is disabled on a review item: its queue has no reason to choose from.',
+  },
+  rejected: {
+    id: 'editScreen.productionItem.rejected',
+    defaultMessage: '{name} was rejected.',
+    description: 'Success notification after a document under review is rejected. {name} is the name of the document.',
+  },
+  sentBack: {
+    id: 'editScreen.productionItem.sentBack',
+    defaultMessage: '{name} was sent back and is being processed again.',
+    description: 'Success notification after a document under review is sent back for reprocessing. {name} is the name of the document.',
+  },
+  failedReject: {
+    id: 'editScreen.productionItem.failedReject',
+    defaultMessage: 'reject the document',
+    description:
+      'Completes the sentences "Failed to …:" and "You do not have permission to …" when rejecting a document under review fails.',
+  },
+  failedSendBack: {
+    id: 'editScreen.productionItem.failedSendBack',
+    defaultMessage: 'send the document back',
+    description:
+      'Completes the sentences "Failed to …:" and "You do not have permission to …" when sending a document under review back fails.',
+  },
+});
+
+/** Renders a `<b>...</b>` element value: emphasis inside a sentence. */
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
+
+/** The processing mode an item records for a document processed with Bedrock Data Automation. */
+const BDA_MODE: ProcessingMode = 'bda';
+
+/** While the editor is saving, or holds edits it has not saved yet. */
+const SAVING_EDITS = 'Saving your latest edits…';
 
 /** Why Summary and Use As Evaluation Baseline wait: they are about the reviewed document. */
 const REVIEW_NOT_COMPLETE = 'Available once the review is complete';
@@ -49,8 +136,8 @@ export const HOLDING_NOTICE = 'This item is being prepared for review. It can be
 export const FINALIZE_FAILED_NOTICE =
   "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Review Management.";
 
-/** What a failed action was trying to do, in the error it reports. */
-const FAILED_ACTION: Record<EditAction, string> = {
+/** What a failed action was trying to do, in the error it reports (Reject and send-back are messages). */
+const FAILED_ACTION: Record<Exclude<EditAction, ReviewOutcomeAction>, string> = {
   claim: 'claim the item',
   skip: 'skip the item',
   baseline: 'use this document as the evaluation baseline',
@@ -73,6 +160,7 @@ export const useProductionItemEditModel = (
   session: EditorSession,
   seed?: { detail: ReviewItemDetail; document: RawDocument },
 ): EditModel => {
+  const intl = useIntl();
   const adapter = useProductionItemEdit(objectKey, seed);
   const { detail, loadError, reload } = adapter;
   const { user, setErrorMessage, setSuccessMessage } = useAppContext();
@@ -225,6 +313,15 @@ export const useProductionItemEditModel = (
 
   const queuePath = productionQueuePath(item.queue);
   const workItemId = productionWorkItemId(objectKey);
+  // The mode of the run that placed the document. A BDA run cannot extract one section
+  // alone, so the page grouping stays as it is during the review (the server refuses a
+  // change too).
+  const bdaMode = item.processingMode === BDA_MODE;
+  const failedAction = (action: EditAction): string => {
+    if (action === 'reject') return intl.formatMessage(messages.failedReject);
+    if (action === 'send-back') return intl.formatMessage(messages.failedSendBack);
+    return FAILED_ACTION[action];
+  };
 
   const handleTakeOver = async () => {
     setTakingOver(true);
@@ -254,6 +351,8 @@ export const useProductionItemEditModel = (
           reportUri: finished ? adapter.summaryReportUri || undefined : undefined,
           unavailableReason: finished ? 'This document has no summary' : REVIEW_NOT_COMPLETE,
         },
+        // Policy rule validation ran before the document was placed: its report is there to read during the review.
+        ruleValidation: { reportUri: adapter.ruleValidationResultUri || undefined, unavailableReason: NO_RULE_VALIDATION_REASON },
         offerReport: true,
       },
       // One alert for the screen's notices, so the space stays given over to the review.
@@ -267,22 +366,26 @@ export const useProductionItemEditModel = (
       // A reason's chip, or Next alert, moves to its field.
       context: <ReviewTaskContext detail={detail} onReasonClick={(r) => session.focusField(r.sectionId, r.field ?? '')} />,
       bar: {
-        primaryDisabledReason: lockedReason ?? (saving ? 'Saving your latest edits…' : undefined),
-        primaryHint:
-          'Apply your corrections and finish the review: evaluation and summarization re-run; OCR, classification and extraction are not repeated.',
+        primaryDisabledReason: lockedReason ?? (saving ? SAVING_EDITS : undefined),
+        primaryHint: intl.formatMessage(messages.primaryHint),
         // Skip gives the item back to its queue: only its holder can.
         showSkip: assignedToMe,
-        skipDisabledReason: dirty ? 'Saving your latest edits…' : undefined,
+        skipDisabledReason: dirty ? SAVING_EDITS : undefined,
+        // Reject ends the review: offered to whoever may finish it, as Process Changes is.
+        showReject: canEdit,
+        rejectDisabledReason:
+          detail.rejectReasons.length === 0 ? intl.formatMessage(messages.noRejectReasons) : dirty || saving ? SAVING_EDITS : undefined,
         showCancel: canEdit,
-        cancelDisabledReason: saving ? 'Saving your latest edits…' : undefined,
+        cancelDisabledReason: saving ? SAVING_EDITS : undefined,
         showSave: canEdit,
-        saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your latest edits…' : undefined,
+        saveDisabledReason: !dirty ? 'No changes to save' : saving ? SAVING_EDITS : undefined,
         showRefresh: true,
-        refreshDisabledReason: saving ? 'Saving your latest edits…' : undefined,
+        refreshDisabledReason: saving ? SAVING_EDITS : undefined,
         showRegroup: true,
-        regroupDisabledReason:
-          // The item's holder regroups, Annotator or Admin, as the server allows.
-          (!terminal && canClaim ? CLAIM_TO_REGROUP_REASON : lockedReason) ?? (dirty ? 'Saving your latest edits…' : undefined),
+        regroupDisabledReason: bdaMode
+          ? BDA_REGROUP_REASON
+          : // The item's holder regroups, Annotator or Admin, as the server allows.
+            ((!terminal && canClaim ? CLAIM_TO_REGROUP_REASON : lockedReason) ?? (dirty ? SAVING_EDITS : undefined)),
         // copyToBaseline is Admin and Author (canWrite), as on the document page.
         showBaseline: canWrite,
         baselineDisabledReason: finished ? baselineCopyBlockedReason(adapter.evaluationStatus) : REVIEW_NOT_COMPLETE,
@@ -322,13 +425,7 @@ export const useProductionItemEditModel = (
             pageIds: s.pageIds.map((id) => Number(id)),
           })),
         canChangeClass: false,
-        consequence: (
-          <>
-            Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted values and your draft edits are <b>kept</b>{' '}
-            with their sections, and the document finishes with this grouping when you choose <b>{PROCESS_CHANGES_LABEL}</b>. A section you
-            remove takes its draft edits with it.
-          </>
-        ),
+        consequence: <FormattedMessage {...messages.regroupConsequence} values={{ b: bold, processChanges: PROCESS_CHANGES_LABEL }} />,
         // Regrouping is part of review: like a first save, it assigns an unassigned item to
         // the Admin opening it, since only the item's holder may regroup.
         beforeOpen: async () => {
@@ -351,7 +448,29 @@ export const useProductionItemEditModel = (
           return { to: leavePath(queuePath), message: `${name} returned to the queue.`, workItemId };
         },
       },
+      reject: {
+        header: intl.formatMessage(messages.rejectHeader),
+        reasons: detail.rejectReasons,
+        body: <Box>{intl.formatMessage(messages.rejectBody)}</Box>,
+        confirmLabel: intl.formatMessage(messages.rejectConfirm),
+        run: async (reason, note) => {
+          // Only a held item can be rejected: an Admin on an unassigned one is assigned it first.
+          if (!(await ensureAssigned())) throw new AssignedElsewhere();
+          await rejectItem(item, reason, note);
+          return { to: leavePath(queuePath), message: intl.formatMessage(messages.rejected, { name }), workItemId };
+        },
+      },
+      sendBack: {
+        // The server allows the holder, and an Admin on an unassigned item without assigning it.
+        // It also decides where the run starts: nothing but the note is sent.
+        run: async (note) => {
+          await sendBackItem(item, note);
+          return { to: leavePath(queuePath), message: intl.formatMessage(messages.sentBack, { name }), workItemId };
+        },
+      },
       process: {
+        // Asked first: complete the review, or send the document back. The dialog reads what each ending runs.
+        confirm: { kind: 'review-completion', objectKey: item.objectKey, cycleId: item.cycleId },
         run: async () => {
           if (!(await ensureAssigned())) throw new AssignedElsewhere();
           // The latest edits are saved as a draft first, so the finalize run applies them.
@@ -385,7 +504,7 @@ export const useProductionItemEditModel = (
       failures: {
         surface: 'flash',
         // Losing the item to an Annotator is shown in the notices, not as an error.
-        describe: (action, err) => (err instanceof AssignedElsewhere ? null : describeApiError(err, FAILED_ACTION[action])),
+        describe: (action, err) => (err instanceof AssignedElsewhere ? null : describeApiError(err, failedAction(action))),
         after: () => void reload(),
       },
     },

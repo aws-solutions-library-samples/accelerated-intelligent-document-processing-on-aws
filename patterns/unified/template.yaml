@@ -3159,19 +3159,19 @@ Resources:
             type: object
             collapsible: true
             defaultExpanded: false
-            sectionLabel: Human-in-the-Loop (HITL) Review (Optional)
-            description: "Route low-confidence extractions to human review. Requires Confidence Assessment to be enabled."
+            sectionLabel: Review Routing (Optional)
+            description: "Holds documents for review in review queues. While Review Routing is on, the routing rules of this profile (the Routing Rules tab) decide whether a document is reviewed and in which review queue; review queues are created in Review Studio › Review Management. Routing rules are evaluated only while the Default review queue is enabled. The confidence threshold and Review missing required fields feed the built-in routing rules, and confidence alerts require Confidence Assessment to be enabled. Inbox messages and the bulk skip limit apply whether or not Review Routing is on."
             properties:
               enabled:
                 type: boolean
-                title: Enabled
-                description: "Enable Human-in-the-Loop review for low-confidence extractions."
+                title: Review Routing
+                description: "Hold documents for review. While it is off no document is held, whatever the routing rules say. A newly created stack turns it on in the profiles it creates. A stack update keeps the value each profile has, unless the configuration supplied to the stack sets it."
                 default: false
                 order: 0
               confidence_threshold:
                 type: number
                 title: Confidence threshold
-                description: "Confidence threshold (0.0-1.0) used for a field with no threshold of its own. Fields scoring below their threshold raise confidence alerts; with HITL enabled they send the document to review."
+                description: "Confidence threshold (0.0-1.0) used for a field with no threshold of its own. Fields scoring below their threshold raise confidence alerts; with Review Routing on, the built-in routing rule sends such a document to the Default review queue."
                 minimum: 0.0
                 maximum: 1.0
                 default: 0.8
@@ -3179,14 +3179,14 @@ Resources:
               route_missing_required_fields:
                 type: boolean
                 title: Review missing required fields
-                description: "With the Default review queue on, also send a document to review when a field its class schema marks required has no extracted value. Legacy HITL triggers on confidence alerts only."
+                description: "With the Default review queue on, the built-in routing rule also sends a document to review when a field its class schema marks required has no extracted value. The legacy review flow triggers on confidence alerts only."
                 default: true
                 order: 2
               notifications:
                 type: object
                 order: 3
                 sectionLabel: "Inbox messages"
-                description: "Retention and per-user cap for Inbox messages. Applies whether or not HITL review is enabled; changes apply to messages written after the change."
+                description: "Retention and per-user cap for Inbox messages. Applies whether or not Review Routing is on; changes apply to messages written after the change."
                 properties:
                   retention_days:
                     type: number
@@ -4575,23 +4575,23 @@ Resources:
                 order: 8
                 dependsOn: { field: "chat.enabled", value: true }
           rule_validation:
-            order: 8
+            order: 6.2
             type: object
             collapsible: true
             defaultExpanded: false
-            sectionLabel: Rule Validation (Optional)
-            description: "Validates extracted data against business rules for matching policy classes. Requires one or more policy classes to be configured."
+            sectionLabel: Policy Rule Validation (Optional)
+            description: "Checks extracted data against the policy rules of the matching policy classes (the Policy Schema tab), after extraction and before Review Routing. Requires one or more policy classes to be configured."
             properties:
               enabled:
                 type: boolean
                 title: Enabled
-                description: Enable or disable rule validation processing
+                description: Enable or disable policy rule validation
                 default: true
                 order: 0
               recommendation_options:
                 type: string
                 format: text-area
-                description: "Recommendation options that define the possible outcomes for rule validation: Pass (criteria fully met), Fail (partially met or needs more info), Information Not Found (no relevant data)"
+                description: "Recommendation options that define the possible outcomes for a policy rule: Pass (criteria fully met), Fail (partially met or needs more info), Information Not Found (no relevant data)"
                 default: |-
                   Pass: The requirement criteria are fully met.
                   Fail: The requirement is partially met or requires additional information.
@@ -4602,7 +4602,7 @@ Resources:
                 type: integer
                 minimum: 1
                 maximum: 10
-                description: Number of concurrent API calls for rule validation
+                description: Number of concurrent API calls for policy rule validation
                 default: 5
                 order: 2
                 dependsOn: { field: "enabled", value: true }
@@ -4610,7 +4610,7 @@ Resources:
                 type: integer
                 minimum: 1000
                 maximum: 200000
-                description: Maximum chunk size (in characters) for rule validation processing
+                description: Maximum chunk size (in characters) for policy rule validation processing
                 default: 8000
                 order: 3
                 dependsOn: { field: "enabled", value: true }
@@ -4733,18 +4733,18 @@ Resources:
                   task_prompt:
                     type: string
                     format: textarea
-                    description: Task prompt for fact extraction - supports placeholders {DOCUMENT_TEXT} (replaced with document content), {recommendation_options} (replaced with available recommendation options), {policy_type} (replaced with policy type), and {rule} (replaced with rule description). Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
+                    description: Task prompt for fact extraction - supports placeholders {DOCUMENT_TEXT} (replaced with document content), {recommendation_options} (replaced with available recommendation options), {policy_type} (replaced with policy type), and {rule} (replaced with the policy rule's description). Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
                     order: 6
               rule_validation_orchestrator:
                 type: object
-                sectionLabel: Rule Validation Orchestrator
+                sectionLabel: Policy Rule Validation Orchestrator
                 description: Configuration for consolidating fact extraction results into final compliance decisions
                 order: 5
                 dependsOn: { field: "enabled", value: true }
                 properties:
                   model:
                     type: string
-                    description: Bedrock model ID for rule validation orchestrator
+                    description: Bedrock model ID for the policy rule validation orchestrator
                     enum:
                       [
                         "us.amazon.nova-lite-v1:0",
@@ -4849,12 +4849,12 @@ Resources:
                   system_prompt:
                     type: string
                     format: textarea
-                    description: System prompt for rule validation orchestrator - defines the LLM's role in consolidating extracted facts into final compliance decisions
+                    description: System prompt for the policy rule validation orchestrator - defines the LLM's role in consolidating extracted facts into final compliance decisions
                     order: 5
                   task_prompt:
                     type: string
                     format: textarea
-                    description: Task prompt for rule validation orchestrator - supports placeholders {recommendation_options}, {extracted_evidence}, {policy_class}, and {rule}. Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
+                    description: Task prompt for the policy rule validation orchestrator - supports placeholders {recommendation_options}, {extracted_evidence}, {policy_class}, and {rule}. Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
                     order: 6
               postHook:
                 type: array
@@ -4925,6 +4925,7 @@ Resources:
       CustomClassificationModelARN: !Ref CustomClassificationModelARN
       CustomExtractionModelARN: !Ref CustomExtractionModelARN
       PreviousIDPPattern: !Ref PreviousIDPPattern
+      HITLTableName: !Ref HITLTableName
       fake-w2: !Sub "s3://${ConfigurationBucket}/config_library/managed_config/fake-w2/config.yaml"
       docsplit: !Sub "s3://${ConfigurationBucket}/config_library/managed_config/docsplit/config.yaml"
       ocr-benchmark: !Sub "s3://${ConfigurationBucket}/config_library/managed_config/ocr-benchmark/config.yaml"
@@ -6835,6 +6836,310 @@ Resources:
       LogGroupName: !Sub "/${AWS::StackName}/lambda/ProcessResultsFunction"
       RetentionInDays: !Ref LogRetentionDays
 
+  # Review routing (idp_common.review_queues.routing_step). After policy rule
+  # validation it decides whether the document is held in a review queue,
+  # continues, or ends as rejected. It writes the review item of a document it
+  # holds.
+  RoutingFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: DockerBuildRun
+    Metadata:
+      SkipBuild: True
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "cloudwatch:PutMetricData does not support resource-level permissions; the statement is limited to this stack's metric namespace by a condition"
+          - id: W89
+            reason: "VPC placement follows the stack's DeployInVPC and IsPrivateApi conditions; without them the function calls only AWS service APIs (DynamoDB, S3, CloudWatch)"
+          - id: W92
+            reason: "Invoked once per document by the state machine, whose concurrency the queue processor bounds; a reserved concurrency would cap document throughput"
+    # checkov:skip=CKV_AWS_116: "No DLQ: the state machine invokes the function synchronously and its Retry policy handles failures"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold table and bucket names and the log level, no secret"
+    # checkov:skip=CKV_AWS_117: "VPC placement follows the stack's DeployInVPC and IsPrivateApi conditions"
+    # checkov:skip=CKV_AWS_115: "No reserved concurrency: the queue processor bounds how many documents run at once"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      PackageType: Image
+      # The image ProcessResultsFunction runs; the handler is another module in it.
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:processresults-function-${ImageVersion}"
+      Architectures:
+        - !Ref LambdaArchitecture
+      ImageConfig:
+        Command:
+          - "routing_handler.handler"
+      Timeout: 900
+      MemorySize: 4096
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
+      Tags:
+        # Data plane — per-doc review routing decision. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
+      VpcConfig: !If
+        - DeployInVPC
+        - SubnetIds: !Ref PrivateSubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroupId
+        - !If
+          - IsPrivateApi
+          - SubnetIds: !Ref LambdaSubnetIds
+            SecurityGroupIds:
+              - !Ref LambdaSecurityGroupId
+          - !Ref AWS::NoValue
+      Environment:
+        Variables:
+          METRIC_NAMESPACE: !Ref StackName
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          TRACKING_TABLE: !Ref TrackingTable
+          DOCUMENT_TRACKING_MODE: dynamodb
+          WORKING_BUCKET: !Ref WorkingBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document is
+          # pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
+          HITL_TABLE_NAME: !Ref HITLTableName
+      LoggingConfig:
+        LogGroup: !Ref RoutingFunctionLogGroup
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        # Review queues: reads the document's item and the queue definitions,
+        # writes the HOLDING item of a document it places (a put, or a
+        # transaction of puts and updates when it replaces a live cycle), its
+        # history, and the withdrawal of a review the run no longer needs.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
+        - !Ref LambdaECRAccessPolicy
+        # The document's tracking row: its review attributes are written, never
+        # the row created or deleted.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTable}"
+        # The configuration is read at the revision the document is pinned to.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so a pruned or
+            # never-cut pinned revision surfaced as an IAM failure (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
+        # Section results and the policy rule validation summary are read from
+        # the output bucket. The one object removed is the review status object
+        # of a review the run withdraws (<document>/review/status.json).
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
+            - Effect: Allow
+              Action: s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*/review/*"
+            # The document passed between states (compressed_documents/ prefix).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucket}/compressed_documents/*"
+        - Statement:
+            - Effect: Allow
+              Action: cloudwatch:PutMetricData
+              Resource: "*"
+              # PutMetricData has no resource-level permissions; the condition
+              # limits it to the stack's own metric namespace
+              # (METRIC_NAMESPACE=<StackName>, idp_common.metrics.put_metric).
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+
+  RoutingFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/RoutingFunction"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Applies a completed review (idp_common.review_queues.apply_review): the first
+  # step of the run that follows it. It writes the reviewer's corrections and the
+  # review record onto the section results.
+  ApplyReviewChangesFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: DockerBuildRun
+    Metadata:
+      SkipBuild: True
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "cloudwatch:PutMetricData does not support resource-level permissions; the statement is limited to this stack's metric namespace by a condition"
+          - id: W89
+            reason: "VPC placement follows the stack's DeployInVPC and IsPrivateApi conditions; without them the function calls only AWS service APIs (DynamoDB, S3, CloudWatch)"
+          - id: W92
+            reason: "Invoked once per document by the state machine, whose concurrency the queue processor bounds; a reserved concurrency would cap document throughput"
+    # checkov:skip=CKV_AWS_116: "No DLQ: the state machine invokes the function synchronously and its Retry policy handles failures"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold table and bucket names and the log level, no secret"
+    # checkov:skip=CKV_AWS_117: "VPC placement follows the stack's DeployInVPC and IsPrivateApi conditions"
+    # checkov:skip=CKV_AWS_115: "No reserved concurrency: the queue processor bounds how many documents run at once"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      PackageType: Image
+      # The image ProcessResultsFunction runs; the handler is another module in it.
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:processresults-function-${ImageVersion}"
+      Architectures:
+        - !Ref LambdaArchitecture
+      ImageConfig:
+        Command:
+          - "apply_review_changes_handler.handler"
+      Timeout: 900
+      MemorySize: 4096
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
+      Tags:
+        # Data plane — per-doc application of a completed review. See docs/reporting-sql-layer.md §10.3.
+        idp:plane: data
+      VpcConfig: !If
+        - DeployInVPC
+        - SubnetIds: !Ref PrivateSubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroupId
+        - !If
+          - IsPrivateApi
+          - SubnetIds: !Ref LambdaSubnetIds
+            SecurityGroupIds:
+              - !Ref LambdaSecurityGroupId
+          - !Ref AWS::NoValue
+      Environment:
+        Variables:
+          METRIC_NAMESPACE: !Ref StackName
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          TRACKING_TABLE: !Ref TrackingTable
+          DOCUMENT_TRACKING_MODE: dynamodb
+          WORKING_BUCKET: !Ref WorkingBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read a pinned configuration revision's body when a document is
+          # pinned to one (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
+          HITL_TABLE_NAME: !Ref HITLTableName
+      LoggingConfig:
+        LogGroup: !Ref ApplyReviewChangesFunctionLogGroup
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        # Review queues: reads the document's item and the reviewer's drafts,
+        # and records when the finalize run started. It creates no item.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
+        - !Ref LambdaECRAccessPolicy
+        # The document's tracking row: its review attributes are written, never
+        # the row created or deleted.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTable}"
+        # The configuration is read at the revision the document is pinned to.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so a pruned or
+            # never-cut pinned revision surfaced as an IAM failure (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
+        # Section results are read and rewritten in the output bucket; the
+        # reviewer's drafts are read from <document>/review/drafts/ in it.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
+            # The document passed between states (compressed_documents/ prefix).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucket}/compressed_documents/*"
+        - Statement:
+            - Effect: Allow
+              Action: cloudwatch:PutMetricData
+              Resource: "*"
+              # PutMetricData has no resource-level permissions; the condition
+              # limits it to the stack's own metric namespace
+              # (METRIC_NAMESPACE=<StackName>, idp_common.metrics.put_metric).
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref StackName
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+
+  ApplyReviewChangesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/ApplyReviewChangesFunction"
+      RetentionInDays: !Ref LogRetentionDays
+
   SummarizationFunction:
     Type: AWS::Serverless::Function
     DependsOn: DockerBuildRun
@@ -7965,7 +8270,7 @@ Resources:
         InvokeBDALambdaArn: !GetAtt InvokeBDAFunction.Arn
         BDAProcessResultsLambdaArn: !GetAtt BDAProcessResultsFunction.Arn
         WorkingBucket: !Ref WorkingBucket
-        # Bounds the waitForTaskToken wait on BDA_InvokeDataAutomation. The
+        # Bounds the waitForTaskToken wait on InvokeDataAutomationStep. The
         # placeholder is UNQUOTED in the ASL because TimeoutSeconds must be an
         # integer, which is why that file is not parseable as JSON without
         # resolving substitutions first.
@@ -7980,6 +8285,8 @@ Resources:
         ShardRuntimeFunctionArn: !GetAtt ShardRuntimeFunction.Arn
         AssessmentFunctionArn: !GetAtt AssessmentFunction.Arn
         PipelineProcessResultsLambdaArn: !GetAtt ProcessResultsFunction.Arn
+        ApplyReviewChangesLambdaArn: !GetAtt ApplyReviewChangesFunction.Arn
+        RoutingLambdaArn: !GetAtt RoutingFunction.Arn
         RuleValidationPolicyClassificationLambdaArn: !GetAtt RuleValidationPolicyClassificationFunction.Arn
         RuleValidationLambdaArn: !GetAtt RuleValidationFunction.Arn
         RuleValidationOrchestrationLambdaArn: !GetAtt RuleValidationOrchestrationFunction.Arn
@@ -8016,6 +8323,10 @@ Resources:
             FunctionName: !Ref AssessmentFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref ProcessResultsFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ApplyReviewChangesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RoutingFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref RuleValidationPolicyClassificationFunction
         - LambdaInvokePolicy:
@@ -8786,7 +9097,9 @@ Resources:
                   [".", ".", ".", "${InvokeBDAFunction}", {"stat": "Sum"}],
                   [".", ".", ".", "${BDAProcessResultsFunction}", {"stat": "Sum"}],
                   [".", ".", ".", "${BDACompletionFunction}", {"stat": "Sum"}],
-                  [".", ".", ".", "${ProcessResultsFunction}", {"stat": "Sum"}]
+                  [".", ".", ".", "${ProcessResultsFunction}", {"stat": "Sum"}],
+                  [".", ".", ".", "${ApplyReviewChangesFunction}", {"stat": "Sum"}],
+                  [".", ".", ".", "${RoutingFunction}", {"stat": "Sum"}]
                 ],
                 "region": "${AWS::Region}",
                 "title": "Lambda Concurrency Throttles (429) - All Functions",
@@ -8860,6 +9173,8 @@ Outputs:
         - !Ref ExtractionFunctionLogGroup
         - !Ref AssessmentFunctionLogGroup
         - !Ref ProcessResultsFunctionLogGroup
+        - !Ref ApplyReviewChangesFunctionLogGroup
+        - !Ref RoutingFunctionLogGroup
         - !Ref RuleValidationFunctionLogGroup
         - !Ref RuleValidationOrchestrationFunctionLogGroup
         # Shared log groups

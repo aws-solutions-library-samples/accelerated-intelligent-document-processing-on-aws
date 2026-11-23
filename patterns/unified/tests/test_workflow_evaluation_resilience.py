@@ -85,12 +85,12 @@ def test_evaluation_failure_does_not_discard_the_document(states):
     catch = states["EvaluationStep"].get("Catch")
     assert catch, "EvaluationStep must catch its errors"
     assert catch[0]["ErrorEquals"] == ["States.ALL"]
-    assert catch[0]["Next"] == "RecordEvaluationFailure"
+    assert catch[0]["Next"] == "RecordEvaluationFailureStep"
 
 
 @pytest.mark.unit
 def test_failure_recorder_records_then_continues_to_the_normal_tail(states):
-    rec = states["RecordEvaluationFailure"]
+    rec = states["RecordEvaluationFailureStep"]
     assert rec["Type"] == "Task"
     assert rec["Parameters"]["record_failure_only"] is True
     # Same document plumbing as EvaluationStep, so the handler sees the same shape.
@@ -118,19 +118,21 @@ def test_no_path_from_evaluation_leads_to_the_fail_state(states):
     """Nothing in the evaluation failure path may terminate the execution."""
     for name in (
         "EvaluationStep",
-        "RecordEvaluationFailure",
+        "RecordEvaluationFailureStep",
         "NormalizeEvaluationFailureOutput",
     ):
         targets = {c.get("Next") for c in states[name].get("Catch", [])}
         targets.add(states[name].get("Next"))
-        assert "FailState" not in targets, f"{name} must not route to FailState"
+        assert "WorkflowFailed" not in targets, (
+            f"{name} must not route to WorkflowFailed"
+        )
 
 
 # --------------------------------------------------------------------------- #
 # The BDA callback wait must be bounded (#755)
 # --------------------------------------------------------------------------- #
 #
-# BDA_InvokeDataAutomation is the ONLY waitForTaskToken state in the workflow, so
+# InvokeDataAutomationStep is the ONLY waitForTaskToken state in the workflow, so
 # it is the only place an execution can block on something outside Step
 # Functions. The callback chain is: BDA job -> EventBridge (BDAEventRule) ->
 # BDACompletionFunction -> reads the task token from S3 -> SendTaskSuccess. Every
@@ -164,26 +166,26 @@ def test_every_wait_for_task_token_state_is_bounded():
     # Guard the substitution too: a literal here would silently ignore the
     # BDACallbackTimeoutSeconds template parameter.
     assert "${BDACallbackTimeoutSeconds}" in raw, (
-        "BDA_InvokeDataAutomation's TimeoutSeconds must come from the "
+        "InvokeDataAutomationStep's TimeoutSeconds must come from the "
         "BDACallbackTimeoutSeconds substitution, not a hardcoded literal"
     )
 
 
 @pytest.mark.unit
 def test_a_timed_out_bda_callback_fails_the_execution(states):
-    """States.Timeout must reach FailState, so the failure becomes alarmable.
+    """States.Timeout must reach WorkflowFailed, so the failure becomes alarmable.
 
     A bound is only useful if tripping it produces a FAILED execution: that is
     what emits ExecutionsFailed and lets the EventBridge rule fire the workflow
     tracker, which decrements the concurrency counter and marks the document
     FAILED. Catching States.ALL is what routes the timeout there.
     """
-    bda = states["BDA_InvokeDataAutomation"]
+    bda = states["InvokeDataAutomationStep"]
     catches = bda.get("Catch") or []
     assert any(
-        "States.ALL" in c.get("ErrorEquals", []) and c.get("Next") == "FailState"
+        "States.ALL" in c.get("ErrorEquals", []) and c.get("Next") == "WorkflowFailed"
         for c in catches
-    ), "a timed-out BDA callback must route to FailState, not be swallowed"
+    ), "a timed-out BDA callback must route to WorkflowFailed, not be swallowed"
 
 
 @pytest.mark.unit
@@ -194,7 +196,7 @@ def test_a_timed_out_bda_callback_is_not_retried(states):
     States.Timeout would start a second BDA job — paying twice and risking
     double-processing — for a callback that may still be in flight.
     """
-    for policy in states["BDA_InvokeDataAutomation"].get("Retry") or []:
+    for policy in states["InvokeDataAutomationStep"].get("Retry") or []:
         errors = policy.get("ErrorEquals", [])
         assert "States.Timeout" not in errors
         assert "States.ALL" not in errors, (

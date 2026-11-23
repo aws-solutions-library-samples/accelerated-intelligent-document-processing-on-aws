@@ -5,8 +5,10 @@
 // priority, reminder time limit, enabled switch and eligible Annotators — or a Test
 // Studio queue's settings (the same, less the id, name and switch, which a test set
 // doesn't have: its documents come from the set, not from the pipeline). Queues have
-// no confidence threshold: documents are routed by their confidence alerts. Create
-// mode stays in the component for the API, but Review Management doesn't open it. Every queue's skip reasons, which an Annotator
+// no confidence threshold: the routing rules of a configuration profile decide which
+// queue a document goes to, and name the queue by its id. With no queue the dialog
+// creates one: Review Management opens it that way from its Create queue button. Every
+// queue's skip reasons, which an Annotator
 // picks from when giving an item back, are edited here one per line. A queue's stored
 // checklist and reject reasons are kept as they are; the dialog doesn't edit them.
 //
@@ -14,6 +16,7 @@
 // Admin saved the queue in the meantime the API refuses it (QUEUE_CHANGED) rather than
 // overwriting their change; the dialog then says so and offers to reload the queue.
 import React, { useEffect, useState } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import type { MultiselectProps } from '@cloudscape-design/components';
 import {
   Alert,
@@ -33,6 +36,41 @@ import {
 import type { ReviewQueueDefinition, ReviewQueueDefinitionInput } from '../../graphql/generated/operation-types';
 import { describeApiError, extractGraphQLErrorMessage } from '../../hooks/utils/graphql-error';
 import { createReviewQueue, listReviewQueues, updateReviewQueue, updateTestSetQueue } from './reviewer-assignment';
+
+const messages = defineMessages<{
+  defaultQueueInfo: NoMessageValues;
+  idConstraint: NoMessageValues;
+  priorityConstraint: NoMessageValues;
+  enabledConstraint: NoMessageValues;
+  defaultEnabledConstraint: NoMessageValues;
+}>({
+  defaultQueueInfo: {
+    id: 'reviewQueues.definitionModal.defaultQueueInfo',
+    defaultMessage:
+      'The built-in routing rules send documents here, and so does a routing rule whose own queue is missing or disabled. Documents are held for review only while this queue is enabled.',
+    description: 'Notice at the top of the Settings dialog of the Default review queue.',
+  },
+  idConstraint: {
+    id: 'reviewQueues.definitionModal.idConstraint',
+    defaultMessage: 'Routing rules name the queue by this id.',
+    description: 'Constraint text under the Queue id field of the review queue dialog.',
+  },
+  priorityConstraint: {
+    id: 'reviewQueues.definitionModal.priorityConstraint',
+    defaultMessage: 'A whole number. For information: orders the queues and Next item.',
+    description: 'Constraint text under the Priority field of the review queue dialog.',
+  },
+  enabledConstraint: {
+    id: 'reviewQueues.definitionModal.enabledConstraint',
+    defaultMessage: 'Documents a routing rule sends to a disabled queue go to the Default queue instead.',
+    description: 'Constraint text under the Enabled switch of the review queue dialog, for a queue other than the Default queue.',
+  },
+  defaultEnabledConstraint: {
+    id: 'reviewQueues.definitionModal.defaultEnabledConstraint',
+    defaultMessage: 'While the Default queue is off, no document is held for review.',
+    description: 'Constraint text under the Enabled switch of the review queue dialog, for the Default queue.',
+  },
+});
 
 /** The server's limit on a queue's skip list. */
 const MAX_SKIP_REASONS = 20;
@@ -82,6 +120,7 @@ const QueueDefinitionModal = ({
   onDismiss,
   onSaved,
 }: QueueDefinitionModalProps): React.JSX.Element => {
+  const intl = useIntl();
   const creating = !queue && !testSet;
   const [id, setId] = useState('');
   const [name, setName] = useState('');
@@ -277,11 +316,7 @@ const QueueDefinitionModal = ({
               {reloadError && <Box color="text-status-error">{reloadError}</Box>}
             </Alert>
           )}
-          {base?.isDefaultQueue && (
-            <Alert type="info">
-              Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.
-            </Alert>
-          )}
+          {base?.isDefaultQueue && <Alert type="info">{intl.formatMessage(messages.defaultQueueInfo)}</Alert>}
           {testSet && <Alert type="info">This Test Studio queue is the test set {testSet.name}; its documents come from the set.</Alert>}
           {/* Each pair in the two columns has a one-line description on both fields, so the
               inputs stay level; longer detail goes under the input as constraint text. */}
@@ -290,6 +325,7 @@ const QueueDefinitionModal = ({
               <FormField
                 label="Queue id"
                 description="Used in links. It cannot be changed later."
+                constraintText={intl.formatMessage(messages.idConstraint)}
                 errorText={submitted ? idError : undefined}
               >
                 <Input
@@ -308,7 +344,7 @@ const QueueDefinitionModal = ({
             <FormField
               label="Priority"
               description="Higher numbers are worked first."
-              constraintText="A whole number. For information: orders the queues and Next item. Kept for when there is more than one queue; with only the Default queue it changes nothing yet."
+              constraintText={intl.formatMessage(messages.priorityConstraint)}
               errorText={submitted ? priorityError : undefined}
             >
               <Input type="number" inputMode="numeric" value={priority} onChange={({ detail }) => setPriority(detail.value)} />
@@ -322,7 +358,11 @@ const QueueDefinitionModal = ({
               <Input type="number" inputMode="numeric" value={timeLimit} onChange={({ detail }) => setTimeLimit(detail.value)} />
             </FormField>
             {!testSet && (
-              <FormField label="Enabled" description="When off, no documents are added to this queue.">
+              <FormField
+                label="Enabled"
+                description="When off, no documents are added to this queue."
+                constraintText={intl.formatMessage(base?.isDefaultQueue ? messages.defaultEnabledConstraint : messages.enabledConstraint)}
+              >
                 <Toggle checked={enabled} onChange={({ detail }) => setEnabled(detail.checked)}>
                   {enabled ? 'Enabled' : 'Disabled'}
                 </Toggle>

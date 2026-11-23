@@ -1184,9 +1184,12 @@ reason. The same handling applies to a reply withheld by stop reason
 (`bedrock_utils.ModelOutputWithheld`, raised after the Simple-mode model call and
 by agentic extraction when its last regeneration round is withheld). With
 `hitl.enabled`, the issue is a human-review reason
-(`review_queues.reasons.failed_extraction_issue`): an `extraction_failed` reason in
-queue mode and a pending section in legacy HITL, so the document is held for review
-rather than completing with the section empty. Not covered: `run_one_section_shard`
+(`review_queues.reasons.failed_extraction_issue`): in queue mode an
+`extraction_failed` reason, counted by the routing input `extraction_failed_count`
+that the built-in routing rule `builtin-extraction-failed` tests, and a pending
+section in legacy HITL, so the document is held for review rather than completing
+with the section empty. A profile whose routing table has no such routing rule holds
+the document only when another of its routing rules matches. Not covered: `run_one_section_shard`
 on the Distributed Map path, where a blocked or withheld shard still fails
 `ExtractionShardMap`.
 

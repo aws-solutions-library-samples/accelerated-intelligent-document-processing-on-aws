@@ -8,7 +8,7 @@ Rich UI components for displaying batch processing progress and status.
 """
 
 import json
-from typing import Dict
+from typing import Dict, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -119,6 +119,34 @@ def create_status_table(status_data: Dict) -> Table:
     return table
 
 
+def routed_by_text(routed_by: Optional[Dict]) -> str:
+    """What placed a document in its review queue, in a line.
+
+    ``routed_by`` is the record the routing step writes: the rule that matched
+    (``ruleLabel``, ``ruleId``), or neither when the table's default outcome
+    applied, and ``fallbackReason`` when the document went to the Default queue
+    because the queue the rule names was missing or disabled, or the table could
+    not be evaluated. Empty for a document that carries no such record.
+    """
+    if not isinstance(routed_by, dict) or not routed_by:
+        return ""
+    rule = routed_by.get("ruleLabel") or routed_by.get("ruleId")
+    text = f"rule '{rule}'" if rule else "the routing table's default outcome"
+    fallback = routed_by.get("fallbackReason")
+    if fallback:
+        text += f" (fell back to the Default queue: {fallback})"
+    return text
+
+
+def review_cell(doc: Dict) -> str:
+    """A document's review status, with its queue when one is recorded."""
+    status = doc.get("review_status")
+    if not status:
+        return "—"
+    queue = doc.get("review_queue")
+    return f"{status} ({queue})" if queue else status
+
+
 def create_recent_completions_table(status_data: Dict, limit: int = 5) -> Table:
     """
     Create table of recent completions
@@ -135,7 +163,7 @@ def create_recent_completions_table(status_data: Dict, limit: int = 5) -> Table:
     )
     table.add_column("Document ID", style="cyan", width=60)
     table.add_column("Status", width=10)
-    table.add_column("Review", width=10)
+    table.add_column("Review", width=28)
     table.add_column("Duration", justify="right", width=12)
 
     completed = status_data.get("completed", [])
@@ -164,7 +192,7 @@ def create_recent_completions_table(status_data: Dict, limit: int = 5) -> Table:
         table.add_row(
             doc_id,
             "✓ Success",
-            doc.get("review_status") or "—",
+            review_cell(doc),
             f"{duration:.1f}s",
             style="green",
         )
@@ -491,6 +519,15 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
                 "end_time": doc.get("end_time", ""),
                 "review_status": doc.get("review_status"),
             }
+            # Present when the document was placed in a review queue and the
+            # stack records the queue, what placed it there, the reason its
+            # reviewer reads and the policy rules it failed.
+            for key in ("review_queue", "routed_by", "routing_reason"):
+                if doc.get(key):
+                    result[key] = doc[key]
+            if doc.get("policy_failure_count"):
+                result["policy_failures"] = doc.get("policy_failures") or []
+                result["policy_failure_count"] = doc["policy_failure_count"]
 
             # Bucket-specific fields. Keyed off the bucket, not off `status`: a
             # list of status literals here is a second verdict, and it disagreed
@@ -652,6 +689,16 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
 
         duration = doc.get("duration", 0) if doc else 0
         console.print()
+        if doc and doc.get("review_queue"):
+            console.print(f"Review queue: {doc['review_queue']}")
+        if doc and doc.get("routed_by"):
+            console.print(f"Routed by: {doc['routed_by']}")
+        # The reason is a routing rule's text with the document's values in it:
+        # printed as text, never read as markup.
+        if doc and doc.get("routing_reason"):
+            console.print(f"Reason: {doc['routing_reason']}", markup=False)
+        if doc and doc.get("policy_failure_count"):
+            console.print(f"Failed policy rules: {doc['policy_failure_count']}")
         console.print(
             f"FINAL STATUS: {status} | Duration: {duration:.1f}s | Exit Code: {exit_code}"
         )

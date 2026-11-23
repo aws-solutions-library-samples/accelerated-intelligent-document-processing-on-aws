@@ -185,6 +185,14 @@ type DocumentUiComputed = {
   duration?: string;
   metering?: Record<string, unknown>;
   hitlReviewHistory?: Record<string, unknown>[];
+  /** The review queue the document is, or was last, in: its id, and its name when it has one. */
+  reviewQueue?: string | null;
+  reviewQueueName?: string | null;
+  /**
+   * The routing rule that placed it there, the reason it gave and how many policy rules the
+   * document failed; `ruleId` is empty for the table's default outcome.
+   */
+  reviewRoutedBy?: { tableId: string; ruleId: string; ruleLabel: string; reason: string; policyFailureCount: number } | null;
   confidenceAlertCount?: number;
   /** Null when the row carries neither the stored count nor its sections. */
   missingRequiredFieldCount?: number | null;

@@ -11,6 +11,7 @@ import {
   claimTestSetDocument as claimTestSetDocumentMutation,
   createReviewQueue as createReviewQueueMutation,
   deleteReviewQueue as deleteReviewQueueMutation,
+  getReviewQueueReferences as getReviewQueueReferencesQuery,
   listMyTestSetTasks as listMyTestSetTasksQuery,
   listAnnotators as listAnnotatorsQuery,
   listReviewQueues as listReviewQueuesQuery,
@@ -20,6 +21,7 @@ import {
   updateReviewQueue as updateReviewQueueMutation,
 } from '../../graphql/generated';
 import type {
+  QueueReference,
   ReviewQueueDefinition,
   ReviewQueueDefinitionInput,
   TestSetDocumentAssignment,
@@ -52,9 +54,20 @@ export const eligibleAnnotators = (
 
 // ------------------------------------------------------------- queue definitions
 
+/** Queue definitions per listReviewQueues request (the resolver's largest page). */
+const QUEUES_PER_PAGE = 100;
+
+/** Every production queue definition: listReviewQueues is paged, so this reads all of its pages. */
 export const listReviewQueues = async (): Promise<ReviewQueueDefinition[]> => {
-  const r = await client.graphql({ query: listReviewQueuesQuery });
-  return (r.data?.listReviewQueues ?? []).filter((q): q is ReviewQueueDefinition => !!q);
+  const queues: ReviewQueueDefinition[] = [];
+  let nextToken: string | null | undefined;
+  do {
+    const r = await client.graphql({ query: listReviewQueuesQuery, variables: { limit: QUEUES_PER_PAGE, nextToken } });
+    const page = r.data?.listReviewQueues;
+    queues.push(...(page?.items ?? []).filter((q): q is ReviewQueueDefinition => !!q));
+    nextToken = page?.nextToken;
+  } while (nextToken);
+  return queues;
 };
 
 export const createReviewQueue = async (input: ReviewQueueDefinitionInput): Promise<ReviewQueueDefinition> => {
@@ -73,6 +86,23 @@ export const updateReviewQueue = async (input: ReviewQueueDefinitionInput): Prom
 
 export const deleteReviewQueue = async (id: string): Promise<void> => {
   await client.graphql({ query: deleteReviewQueueMutation, variables: { id } });
+};
+
+/**
+ * Every routing rule, in every configuration profile, that sends documents to a queue.
+ * getReviewQueueReferences is paged by profile, so a page can hold no reference and still
+ * be followed by another: this reads until there is no next page.
+ */
+export const getReviewQueueReferences = async (queueId: string): Promise<QueueReference[]> => {
+  const references: QueueReference[] = [];
+  let nextToken: string | null | undefined;
+  do {
+    const r = await client.graphql({ query: getReviewQueueReferencesQuery, variables: { queueId, nextToken } });
+    const page = r.data?.getReviewQueueReferences;
+    references.push(...(page?.items ?? []).filter((reference): reference is QueueReference => !!reference));
+    nextToken = page?.nextToken;
+  } while (nextToken);
+  return references;
 };
 
 // ------------------------------------------------------------ Test Studio queues

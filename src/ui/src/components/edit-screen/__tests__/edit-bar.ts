@@ -14,6 +14,7 @@ export type MenuName = (typeof MENUS)[number];
 const ITEM_IDS: Record<string, string> = {
   History: 'history',
   Summary: 'summary',
+  'Policy Rule Validation Summary': 'rule-validation',
   'Processing Report': 'report',
   'Edit Page Grouping': 'regroup',
   'Use As Evaluation Baseline': 'baseline',

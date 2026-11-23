@@ -468,13 +468,13 @@ A rule class appended to `policy_classes` has the following JSON-Schema shape:
 
 ### How Extracted Rules Are Used
 
-Policy Discovery is only the **authoring** side. The rules are evaluated by the Rule Validation stage of the unified processing pipeline, which runs after extraction and HITL (if enabled) on every document submitted to the main input bucket:
+Policy Discovery is only the **authoring** side. The rules are evaluated by the Rule Validation stage of the unified processing pipeline, which runs after extraction and assessment, and before [review routing](review-routing.md), on every document submitted to the main input bucket (and again after a completed review, on the corrected values):
 
 1. `ProcessResultsFunction` checks whether `rule_validation.enabled == true` **AND** `policy_classes` is non-empty. If yes, it sets `rule_validation_enabled: true` on the Step Functions state input.
 2. The state machine routes to `PolicyClassificationStep` (Lambda: `RuleValidationPolicyClassificationFunction`), which uses `PolicyClassificationService` to decide which policy classes apply to *this* document.
 3. `PolicyClassificationService.classify_document` runs the regex matchers defined on each policy class (see next section). Matched policy classes are passed downstream; unmatched ones are skipped.
-4. The `ProcessRuleValidationSections` Map state iterates over document sections, invoking `RuleValidationFunction` per section to answer each rule's yes/no question from the extracted section data.
-5. `RuleValidationOrchestration` consolidates the per-section responses into `consolidated_summary.json` and `consolidated_summary.md` written to the Output bucket under `<document>/rule_validation/consolidated/`.
+4. The `ValidatePolicyRulesBySection` Map state iterates over document sections, invoking `RuleValidationFunction` per section to answer each rule's yes/no question from the extracted section data.
+5. `PolicyRuleConsolidationStep` consolidates the per-section responses into `consolidated_summary.json` and `consolidated_summary.md` written to the Output bucket under `<document>/rule_validation/consolidated/`.
 
 See [docs/rule-validation.md](rule-validation.md) for the validator-side details.
 
@@ -536,7 +536,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 **Document Uploads but Rule Validation doesn't fire on subsequent documents:**
 - **Most common cause:** the extracted policy class has no `Document Name Regex` or `Page Content Regex`. See [Required: Add a Document Matching Regex](#required-add-a-document-matching-regex).
 - Check `ProcessResultsFunction` CloudWatch logs for `Rule validation is enabled but no policy_classes configured - skipping rule validation`. If you see that, `policy_classes` is empty in the deployed config profile.
-- Check the Step Functions execution history for whether `PolicyClassificationStep` and `ProcessRuleValidationSections` actually ran, or whether it short-circuited to `SetEmptyRuleValidationResult`.
+- Check the Step Functions execution history for whether `PolicyClassificationStep` and `ValidatePolicyRulesBySection` actually ran, or whether it short-circuited to `SetEmptyPolicyRuleValidationResult`.
 
 **Two identical rule classes after re-uploading:**
 - Expected — uploads are append-only by design so accidental re-uploads don't clobber prior work. Delete the duplicate in the Policy Schema UI.

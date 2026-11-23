@@ -525,3 +525,81 @@ def test_a_section_with_nothing_to_assess_does_not_complete_silently(
     assert wired.update_document_section.called
     persisted = wired.update_document_section.call_args.kwargs["section"]
     assert [i.code for i in persisted.processing_issues] == [CONFIDENCE_SKIPPED_CODE]
+
+
+# ---------------------------------------------------------------------------
+# A run that starts at assessment assesses the section again
+# ---------------------------------------------------------------------------
+
+_ABSENT = object()
+
+
+def _invoke_already_assessed(wired, monkeypatch, execution_input=_ABSENT):
+    """The handler over a section whose result already carries confidence data.
+
+    Returns the response and the assessment service, so a test can tell the skip
+    (the service is never built into a call) from an assessment.
+    """
+    monkeypatch.setattr(
+        assessment_index.s3,
+        "get_json_content",
+        lambda uri: {
+            "inference_result": {"transactions": [{"amount": "1.00"}]},
+            "explainability_info": [
+                {"transactions": [{"amount": {"confidence": 0.9}}]}
+            ],
+        },
+    )
+    service = MagicMock()
+    service.process_document_section.return_value = _document()
+    monkeypatch.setattr(
+        assessment_index,
+        "assessment",
+        SimpleNamespace(AssessmentService=lambda **kw: service),
+    )
+    event = {"document": _document().to_dict(), "section_id": "1"}
+    if execution_input is not _ABSENT:
+        event["execution_input"] = execution_input
+    return assessment_index.handler(event, _Context()), service
+
+
+def test_a_run_that_starts_at_assessment_assesses_an_assessed_section_again(
+    wired, monkeypatch
+):
+    result, service = _invoke_already_assessed(
+        wired,
+        monkeypatch,
+        {"runPlan": {"v": 1, "kind": "reprocess", "startStep": "assessment"}},
+    )
+
+    assert service.process_document_section.call_count == 1
+    assert service.process_document_section.call_args.args[1] == "1"
+    assert result["section_id"] == "1"
+    # The status write of an assessment that runs, which the skip does not make.
+    assert wired.update_document_status.called
+
+
+@pytest.mark.parametrize(
+    "execution_input",
+    [
+        _ABSENT,
+        None,
+        {},
+        {"document": {}},
+        {"runPlan": None},
+        {"runPlan": {"v": 1, "kind": "reprocess", "startStep": "beginning"}},
+        {"runPlan": {"v": 1, "kind": "saved_edits", "startStep": "extraction"}},
+    ],
+)
+def test_any_other_run_takes_the_already_assessed_skip(
+    wired, monkeypatch, execution_input
+):
+    """A run from the start, a run that starts elsewhere, and a run that began
+    under the definition before the state machine passed its input."""
+    result, service = _invoke_already_assessed(wired, monkeypatch, execution_input)
+
+    assert not service.process_document_section.called
+    assert not wired.update_document_status.called
+    assert result["section_id"] == "1"
+    document = Document.from_dict(result["document"])
+    assert document.sections[0].extraction_result_uri == _EXTRACTION_URI

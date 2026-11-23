@@ -9,7 +9,8 @@
  */
 
 import React from 'react';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, screen } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@cloudscape-design/components', async (importOriginal) => {

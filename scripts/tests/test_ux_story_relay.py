@@ -1795,6 +1795,9 @@ _EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
 #: The edit page's read-only notice, which offers Claim beside the bar's own.
 _EDIT_PAGE = "components/edit-screen/EditPage.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
+#: The dialog Process Changes opens on a review item: complete the review, or send
+#: the document back.
+_COMPLETION = "components/review-queues/ReviewCompletionModal.tsx"
 #: The edit screen names Process Changes with one shared constant (common/labels.ts).
 _PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
@@ -1879,6 +1882,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_FRAME, "Claim"),
         Shipped(_EDIT_PAGE, "Claim"),
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+        Shipped(_FRAME, "Reject"),
         Shipped(_FRAME, "Save"),
         Shipped(
             _PRODUCTION_MODEL,
@@ -1900,6 +1904,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "ClearReadInboxMessages": (Shipped(_INBOX, "Clear read", inside_dialog=True),),
     "CompleteReviewItem": (
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+        Shipped(_COMPLETION, "Complete review", inside_dialog=True),
     ),
     "CompleteSectionReview": (
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
@@ -2066,6 +2071,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "PutTenant": (Shipped(_TENANTS, "Save tenant"),),
     "ReassignReviewItem": (Shipped(_ASSIGN, "Assign", inside_dialog=True),),
     "ReextractTestSetDocument": (Shipped(_SLOTS, "Re-extract", source="'Re-extract'"),),
+    "RejectReviewItem": (Shipped(_FRAME, "Reject"),),
     "ReleaseReview": (Shipped(_REVIEW_MENU, "Release Review", role="menuitem"),),
     "ReleaseReviewItem": (Shipped(_FRAME, "Skip"),),
     "RemoveDocumentsFromTestSet": (
@@ -2150,6 +2156,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
         Shipped(_CONFIG, "Confirm Activate"),
     ),
+    "SendBackReviewItem": (Shipped(_COMPLETION, "Send back", inside_dialog=True),),
     "SendToReview": (Shipped(_SEND_TO_REVIEW, "Send to review", inside_dialog=True),),
     "SkipAllSectionsReview": (
         Shipped(_DETAIL_ACTIONS, "Skip All Reviews", inside_dialog=True),
@@ -2250,10 +2257,6 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
 #: Mutations the UI declares that no shipped control sends, each with what makes
 #: that so; the suite checks each one has no caller outside ``src/ui/src/graphql``.
 MUTATIONS_WITHOUT_A_GUARDED_CONTROL: dict[str, str] = {
-    "RejectReviewItem": (
-        "declared among the UI's operations and called by none of its components "
-        "or hooks"
-    ),
     "RenewReviewLease": (
         "declared among the UI's operations and called by none of its components "
         "or hooks"
@@ -2500,6 +2503,11 @@ CLAIM_CALL_SITES: dict[tuple[str, str], tuple[Shipped, ...]] = {
     ),
     (_PRODUCTION_MODEL, "useProductionItemEditModel.state.process.run"): (
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
+    # Only a held item can be rejected, so Reject assigns an unassigned one to the
+    # Admin first, as Process Changes does.
+    (_PRODUCTION_MODEL, "useProductionItemEditModel.state.reject.run"): (
+        Shipped(_FRAME, "Reject"),
     ),
     (_PRODUCTION_MODEL, "useProductionItemEditModel.state.claim"): (
         Shipped(_FRAME, "Claim"),

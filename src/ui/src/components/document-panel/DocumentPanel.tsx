@@ -3,11 +3,11 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Alert, Box, ColumnLayout, Container, SpaceBetween, Header, StatusIndicator } from '@cloudscape-design/components';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import './DocumentPanel.css';
 import SectionsPanel from '../sections-panel';
 import PagesPanel from '../pages-panel';
@@ -20,6 +20,7 @@ import { getDocumentConfidenceAlertCount } from '../common/confidence-alerts-uti
 import { getDocumentMissingRequiredFieldCount, resolveMissingRequiredFieldCount } from '../common/missing-required-fields-utils';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import { getMalwareScanView } from '../common/malware-scan';
+import type { ReviewRoutedBy } from '../common/map-document-attributes';
 import { renderObjectStatus } from '../common/object-status-renderer';
 import DocumentVersionsPanel from './DocumentVersionsPanel';
 import type { DocumentVersionDetail } from './DocumentVersionsPanel';
@@ -34,6 +35,7 @@ import DocumentPageHeader from '../common/DocumentPageHeader';
 import FileViewer from '../document-viewer/FileViewer';
 import EditorNotices from '../edit-screen/EditorNotices';
 import { documentName } from '../review-queues/review-api';
+import { RoutedByReason, routedByText } from '../review-queues/RoutedBy';
 import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
@@ -75,6 +77,10 @@ interface MappedDocument {
   hitlReviewOwnerEmail?: string;
   hitlReviewedBy?: string;
   hitlReviewedByEmail?: string;
+  /** The review queue the document is, or was last, in, and the routing rule that sent it there. */
+  reviewQueue?: string | null;
+  reviewQueueName?: string | null;
+  reviewRoutedBy?: ReviewRoutedBy | null;
   mergedConfig?: Record<string, unknown>;
   // Declared rather than left to the index signature below, so a typo in one of
   // these names is a type error here instead of a field that silently reads
@@ -124,6 +130,24 @@ const CONFIG_SOURCE_LABELS: Record<string, string> = {
 };
 
 const logger = new ConsoleLogger('DocumentPanel');
+
+const messages = defineMessages<{
+  reviewQueue: NoMessageValues;
+  routingReason: NoMessageValues;
+}>({
+  reviewQueue: {
+    id: 'documentPanel.attributes.reviewQueue',
+    defaultMessage: 'Review queue',
+    description:
+      'Label of the document detail that names the review queue the document is, or was last, in. The routing rule that sent it there is shown under the name of the queue.',
+  },
+  routingReason: {
+    id: 'documentPanel.attributes.routingReason',
+    defaultMessage: 'Routing reason',
+    description:
+      'Label of the document detail that shows the reason the routing rule gave for sending the document to its review queue, with the values the document had.',
+  },
+});
 
 // Detail-view polling cadence under the HTTP API transport (no subscriptions).
 const USE_POLLING = true;
@@ -232,6 +256,14 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
       <Field label="Review Status">{renderHitlStatus(item)}</Field>
       <Field label="Review Owner">{item.hitlReviewOwnerEmail || item.hitlReviewOwner || '-'}</Field>
       <Field label="Review Completed By">{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</Field>
+      {/*
+        Where routing sent the document, shown when it went to a queue: the queue, with
+        the routing rule that sent it there under its name (in the words the review
+        pages use), then the reason the routing rule gave.
+      */}
+      {item.reviewQueue && <ReviewQueueField item={item} />}
+      {/* A Boolean, not the reason: an empty text would take a place in the grid. */}
+      {!!item.reviewRoutedBy?.reason && <RoutingReasonField routedBy={item.reviewRoutedBy} />}
       {skipAll && (
         <Field label="Skip Reason">
           {skipAll.reason}
@@ -252,6 +284,38 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
       <MalwareScanAttribute item={item} />
       <CallerAttributesField entries={item.callerAttributes} />
     </ColumnLayout>
+  );
+};
+
+/**
+ * The review queue the document is, or was last, in, with the routing rule that sent
+ * it there under the name of the queue.
+ *
+ * useIntl lives here and in RoutingReasonField, which are rendered only for a document
+ * that routing sent to a queue, so any other document renders without touching
+ * react-intl (see CallerAttributesList).
+ */
+const ReviewQueueField = ({ item }: { item: MappedDocument }): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Field label={intl.formatMessage(messages.reviewQueue)}>
+      {item.reviewQueueName || item.reviewQueue}
+      {item.reviewRoutedBy && (
+        <Box fontSize="body-s" color="text-body-secondary">
+          {routedByText(intl, item.reviewRoutedBy)}
+        </Box>
+      )}
+    </Field>
+  );
+};
+
+/** The reason the routing rule gave for sending the document to its review queue. */
+const RoutingReasonField = ({ routedBy }: { routedBy: ReviewRoutedBy }): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Field label={intl.formatMessage(messages.routingReason)}>
+      <RoutedByReason routedBy={routedBy} />
+    </Field>
   );
 };
 

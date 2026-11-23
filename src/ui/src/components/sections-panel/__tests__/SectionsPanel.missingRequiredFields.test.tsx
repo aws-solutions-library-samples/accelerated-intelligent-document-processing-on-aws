@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ currentCredentials: {} }) }));

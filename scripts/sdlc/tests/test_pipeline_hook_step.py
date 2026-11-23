@@ -272,8 +272,9 @@ class TestStepInvocationCorrectness:
     def test_scan_is_scoped_to_one_identified_execution(self, cbd):
         """Step 14 shares the state machine with the other parallel steps, whose
         hook-less documents ALSO emit `{hookPoint: ..., invoked: 0}` at both
-        points — PreprocessingHook is StartAt and PostprocessingHook is on the
-        shared tail, so EVERY execution emits both. Collecting payloads across
+        points — PreprocessingHook is the first Task state a run from the
+        beginning enters and PostprocessingHook is on the shared tail, so EVERY
+        such execution emits both. Collecting payloads across
         executions can therefore latch onto a foreign one. The scan must first
         identify our execution, then read only that one's history."""
         src = self._src(cbd)

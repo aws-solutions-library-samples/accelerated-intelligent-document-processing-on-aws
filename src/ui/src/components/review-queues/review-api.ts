@@ -17,9 +17,11 @@ import {
   listReviewQueueItems as listReviewQueueItemsQuery,
   moveReviewItem as moveReviewItemMutation,
   reassignReviewItem as reassignReviewItemMutation,
+  rejectReviewItem as rejectReviewItemMutation,
   releaseReviewItem as releaseReviewItemMutation,
   removeReviewItem as removeReviewItemMutation,
   saveReviewDraft as saveReviewDraftMutation,
+  sendBackReviewItem as sendBackReviewItemMutation,
   takeOverReviewItem as takeOverReviewItemMutation,
 } from '../../graphql/generated';
 import type {
@@ -109,6 +111,47 @@ export const claimNextItem = async (queueName: string): Promise<ClaimNextResult>
 export const releaseItem = async (item: ItemRef, reason: string, note?: string): Promise<ReviewItem> => {
   const r = await client.graphql({ query: releaseReviewItemMutation, variables: { ...ref(item), reason, note } });
   return required(r.data?.releaseReviewItem, 'releaseReviewItem');
+};
+
+/**
+ * Reject: the review ends and the document is rejected. The item's holder may, and an
+ * Admin on an item someone holds. `reason` comes from the queue's reject list; it and
+ * `note` go into the item's history.
+ */
+export const rejectItem = async (item: ItemRef, reason: string, note?: string): Promise<ReviewItem> => {
+  const r = await client.graphql({ query: rejectReviewItemMutation, variables: { ...ref(item), reason, note } });
+  return required(r.data?.rejectReviewItem, 'rejectReviewItem');
+};
+
+/** The status of a run the server queued (run_plan's QUEUED). */
+const RUN_QUEUED = 'QUEUED';
+
+/**
+ * A send-back the server answered without queueing a run: the run cannot start for
+ * this document, or the review was replaced meanwhile. `code` is the server's reason
+ * (RUN_IN_PROGRESS, CYCLE_CHANGED, ...), and the message is the server's sentence.
+ */
+export class SendBackRefused extends Error {
+  readonly code: string | null;
+
+  constructor(code: string | null, message: string) {
+    super(message);
+    this.name = 'SendBackRefused';
+    this.code = code;
+  }
+}
+
+/**
+ * Send back: withdraw the review and process the document again. The server decides
+ * where the run starts: at classification, or at the beginning in BDA mode. The
+ * corrections and any page regrouping made in the review are discarded. The item's
+ * holder may, and an Admin on an item that is open or held. `note` goes into the item's
+ * history. Throws SendBackRefused when the server queued no run.
+ */
+export const sendBackItem = async (item: ItemRef, note?: string): Promise<void> => {
+  const r = await client.graphql({ query: sendBackReviewItemMutation, variables: { ...ref(item), note } });
+  const result = required(r.data?.sendBackReviewItem, 'sendBackReviewItem');
+  if (result.status !== RUN_QUEUED) throw new SendBackRefused(result.reason ?? null, result.message || result.reason || result.status);
 };
 
 export const forceReleaseItem = async (item: ItemRef): Promise<ReviewItem> => {

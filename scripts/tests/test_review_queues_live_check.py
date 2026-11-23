@@ -7,7 +7,9 @@ An Annotator works only the queues whose Eligible Annotators list names them
 live check that only creates an Annotator therefore finds no queue on a fresh stack.
 These tests drive the whole check against an in-memory stack whose queue membership
 is decided by the real ``QueueDefinition`` model, and whose ``updateReviewQueue``
-resets every field the input leaves out: it is the resolver's own ``_queue_input``.
+resets every field the input leaves out: the definition an update produces is built
+by the review queue service's own code. ``listReviewQueues`` answers a page, as the
+resolver does.
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ from unittest.mock import patch
 
 import pytest
 
+from idp_common.review_queues.api_models import UpdateQueueArgs
 from idp_common.review_queues.queue_defs import QueueDefinition, QueueDefStore
+from idp_common.review_queues.service import ReviewQueueService
 
 pytestmark = pytest.mark.unit
 
@@ -56,11 +60,11 @@ CONCURRENT = "added.meanwhile@example.com"
 
 
 def _load_resolver():
-    """The review-queues resolver, for its own ``_queue_input`` and ``_queue_view``.
+    """The review-queues resolver, for its own ``_queue_view``.
 
     The fake API answers ``listReviewQueues`` and ``updateReviewQueue`` with the
-    resolver's functions rather than a copy of them, so "an update resets what it
-    leaves out" is the resolver's behaviour and not this file's belief about it.
+    product's functions rather than a copy of them: the resolver's view of a
+    definition, and (``_updated``) the service's reading of an update.
     """
     index = (
         SCRIPTS.parent
@@ -79,6 +83,17 @@ def _load_resolver():
 
 resolver = _load_resolver()
 _view = resolver._queue_view
+
+
+def _updated(update: dict, existing: QueueDefinition) -> QueueDefinition:
+    """The definition ``updateReviewQueue`` stores for an input.
+
+    Built by the service's own code, so "an update resets what it leaves out" is
+    the product's behaviour and not this file's belief about it.
+    """
+    return ReviewQueueService._definition(
+        UpdateQueueArgs.model_validate(update), existing
+    )
 
 
 class FakeStack:
@@ -115,6 +130,10 @@ class FakeStack:
         self.completed = False
         self.on_update = None
         self.on_list = None
+        #: Queue definitions per listReviewQueues page; None answers them all in one.
+        self.page_size: int | None = None
+        #: A stack whose listReviewQueues is not paged answers a plain list.
+        self.plain_list = False
         #: field name -> statuses to answer with, in order, instead of handling it.
         self.refuse: dict[str, list[int]] = {}
         #: Answer updateReviewQueue with this status after the write has landed.
@@ -237,14 +256,21 @@ class FakeStack:
         if self.on_list:
             hook, self.on_list = self.on_list, None
             hook()
-        return views
+        if self.plain_list:
+            return views
+        start = int(args.get("nextToken") or 0)
+        end = len(views) if self.page_size is None else start + self.page_size
+        return {
+            "items": views[start:end],
+            "nextToken": str(end) if end < len(views) else None,
+        }
 
     def op_updateReviewQueue(self, caller, group, args):
         assert group == "Admin", "updateReviewQueue is Admin-only"
         if args["input"]["id"] == self.other.id:
-            self.other = resolver._queue_input(args["input"], self.other)
+            self.other = _updated(args["input"], self.other)
             return _view(self.other)
-        self.default = resolver._queue_input(args["input"], self.default)
+        self.default = _updated(args["input"], self.default)
         if self.on_update:
             hook, self.on_update = self.on_update, None
             hook()
@@ -316,6 +342,41 @@ def test_a_fresh_stack_passes_on_the_annotator_path():
         "listReviewQueues",
         "updateReviewQueue",
     }
+
+
+def test_the_default_queue_is_found_on_a_later_page():
+    """The Default queue is listed second here, so one definition a page puts it
+    on the second page: the check has to follow ``nextToken`` to list the Annotator."""
+    stack = FakeStack()
+    stack.page_size = 1
+
+    code, report = _run(stack)
+
+    assert code == live.EXIT_PASS, report.checks
+    assert _outcomes(report)["admin-lists-annotator-on-default-queue"] == live.PASS
+    assert stack.default == stack.original
+
+
+def test_a_listing_with_no_default_queue_on_any_page_stops_the_check():
+    stack = FakeStack()
+    stack.page_size = 1
+    stack.default = stack.default.model_copy(update={"id": "main"})
+
+    code, report = _run(stack)
+
+    assert code == live.EXIT_INCOMPLETE
+    assert "returned no Default queue" in report.checks[-1].detail
+    assert not any(op == "updateReviewQueue" for op, _ in stack.calls)
+
+
+def test_a_stack_whose_listing_is_not_paged_still_passes():
+    stack = FakeStack()
+    stack.plain_list = True
+
+    code, report = _run(stack)
+
+    assert code == live.EXIT_PASS, report.checks
+    assert stack.default == stack.original
 
 
 def test_the_default_queue_is_left_exactly_as_found():

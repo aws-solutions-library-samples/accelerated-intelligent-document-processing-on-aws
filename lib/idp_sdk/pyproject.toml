@@ -40,6 +40,9 @@ dependencies = [
     "click>=8.0.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",
+    # DMN XML import and export of routing tables (client.config.routing_to_dmn /
+    # routing_from_dmn), through idp_common.decision_tables.dmn.
+    "defusedxml==0.7.1",
 ]
 
 [project.optional-dependencies]

@@ -54,7 +54,7 @@ def handler(event, context):
 
     #1101: Step Functions retries by the exception's CLASS NAME, so a transient
     failure that arrives here under any other name failed the document outright
-    while the eight-attempt ladder RuleValidationStep carries sat unused. The whole
+    while the eight-attempt ladder PolicyRuleValidationStep carries sat unused. The whole
     handler is wrapped, not just the service call, so the document and config loads
     and the status write are covered too — each of those is an S3 or DynamoDB call
     that can throttle. Transient causes are re-raised under the one name that state

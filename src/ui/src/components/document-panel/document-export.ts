@@ -115,6 +115,9 @@ export interface ExportableDocument {
   hitlReviewOwnerEmail?: string;
   hitlReviewedBy?: string;
   hitlReviewedByEmail?: string;
+  reviewQueue?: string | null;
+  reviewQueueName?: string | null;
+  reviewRoutedBy?: { tableId: string; ruleId: string; ruleLabel: string; reason?: string; policyFailureCount?: number } | null;
   [key: string]: unknown;
 }
 
@@ -296,6 +299,11 @@ const buildPlan = (doc: ExportableDocument, settings: ExportSettings | undefined
     hitlReviewOwnerEmail: doc.hitlReviewOwnerEmail ?? null,
     hitlReviewedBy: doc.hitlReviewedBy ?? null,
     hitlReviewedByEmail: doc.hitlReviewedByEmail ?? null,
+    // Which review queue the document went to, and the routing rule that sent it there
+    // with the reason it gave and the number of policy rules the document failed.
+    reviewQueue: doc.reviewQueue ?? null,
+    reviewQueueName: doc.reviewQueueName ?? null,
+    reviewRoutedBy: doc.reviewRoutedBy ?? null,
   };
   syntheticFiles.push({
     zipPath: 'document-attributes.json',

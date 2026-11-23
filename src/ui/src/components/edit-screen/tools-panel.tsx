@@ -5,9 +5,52 @@
 // a direct edit, a Production queue item and a Test Studio item.
 import React from 'react';
 import { HelpPanel, Icon } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type MessageTag, type NoMessageValues } from 'react-intl';
 
 import { DOCS_BASE_URL } from '../../constants/github';
 import { PROCESS_CHANGES_LABEL } from '../common/labels';
+
+const messages = defineMessages<{
+  processChanges: { readonly b: MessageTag; readonly processChanges: string };
+  processChangesDocument: NoMessageValues;
+  processChangesQueueItem: { readonly b: MessageTag };
+  processChangesTestStudio: NoMessageValues;
+  policyRuleValidation: { readonly b: MessageTag };
+}>({
+  processChanges: {
+    id: 'editScreen.toolsPanel.processChanges',
+    defaultMessage: '<b>{processChanges}</b> saves, then processes the changes:',
+    description:
+      'Edit screen info panel, the list of buttons: introduces what Process Changes does, by where the document was opened from. <b> marks the button name; {processChanges} is its label.',
+  },
+  processChangesDocument: {
+    id: 'editScreen.toolsPanel.processChangesDocument',
+    defaultMessage:
+      'On a document opened from its page, it asks you to confirm and lists the steps of the run that follows. The steps before the one it starts at are not repeated.',
+    description: 'Edit screen info panel: what Process Changes does on a document that is not in a review queue.',
+  },
+  processChangesQueueItem: {
+    id: 'editScreen.toolsPanel.processChangesQueueItem',
+    defaultMessage:
+      'On a queue item, it asks how the review ends and lists the steps of the run that follows. <b>Complete the review</b> keeps your corrections; a section whose pages you changed is extracted again first. <b>Send back for reprocessing</b> discards your corrections and any page regrouping, and the document is processed again from classification (from the beginning in BDA mode).',
+    description:
+      'Edit screen info panel: what Process Changes does on a review queue item. <b> marks the names of the two options of the dialog it opens. Classification is a processing step; BDA mode is the processing mode that uses Bedrock Data Automation.',
+  },
+  processChangesTestStudio: {
+    id: 'editScreen.toolsPanel.processChangesTestStudio',
+    defaultMessage:
+      'On a Test Studio document, it also writes the labels as reviewed ground truth. When no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.',
+    description: 'Edit screen info panel: what Process Changes does on a Test Studio document.',
+  },
+  policyRuleValidation: {
+    id: 'editScreen.toolsPanel.policyRuleValidation',
+    defaultMessage: '<b>Policy Rule Validation Summary</b>: the policy rules the document passed and failed, with the reason for each.',
+    description: 'Edit screen info panel, the Reports menu: what the Policy Rule Validation Summary item shows. <b> marks the item name.',
+  },
+});
+
+/** Renders a `<b>...</b>` element value: a UI label named inside a sentence. */
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
 
 const EditScreenToolsPanel = (): React.JSX.Element => (
   <HelpPanel
@@ -60,9 +103,18 @@ const EditScreenToolsPanel = (): React.JSX.Element => (
           <b>Save</b> saves the open section without finishing. On a Test Studio document it keeps a draft, which opens no version.
         </li>
         <li>
-          <b>{PROCESS_CHANGES_LABEL}</b> saves, then processes the changes: evaluation and summarization re-run, and OCR, classification and
-          extraction are not repeated. It finishes a queue item. On a Test Studio document it also writes the labels as reviewed ground
-          truth; when no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.
+          <FormattedMessage {...messages.processChanges} values={{ b: bold, processChanges: PROCESS_CHANGES_LABEL }} />
+          <ul>
+            <li>
+              <FormattedMessage {...messages.processChangesDocument} />
+            </li>
+            <li>
+              <FormattedMessage {...messages.processChangesQueueItem} values={{ b: bold }} />
+            </li>
+            <li>
+              <FormattedMessage {...messages.processChangesTestStudio} />
+            </li>
+          </ul>
         </li>
       </ul>
       <h3>Reports</h3>
@@ -72,6 +124,9 @@ const EditScreenToolsPanel = (): React.JSX.Element => (
         </li>
         <li>
           <b>Summary</b>: the document&apos;s summary, once it is finished.
+        </li>
+        <li>
+          <FormattedMessage {...messages.policyRuleValidation} values={{ b: bold }} />
         </li>
         <li>
           <b>Processing Report</b>: how the open section was extracted.

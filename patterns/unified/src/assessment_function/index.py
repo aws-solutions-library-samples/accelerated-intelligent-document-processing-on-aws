@@ -210,8 +210,19 @@ def _handle(event, context):
     # standalone AssessmentService batches large lists on its own).
     assessment_context = "Assessment"
 
+    # A run that starts at assessment (its run plan says so) asks for the section
+    # to be assessed again, so the skip below is not taken. The state machine
+    # passes its input as ``execution_input``; a run that started under the
+    # definition before it did sends none.
+    run_plan = (event.get("execution_input") or {}).get("runPlan") or {}
+    assess_again = run_plan.get("startStep") == "assessment"
+
     # Intelligent Assessment Skip: Check if extraction results already contain explainability_info
-    if section.extraction_result_uri and section.extraction_result_uri.strip():
+    if (
+        not assess_again
+        and section.extraction_result_uri
+        and section.extraction_result_uri.strip()
+    ):
         try:
             logger.info(
                 f"Checking extraction results for existing assessment: {section.extraction_result_uri}"

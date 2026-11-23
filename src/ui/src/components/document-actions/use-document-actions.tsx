@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The document page's action bar and the dialogs it opens. Left to right: the Details |
-// Source switch; Reports (Summary, Evaluation Report, Rule Validation Summary,
+// Source switch; Reports (Summary, Evaluation Report, Policy Rule Validation Summary,
 // Estimated Cost, Processing Flow); More Actions (the changes; then the downloads, as a group; then
 // Reprocess, Abort and Delete as a group, Delete last); Refresh; Troubleshoot; Start
 // Review, where it applies; and Edit, the primary action. More Actions opens Edit Page Grouping (the edit
@@ -55,7 +55,13 @@ const messages = defineMessages<{
   resubmitDescription: NoMessageValues;
   sentToReview: { readonly name: string };
   sendToReviewFailed: { readonly name: string; readonly outcome: string };
+  policyRuleValidationSummary: NoMessageValues;
 }>({
+  policyRuleValidationSummary: {
+    id: 'documentActions.reports.policyRuleValidationSummary',
+    defaultMessage: 'Policy Rule Validation Summary',
+    description: "Item of the Reports menu on the document page: opens the document's policy rule validation summary.",
+  },
   sendToReview: {
     id: 'documentActions.moreActions.sendToReview',
     defaultMessage: 'Send to review',
@@ -360,7 +366,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
       items: [
         ...offered(gates.summary, 'summary', 'Summary'),
         ...offered(gates.evaluation, 'evaluation', 'Evaluation Report'),
-        ...offered(gates['rule-validation'], 'rule-validation', 'Rule Validation Summary'),
+        ...offered(gates['rule-validation'], 'rule-validation', intl.formatMessage(messages.policyRuleValidationSummary)),
         ...offered(gates.cost, 'cost', 'Estimated Cost'),
         ...offered(gates.flow, 'flow', 'Processing Flow'),
       ],

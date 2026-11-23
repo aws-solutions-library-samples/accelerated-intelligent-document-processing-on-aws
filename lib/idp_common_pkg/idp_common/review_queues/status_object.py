@@ -20,14 +20,16 @@ from .models import (
     ReviewItemRecord,
     RunRef,
     StatusObject,
+    StatusPolicyFailure,
     StatusReason,
+    StatusRoutedBy,
     StatusTimestamps,
 )
 from .statuses import ReviewStatus
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 STATUS_SEGMENT = "review/status.json"
 
 
@@ -50,6 +52,7 @@ def build_status(
     now: datetime,
 ) -> StatusObject:
     final = status in (ReviewStatus.COMPLETE, ReviewStatus.REJECTED)
+    routed_by = item.routed_by
     return StatusObject(
         document_key=item.doc_key,
         status=status.value,
@@ -68,6 +71,24 @@ def build_status(
         reviewer=item.disposed_by if final else None,
         reject_reason=item.reject_reason if status == ReviewStatus.REJECTED else None,
         reject_note=item.reject_note if status == ReviewStatus.REJECTED else None,
+        routed_by=(
+            StatusRoutedBy(
+                table_id=routed_by.table_id,
+                rule_id=routed_by.rule_id,
+                rule_label=routed_by.rule_label,
+                placed_queue=routed_by.placed_queue,
+                fallback_reason=routed_by.fallback_reason,
+                reason=routed_by.reason,
+                reason_source=routed_by.reason_source,
+                policy_failures=[
+                    StatusPolicyFailure(**failure.model_dump())
+                    for failure in routed_by.policy_failures
+                ],
+                policy_failure_count=routed_by.policy_failure_count,
+            )
+            if routed_by is not None
+            else None
+        ),
         timestamps=StatusTimestamps(
             enqueued_at=item.enqueued_at,
             disposed_at=item.disposed_at if final else None,

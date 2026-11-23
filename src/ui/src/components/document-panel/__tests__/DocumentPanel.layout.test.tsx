@@ -6,13 +6,16 @@
  * grid that narrows on a narrow screen (ColumnLayout columns={4} with minColumnWidth,
  * text-grid), in the same order as before, each a key label over its value; the status
  * is the shared status indicator; and Estimated Cost is its own container below Document
- * Details, not inside it.
+ * Details, not inside it. A document routing placed in a review queue shows the queue
+ * with the routing rule under its name, in the words the review pages use, and next to
+ * it the reason the routing rule gave, shortened when it is long and rendered as text.
  */
 
 import React from 'react';
 import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { fireEvent, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
@@ -136,6 +139,120 @@ describe('Document Details', () => {
       'Summary',
       'Malware scan',
     ]);
+  });
+
+  /** The value of a field: its text nodes, top to bottom. */
+  const field = (label: string): string[] | null => {
+    const key = [...document.querySelectorAll('[class*="key-label"]')].find((e) => e.textContent === label);
+    if (!key) return null;
+    const value = key.nextElementSibling!;
+    const walker = document.createTreeWalker(value, NodeFilter.SHOW_TEXT);
+    const texts: string[] = [];
+    while (walker.nextNode()) texts.push(walker.currentNode.textContent ?? '');
+    return texts.filter((text) => text.trim() !== '');
+  };
+  const labels = (): (string | null)[] => [...document.querySelectorAll('[class*="key-label"]')].map((e) => e.textContent);
+  const ROUTED_BY = {
+    tableId: 'review-routing',
+    ruleId: 'claims-over-1000',
+    ruleLabel: 'Claims over 1000',
+    reason: '',
+    policyFailureCount: 0,
+  };
+
+  it('shows the review queue by name with the routing rule under it, then the reason, after the review fields', () => {
+    const routed = {
+      ...ITEM,
+      reviewQueue: 'claims',
+      reviewQueueName: 'Claims team',
+      reviewRoutedBy: { ...ROUTED_BY, reason: 'Invoice total 1250.00 is over 1000. Check the total against the line items.' },
+    };
+    renderWithIntl(<DocumentAttributes item={routed as never} versions={[]} />);
+
+    // The routing rule reads as it does on the review pages.
+    expect(field('Review queue')).toEqual(['Claims team', 'Routed by rule: Claims over 1000']);
+    expect(field('Routing reason')).toEqual(['Invoice total 1250.00 is over 1000. Check the total against the line items.']);
+    const all = labels();
+    expect(all.slice(all.indexOf('Review Completed By'), all.indexOf('Review Completed By') + 3)).toEqual([
+      'Review Completed By',
+      'Review queue',
+      'Routing reason',
+    ]);
+    // The routing rule has no label of its own: its text says what it is.
+    expect(all).not.toContain('Routed by');
+  });
+
+  it('shows the queue by its id when it has no name, and the rule by its id when it has no label', () => {
+    const routed = {
+      ...ITEM,
+      reviewQueue: 'claims',
+      reviewQueueName: null,
+      reviewRoutedBy: { ...ROUTED_BY, ruleId: 'plain', ruleLabel: '' },
+    };
+    renderWithIntl(<DocumentAttributes item={routed as never} versions={[]} />);
+
+    expect(field('Review queue')).toEqual(['claims', 'Routed by rule: plain']);
+  });
+
+  it('says the default outcome routed a document no rule matched', () => {
+    const routed = { ...ITEM, reviewQueue: 'default', reviewRoutedBy: { ...ROUTED_BY, ruleId: '', ruleLabel: '' } };
+    renderWithIntl(<DocumentAttributes item={routed as never} versions={[]} />);
+
+    expect(field('Review queue')).toEqual(['default', 'Routed by the default outcome']);
+  });
+
+  it('shows no routing reason for a document placed before routing rules had one', () => {
+    const routed = { ...ITEM, reviewQueue: 'claims', reviewQueueName: 'Claims team', reviewRoutedBy: ROUTED_BY };
+    renderWithIntl(<DocumentAttributes item={routed as never} versions={[]} />);
+
+    expect(field('Review queue')).toEqual(['Claims team', 'Routed by rule: Claims over 1000']);
+    expect(labels()).not.toContain('Routing reason');
+    // Every place in the grid is a field: the empty reason is not rendered as a text of its own.
+    const grid = state.columnLayouts.at(-1)!.children as React.ReactNode;
+    expect(React.Children.toArray(grid).filter((child) => typeof child === 'string')).toEqual([]);
+  });
+
+  it('shortens a long routing reason, and shows the rest on request', () => {
+    const long = Array.from({ length: 12 }, (_, i) => `Sentence ${i + 1} of the reason says what to check.`).join(' ');
+    const routed = { ...ITEM, reviewQueue: 'claims', reviewRoutedBy: { ...ROUTED_BY, reason: long } };
+    renderWithIntl(<DocumentAttributes item={routed as never} versions={[]} />);
+
+    expect(field('Routing reason')).toEqual([`${long.slice(0, 280).trimEnd()}…`, 'Show more']);
+    const more = screen.getByRole('button', { name: 'Show more' });
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(more);
+    expect(field('Routing reason')).toEqual([long, 'Show less']);
+  });
+
+  it('shows what the routing reason holds as text, not as markup', () => {
+    const markup = 'Vendor <img src=x onerror="alert(1)"> **Acme** [site](https://example.com)';
+    const routed = { ...ITEM, reviewQueue: 'claims', reviewRoutedBy: { ...ROUTED_BY, reason: markup } };
+    renderWithIntl(<DocumentAttributes item={routed as never} versions={[]} />);
+
+    expect(field('Routing reason')).toEqual([markup]);
+    expect(document.querySelector('img')).toBeNull();
+    expect(document.querySelector('a[href="https://example.com"]')).toBeNull();
+  });
+
+  it('shows neither field for a document that was not routed to a queue', () => {
+    renderWithIntl(<DocumentAttributes item={ITEM as never} versions={[]} />);
+
+    expect(labels()).not.toContain('Review queue');
+    expect(labels()).not.toContain('Routing reason');
+    expect(document.body.textContent).not.toContain('Routed by');
+  });
+
+  it('shows the queue alone for a document in a queue with no routing rule on record', () => {
+    renderWithIntl(
+      <DocumentAttributes
+        item={{ ...ITEM, reviewQueue: 'default', reviewQueueName: 'Default', reviewRoutedBy: null } as never}
+        versions={[]}
+      />,
+    );
+
+    expect(field('Review queue')).toEqual(['Default']);
+    expect(labels()).not.toContain('Routing reason');
+    expect(document.body.textContent).not.toContain('Routed by');
   });
 
   it('shows the status with the shared status indicator', () => {

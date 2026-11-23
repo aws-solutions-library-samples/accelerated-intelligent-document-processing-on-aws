@@ -57,6 +57,10 @@ class FactExtractionResponse:
     extracted_facts: List[Dict[str, str]] = field(default_factory=list)
     extraction_summary: str = ""
     z3_parameters: Optional[Dict[str, Any]] = field(default=None)
+    #: The policy rule's stable id, ``<policy type>.<rule key>``.
+    rule_id: Optional[str] = None
+    #: The rule's Z3 id (``x-aws-idp-rule-id``), when it has one.
+    z3_rule_id: Optional[str] = None
 
     def __init__(self, **kwargs):
         """Custom init to enforce validation."""
@@ -66,6 +70,8 @@ class FactExtractionResponse:
             "extracted_facts",
             "extraction_summary",
             "z3_parameters",
+            "rule_id",
+            "z3_rule_id",
         }
 
         # Check for extra fields
@@ -79,6 +85,8 @@ class FactExtractionResponse:
         self.extracted_facts = kwargs.get("extracted_facts", [])
         self.extraction_summary = kwargs.get("extraction_summary", "")
         self.z3_parameters = kwargs.get("z3_parameters")
+        self.rule_id = kwargs.get("rule_id")
+        self.z3_rule_id = kwargs.get("z3_rule_id")
 
         # Call post_init for validation
         self.__post_init__()
@@ -116,6 +124,13 @@ class LLMResponse:
     recommendation: str
     reasoning: str
     supporting_pages: List[str] = field(default_factory=list)
+    #: The policy rule's stable id, ``<policy type>.<rule key>``.
+    rule_id: Optional[str] = None
+    #: The rule's Z3 id (``x-aws-idp-rule-id``), when it has one.
+    z3_rule_id: Optional[str] = None
+    #: ``recommendation`` normalised to ``pass``, ``fail``, ``not_found`` or
+    #: ``unknown``.
+    verdict: Optional[str] = None
 
     def __init__(self, **kwargs):
         """Custom init to enforce extra="forbid" behavior."""
@@ -126,6 +141,9 @@ class LLMResponse:
             "recommendation",
             "reasoning",
             "supporting_pages",
+            "rule_id",
+            "z3_rule_id",
+            "verdict",
         }
 
         # Check for extra fields
@@ -139,6 +157,9 @@ class LLMResponse:
         self.recommendation = kwargs.get("recommendation")
         self.reasoning = kwargs.get("reasoning")
         self.supporting_pages = kwargs.get("supporting_pages", [])
+        self.rule_id = kwargs.get("rule_id")
+        self.z3_rule_id = kwargs.get("z3_rule_id")
+        self.verdict = kwargs.get("verdict")
 
         # Call post_init for validation
         self.__post_init__()

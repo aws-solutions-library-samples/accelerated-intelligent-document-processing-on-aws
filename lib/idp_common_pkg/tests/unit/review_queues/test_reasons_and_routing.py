@@ -13,13 +13,15 @@ it pins.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import ClientError
 
 from idp_common.review_queues import routing
-from idp_common.review_queues.models import ReviewItemRecord
+from idp_common.review_queues.models import ReviewItemRecord, RoutedBy
 from idp_common.review_queues.queue_defs import DEFAULT_QUEUE_ID, QueueDefinition
 from idp_common.review_queues.reasons import (
     MAX_REASONS,
@@ -27,6 +29,7 @@ from idp_common.review_queues.reasons import (
     field_label,
 )
 from idp_common.review_queues.statuses import LIVE_ITEM_STATES, QueueItemState
+from idp_common.utils.transient_errors import TransientError
 
 NOW = datetime(2026, 10, 18, 12, 0, 0, tzinfo=timezone.utc)
 ARN = "arn:aws:states:us-east-1:111122223333:execution:sm:run-1"
@@ -63,6 +66,8 @@ def _section(section_id, *alerts, confidence=None, classification="W2"):
     return SimpleNamespace(
         section_id=section_id,
         classification=classification,
+        # One page per section, numbered as the section is.
+        page_ids=[section_id],
         confidence_threshold_alerts=list(alerts),
         confidence=confidence,
     )
@@ -115,9 +120,13 @@ class _Store:
         self.queue_defs = routing.QueueDefStore(lambda: self.defs_client, ttl=0)
         self.holding = []
         self.history = []
+        self.cycle_history = []
 
     def get_item(self, doc_key):
         return self.item
+
+    def put_history(self, doc_key, cycle_id, event, actor, details, expires, **kw):
+        self.cycle_history.append((event, dict(details)))
 
     def put_holding(self, record, *, supersede=None, history=None):
         self.holding.append((record, supersede, history))
@@ -310,6 +319,163 @@ class TestReviewMode:
         assert routing.review_mode(_config(), store, studio) == "legacy"
         decision = _route(studio, store)
         assert decision.mode == "legacy" and store.holding == []
+
+
+class _FailingDefs:
+    """Queue definitions whose read fails with the given error."""
+
+    def __init__(self, error):
+        self.error = error
+        self.reads = 0
+
+    def query_pages(self, *args, **kwargs):
+        self.reads += 1
+        raise self.error
+
+
+def _client_error(code):
+    return ClientError({"Error": {"Code": code, "Message": "no"}}, "Query")
+
+
+def _unreadable(error):
+    store = _Store()
+    store.defs_client = _FailingDefs(error)
+    return store
+
+
+@pytest.mark.unit
+class TestTheDefaultQueueRead:
+    """``default_queue``: what a caller gets when the definitions cannot be read."""
+
+    def test_it_is_the_default_queues_definition(self):
+        queue = routing.default_queue(_Store(definitions=[_default(priority=70)]))
+
+        assert (queue.id, queue.enabled, queue.priority) == (DEFAULT_QUEUE_ID, True, 70)
+        assert routing.default_queue(_Store(), strict=True).id == DEFAULT_QUEUE_ID
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            _client_error("ThrottlingException"),
+            _client_error("ProvisionedThroughputExceededException"),
+            TimeoutError("timed out"),
+        ],
+    )
+    def test_strict_raises_a_transient_failure_for_a_retry(self, error):
+        store = _unreadable(error)
+
+        with pytest.raises(TransientError) as raised:
+            routing.default_queue(store, strict=True)
+
+        assert "the Default review queue definition" in str(raised.value)
+        assert raised.value.__cause__ is error
+
+    def test_strict_keeps_a_failure_that_is_already_named_transient(self):
+        """The ``except`` returns, so the name must not be swallowed there."""
+        error = TransientError(TimeoutError("timed out"), "queue definitions")
+
+        with pytest.raises(TransientError) as raised:
+            routing.default_queue(_unreadable(error), strict=True)
+
+        assert raised.value is error
+
+    @pytest.mark.parametrize(
+        "error",
+        [_client_error("AccessDeniedException"), ValueError("not a definition")],
+    )
+    def test_strict_answers_none_for_any_other_failure(self, error, caplog):
+        with caplog.at_level(logging.WARNING, logger=routing.logger.name):
+            queue = routing.default_queue(_unreadable(error), strict=True)
+
+        assert queue is None
+        assert [r.getMessage() for r in caplog.records] == [
+            "event=review_queue_defs_unavailable"
+        ]
+
+    @pytest.mark.parametrize(
+        "error",
+        [_client_error("ThrottlingException"), _client_error("AccessDeniedException")],
+    )
+    def test_without_strict_every_failure_answers_none(self, error):
+        assert routing.default_queue(_unreadable(error)) is None
+
+    def test_the_assembly_steps_keep_reading_a_throttled_read_as_legacy(self):
+        """Their retriers do not list ``TransientError``: ``review_mode`` and
+        ``route_for_review`` do not ask for the strict read."""
+        store = _unreadable(_client_error("ThrottlingException"))
+
+        assert routing.review_mode(_config(), store) == "legacy"
+        decision = _route(_document(_section("1", _alert("Total", 0.2))), store)
+        assert decision.mode == "legacy" and store.holding == []
+
+
+@pytest.mark.unit
+class TestPlaceForReview:
+    """What a placement by a routing rule records in the cycle's history."""
+
+    def _place(self, store, routed_by):
+        return routing.place_for_review(
+            _document(_section("1")),
+            _config(),
+            mode="pipeline",
+            execution_arn=ARN,
+            store=store,
+            item=None,
+            queue=_default(),
+            reasons=[],
+            routed_by=routed_by,
+            s3=_S3(),
+            output_bucket="",
+            now=NOW,
+        )
+
+    def test_the_routed_entry_carries_the_reason_and_its_source(self):
+        store = _Store()
+
+        self._place(
+            store,
+            RoutedBy(
+                table_id="review-routing",
+                rule_id="high-value",
+                rule_label="Invoices over 10,000",
+                reason="Total 12000 is over 10000",
+                reason_template="Total {field_value:Invoice:Total} is over 10000",
+                reason_source="admin",
+            ),
+        )
+
+        assert store.cycle_history == [
+            (
+                "routed",
+                {
+                    "queue": "default",
+                    "rule_id": "high-value",
+                    "rule_label": "Invoices over 10,000",
+                    "fallback_reason": "",
+                    # ``reason`` in a history entry is a reason a person chose.
+                    "routing_reason": "Total 12000 is over 10000",
+                    "reason_source": "admin",
+                },
+            )
+        ]
+
+    def test_the_reason_is_not_logged(self, caplog):
+        with caplog.at_level(logging.INFO):
+            self._place(
+                _Store(), RoutedBy(rule_id="r1", reason="Vendor ZETA-CORP-771 is new")
+            )
+
+        logged = [r.getMessage() for r in caplog.records]
+        assert [m for m in logged if m.startswith("event=review_hold")]
+        assert not [m for m in logged if "ZETA-CORP-771" in m]
+
+    def test_a_placement_no_routing_rule_made_has_no_routed_entry(self):
+        store = _Store()
+
+        self._place(store, None)
+
+        assert store.cycle_history == []
+        assert len(store.holding) == 1
 
 
 @pytest.mark.unit

@@ -14,8 +14,12 @@ import WorkItemsTable from './WorkItemsTable';
 import useWorkItemActions from './use-work-item-actions';
 import { fromReviewItem } from './work-items';
 
-/** Document | Source | Queue | Priority | Age | Top reason, then the row menu. */
+/** The columns the Tasks table offers, in order; the row menu follows them. */
 const TASK_COLUMNS = ['document', 'source', 'queue', 'priority', 'age', 'reason'] as const;
+/** The columns shown until the user changes them in the table's settings; the others are offered there. */
+const DEFAULT_VISIBLE_TASK_COLUMNS = ['document', 'queue', 'age', 'reason'] as const;
+/** The browser storage key of the Tasks table's settings. */
+const TASK_PREFERENCES_KEY = 'my-tasks-preferences';
 
 const MyTasksPage = (): React.JSX.Element => {
   const reviewWork = useOptionalReviewWork();
@@ -67,6 +71,8 @@ const MyTasksPage = (): React.JSX.Element => {
           title="Items assigned to you"
           onRowAction={runRowAction}
           columns={TASK_COLUMNS}
+          defaultVisible={DEFAULT_VISIBLE_TASK_COLUMNS}
+          preferencesKey={TASK_PREFERENCES_KEY}
           showSourceFilter
           empty="Nothing is assigned to you. Claim an item from Home › Queues, or wait for an Admin to assign you one (you're told in your Inbox)."
           actions={

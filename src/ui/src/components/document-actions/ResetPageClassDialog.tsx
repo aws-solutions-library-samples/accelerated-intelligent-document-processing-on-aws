@@ -5,6 +5,7 @@
 // (processChanges with `classReset`). A reset classifies the whole document again and
 // rebuilds and re-extracts every section, which the dialog says before anything is sent.
 import React, { useState } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import { Alert, Box, Button, FormField, Modal, Multiselect, SpaceBetween } from '@cloudscape-design/components';
 import type { MultiselectProps } from '@cloudscape-design/components';
 
@@ -30,7 +31,17 @@ interface ResetPageClassDialogProps {
 
 const plural = (n: number) => (n > 1 ? 's' : '');
 
+const messages = defineMessages<{ reviewAndPolicyRules: NoMessageValues }>({
+  reviewAndPolicyRules: {
+    id: 'documentActions.resetPageClass.reviewAndPolicyRules',
+    defaultMessage:
+      'If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.',
+    description: 'One of the consequences listed in the Reset Page Class dialog of the document page.',
+  },
+});
+
 const ResetPageClassDialog = ({ objectKey, pages, disabledReason, onDone, onDismiss }: ResetPageClassDialogProps): React.JSX.Element => {
+  const intl = useIntl();
   const { setSuccessMessage } = useAppContext();
   const [chosen, setChosen] = useState<readonly MultiselectProps.Option[]>([]);
   const [busy, setBusy] = useState(false);
@@ -102,9 +113,7 @@ const ResetPageClassDialog = ({ objectKey, pages, disabledReason, onDone, onDism
                 Every section is rebuilt and extracted again. Values corrected by hand in any section, not only the ones holding these
                 pages, are replaced.
               </li>
-              <li>
-                If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.
-              </li>
+              <li>{intl.formatMessage(messages.reviewAndPolicyRules)}</li>
             </ul>
           </SpaceBetween>
         </Alert>

@@ -6,7 +6,7 @@
 Finishing a legacy HITL review (Process Changes, Skip All Reviews, completing the
 last section) resubmits the stored document, ``Metering`` included, and the
 Pipeline-mode workflow then skips every step whose output already exists. The
-document's metering reaches ``Pipeline_ProcessResultsStep`` by two routes:
+document's metering reaches ``Pipeline_AssembleDocumentStep`` by two routes:
 
 * ``ClassificationResult.document.metering`` — the stored metering plus whatever
   the OCR and classification skip branches added; and

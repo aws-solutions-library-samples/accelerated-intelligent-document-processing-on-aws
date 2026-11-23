@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 import boto3
 import cfnresponse  # type: ignore[import-untyped]
@@ -625,6 +625,115 @@ def _migrated_or_original(config: Dict[str, Any]) -> Dict[str, Any]:
         return config
 
 
+#: The custom resource property that names the stack's review queue table. It is
+#: empty on a headless stack, which has no review queues.
+REVIEW_TABLE_PROPERTY = "HITLTableName"
+
+
+def _hitl_enabled(config: Any) -> Any:
+    """``hitl.enabled`` of a configuration dict or model, as it is held there.
+
+    None when the configuration, its ``hitl`` block or the key is absent.
+    """
+    hitl = (
+        config.get("hitl")
+        if isinstance(config, dict)
+        else getattr(config, "hitl", None)
+    )
+    if isinstance(hitl, dict):
+        return hitl.get("enabled")
+    return getattr(hitl, "enabled", None)
+
+
+def _review_routing_of(stored_config: Any) -> Optional[bool]:
+    """The Review Routing switch of a stored profile; None unless it is a bool."""
+    value = _hitl_enabled(stored_config)
+    return value if isinstance(value, bool) else None
+
+
+def supplied_review_routing(raw: Any) -> Optional[bool]:
+    """The Review Routing switch (``hitl.enabled``) a supplied configuration sets.
+
+    ``raw`` is the configuration before it is merged with the system defaults, so
+    a value here is one its author wrote. None when the configuration does not set
+    the switch. A file written for an earlier format sets it under another key
+    (``assessment.hitl_enabled``), so the value is read after the same migration
+    the merge applies.
+    """
+    if not isinstance(raw, dict):
+        return None
+    value = _hitl_enabled(_migrated_or_original(raw))
+    return None if value is None else flag_is_true(value)
+
+
+def stored_review_routing(manager: Any, version: str) -> Optional[bool]:
+    """The Review Routing switch of the stored profile ``version``.
+
+    None when the profile does not exist, cannot be read, or holds no bool there.
+    """
+    try:
+        return _review_routing_of(manager.get_configuration("Config", version))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"Could not read Review Routing of the stored profile '{version}': {e}"
+        )
+        return None
+
+
+def seed_review_routing(
+    config: Dict[str, Any],
+    *,
+    supplied: Optional[bool],
+    stored: Optional[bool],
+    stored_default: Optional[bool],
+    first_deployment: bool,
+    review_table: bool,
+    profile: Optional[str] = None,
+) -> Optional[bool]:
+    """Set the Review Routing switch of a profile this deployment is about to save.
+
+    The model default and the system default of ``hitl.enabled`` are off, and a
+    deployment must not change the switch of a stack that already runs. The first
+    of these that applies decides:
+
+    1. The supplied configuration sets the switch (``supplied``): it is left.
+    2. The profile is stored already (``stored``): its value is written, so an
+       update carries what the profile has.
+    3. This is the stack's first deployment and it has a review table: on.
+    4. The stored ``default`` profile has a value (``stored_default``): it is
+       written, so a profile this deployment creates starts as ``default`` is.
+    5. Otherwise it is left, which is the system default (off).
+
+    Writes into ``config`` and returns what was written; None when it was left.
+    With ``profile``, logs the resulting value and what decided it.
+    """
+    if supplied is not None:
+        value, decided_by = None, "set by the supplied configuration"
+    elif stored is not None:
+        value, decided_by = stored, "carried from the stored profile"
+    elif first_deployment and review_table:
+        value, decided_by = True, "new stack with a review table"
+    elif stored_default is not None:
+        value, decided_by = stored_default, "taken from the stored default profile"
+    else:
+        value, decided_by = None, "left at the system default"
+
+    if value is not None and isinstance(config, dict):
+        hitl = config.get("hitl")
+        if not isinstance(hitl, dict):
+            hitl = config["hitl"] = {}
+        hitl["enabled"] = value
+    else:
+        value = None
+
+    if profile is not None:
+        logger.info(
+            f"Review Routing for profile {profile}: {_hitl_enabled(config)} "
+            f"({decided_by})"
+        )
+    return value
+
+
 def save_configuration_bypass_manager(
     config_type: str, config_data: Any, version: str = None, description: str = None
 ) -> None:
@@ -958,6 +1067,9 @@ def handler(event: Dict[str, Any], context: Any) -> None:
 
             # Collect all configurations to process
             configurations = {}
+            # The Review Routing switch each supplied configuration sets, by
+            # profile, read before the merge fills in the system default.
+            supplied_switch: Dict[str, Optional[bool]] = {}
 
             # Process Schema configuration
             if "Schema" in properties:
@@ -976,6 +1088,9 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                 # Merge minimal config with system defaults
                 # This allows config.yaml files to only specify what they want to customize
                 if isinstance(resolved_default, dict):
+                    supplied_switch["default"] = supplied_review_routing(
+                        resolved_default
+                    )
                     logger.info("Merging default config with system defaults...")
                     resolved_default = merge_custom_with_defaults(resolved_default)
 
@@ -997,6 +1112,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
 
                     # Merge minimal custom config with system defaults
                     # This allows users to provide only customized fields
+                    supplied_switch["custom"] = supplied_review_routing(resolved_custom)
                     logger.info("Merging custom config with system defaults...")
                     resolved_custom = merge_custom_with_defaults(resolved_custom)
 
@@ -1030,6 +1146,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                 "CustomClassificationModelARN",
                 "CustomExtractionModelARN",
                 "PreviousIDPPattern",
+                REVIEW_TABLE_PROPERTY,
             }
 
             for prop_name, prop_value in properties.items():
@@ -1064,6 +1181,9 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                             # Extract description before processing config
                             description = resolved_config.pop("description", "")
                             resolved_config.pop("pricing", None)
+                            supplied_switch[version_name] = supplied_review_routing(
+                                resolved_config
+                            )
                             logger.info(
                                 f"Merging {version_name} config with system defaults..."
                             )
@@ -1091,12 +1211,34 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                     f"Applied model swapping for {region_type} region to all configurations"
                 )
 
+            # Review Routing (`hitl.enabled`) is on in the profiles a new stack
+            # creates and is carried on every later deployment: see
+            # `seed_review_routing`. A headless stack has no review table.
+            review_table = bool(
+                str(properties.get(REVIEW_TABLE_PROPERTY) or "").strip()
+            )
+            stored_default = (
+                None
+                if version_migration_performed
+                else stored_review_routing(manager, "default")
+            )
+            first_deployment = request_type == "Create" and stored_default is None
+
             # Save all configurations
             for config_key, config in configurations.items():
                 if config_key.split("#")[0] == "Config":  # config item
                     # Versioned format - use config_name as version
                     _, version, description = config_key.split("#")
                     if version_migration_performed:
+                        seed_review_routing(
+                            config,
+                            supplied=supplied_switch.get(version),
+                            stored=None,
+                            stored_default=stored_default,
+                            first_deployment=first_deployment,
+                            review_table=review_table,
+                            profile=version,
+                        )
                         # Use direct DynamoDB operations when migration was performed
                         save_configuration_bypass_manager(
                             "Config", config, version=version
@@ -1112,6 +1254,15 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                             )
                         except Exception:
                             pass
+                        seed_review_routing(
+                            config,
+                            supplied=supplied_switch.get(version),
+                            stored=_review_routing_of(existing_config),
+                            stored_default=stored_default,
+                            first_deployment=first_deployment,
+                            review_table=review_table,
+                            profile=version,
+                        )
                         # A stack deployment cuts a revision instead of
                         # overwriting silently, so an upgrade's configuration
                         # changes are diffable and can be rolled back.

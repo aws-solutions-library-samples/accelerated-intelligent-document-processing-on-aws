@@ -2,8 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
 import { HelpPanel, Icon } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type MessageTag } from 'react-intl';
 
 const DOCS_BASE_URL = 'https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws';
+
+const messages = defineMessages<{ reports: { readonly b: MessageTag } }>({
+  reports: {
+    id: 'documentDetails.toolsPanel.reports',
+    defaultMessage:
+      '<b>Reports</b>: the Summary, Evaluation Report, Policy Rule Validation Summary, Estimated Cost and Processing Flow, each in a dialog.',
+    description: "Document page info panel, the action bar: what the Reports menu holds. <b> marks the menu's name.",
+  },
+});
+
+/** Renders a `<b>...</b>` element value: a UI label named inside a sentence. */
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
 
 const ToolsPanel = (): React.JSX.Element => (
   <HelpPanel
@@ -51,7 +64,7 @@ const ToolsPanel = (): React.JSX.Element => (
           <b>Details | Source</b> switches between the page&apos;s panels and the original file.
         </li>
         <li>
-          <b>Reports</b>: the Summary, Evaluation Report, Rule Validation Summary, Estimated Cost and Processing Flow, each in a dialog.
+          <FormattedMessage {...messages.reports} values={{ b: bold }} />
         </li>
         <li>
           <b>More Actions</b>: Edit Page Grouping, Re-extract Sections, Edit Page Text, Reset Page Class, Use As Evaluation Baseline, Skip

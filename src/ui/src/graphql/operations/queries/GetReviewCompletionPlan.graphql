@@ -1,0 +1,30 @@
+query GetReviewCompletionPlan($objectKey: String!, $cycleId: String!) {
+  getReviewCompletionPlan(objectKey: $objectKey, cycleId: $cycleId) {
+    complete {
+      mode
+      startStep
+      steps {
+        id
+        label
+        state
+      }
+      sections {
+        sectionId
+        cause
+      }
+    }
+    sendBack {
+      mode
+      startStep
+      steps {
+        id
+        label
+        state
+      }
+      sections {
+        sectionId
+        cause
+      }
+    }
+  }
+}

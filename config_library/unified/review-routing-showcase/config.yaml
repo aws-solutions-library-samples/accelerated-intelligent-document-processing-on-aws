@@ -1,0 +1,1939 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# All settings not explicitly defined here are inherited from system defaults.
+#
+# Review routing showcase. One routing table sends sample documents to review
+# queues, and every routing rule carries the reason its reviewer reads.
+#
+# Four samples each reach a different queue: a lending package goes to Specialist,
+# a prior-authorization packet to Compliance, a high-value invoice to Approvals and
+# a W-2 to Default. Three synthetic invoices (samples/review-routing) carry one, two
+# and three known problems, and each returns to review once for each problem that
+# remains.
+#
+# The queues `specialist`, `compliance` and `approvals` must exist before this
+# configuration is saved (Review Studio > Review Management > Create queue, or
+# `idp-cli review-queues create`). See README.md in this directory and
+# docs/review-routing.md.
+
+use_bda: false
+
+notes: "Review routing showcase for pipeline mode: routing rules that send documents to the Specialist, Compliance, Approvals and Default review queues, each with a reason for the reviewer, and three scenario invoices that return to review once for each remaining problem. Create the three queues before saving this configuration."
+
+hitl:
+  enabled: true                  # Review Routing is on: routing holds a document only while it is
+  # A field with no threshold of its own raises a confidence alert under this value.
+  # It is high so that the samples show confidence alerts among their review reasons.
+  # No sample depends on one to reach its queue: a confidence score comes from a
+  # model and differs between runs. The Invoice and Scenario-Invoice fields below
+  # carry a threshold of 0 instead, so an invoice raises no alert and is in review
+  # only because of what a routing rule reads in it.
+  confidence_threshold: "0.99"
+
+rule_validation:
+  enabled: true                  # Two routing rules read the policy rule verdicts
+
+routing:
+  tables:
+    - id: review-routing
+      stage: after_policy_rule_validation
+      hit_policy: FIRST
+      engine: builtin
+      rules:
+        # A routing rule's reason is what the reviewer reads. A placeholder in
+        # braces takes the document's value: {input}, {input:path},
+        # {condition_N.value} (what the N-th condition compares with) and
+        # {confidence_threshold}.
+        #
+        # The four scenario routing rules come first. They read the synthetic
+        # invoices of samples/review-routing (class Scenario-Invoice), so no other
+        # sample matches them. A document goes to review for the first routing rule
+        # that matches, so a document with several problems returns to review once
+        # for each problem that remains.
+        #
+        # The first two apply only before the first review: a reviewer can change
+        # neither the classes of a document nor the page text a policy rule reads.
+        - id: scenario-po-without-purchase-order
+          label: PO-backed invoice with no purchase order
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: field_value
+              path: "Scenario-Invoice:InvoiceType"
+              aggregate: any
+              test: '"PO-backed"'
+            - input: class_present              # True when a section has the class
+              path: "Scenario-Purchase-Order"
+              aggregate: any
+              test: "false"                     # The document holds no purchase order
+          actions:
+            - type: review_queue
+              queue: approvals
+          reason: "This invoice is {field_value:Scenario-Invoice:InvoiceType}, but the document has no purchase order. Check the purchase order before you complete the review."
+        - id: scenario-net-amount-check
+          label: Net amount does not add up
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: policy_rule_verdict        # The verdict of one policy rule
+              path: "scenario_invoice_checks.net_amount_matches"
+              aggregate: any
+              test: '"fail"'
+          actions:
+            - type: review_queue
+              queue: compliance
+          reason: "The net amount due {field_value:Scenario-Invoice:NetAmountDue} is not the gross total {field_value:Scenario-Invoice:GrossTotal} minus the discount {field_value:Scenario-Invoice:Discount}. Correct the amount that is wrong."
+        # The next two have no `reviewed` condition: they hold a document again
+        # after a review, until the reviewer has corrected the value.
+        - id: scenario-vendor-not-approved
+          label: Vendor not on the approved list
+          enabled: true
+          conditions:
+            - input: field_value
+              path: "Scenario-Invoice:Vendor"
+              aggregate: any
+              test: 'not("AnyCompany Office Supplies", "Example Print Services")'
+          actions:
+            - type: review_queue
+              queue: approvals
+          reason: "Vendor {field_value:Scenario-Invoice:Vendor} is not on the approved vendor list ({condition_1.value}). Enter the vendor's registered name."
+        - id: scenario-payment-terms-missing
+          label: Payment terms missing
+          enabled: true
+          conditions:
+            - input: class_present
+              path: "Scenario-Invoice"
+              aggregate: any
+              test: "true"
+            - input: field_value
+              path: "Scenario-Invoice:PaymentTerms"
+              aggregate: count                  # How many sections have a value
+              test: "0"
+          actions:
+            - type: review_queue
+              queue: default
+          reason: "Invoice {field_value:Scenario-Invoice:InvoiceNumber} has no payment terms. Add the terms from the supplier agreement."
+        # Each of the four showcase routing rules applies to a document that has not
+        # been reviewed yet, as the built-in routing rules do: none of them sends a
+        # completed review to a queue again.
+        - id: specialist-bank-checks
+          label: Packages with a bank check
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: section_classes        # The class of every section of the document
+              path: ""
+              aggregate: any                # At least one section is a bank check
+              test: '"Bank-checks"'
+          actions:
+            - type: review_queue
+              queue: specialist
+          reason: "Section classes: {section_classes}. Check the bank check against the application."
+        - id: compliance-policy-failure
+          label: Failed policy rules
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: failed_policy_rule_count   # Policy rules whose verdict is fail
+              path: ""
+              aggregate: any
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: compliance
+          reason: "Failed policy rules: {failed_policy_rule_count}. Check each failed policy rule against the pages it cites."
+        - id: approvals-high-value
+          label: Invoices over 1000
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: field_value
+              path: "Invoice:GrossTotal"    # The gross total of an Invoice section
+              aggregate: any
+              test: "> 1000"
+          actions:
+            - type: review_queue
+              queue: approvals
+          reason: "The gross total {field_value:Invoice:GrossTotal} is over {condition_2.value}. Check the amount before the invoice is approved."
+        - id: default-w2-forms
+          label: W-2 forms
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: section_classes
+              path: ""
+              aggregate: any                # At least one section is a W-2
+              test: '"W2"'
+          actions:
+            - type: review_queue
+              queue: default                  # A routing rule can name the Default queue too
+          reason: "Section classes: {section_classes}. Check the wages and the tax withheld on the W-2."
+        # The three built-in routing rules, as in the system defaults.
+        - id: builtin-extraction-failed
+          label: Failed extractions
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: extraction_failed_count
+              path: ""
+              aggregate: any
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: default
+          reason: "Sections whose extraction failed: {extraction_failed_count}. They have no extracted values: enter them from the document."
+        - id: builtin-confidence-alerts
+          label: Confidence alerts
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: confidence_alert_count
+              path: ""
+              aggregate: any
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: default
+          reason: "Fields below the confidence threshold: {confidence_alert_count}. Check the highlighted fields and correct them."
+        - id: builtin-missing-required
+          label: Missing required fields
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: route_missing_required_fields
+              path: ""
+              aggregate: any
+              test: "true"
+            - input: missing_required_field_count
+              path: ""
+              aggregate: any
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: default
+          reason: "Required fields with no value: {missing_required_field_count}. Fill them in from the document."
+      default_outcome:              # A document no routing rule matches is not reviewed
+        actions: []
+  max_consecutive_placements: 3
+
+classes:
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $defs:
+    LineItem:
+      type: object
+      properties:
+        LineItemRate:
+          description: Rate for the line item. Output null if not shown.
+          x-aws-idp-confidence-threshold: '0.0'
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+          type: number
+        LineItemDays:
+          description: Days of the week as shown in the line item. Output null if not shown.
+          x-aws-idp-confidence-threshold: '0.0'
+          x-aws-idp-evaluation-method: LEVENSHTEIN
+          x-aws-idp-evaluation-threshold: '0.7'
+          type: string
+        LineItemStartDate:
+          description: Start date for the line item, formatted as MM/DD/YY (2-digit year, e.g. 10/22/16). Output
+            null if not shown.
+          x-aws-idp-confidence-threshold: '0.0'
+          x-aws-idp-evaluation-method: DATE
+          x-aws-idp-evaluation-threshold: '0.7'
+          type: string
+        LineItemEndDate:
+          description: End date for the line item, formatted as MM/DD/YY (2-digit year, e.g. 10/22/16). Output null
+            if not shown.
+          x-aws-idp-confidence-threshold: '0.0'
+          x-aws-idp-evaluation-method: DATE
+          x-aws-idp-evaluation-threshold: '0.7'
+          type: string
+        LineItemDescription:
+          description: Description of the line item. Output null if not shown.
+          x-aws-idp-evaluation-method: LEVENSHTEIN
+          x-aws-idp-evaluation-threshold: '0.7'
+          type: string
+          x-aws-idp-confidence-threshold: '0.0'
+  description: Invoice document
+  type: object
+  x-aws-idp-document-type: Invoice
+  properties:
+    Agency:
+      description: The agency the invoice is addressed to
+      x-aws-idp-confidence-threshold: '0.0'
+      x-aws-idp-evaluation-weight: '2'
+      x-aws-idp-evaluation-method: LEVENSHTEIN
+      x-aws-idp-evaluation-threshold: '0.7'
+      type: string
+    Advertiser:
+      description: The name of the advertiser
+      x-aws-idp-confidence-threshold: '0.0'
+      x-aws-idp-evaluation-weight: '2'
+      x-aws-idp-evaluation-method: FUZZY
+      x-aws-idp-evaluation-threshold: '0.8'
+      type: string
+    GrossTotal:
+      description: The gross total amount. Output null if not shown.
+      x-aws-idp-evaluation-weight: '2'
+      x-aws-idp-confidence-threshold: '0.0'
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+      type: number
+    PaymentTerms:
+      description: Terms of payment. Output null if not shown.
+      x-aws-idp-evaluation-weight: '0.2'
+      x-aws-idp-evaluation-method: FUZZY
+      x-aws-idp-evaluation-threshold: '0.7'
+      type: string
+      x-aws-idp-confidence-threshold: '0.0'
+    AgencyCommission:
+      description: The agency commission amount. Output null if not shown.
+      x-aws-idp-evaluation-weight: '0.2'
+      x-aws-idp-confidence-threshold: '0.0'
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+      type: number
+    NetAmountDue:
+      description: The net amount due after commission. Output null if not shown.
+      x-aws-idp-evaluation-weight: '2'
+      x-aws-idp-confidence-threshold: '0.0'
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+      type: number
+    LineItems:
+      type: array
+      description: List of line item details on the invoice; each item has several possible elements
+      items:
+        $ref: '#/$defs/LineItem'
+  required:
+  - Agency
+  - Advertiser
+  - LineItems
+  $id: Invoice
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: Payslip
+  type: object
+  x-aws-idp-document-type: Payslip
+  description: An employee wage statement showing earnings, deductions, taxes, and net pay for a specific pay period,
+    typically issued by employers to document compensation details including gross pay, various tax withholdings,
+    and year-to-date totals.
+  $defs:
+    Address:
+      type: object
+      description: The complete business address of the employing company, including street address, city, state,
+        and postal code information.
+      properties:
+        City:
+          type: string
+          description: The city portion of the company's business address.
+          x-aws-idp-evaluation-method: EXACT
+        Line1:
+          type: string
+          description: The primary street address line of the company's business location.
+          x-aws-idp-evaluation-method: EXACT
+        State:
+          type: string
+          description: The state or province portion of the company's business address.
+          x-aws-idp-evaluation-method: EXACT
+        ZipCode:
+          type: string
+          description: The postal code portion of the company's business address.
+          x-aws-idp-evaluation-method: EXACT
+        Line2:
+          type: string
+          description: The secondary address line for the company, such as suite or floor number.
+          x-aws-idp-evaluation-method: EXACT
+    EmployeeName:
+      type: object
+      description: The complete name information of the employee, including first name, middle name, last name,
+        and any suffix.
+      properties:
+        SuffixName:
+          type: string
+          description: Name suffix such as Jr., Sr., III, etc.
+          x-aws-idp-evaluation-method: EXACT
+        LastName:
+          type: string
+          description: The family name or surname of the employee.
+          x-aws-idp-evaluation-method: EXACT
+        MiddleName:
+          type: string
+          description: The middle name or initial of the employee.
+          x-aws-idp-evaluation-method: EXACT
+        FirstName:
+          type: string
+          description: The given name of the employee.
+          x-aws-idp-evaluation-method: EXACT
+    TaxInfo:
+      type: object
+      properties:
+        YTD:
+          type: string
+          description: Year-to-date amount for this federal tax item.
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        Period:
+          type: string
+          description: Current period amount for this federal tax item.
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        ItemDescription:
+          type: string
+          description: Description of the specific federal tax type or category.
+          x-aws-idp-evaluation-method: EXACT
+  properties:
+    PayDate:
+      format: date
+      description: The actual date when the employee was paid.
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    PayPeriodStartDate:
+      format: date
+      description: The beginning date of the pay period covered by this payslip.
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    PayPeriodEndDate:
+      format: date
+      description: The ending date of the pay period covered by this payslip.
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    CurrentGrossPay:
+      type: number
+      description: The total earnings before any deductions for the current pay period.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    CurrentNetPay:
+      type: number
+      description: The take-home pay after all deductions for the current pay period.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    YTDGrossPay:
+      type: number
+      description: Year-to-date gross pay representing cumulative earnings before deductions.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    YTDNetPay:
+      type: number
+      description: Year-to-date net pay amount representing cumulative take-home earnings.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    CurrentTotalDeductions:
+      type: number
+      description: Total amount deducted from gross pay for the current period.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    YTDTotalDeductions:
+      type: number
+      description: Year-to-date total deductions representing cumulative amounts withheld.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    EmployeeName:
+      description: The complete name information of the employee.
+      $ref: '#/$defs/EmployeeName'
+      x-aws-idp-evaluation-method: LLM
+    EmployeeNumber:
+      type: string
+      description: 'The employer''s unique identifier for the employee. Also labelled ''Employee No.'', ''Emp #'',
+        ''Employee ID'' or ''File No.''. On ADP-style earnings statements the header row reads ''CO. FILE DEPT.
+        CLOCK NUMBER'' and the employee number is the value in the FILE column (the second of the five codes) -
+        not the CLOCK value (the employee''s clock/badge number) and not the NUMBER value (the check or advice number).'
+      x-aws-idp-evaluation-method: EXACT
+    EmployeeAddress:
+      description: The complete residential address of the employee.
+      $ref: '#/$defs/Address'
+      x-aws-idp-evaluation-method: LLM
+    CompanyAddress:
+      description: The complete business address of the employing company.
+      $ref: '#/$defs/Address'
+      x-aws-idp-evaluation-method: LLM
+    FederalTaxes:
+      description: List of federal tax withholdings.
+      type: array
+      x-aws-idp-list-item-description: Each item represents a specific federal tax withholding category
+      items:
+        $ref: '#/$defs/TaxInfo'
+      x-aws-idp-evaluation-method: LLM
+    StateTaxes:
+      description: List of state tax withholdings.
+      type: array
+      x-aws-idp-list-item-description: Each item represents a specific state tax withholding category
+      items:
+        $ref: '#/$defs/TaxInfo'
+      x-aws-idp-evaluation-method: LLM
+    CityTaxes:
+      description: List of city or local tax withholdings.
+      type: array
+      x-aws-idp-list-item-description: Each item represents a specific city or local tax withholding
+      items:
+        $ref: '#/$defs/TaxInfo'
+      x-aws-idp-evaluation-method: LLM
+    FederalFilingStatus:
+      type: string
+      description: The employee's federal tax filing status for withholding purposes.
+      x-aws-idp-evaluation-method: EXACT
+    StateFilingStatus:
+      type: string
+      description: The employee's state tax filing status for withholding purposes.
+      x-aws-idp-evaluation-method: EXACT
+    RegularHourlyRate:
+      type: number
+      description: The standard hourly wage rate for regular working hours.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    HolidayHourlyRate:
+      type: number
+      description: The hourly wage rate for holiday work.
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    PayrollNumber:
+      type: string
+      description: The payroll check, advice or voucher number that identifies this specific payment. Also labelled
+        'Check No.', 'Advice No.', 'Voucher No.' or 'Payroll No.'. On ADP-style earnings statements it is the value
+        in the NUMBER column (the fifth of the five codes in the 'CO. FILE DEPT. CLOCK NUMBER' header row), typically
+        zero-padded.
+      x-aws-idp-evaluation-method: EXACT
+    currency:
+      type: string
+      description: The currency in which all monetary amounts are denominated.
+      x-aws-idp-evaluation-method: EXACT
+  required:
+  - PayDate
+  - CurrentGrossPay
+  - YTDGrossPay
+  - CurrentNetPay
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: US-drivers-licenses
+  type: object
+  x-aws-idp-document-type: US-drivers-licenses
+  description: An official government-issued identification document that authorizes an individual to operate motor
+    vehicles, containing personal information, physical characteristics, address details, and driving privileges
+    with restrictions and endorsements.
+  $defs:
+    Address:
+      type: object
+      properties:
+        City:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Line1:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        State:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        ZipCode:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Line2:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    EmployeeName:
+      type: object
+      properties:
+        SuffixName:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        LastName:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        MiddleName:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        FirstName:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    PERSONAL_DETAILS:
+      type: object
+      properties:
+        HAIR_COLOR:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        HEIGHT:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        WEIGHT:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        SEX:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        EYE_COLOR:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+  properties:
+    STATE_NAME:
+      type: string
+      description: The state that issued the driver's license.
+      x-aws-idp-evaluation-method: EXACT
+    NAME_DETAILS:
+      $ref: '#/$defs/EmployeeName'
+      x-aws-idp-evaluation-method: LLM
+    ID_NUMBER:
+      type: string
+      description: The unique driver's license identification number.
+      x-aws-idp-evaluation-method: EXACT
+    DATE_OF_BIRTH:
+      type: string
+      description: The birth date of the license holder.
+      x-aws-idp-evaluation-method: DATE
+    DATE_OF_ISSUE:
+      type: string
+      description: The date when the driver's license was issued.
+      x-aws-idp-evaluation-method: DATE
+    EXPIRATION_DATE:
+      type: string
+      description: The date when the driver's license expires.
+      x-aws-idp-evaluation-method: DATE
+    CLASS:
+      type: string
+      description: The type of driving privileges granted.
+      x-aws-idp-evaluation-method: EXACT
+    ADDRESS_DETAILS:
+      $ref: '#/$defs/Address'
+      x-aws-idp-evaluation-method: LLM
+    PERSONAL_DETAILS:
+      $ref: '#/$defs/PERSONAL_DETAILS'
+      x-aws-idp-evaluation-method: LLM
+    ENDORSEMENTS:
+      type: array
+      items:
+        type: string
+      x-aws-idp-evaluation-method: LLM
+    RESTRICTIONS:
+      type: array
+      items:
+        type: string
+      x-aws-idp-evaluation-method: LLM
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: Bank-checks
+  type: object
+  x-aws-idp-document-type: Bank-checks
+  description: A written financial instrument directing a bank to pay a specific amount of money from the account
+    holder's account to a designated payee.
+  properties:
+    date:
+      format: date
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    dollar_amount:
+      type: number
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    check_number:
+      type: string
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+    account_holder_name:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    payee_name:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    bank_name:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    memo:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    bank_routing_number:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    amount_in_words:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    is_signed:
+      type: boolean
+      x-aws-idp-evaluation-method: EXACT
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: Bank-Statement
+  type: object
+  x-aws-idp-document-type: Bank-Statement
+  description: A periodic financial document issued by banks detailing account activity, balances, and transactions
+    over a specific time period.
+  $defs:
+    Address:
+      type: object
+      properties:
+        City:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Line1:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        State:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        ZipCode:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Line2:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    account_summaryItem:
+      type: object
+      properties:
+        summary_desc:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        summary_amount:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+    transaction_detail:
+      type: object
+      properties:
+        date:
+          type: string
+          x-aws-idp-evaluation-method: DATE
+        description:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        balance:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        deposits:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        withdrawals:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+  properties:
+    bank_name:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    account_holder_name:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    account_holder_address:
+      $ref: '#/$defs/Address'
+      x-aws-idp-evaluation-method: EXACT
+    account_number:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    account_type:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    statement_start_date:
+      format: date
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    statement_end_date:
+      format: date
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    account_summary:
+      type: array
+      items:
+        $ref: '#/$defs/account_summaryItem'
+      x-aws-idp-evaluation-method: LLM
+    transaction_details:
+      type: array
+      items:
+        $ref: '#/$defs/transaction_detail'
+      x-aws-idp-evaluation-method: LLM
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: W2
+  type: object
+  x-aws-idp-document-type: W2
+  description: An annual tax document provided by employers to employees reporting wages earned and taxes withheld
+    during the tax year.
+  $defs:
+    employer_info:
+      type: object
+      properties:
+        control_number:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        employer_address:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        employer_name:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        ein:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        employer_zip_code:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    employee_general_info:
+      type: object
+      properties:
+        employee_last_name:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        employee_name_suffix:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        employee_zip_code:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        employee_address:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        first_name:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        ssn:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    federal_wage_info:
+      type: object
+      properties:
+        wages_tips_other_compensation:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        social_security_wages:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        social_security_tips:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        medicare_wages_tips:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+    federal_tax_info:
+      type: object
+      properties:
+        federal_income_tax:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        social_security_tax:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        medicare_tax:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        allocated_tips:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+    state_taxes_tableItem:
+      type: object
+      properties:
+        state_name:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        state_wages_and_tips:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        state_income_tax:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        local_wages_tips:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        local_income_tax:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+        locality_name:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    code:
+      type: object
+      properties:
+        code:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        amount:
+          type: string
+          x-aws-idp-evaluation-method: NUMERIC_EXACT
+  properties:
+    employer_info:
+      $ref: '#/$defs/employer_info'
+      x-aws-idp-evaluation-method: LLM
+    employee_general_info:
+      $ref: '#/$defs/employee_general_info'
+      x-aws-idp-evaluation-method: LLM
+    federal_wage_info:
+      $ref: '#/$defs/federal_wage_info'
+      x-aws-idp-evaluation-method: LLM
+    federal_tax_info:
+      $ref: '#/$defs/federal_tax_info'
+      x-aws-idp-evaluation-method: LLM
+    state_taxes_table:
+      type: array
+      items:
+        $ref: '#/$defs/state_taxes_tableItem'
+      x-aws-idp-evaluation-method: LLM
+    codes:
+      type: array
+      items:
+        $ref: '#/$defs/code'
+      x-aws-idp-evaluation-method: LLM
+    other:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    nonqualified_plans_income:
+      type: string
+      x-aws-idp-evaluation-method: NUMERIC_EXACT
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: Homeowners-Insurance-Application
+  type: object
+  x-aws-idp-document-type: Homeowners-Insurance-Application
+  description: An application form for homeowners insurance coverage containing applicant personal information,
+    property details, and underwriting data.
+  $defs:
+    Primary Applicant Information:
+      type: object
+      properties:
+        Name:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Date of Birth:
+          type: string
+          x-aws-idp-evaluation-method: DATE
+        Gender:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Marital Status:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Education Level:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Drivers License Number:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        DL State:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Currently Insured Auto:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Length of Time with Current Auto Carrier:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Length of Time with Prior Auto Carrier:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Type of Current Property Policy:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Years with Prior Property Company:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Existing Esurance Policy:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    Co-Applicant Information:
+      type: object
+      properties:
+        Name:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Date of Birth:
+          type: string
+          x-aws-idp-evaluation-method: DATE
+        Gender:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Marital Status:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Relationship to Primary Applicant:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Education Level:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Drivers License Number:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        DL State:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Currently Insured- Auto:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Length of Time with Current Auto Carrier:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Length of Time with Prior Auto Carrier:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+    Auto Claims, Accidents, and Violations:
+      type: object
+      properties:
+        Number of Auto Accidents:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        At-Fault:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Not-at-Fault:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Number of Violations:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Major:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Minor:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+        Number of Comp Claims:
+          type: string
+          x-aws-idp-evaluation-method: EXACT
+  properties:
+    Policy Number:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Effective Date:
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    Expiration Date:
+      type: string
+      x-aws-idp-evaluation-method: DATE
+    Purchase Date and Time:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Insurance Company:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Named Insured(s) and Mailing Address:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Insured Property:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Primary Phone number:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Alternate Phone number:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Primary Email:
+      type: string
+      x-aws-idp-evaluation-method: EXACT
+    Primary Applicant Information:
+      $ref: '#/$defs/Primary Applicant Information'
+      x-aws-idp-evaluation-method: LLM
+    Co-Applicant Information:
+      $ref: '#/$defs/Co-Applicant Information'
+      x-aws-idp-evaluation-method: LLM
+    Auto Claims, Accidents, and Violations:
+      $ref: '#/$defs/Auto Claims, Accidents, and Violations'
+      x-aws-idp-evaluation-method: LLM
+- $schema: https://json-schema.org/draft/2020-12/schema
+  description: Section 1 of a Prior Authorization packet containing administrative and  demographic information
+    including patient identification, insurance/payer  details, encounter information, provider credentials, facility
+    details,  and a billing summary table showing all CPT codes with modifiers and  global periods. This section
+    is critical for verifying same-provider/same-date  requirements, service type (Emergent/Elective), and modifier
+    documentation  for global period rule evaluation.
+  type: object
+  x-aws-idp-document-type: PA-Administrative
+  properties:
+    patient_name:
+      type: string
+      description: 'The full name of the patient (Last, First Middle) as shown in  Section A: Patient Identification.'
+      x-aws-idp-evaluation-method: EXACT
+    patient_dob:
+      type: string
+      format: date
+      description: 'The patient''s date of birth from Section A, in ISO-8601 format (YYYY-MM-DD) to match this field''s
+        `format: date`.'
+      x-aws-idp-evaluation-method: DATE
+    member_id:
+      type: string
+      description: 'The insurance member identification number from Section B: Insurance/Payer.'
+      x-aws-idp-evaluation-method: EXACT
+    group_number:
+      type: string
+      description: The insurance group number from Section B.
+      x-aws-idp-evaluation-method: EXACT
+    primary_insurance_carrier:
+      type: string
+      description: The name of the primary insurance carrier from Section B.
+      x-aws-idp-evaluation-method: EXACT
+    date_of_service:
+      type: string
+      format: date
+      description: 'The date when services were rendered from Section C: Encounter Information.  Critical for same_day_service_rules
+        and global period calculations.'
+      x-aws-idp-evaluation-method: DATE
+    admission_date:
+      type: string
+      format: date
+      description: The date the patient was admitted from Section C.
+      x-aws-idp-evaluation-method: DATE
+    discharge_date:
+      type: string
+      format: date
+      description: The date the patient was discharged from Section C.
+      x-aws-idp-evaluation-method: DATE
+    type_of_service:
+      type: string
+      description: 'The classification of service urgency from Section C checkboxes:  Elective, Urgent, or Emergent.
+        Critical for bundling_31500 rule  evaluation (emergency intubation requires EMERGENT designation).'
+      x-aws-idp-evaluation-method: EXACT
+    place_of_service:
+      type: string
+      description: The place of service code and description from Section C (e.g.,  Inpatient Hospital (21), Emergency
+        Room (23)).
+      x-aws-idp-evaluation-method: EXACT
+    provider_name:
+      type: string
+      description: 'The name and credentials of the rendering/requesting provider from  Section D: Requesting/Rendering
+        Provider.'
+      x-aws-idp-evaluation-method: EXACT
+    provider_npi:
+      type: string
+      description: The National Provider Identifier (NPI) of the rendering provider  from Section D. Used to verify
+        same-provider requirements for  same_day_service_rules.
+      x-aws-idp-evaluation-method: EXACT
+    facility_name:
+      type: string
+      description: The name of the facility where services were performed from Section E.
+      x-aws-idp-evaluation-method: EXACT
+    facility_npi:
+      type: string
+      description: The NPI of the facility from Section E.
+      x-aws-idp-evaluation-method: EXACT
+    same_provider_same_date_statement:
+      type: string
+      description: Statement from Section G Billing Summary confirming all procedures  were performed by SAME PROVIDER
+        on SAME DATE under specified conditions.  Critical evidence for same_day_service_rules evaluation.
+      x-aws-idp-evaluation-method: LLM
+    billing_summary_cpt_codes:
+      type: array
+      description: 'List of all CPT codes from Section G: Procedure & Billing Summary table  with their modifiers,
+        global periods, and status notes.'
+      x-aws-idp-evaluation-method: LLM
+      x-aws-idp-list-item-description: Each item represents one billed procedure line
+      items:
+        type: object
+        properties:
+          cpt_code:
+            type: string
+            description: The CPT procedure code.
+          description:
+            type: string
+            description: Brief description of the procedure.
+          modifier:
+            type: string
+            description: Modifier applied (57=Decision for Surgery, 59=Distinct Procedural  Service, 25=Significant
+              Separate E&M, 24=Unrelated E&M Postop, None).
+          global_period:
+            type: string
+            description: The global surgery period (000, 010, 090, XXX, N/A). Critical for  global_periods rule
+              evaluation.
+          billed_amount:
+            type: string
+            description: The dollar amount billed for this procedure.
+          status:
+            type: string
+            description: Status notes from billing summary such as 'Decision for Surgery',  'Primary Procedure',
+              'Emergency - documented', 'Findings → open surgery',  'Converted to open', 'Access evaluation', 'Intraoperative',  'Contralateral
+              (LEFT)'.
+  $id: PA-Administrative
+- $schema: https://json-schema.org/draft/2020-12/schema
+  description: Section 2 of a Prior Authorization packet containing patient medical history  including chronic conditions
+    with ICD-10 codes, comorbidities, prior surgical  and procedural history, current medications, allergies, history
+    of present  illness (HPI) with vital signs, physical examination findings, diagnostic  study results, and postoperative
+    follow-up documentation. This section provides  clinical context for emergency criteria evaluation, pre-existing
+    conditions  (like pleural effusion laterality), bleeding history, and unrelated E&M  documentation for modifier
+    24/25 justification.
+  type: object
+  x-aws-idp-document-type: PA-Medical-History
+  properties:
+    patient_name:
+      type: string
+      description: The full name of the patient from the patient reference bar.
+      x-aws-idp-evaluation-method: EXACT
+    mrn:
+      type: string
+      description: The Medical Record Number assigned by the facility.
+      x-aws-idp-evaluation-method: EXACT
+    encounter_date:
+      type: string
+      format: date
+      description: The encounter date for this medical history documentation.
+      x-aws-idp-evaluation-method: DATE
+    chronic_conditions:
+      type: array
+      description: List of chronic conditions and comorbidities from the Chronic Conditions  & Comorbidities section
+        with ICD-10 codes and clinical notes.
+      x-aws-idp-evaluation-method: LLM
+      x-aws-idp-list-item-description: Each item represents one chronic condition
+      items:
+        type: object
+        properties:
+          condition_name:
+            type: string
+            description: Name of the chronic condition.
+          icd10_code:
+            type: string
+            description: ICD-10 diagnosis code.
+          clinical_notes:
+            type: string
+            description: Clinical notes about the condition status and management.
+    pre_existing_pleural_effusion:
+      type: string
+      description: Documentation of any PRE-EXISTING pleural effusion including LATERALITY  (LEFT/RIGHT). Look for
+        terms like 'LEFT-sided pleural effusion',  'CONTRALATERAL to current pathology'. Critical for separate_procedure_cpt_32551  rule
+        - determines if chest tube is on contralateral side.
+      x-aws-idp-evaluation-method: LLM
+    bleeding_disorder_history:
+      type: string
+      description: Documentation of bleeding disorders or confirmation of NO BLEEDING DISORDERS.  Look for 'No history
+        of bleeding disorders', 'coagulation normal'. Critical  for component_service rule - determines if intraoperative
+        bleeding was  incidental to procedure vs. due to underlying condition.
+      x-aws-idp-evaluation-method: LLM
+    prior_respiratory_procedures:
+      type: array
+      description: List of prior respiratory/thoracic procedures from Prior Surgical/Procedural  History section
+        with dates, CPT codes, laterality, and findings.
+      x-aws-idp-evaluation-method: LLM
+      x-aws-idp-list-item-description: Each item represents one prior procedure
+      items:
+        type: object
+        properties:
+          procedure_name:
+            type: string
+            description: Name of the procedure.
+          cpt_code:
+            type: string
+            description: CPT code for the procedure.
+          date:
+            type: string
+            description: Date the procedure was performed.
+          facility:
+            type: string
+            description: Facility where procedure was performed.
+          laterality:
+            type: string
+            description: Side of body (LEFT/RIGHT) if applicable.
+          findings_and_outcome:
+            type: string
+            description: Key findings from the procedure. Look for 'FINDINGS LED DIRECTLY  TO DECISION' language.
+              Critical for diagnostic_surgical rules.
+    prior_minor_surgery_with_em:
+      type: object
+      description: Documentation of prior minor procedure (000/010 global) with same-day E&M  including Modifier
+        25 and separately identifiable reason. Critical for  minor_surgery_000_010 rule evaluation.
+      x-aws-idp-evaluation-method: LLM
+      properties:
+        procedure_date:
+          type: string
+          description: Date of the minor procedure.
+        procedure_cpt:
+          type: string
+          description: CPT code for the minor procedure.
+        global_period:
+          type: string
+          description: Global period (000 or 010 days).
+        same_day_em_code:
+          type: string
+          description: E&M code billed same day with modifier.
+        separately_identifiable_documentation:
+          type: string
+          description: Documentation stating E&M was SIGNIFICANT AND SEPARATELY IDENTIFIABLE  and UNRELATED to the
+            procedure decision.
+    hpi_severity_on_arrival:
+      type: string
+      description: The patient's severity status on arrival from HPI section including vital  signs (SpO2 percentage,
+        respiratory rate, blood pressure). Look for values  like 'SpO2 88%', 'Severe'. Critical for bundling_31500
+        rule - supports  emergency intubation criteria.
+      x-aws-idp-evaluation-method: LLM
+    hpi_progression:
+      type: string
+      description: Description of how the patient's condition progressed from HPI section.  Look for 'Rapidly deteriorating',
+        'acute distress'. Critical for  bundling_31500 rule.
+      x-aws-idp-evaluation-method: LLM
+    postoperative_follow_up_visit:
+      type: object
+      description: Documentation of postoperative follow-up visit including date, days post-op,  E&M code with Modifier
+        24, and the UNRELATED condition addressed. Critical  for postoperative_rules evaluation.
+      x-aws-idp-evaluation-method: LLM
+      properties:
+        visit_date:
+          type: string
+          description: Date of the postoperative visit.
+        days_post_op:
+          type: string
+          description: Number of days after surgery.
+        within_global_period:
+          type: string
+          description: Confirmation visit is within global period (e.g., 'Within 090-day global').
+        em_code_with_modifier:
+          type: string
+          description: E&M code billed with modifier (e.g., '99213-24').
+        unrelated_condition:
+          type: string
+          description: Description of the UNRELATED condition addressed. Must be unrelated  to surgical recovery
+            or complications. Look for 'UNRELATED E&M SERVICE',  'NOT related to recovery from surgical procedure'.
+    diagnostic_study_findings:
+      type: string
+      description: Key findings from imaging (CXR, CT) and laboratory studies relevant to  the current encounter.
+      x-aws-idp-evaluation-method: LLM
+  $id: PA-Medical-History
+- $schema: https://json-schema.org/draft/2020-12/schema
+  description: Section 3 of a Prior Authorization packet containing the operative report  with detailed surgical
+    narrative, pre/postoperative diagnoses, procedures  performed with CPT codes, modifier documentation boxes (especially
+    Modifier 57  for decision for major surgery), and critical key phrases that determine rule  outcomes. This is
+    the primary source for surgical decision-making documentation,  emergency criteria language, conversion statements,
+    laterality documentation,  and access evaluation statements.
+  type: object
+  x-aws-idp-document-type: PA-Operative-Report
+  properties:
+    patient_name:
+      type: string
+      description: The full name of the patient from the operative report header.
+      x-aws-idp-evaluation-method: EXACT
+    date_of_surgery:
+      type: string
+      format: date
+      description: The date the surgical procedure was performed.
+      x-aws-idp-evaluation-method: DATE
+    surgeon_name:
+      type: string
+      description: The name and credentials of the operating surgeon.
+      x-aws-idp-evaluation-method: EXACT
+    preoperative_diagnoses:
+      type: array
+      description: List of diagnoses prior to surgery with ICD-10 codes.
+      x-aws-idp-evaluation-method: LLM
+      items:
+        type: string
+    postoperative_diagnoses:
+      type: array
+      description: List of diagnoses after surgery with ICD-10 codes.
+      x-aws-idp-evaluation-method: LLM
+      items:
+        type: string
+    procedures_performed:
+      type: array
+      description: List of procedures performed with CPT codes and descriptions.
+      x-aws-idp-evaluation-method: LLM
+      items:
+        type: string
+    modifier_57_documentation:
+      type: string
+      description: Documentation from the MODIFIER 57 DOCUMENTATION box stating that E&M  service led to decision
+        for major surgery with 090-day global period.  Look for exact language like 'E&M service...led to decision
+        for major  surgery', '090-day global period'. Critical for major_surgery_090 rule (PASS).
+      x-aws-idp-evaluation-method: LLM
+    emergency_intubation_documentation:
+      type: string
+      description: 'Documentation of emergency/emergent intubation from operative narrative.  Look for exact phrases:
+        ''RAPIDLY DETERIORATING PATIENT'', ''required immediate  airway control'', ''EMERGENT endotracheal intubation'',
+        ''mechanical ventilation''.  Critical for bundling_31500 rule (PASS if documented).'
+      x-aws-idp-evaluation-method: LLM
+    access_evaluation_documentation:
+      type: string
+      description: Documentation that nasal endoscopy was performed as 'ACCESS EVALUATION'  or 'standard access
+        evaluation' for bronchoscopy. Look for 'performed as  part of the standard access evaluation'. Indicates
+        bundling per  bundling_hcpcs rule (FAIL - should be bundled).
+      x-aws-idp-evaluation-method: LLM
+    diagnostic_findings_lead_to_decision:
+      type: string
+      description: Documentation stating diagnostic procedure 'FINDINGS LED DIRECTLY TO THE  DECISION' for surgical
+        intervention. Look for exact phrase 'LED DIRECTLY  TO THE DECISION'. Critical for diagnostic_surgical_cpt_31622_31635
+        rule  (PASS for 31622 diagnostic bronchoscopy).
+      x-aws-idp-evaluation-method: LLM
+    conversion_to_open_documentation:
+      type: string
+      description: Documentation that endoscopic procedure was 'CONVERTED TO OPEN PROCEDURE'  or 'converted to an
+        open procedure'. Look for 'SURGICAL BRONCHOSCOPY WAS  CONVERTED TO AN OPEN PROCEDURE'. Critical for diagnostic_surgical
+        rules  (FAIL for surgical endoscopy 31635 - not separately reportable).
+      x-aws-idp-evaluation-method: LLM
+    intraoperative_bleeding_control:
+      type: string
+      description: Documentation of bleeding control during procedure. Look for 'epistaxis  controlled with topical',
+        'Minor epistaxis...controlled'. Critical for  component_service rule (FAIL - control of bleeding is bundled
+        with  endoscopic procedures).
+      x-aws-idp-evaluation-method: LLM
+    chest_tube_laterality:
+      type: string
+      description: 'Documentation of chest tube placement side. Look for exact terms: ''LEFT'',  ''RIGHT'', ''CONTRALATERAL'',
+        ''opposite side from'', ''LEFT (CONTRALATERAL) side''.  Critical for separate_procedure_cpt_32551 rule (PASS
+        if contralateral).'
+      x-aws-idp-evaluation-method: LLM
+    thoracotomy_side:
+      type: string
+      description: The side of the thoracotomy (LEFT/RIGHT). Look for 'right posterolateral  thoracotomy', 'left
+        thoracotomy'. Used to determine if chest tube is  contralateral.
+      x-aws-idp-evaluation-method: EXACT
+    single_incision_documentation:
+      type: string
+      description: Documentation of single incision approach for thoracotomy. Look for  'single posterolateral thoracotomy
+        incision', 'single skin incision'.  Critical for bundling_32100 rule - confirms primary procedure with no  separate
+        approach (PASS).
+      x-aws-idp-evaluation-method: LLM
+    operative_narrative_summary:
+      type: string
+      description: Summary of the complete operative narrative describing the surgical  procedure sequence and key
+        events.
+      x-aws-idp-evaluation-method: LLM
+  $id: PA-Operative-Report
+- $schema: https://json-schema.org/draft/2020-12/schema
+  description: Section 4 of a Prior Authorization packet containing the operative procedure  log with case narrative
+    summary, detailed procedure sequencing table showing  CPT codes with start/end times and outcomes, surgical
+    team information,  anatomical details table, and individual procedure narratives. This section  documents procedure
+    order (diagnostic before surgical), timing, duration,  specific outcomes, and provides corroborating evidence
+    for operative report  claims including missing documentation flags.
+  type: object
+  x-aws-idp-document-type: PA-Procedure-Log
+  properties:
+    patient_name:
+      type: string
+      description: The full name of the patient from the procedure log header.
+      x-aws-idp-evaluation-method: EXACT
+    date_of_service:
+      type: string
+      format: date
+      description: The date of the procedures.
+      x-aws-idp-evaluation-method: DATE
+    surgery_start_time:
+      type: string
+      description: The time surgery began (e.g., '19:02').
+      x-aws-idp-evaluation-method: EXACT
+    surgery_end_time:
+      type: string
+      description: The time surgery ended (e.g., '21:47').
+      x-aws-idp-evaluation-method: EXACT
+    procedure_sequence:
+      type: array
+      description: Ordered list of procedures from the Procedure Sequence table showing  sequence number, CPT code,
+        description, timing, and outcome. Critical  for verifying procedure order (diagnostic before surgical).
+      x-aws-idp-evaluation-method: LLM
+      x-aws-idp-list-item-description: Each item represents one procedure in sequence
+      items:
+        type: object
+        properties:
+          sequence_number:
+            type: string
+            description: Order in which procedure was performed (1, 2, 3...).
+          cpt_code:
+            type: string
+            description: CPT code for the procedure.
+          procedure_description:
+            type: string
+            description: Description of the procedure.
+          start_time:
+            type: string
+            description: Time procedure started.
+          end_time:
+            type: string
+            description: Time procedure ended.
+          duration:
+            type: string
+            description: Duration of the procedure.
+          outcome:
+            type: string
+            description: 'Outcome of the procedure. Look for key phrases: ''Successful'',  ''Unsuccessful - converted'',
+              ''L side (contralat)'', ''Controlled w/ topical'',  ''FB identified'', ''Airway assessment''.'
+    emergency_intubation_sequence:
+      type: string
+      description: 'Documentation showing emergency intubation (31500) was the FIRST procedure  performed with timing.
+        Look for sequence #1 with 31500. Supports  bundling_31500 rule evaluation (PASS if first procedure in emergency).'
+      x-aws-idp-evaluation-method: LLM
+    diagnostic_before_surgical_evidence:
+      type: string
+      description: Evidence that diagnostic procedure (31622) was performed BEFORE surgical  procedure (31635) in
+        the sequence. Look for 31622 with lower sequence  number than 31635. Critical for diagnostic_surgical_cpt_31622_31635
+        rule.
+      x-aws-idp-evaluation-method: LLM
+    conversion_outcome_evidence:
+      type: string
+      description: Documentation of unsuccessful endoscopic attempt and conversion from  procedure outcome column.
+        Look for 'Unsuccessful - converted' for 31635.  Supports diagnostic_surgical rule (FAIL for 31635).
+      x-aws-idp-evaluation-method: LLM
+    chest_tube_placement_outcome:
+      type: string
+      description: Outcome details for chest tube (32551) showing side and contralateral  confirmation. Look for
+        'L side (contralat)', '32Fr placed, L side'.  Supports separate_procedure_cpt_32551 rule (PASS).
+      x-aws-idp-evaluation-method: LLM
+    bleeding_control_timing:
+      type: string
+      description: Timing of bleeding control procedure (30901) showing it occurred during  the surgical session
+        (intraoperative). Look for procedure time within  surgery window. Supports component_service rule (FAIL
+        - bundled).
+      x-aws-idp-evaluation-method: LLM
+    codes_without_documentation:
+      type: array
+      description: List of CPT codes that appear in the procedure sequence table but have  NO documentation of indication,
+        findings, or outcome in the Outcome column.  Results in INFORMATION_NOT_FOUND for corresponding rules.
+      x-aws-idp-evaluation-method: LLM
+      x-aws-idp-list-item-description: Each item represents a code with missing documentation
+      items:
+        type: object
+        properties:
+          cpt_code:
+            type: string
+            description: The CPT code without documentation.
+          missing_documentation:
+            type: string
+            description: What documentation is missing (e.g., 'No indication documented',  'No findings documented',
+              'Blank outcome field').
+    anatomical_details:
+      type: object
+      description: Anatomical details from the anatomy table showing laterality for each  surgical site.
+      x-aws-idp-evaluation-method: LLM
+      properties:
+        thoracotomy_side:
+          type: string
+          description: Side of thoracotomy (RIGHT/LEFT).
+        chest_tube_side:
+          type: string
+          description: Side of chest tube placement (RIGHT/LEFT).
+        foreign_body_location:
+          type: string
+          description: Location of foreign body if applicable.
+  $id: PA-Procedure-Log
+- $schema: https://json-schema.org/draft/2020-12/schema
+  description: Section 5 of a Prior Authorization packet containing claims and supporting  evidence including member
+    claim history table (36 months), insurance card  verification (front and back images), employment verification
+    (pay statement),  explanation of benefits (EOB) showing processing status for each CPT code,  and letter of
+    medical necessity. This section provides historical billing  patterns, prior procedure payment status, and current
+    claim line-item  processing results that correlate to rule outcomes.
+  type: object
+  x-aws-idp-document-type: PA-Claims-Evidence
+  properties:
+    member_id:
+      type: string
+      description: The insurance member identification number from the claims section header.
+      x-aws-idp-evaluation-method: EXACT
+    member_name:
+      type: string
+      description: The name of the insurance member.
+      x-aws-idp-evaluation-method: EXACT
+    claim_history:
+      type: array
+      description: Historical claims table showing prior services, CPT codes, amounts,  payment status, and notes
+        relevant to rule evaluation.
+      x-aws-idp-evaluation-method: LLM
+      x-aws-idp-list-item-description: Each item represents one historical claim line
+      items:
+        type: object
+        properties:
+          date_of_service:
+            type: string
+            description: Date of the historical service.
+          claim_number:
+            type: string
+            description: Claim identifier (e.g., 'IL25-778899').
+          service_description:
+            type: string
+            description: Description of the service including modifier notes (e.g.,  'Office E&M (Mod 25) - HTN
+              mgmt', 'Postop E&M (Mod 24) - unrelated derm').
+          cpt_code:
+            type: string
+            description: CPT code billed.
+          billed_amount:
+            type: string
+            description: Amount billed.
+          paid_amount:
+            type: string
+            description: Amount paid by insurance.
+          status:
+            type: string
+            description: Claim status (PAID, DENIED, UNDER REVIEW).
+    prior_minor_surgery_with_em_claim:
+      type: object
+      description: Historical claim evidence of minor surgery (000/010 global) with separately  billed E&M using
+        Modifier 25. Supports minor_surgery_000_010 rule.
+      x-aws-idp-evaluation-method: LLM
+      properties:
+        claim_number:
+          type: string
+          description: Claim number for the encounter.
+        procedure_cpt:
+          type: string
+          description: Minor procedure CPT code (e.g., '11102').
+        em_code_with_modifier:
+          type: string
+          description: E&M code with modifier (e.g., '99213-25').
+        both_paid:
+          type: string
+          description: Whether both procedure and E&M were paid ('PAID', 'Yes').
+    prior_diagnostic_procedure_claim:
+      type: object
+      description: Historical claim for diagnostic procedure with documented findings that  led to treatment decision.
+        Supports diagnostic_surgical rules.
+      x-aws-idp-evaluation-method: LLM
+      properties:
+        claim_number:
+          type: string
+          description: Claim number.
+        procedure_cpt:
+          type: string
+          description: Diagnostic procedure CPT (e.g., '32601').
+        notes:
+          type: string
+          description: Notes indicating findings led to decision (e.g., 'findings led  directly to decision for
+            chest tube').
+        status:
+          type: string
+          description: Payment status.
+    postop_visit_claim:
+      type: object
+      description: Claim for postoperative visit with Modifier 24 for unrelated condition.  Supports postoperative_rules
+        evaluation.
+      x-aws-idp-evaluation-method: LLM
+      properties:
+        claim_number:
+          type: string
+          description: Claim number for postop visit (e.g., 'IL26-889900').
+        em_code_with_modifier:
+          type: string
+          description: E&M code with modifier 24 (e.g., '99213-24').
+        service_description:
+          type: string
+          description: Description noting unrelated condition.
+        status:
+          type: string
+          description: Payment status.
+    current_claim_eob:
+      type: object
+      description: Explanation of Benefits for the current claim showing processing status  for each CPT code. Status
+        values correlate to rule outcomes.
+      x-aws-idp-evaluation-method: LLM
+      properties:
+        claim_number:
+          type: string
+          description: Current claim number.
+        claim_status:
+          type: string
+          description: Overall claim status.
+        line_items:
+          type: array
+          items:
+            type: object
+            properties:
+              cpt_code:
+                type: string
+                description: CPT code.
+              service_description:
+                type: string
+                description: Service description.
+              billed_amount:
+                type: string
+                description: Amount billed.
+              allowed_amount:
+                type: string
+                description: Amount allowed by payer.
+              paid_amount:
+                type: string
+                description: Amount paid.
+              patient_responsibility:
+                type: string
+                description: Amount patient owes.
+              status:
+                type: string
+                description: 'Processing status: ''Processed'' (PASS), ''Under Review'',  ''Pend - No Docs'' (INFO
+                  NOT FOUND), ''Denied'' (FAIL).'
+    insurance_card_member_id:
+      type: string
+      description: Member ID as shown on insurance card image for verification.
+      x-aws-idp-evaluation-method: EXACT
+    insurance_card_group_number:
+      type: string
+      description: Group number as shown on insurance card image.
+      x-aws-idp-evaluation-method: EXACT
+    letter_of_medical_necessity_summary:
+      type: string
+      description: Key statements from the letter of medical necessity supporting the claim  including emergency
+        criteria, conversion documentation, laterality  confirmation, and modifier justification.
+      x-aws-idp-evaluation-method: LLM
+  $id: PA-Claims-Evidence
+# The two classes of the scenario invoices (samples/review-routing). A document
+# whose name holds "routing-scenario" is a Scenario-Invoice by its name, so its
+# class does not depend on a model. Every field carries a confidence threshold of
+# 0, so a scenario invoice raises no confidence alert.
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: Scenario-Invoice
+  type: object
+  x-aws-idp-document-type: Scenario-Invoice
+  x-aws-idp-document-name-regex: (?i).*routing-scenario.*
+  description: A synthetic one-page supplier invoice of the review routing scenarios. A document is of this
+    class only when its file name contains routing-scenario; every other invoice is of the class Invoice.
+  properties:
+    Vendor:
+      type: string
+      description: The vendor name exactly as printed after the label Vendor. Do not expand, complete or correct
+        it.
+      x-aws-idp-confidence-threshold: '0.0'
+    InvoiceNumber:
+      type: string
+      description: The invoice number printed after the label Invoice Number.
+      x-aws-idp-confidence-threshold: '0.0'
+    InvoiceType:
+      type: string
+      description: The invoice type exactly as printed after the label Invoice Type, either Standard or PO-backed.
+      x-aws-idp-confidence-threshold: '0.0'
+    PaymentTerms:
+      type: string
+      description: The payment terms printed after the label Payment Terms, for example Net 30. Output null if
+        the invoice prints no payment terms.
+      x-aws-idp-confidence-threshold: '0.0'
+    GrossTotal:
+      type: number
+      description: The amount printed after the label Gross Total, as a number with no thousands separator.
+      x-aws-idp-confidence-threshold: '0.0'
+    Discount:
+      type: number
+      description: The amount printed after the label Discount, as a number with no thousands separator.
+      x-aws-idp-confidence-threshold: '0.0'
+    NetAmountDue:
+      type: number
+      description: The amount printed after the label Net Amount Due, as a number with no thousands separator.
+        Output the printed amount even when it is not the gross total minus the discount.
+      x-aws-idp-confidence-threshold: '0.0'
+  required:
+  - Vendor
+  - InvoiceNumber
+  - GrossTotal
+# No sample holds a purchase order. The class exists so that a routing rule can
+# test that a document has no section of it.
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: Scenario-Purchase-Order
+  type: object
+  x-aws-idp-document-type: Scenario-Purchase-Order
+  description: The purchase order that backs a PO-backed invoice of the review routing scenarios. No sample
+    holds one, and no other kind of document is of this class.
+  properties:
+    PONumber:
+      type: string
+      description: The purchase order number printed after the label PO Number.
+      x-aws-idp-confidence-threshold: '0.0'
+policy_classes:
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: global_periods
+  x-aws-idp-document-name-regex: (?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*
+  type: object
+  rule_properties:
+    minor_surgery_000_010:
+      type: string
+      description: If a procedure has a global period of 000 or 010 days, it is defined as a minor surgical procedure.
+        In general, E&M services on the same date of service as the minor surgical procedure are included in the
+        payment for the procedure. The decision to perform a minor surgical procedure is included in the payment
+        for the minor surgical procedure and shall not be reported separately as an E&M service. However, a significant
+        and separately identifiable E&M service unrelated to the decision to perform the minor surgical procedure
+        is separately reportable with modifier 25. The E&M service and minor surgical procedure do not require different
+        diagnoses. If a minor surgical procedure is performed on a new patient, the same rules for reporting E&M
+        services apply. The fact that the patient is \"new\" to the provider/supplier is not sufficient alone to
+        justify reporting an E&M service on the same date of service as a minor surgical procedure.
+    major_surgery_090:
+      type: string
+      description: If a procedure has a global period of 090 days, it is defined as a major surgical procedure.
+        If an E&M service is performed on the same date of service as a major surgical procedure for the purpose
+        of deciding whether to perform this surgical procedure, the E&M service is separately reportable with modifier
+        57. Other preoperative E&M services on the same date of service as a major surgical procedure are included
+        in the global payment for the procedure and are not separately reportable.
+  $id: global_periods
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: same_day_service_rules
+  x-aws-idp-document-name-regex: (?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*
+  type: object
+  rule_properties:
+    service_rule:
+      type: string
+      description: Since National Correct Coding Initiative (NCCI) Procedure-to-Procedure (PTP) edits are applied
+        to same day services by the same provider/supplier to the same beneficiary, certain Global Surgery Rules
+        are applicable to the NCCI program. An E&M service is separately reportable on the same date of service
+        as a procedure with a global period of 000, 010, or 090 days under limited circumstances.
+  $id: same_day_service_rules
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: postoperative_rules
+  x-aws-idp-document-name-regex: (?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*
+  type: object
+  rule_properties:
+    postoperative_rule:
+      type: string
+      description: For major and minor surgical procedures, postoperative E&M services related to recovery from
+        the surgical procedure during the postoperative period are included in the global surgical package as are
+        E&M services related to complications of the surgery. Postoperative visits unrelated to the diagnosis for
+        which the surgical procedure was performed may be reported separately on the same day as a surgical procedure
+        with modifier 24 (\"Unrelated Evaluation and Management Service by the Same Physician or Other Qualified
+        Health Care Professional During a Postoperative Period\"), unless related to a complication of surgery.
+  $id: postoperative_rules
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: bundling
+  x-aws-idp-document-name-regex: (?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*
+  type: object
+  rule_properties:
+    bundling_31500:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"31500\"\n            ],\n            \"rule_text\"\
+        : \"If laryngoscopy is required for elective or emergency placement of an endotracheal tube, the laryngoscopy\
+        \ is not separately reportable. CPT code 31500 describes an emergency endotracheal intubation procedure\
+        \ and shall not be reported when an elective intubation is performed. For example, if intubation is performed\
+        \ in a rapidly deteriorating patient who requires mechanical ventilation, a separate HCPCS/CPT code may\
+        \ be reported for the emergent intubation. The medical record must document the necessity for emergent intubation.\"\
+        ,\n            \"bundled_services\": [\n              \"laryngoscopy for elective or emergency placement\
+        \ of endotracheal tube\"\n            ],\n            \"separately_reportable_conditions\": [\n        \
+        \      \"intubation is performed in a rapidly deteriorating patient who requires mechanical ventilation\"\
+        \n            ]\n}"
+    bundling_hcpcs:
+      type: string
+      description: "{\"rule_text\": \"When a diagnostic or surgical endoscopy of the respiratory system is performed,\
+        \ it is a standard of practice to evaluate the access regions. A separate HCPCS/CPT code shall not be reported\
+        \ for this evaluation of the access regions. For example, if an endoscopic anterior ethmoidectomy is performed,\
+        \ a diagnostic nasal endoscopy shall not be reported separately simply because the approach to the ethmoid\
+        \ sinus is transnasal. Similarly, fiberoptic bronchoscopy routinely includes an examination of the nasal\
+        \ cavity, pharynx, and larynx. A separate HCPCS/CPT code shall not be reported with the bronchoscopy HCPCS/CPT\
+        \ code for this latter examination whether it is limited (\\\"cursory\\\") or complete.\",\n           \
+        \ \"bundled_services\": [\n              \"evaluation of access regions\",\n              \"examination\
+        \ of nasal cavity, pharynx, and larynx with bronchoscopy\"\n            ],\n            \"separately_reportable_conditions\"\
+        : [\n              \"If medically reasonable and necessary endoscopic procedures are performed on 2 regions\
+        \ of the respiratory system with different types of endoscopes, both procedures may be separately reportable\"\
+        ,\n              \"If the findings of a diagnostic endoscopy lead to the decision to perform a non-endoscopic\
+        \ surgical procedure at the same patient encounter, the diagnostic endoscopy may be reported separately\"\
+        \n            ],\n            \"examples\": \"For example, if a patient requires diagnostic bronchoscopy\
+        \ for a lung mass with a fiberoptic bronchoscope and a separate laryngoscopy for a laryngeal mass with a\
+        \ fiberoptic laryngoscope at the same patient encounter, HCPCS/CPT codes for both procedures may be reported\
+        \ separately. It must be medically reasonable and necessary to use 2 separate endoscopes to report both\
+        \ codes.\"}"
+    bundling_30801_30802:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"30801\",\n              \"30802\"\n          \
+        \  ],\n            \"rule_text\": \"The procedures described by CPT codes 30801 and 30802 (Cautery and/or\
+        \ ablation of mucosa of inferior turbinates) are performed to reduce the size of the inferior turbinates\
+        \ of the nose. These 2 codes shall not be reported for access to the nose or sinuses or for control of intraoperative\
+        \ bleeding with other codes describing nasal or sinus endoscopy or other nasal procedures. Since the procedure\
+        \ described by CPT code 30802 (Intramural, unilateral or bilateral) is more extensive than the procedure\
+        \ described by CPT code 30801 (Superficial, unilateral, or bilateral), both codes shall not be reported\
+        \ for the same patient encounter.\",\n            \"bundled_services\": [\n              \"CPT codes 30801\
+        \ and 30802 for access to nose or sinuses or for control of intraoperative bleeding\",\n              \"\
+        CPT codes 30801 and 30802 together for same patient encounter\"\n            ]\n}"
+    bundling_32100:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"32100\"\n            ],\n            \"rule_text\"\
+        : \"Open procedures of the thorax include the approach and exploration. CPT code 32100 (thoracotomy; with\
+        \ exploration) shall not be reported separately with open thoracic procedures to describe the approach and\
+        \ exploration.\",\n            \"bundled_services\": [\n              \"approach and exploration with open\
+        \ thoracic procedures\"\n            ],\n            \"separately_reportable_conditions\": [\n         \
+        \     \"(1) it is performed on the contralateral side\",\n              \"(2) it is performed on the ipsilateral\
+        \ side through a separate skin incision\",\n              \"(3) it is performed to obtain a biopsy at a\
+        \ different site than the other open thoracic procedure\"\n            ]\n}"
+    bundling_92502:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"92502\"\n            ],\n            \"rule_text\"\
+        : \"CPT code 92502 (otolaryngologic examination under general anesthesia) is not separately reportable with\
+        \ any other otolaryngologic procedure performed under general anesthesia.\",\n            \"bundled_services\"\
+        : [\n              \"otolaryngologic examination under general anesthesia with any other otolaryngologic\
+        \ procedure performed under general anesthesia\"\n            ]\n}"
+  $id: bundling
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: diagnostic_surgical
+  x-aws-idp-document-name-regex: (?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*
+  type: object
+  rule_properties:
+    diagnostic_surgical_cpt_31622_31635:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"31622\",\n              \"31635\"\n          \
+        \  ],\n\"rule_text\": \"If an endoscopic procedure is performed at the same patient encounter as a non-endoscopic\
+        \ procedure to ensure that no intraoperative injury occurred or to verify that the procedure was performed\
+        \ correctly, the endoscopic procedure is not separately reportable with the non-endoscopic procedure. A\
+        \ diagnostic endoscopy is not separately reportable with a surgical endoscopy, per CPT Professional instructions.\
+        \ If an endoscopic procedure fails and is converted into an open procedure, the endoscopic procedure is\
+        \ not separately reportable with the open procedure. Neither the surgical endoscopy nor diagnostic endoscopy\
+        \ code shall be reported with the open procedure code when a surgical endoscopy is converted to an open\
+        \ procedure.\",\n            \"bundled_services\": [\n              \"endoscopic procedure to ensure no\
+        \ intraoperative injury or verify procedure performed correctly\",\n              \"diagnostic endoscopy\
+        \ with surgical endoscopy\",\n              \"surgical endoscopy converted to open procedure\"\n       \
+        \     ],\n            \"separately_reportable_conditions\": [\n              \"diagnostic endoscopy may\
+        \ be reported separately if endoscopic effort fails and open procedure is performed\"\n            ],\n\
+        \            \"examples\": \"A patient presents with aspiration of a foreign body. A bronchoscopy is performed\
+        \ identifying lobar foreign body obstruction, and an attempt is made to remove this obstruction during the\
+        \ bronchoscopy. It would be inappropriate to report CPT codes 31622 (Diagnostic bronchoscopy) and 31635\
+        \ (Surgical bronchoscopy with removal of foreign body). Only the \\\"surgical\\\" endoscopy, CPT code 31635,\
+        \ may be reported. In this example, if the endoscopic effort fails and a thoracotomy is performed, the diagnostic\
+        \ bronchoscopy may be reported separately in addition to the thoracotomy. However, the CPT code for the\
+        \ surgical bronchoscopy to remove the foreign body is not separately reportable because the procedure was\
+        \ converted to an open procedure. If the surgeon decides to repeat the bronchoscopy after induction of general\
+        \ anesthesia to confirm the surgical approach to the foreign body, this confirmatory bronchoscopy is not\
+        \ separately reportable although the initial diagnostic bronchoscopy may still be reportable.\"\n}"
+    diagnostic_surgical_cpt_32601_32604_32606:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"32601\",\n              \"32604\",\n         \
+        \     \"32606\"\n            ],\n            \"rule_text\": \"A diagnostic thoracoscopy (CPT codes 32601,\
+        \ 32604, 32606) is not separately reportable with a surgical thoracoscopy on the ipsilateral side of the\
+        \ thorax. A diagnostic thoracoscopy to assess the surgical field or extent of disease before an open thoracotomy,\
+        \ thoracostomy, or mediastinal procedure is not separately reportable. However, a diagnostic thoracoscopy\
+        \ is separately reportable with an open thoracotomy, thoracostomy, or mediastinal procedure if the findings\
+        \ of the diagnostic thoracoscopy lead to the decision to perform an open thoracotomy, thoracostomy, or mediastinal\
+        \ procedure. If a surgical thoracoscopy is converted to an open thoracotomy, thoracostomy, or mediastinal\
+        \ procedure, the surgical thoracoscopy is not separately reportable. Additionally, a diagnostic thoracoscopy\
+        \ shall not be reported in lieu of the surgical thoracoscopy with the open thoracotomy, thoracostomy, or\
+        \ mediastinal procedure. Neither a surgical thoracoscopy nor diagnostic thoracoscopy code shall be reported\
+        \ with the open thoracotomy, thoracostomy, or mediastinal procedure code when a surgical thoracoscopy is\
+        \ converted to an open procedure.\",\n            \"bundled_services\": [\n              \"diagnostic thoracoscopy\
+        \ with surgical thoracoscopy on ipsilateral side\",\n              \"diagnostic thoracoscopy to assess surgical\
+        \ field or extent of disease before open procedure\",\n              \"surgical thoracoscopy converted to\
+        \ open procedure\"\n            ],\n            \"separately_reportable_conditions\": [\n              \"\
+        findings of the diagnostic thoracoscopy lead to the decision to perform an open thoracotomy, thoracostomy,\
+        \ or mediastinal procedure\"\n            ]\n}"
+  $id: diagnostic_surgical
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: component_service
+  x-aws-idp-document-name-regex: (?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*
+  type: object
+  rule_properties:
+    component_service:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"30901\",\n              \"30801\",\n         \
+        \     \"30903\",\n              \"30905\",\n              \"31238\"\n            ],\n            \"rule_text\"\
+        : \"Control of bleeding is an integral component of endoscopic procedures, and is not separately reportable.\
+        \ For example, control of nasal hemorrhage (CPT code 30901) is not separately reportable for control of\
+        \ bleeding due to a nasal/sinus endoscopic procedure. If bleeding occurs in the postoperative period and\
+        \ requires return to the operating room for treatment, a HCPCS/CPT code for control of the bleeding may\
+        \ be reported with modifier 78 indicating that the procedure was a complication of a prior procedure requiring\
+        \ treatment in the operating room. However, control of postoperative bleeding not requiring return to the\
+        \ operating room is not separately reportable.\",\n            \"bundled_services\": [\n              \"\
+        control of nasal hemorrhage (CPT code 30901)\",\n              \"CPT codes 30801, 30903, 30905, 31238 for\
+        \ control of bleeding due to nasal/sinus endoscopic procedure or other nasal procedure\"\n            ],\n\
+        \            \"separately_reportable_conditions\": [\n              \"bleeding occurs in the postoperative\
+        \ period and requires return to the operating room for treatment\"\n            ]\n}"
+  $id: component_service
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: separate_procedure
+  x-aws-idp-document-name-regex: (?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*
+  type: object
+  rule_properties:
+    separate_procedure_cpt_32551:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"32551\"\n            ],\n            \"rule_text\"\
+        : \"A tube thoracostomy (CPT code 32551) may be performed for drainage of an abscess, empyema, or hemothorax.\
+        \ The code descriptor for CPT code 32551 defines it as a \\\"separate procedure.\\\" It is not separately\
+        \ reportable when performed at the same patient encounter as another open procedure of the thorax unless\
+        \ it is performed in the thoracic cavity contralateral to the one entered to perform the open thoracic procedure.\"\
+        ,\n            \"bundled_services\": [\n              \"tube thoracostomy with another open procedure of\
+        \ the thorax on ipsilateral side\"\n            ],\n            \"separately_reportable_conditions\": [\n\
+        \              \"performed in the thoracic cavity contralateral to the one entered to perform the open thoracic\
+        \ procedure\"\n            ]\n}"
+    separate_procedure_cpt_31600:
+      type: string
+      description: "{\n\"cpt_codes_affected\": [\n              \"31600\"\n            ],\n            \"rule_text\"\
+        : \"The descriptor for CPT code 31600 (Tracheostomy, planned (separate procedure)) includes the \\\"separate\
+        \ procedure\\\" designation. Therefore, pursuant to the Centers for Medicare & Medicaid Services (CMS) \\\
+        \"separate procedure\\\" policy, a tracheostomy is not separately reportable with laryngeal surgical procedures\
+        \ that frequently require tracheostomy (e.g., laryngotomy, laryngectomy, laryngoplasty).\",\n          \
+        \  \"bundled_services\": [\n              \"tracheostomy with laryngeal surgical procedures (e.g., laryngotomy,\
+        \ laryngectomy, laryngoplasty)\"\n            ]\n}"
+  $id: separate_procedure
+# The one policy of the scenario invoices. Its name pattern matches those
+# documents only, and the patterns above match none of them.
+- $schema: https://json-schema.org/draft/2020-12/schema
+  x-aws-idp-policy-type: scenario_invoice_checks
+  x-aws-idp-document-name-regex: (?i).*routing-scenario.*
+  type: object
+  rule_properties:
+    net_amount_matches:
+      type: string
+      description: The Net Amount Due printed on the invoice must equal its Gross Total minus its Discount. The
+        rule fails when the three printed amounts do not satisfy Net Amount Due = Gross Total - Discount.
+  $id: scenario_invoice_checks

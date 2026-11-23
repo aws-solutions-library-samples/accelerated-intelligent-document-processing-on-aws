@@ -1,17 +1,34 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The document page's Reports › Summary, Evaluation Report and Rule Validation Summary,
+// The document page's Reports › Summary, Evaluation Report and Policy Rule Validation Summary,
 // each in a dialog over the document as the page shows it (a past version's reports
 // when one is being viewed). Rendered inside the page's DocumentVersionProvider, so a
 // past version's reports are read at that version.
 import React from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import { ReportModal, SummaryReportModal } from '../common/ReportModal';
 import EvaluationReport from '../document-viewer/EvaluationReport';
 import { MarkdownReport } from '../document-viewer/MarkdownViewer';
 
 export type DocumentReport = 'summary' | 'evaluation' | 'rule-validation';
+
+const messages = defineMessages<{
+  policyRuleValidationSummary: NoMessageValues;
+  policyRuleValidationEmpty: NoMessageValues;
+}>({
+  policyRuleValidationSummary: {
+    id: 'documentActions.reportDialog.policyRuleValidationSummary',
+    defaultMessage: 'Policy Rule Validation Summary',
+    description: "Header and title of the dialog that shows a document's policy rule validation summary report.",
+  },
+  policyRuleValidationEmpty: {
+    id: 'documentActions.reportDialog.policyRuleValidationEmpty',
+    defaultMessage: 'Policy rule validation summary not available for this document',
+    description: 'Shown in the Policy Rule Validation Summary dialog when the document has no such report.',
+  },
+});
 
 interface DocumentReportDialogProps {
   report: DocumentReport;
@@ -25,6 +42,7 @@ interface DocumentReportDialogProps {
 }
 
 const DocumentReportDialog = ({ report, displayed, onDismiss }: DocumentReportDialogProps): React.JSX.Element => {
+  const intl = useIntl();
   const { objectKey } = displayed;
   if (report === 'summary')
     return <SummaryReportModal reportUri={displayed.summaryReportUri ?? ''} objectKey={objectKey} onDismiss={onDismiss} />;
@@ -38,12 +56,12 @@ const DocumentReportDialog = ({ report, displayed, onDismiss }: DocumentReportDi
     );
   }
   return (
-    <ReportModal header="Rule Validation Summary" onDismiss={onDismiss}>
+    <ReportModal header={intl.formatMessage(messages.policyRuleValidationSummary)} onDismiss={onDismiss}>
       <MarkdownReport
         reportUri={displayed.ruleValidationResultUri ?? ''}
         documentId={objectKey}
-        title="Rule Validation Summary"
-        emptyMessage="Rule validation summary not available for this document"
+        title={intl.formatMessage(messages.policyRuleValidationSummary)}
+        emptyMessage={intl.formatMessage(messages.policyRuleValidationEmpty)}
       />
     </ReportModal>
   );

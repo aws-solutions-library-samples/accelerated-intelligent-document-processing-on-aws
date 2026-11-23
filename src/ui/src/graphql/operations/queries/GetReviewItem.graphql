@@ -39,6 +39,26 @@ query GetReviewItem($objectKey: String!) {
         requestedBy
         requestedAt
       }
+      queueName
+      routedBy {
+        tableId
+        ruleId
+        ruleLabel
+        placedQueue
+        fallbackReason
+        inputs
+        reason
+        reasonSource
+        policyFailures {
+          ruleId
+          policy
+          name
+          reason
+          pages
+        }
+        policyFailureCount
+      }
+      processingMode
     }
     queueName
     sections {

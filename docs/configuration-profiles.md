@@ -228,6 +228,39 @@ is empty. Two things follow:
 **Restore** saves the revision as a pinned read runs it, so the restored profile
 includes the settings filled in from `default`.
 
+### Reprocessing from a later step
+
+**Reprocess** can start a document at any step of its processing mode, not only at
+the beginning (see [Document Versions](./document-versions.md#reprocessing)). The
+configuration a later start may run under is limited, because a run that starts
+later reuses what the earlier steps produced under the document's own
+configuration:
+
+| Reprocess with … | Start steps offered |
+|---|---|
+| The document's profile at the revision it was processed with | Every step whose inputs the document has |
+| Another revision of the document's profile | Every step, unless that revision has an enabled preprocessing hook or a different processing mode; then only the beginning |
+| Another profile | The beginning only |
+
+The Reprocess dialog greys out a step that is not available and says why. The
+runs that follow a review (completing it, removing it, sending the document back)
+always use the revision the document was processed with.
+
+### Routing rules are part of a profile
+
+A profile's review routing table (the **Routing Rules** tab; see
+[Review Routing](./review-routing.md)) is in its `routing` section, so it is saved,
+compared, restored and pinned with the rest of the configuration: a revision's
+diff shows a changed routing rule, restoring a revision restores its routing rules,
+and a document is routed by the table of the revision it runs under. A revision that
+holds no `routing` section, such as one saved before routing tables existed, routes
+with the table the `default` profile holds, as a pinned revision takes every setting
+it lacks from `default`: the built-in routing rules unless an Admin changed
+`default`'s. Only Admins can
+save a change to that section. **Routing rules that use this queue**, on a review
+queue's page, lists the routing rules of each profile's current configuration and of
+its newer revisions that are not yet the one documents run.
+
 ### Revisions from the CLI and SDK
 
 Everything above is also reachable programmatically, which is what lets an

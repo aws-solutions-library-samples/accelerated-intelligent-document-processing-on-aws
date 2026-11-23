@@ -227,6 +227,70 @@
     "defaultMessage": "Previous page",
     "description": "Screen-reader label of the previous-page button of a table's pagination."
   },
+  "common.processChangesConfirm.clearsPolicyRuleValidation": {
+    "defaultMessage": "Clear the document's Policy Rule Validation results",
+    "description": "One of the effects listed in the Confirm Reprocessing dialog of Save and Re-extract."
+  },
+  "common.processChangesConfirm.reprocess": {
+    "defaultMessage": "The document is processed again with your saved changes. The steps before the one the run starts at are not repeated: what they produced is kept.",
+    "description": "Text of the Confirm Reprocessing dialog of Process Changes on a document outside a review. The list of the processing steps the run will do follows it."
+  },
+  "common.reprocessModal.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the Reprocess dialog after it has listed the results."
+  },
+  "common.reprocessModal.documentColumn": {
+    "defaultMessage": "Document",
+    "description": "Column header: the document a reprocess was asked for."
+  },
+  "common.reprocessModal.failed": {
+    "defaultMessage": "Failed",
+    "description": "Reprocess result of a document: queueing it failed."
+  },
+  "common.reprocessModal.notQueuedHeader": {
+    "defaultMessage": "{count, plural, one {# document was} other {# documents were}} not queued, of {total, number}",
+    "description": "Heading of the warning above the per-document results of a reprocess. {count} of the {total} documents asked for were not queued to run again."
+  },
+  "common.reprocessModal.queued": {
+    "defaultMessage": "Queued",
+    "description": "Reprocess result of a document: a run was queued for it."
+  },
+  "common.reprocessModal.reasonColumn": {
+    "defaultMessage": "Reason",
+    "description": "Column header: why a document was not queued to run again."
+  },
+  "common.reprocessModal.refused": {
+    "defaultMessage": "Not queued",
+    "description": "Reprocess result of a document: the request was refused for it, and nothing about it changed."
+  },
+  "common.reprocessModal.resultColumn": {
+    "defaultMessage": "Result",
+    "description": "Column header: whether the document was queued to run again."
+  },
+  "common.reprocessModal.resultsHeader": {
+    "defaultMessage": "Reprocess results",
+    "description": "Header of the Reprocess dialog once it lists what happened to each document."
+  },
+  "common.reprocessModal.resultsLabel": {
+    "defaultMessage": "Result for each document",
+    "description": "Accessible name of the table of per-document reprocess results."
+  },
+  "common.reprocessModal.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button in the Reprocess dialog that asks for the start steps again."
+  },
+  "common.reprocessModal.stepsErrorBody": {
+    "defaultMessage": "The steps these documents can start at could not be read, so the run starts at the beginning.",
+    "description": "Text of the warning in the Reprocess dialog when the steps the selection can start at could not be read."
+  },
+  "common.reprocessModal.stepsErrorHeader": {
+    "defaultMessage": "Couldn't check the start steps",
+    "description": "Heading of the warning in the Reprocess dialog when the steps the selection can start at could not be read."
+  },
+  "common.reprocessModal.stepsLoading": {
+    "defaultMessage": "Checking which steps the run can start at",
+    "description": "Shown in the Reprocess dialog while the server is asked which processing steps the selected documents can start at."
+  },
   "common.table.filterCount": {
     "defaultMessage": "{count, plural, one {# match} other {# matches}}",
     "description": "Count next to a table's text filter. {count} is the number of rows the filter matches."
@@ -375,6 +439,14 @@
     "defaultMessage": "Show all mappings",
     "description": "Button that removes the one-mapping filter from the change history."
   },
+  "configuration.builder.routingTab": {
+    "defaultMessage": "Routing Rules",
+    "description": "Label of the configuration tab that holds the routing rules of a profile."
+  },
+  "configuration.layout.policySchemaError": {
+    "defaultMessage": "Policy Schema: {path} - {message}",
+    "description": "Configuration page: one validation error of the Policy Schema tab. {path} is where in the schema the error is and {message} what is wrong there."
+  },
   "configuration.layout.previewPrompts": {
     "defaultMessage": "Preview prompts",
     "description": "Configuration page: label of the button that opens a dialog showing what each processing step's prompt includes, and the header of that dialog."
@@ -388,7 +460,7 @@
     "description": "Tooltip on the disabled \"Preview prompts\" button of the Configuration page, shown while no configuration profile is open."
   },
   "configuration.toolsPanel.editingTabsAndPreview": {
-    "defaultMessage": "The <strong>Processing Settings</strong> tab holds the processing steps' settings (OCR, classification, extraction, assessment, summarization, HITL and the rest). Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to edit document classes and validation rules, and the <strong>Preview prompts</strong> button to see what each step's prompt includes, with your configuration values filled in. The preview shows which placeholders a step carries and which it leaves empty; it is not the exact bytes of the request.",
+    "defaultMessage": "The <strong>Processing Settings</strong> tab holds the processing steps' settings (OCR, classification, extraction, assessment, summarization, review routing and the rest). Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to edit document classes and validation rules, and the <strong>Preview prompts</strong> button to see what each step's prompt includes, with your configuration values filled in. The preview shows which placeholders a step carries and which it leaves empty; it is not the exact bytes of the request.",
     "description": "Configuration info panel, \"Editing\" list item. Each <strong> phrase is the label of a tab or button on the Configuration page, shown in bold."
   },
   "discovery.policyGroup.constraint": {
@@ -483,9 +555,33 @@
     "defaultMessage": "For a rider: the rules you choose are removed and this upload's rules are added. A new rule with a superseded rule's name takes its place; the rest are added alongside.",
     "description": "Explanation of the Supersede chosen rules option."
   },
+  "documentActions.editPageText.saveNotice": {
+    "defaultMessage": "Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.",
+    "description": "Notice in the Edit Page Text dialog of the document page: what its Save and Reprocess button does."
+  },
   "documentActions.moreActions.sendToReview": {
     "defaultMessage": "Send to review",
     "description": "Item of the document page's More Actions menu that sends a finished document to a review queue."
+  },
+  "documentActions.reextractSections.consequence": {
+    "defaultMessage": "These sections are extracted again: {sections}. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.",
+    "description": "Warning in the Re-extract Sections dialog of the document page. {sections} is the list of chosen sections, for example \"Section 1, Section 3\"."
+  },
+  "documentActions.reportDialog.policyRuleValidationEmpty": {
+    "defaultMessage": "Policy rule validation summary not available for this document",
+    "description": "Shown in the Policy Rule Validation Summary dialog when the document has no such report."
+  },
+  "documentActions.reportDialog.policyRuleValidationSummary": {
+    "defaultMessage": "Policy Rule Validation Summary",
+    "description": "Header and title of the dialog that shows a document's policy rule validation summary report."
+  },
+  "documentActions.reports.policyRuleValidationSummary": {
+    "defaultMessage": "Policy Rule Validation Summary",
+    "description": "Item of the Reports menu on the document page: opens the document's policy rule validation summary."
+  },
+  "documentActions.resetPageClass.reviewAndPolicyRules": {
+    "defaultMessage": "If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.",
+    "description": "One of the consequences listed in the Reset Page Class dialog of the document page."
   },
   "documentActions.sendToReview.failed": {
     "defaultMessage": "Could not send {name} to review: {outcome}.",
@@ -502,6 +598,18 @@
   "documentActions.skipAllReviews.resubmitLabel": {
     "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
     "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
+  },
+  "documentDetails.toolsPanel.reports": {
+    "defaultMessage": "<b>Reports</b>: the Summary, Evaluation Report, Policy Rule Validation Summary, Estimated Cost and Processing Flow, each in a dialog.",
+    "description": "Document page info panel, the action bar: what the Reports menu holds. <b> marks the menu's name."
+  },
+  "documentPanel.attributes.reviewQueue": {
+    "defaultMessage": "Review queue",
+    "description": "Label of the document detail that names the review queue the document is, or was last, in. The routing rule that sent it there is shown under the name of the queue."
+  },
+  "documentPanel.attributes.routingReason": {
+    "defaultMessage": "Routing reason",
+    "description": "Label of the document detail that shows the reason the routing rule gave for sending the document to its review queue, with the values the document had."
   },
   "documentPanel.callerAttributes.label": {
     "defaultMessage": "Attributes",
@@ -1175,6 +1283,58 @@
     "defaultMessage": "Upload process failed: {error}",
     "description": "Error on the Upload Documents page when the upload as a whole fails. {error} is the error message."
   },
+  "editScreen.bar.reject": {
+    "defaultMessage": "Reject",
+    "description": "Button in the bar of the edit screen of a review item: end the review with the document rejected. It asks for a reason first."
+  },
+  "editScreen.bar.rejectHint": {
+    "defaultMessage": "End the review and reject this document. A reason is asked for first.",
+    "description": "Hover text of the Reject button of the edit screen while it is available."
+  },
+  "editScreen.productionItem.failedReject": {
+    "defaultMessage": "reject the document",
+    "description": "Completes the sentences \"Failed to …:\" and \"You do not have permission to …\" when rejecting a document under review fails."
+  },
+  "editScreen.productionItem.failedSendBack": {
+    "defaultMessage": "send the document back",
+    "description": "Completes the sentences \"Failed to …:\" and \"You do not have permission to …\" when sending a document under review back fails."
+  },
+  "editScreen.productionItem.noRejectReasons": {
+    "defaultMessage": "This queue lists no reject reasons",
+    "description": "Why Reject is disabled on a review item: its queue has no reason to choose from."
+  },
+  "editScreen.productionItem.primaryHint": {
+    "defaultMessage": "Finish the review: complete it with your corrections, or send the document back to be processed again.",
+    "description": "Hover text of Process Changes on a review item. Process Changes opens a dialog with those two endings."
+  },
+  "editScreen.productionItem.regroupConsequence": {
+    "defaultMessage": "Moving pages rewrites this document's <b>section grouping</b>. When you choose <b>{processChanges}</b> and complete the review, a section you added or whose pages you changed is <b>extracted again</b>, and the corrections you saved are applied afterwards. The other sections keep their extracted values and your draft edits. A section you remove takes its draft edits with it.",
+    "description": "What changing the page grouping of a document under review does, shown in the Edit Page Grouping dialog. <b> marks emphasis. {processChanges} is the label of the Process Changes button."
+  },
+  "editScreen.productionItem.rejectBody": {
+    "defaultMessage": "The review ends and the document is rejected. Its extracted values stay as they were before the review: your corrections are not applied, and evaluation and summarization do not run.",
+    "description": "What rejecting does, in the dialog that asks why a document under review is rejected."
+  },
+  "editScreen.productionItem.rejectConfirm": {
+    "defaultMessage": "Reject",
+    "description": "Button that confirms rejecting a document under review, in the dialog that asks for the reason."
+  },
+  "editScreen.productionItem.rejectHeader": {
+    "defaultMessage": "Reject this document",
+    "description": "Header of the dialog that asks why a document under review is rejected."
+  },
+  "editScreen.productionItem.rejected": {
+    "defaultMessage": "{name} was rejected.",
+    "description": "Success notification after a document under review is rejected. {name} is the name of the document."
+  },
+  "editScreen.productionItem.sentBack": {
+    "defaultMessage": "{name} was sent back and is being processed again.",
+    "description": "Success notification after a document under review is sent back for reprocessing. {name} is the name of the document."
+  },
+  "editScreen.reports.policyRuleValidation": {
+    "defaultMessage": "Policy Rule Validation Summary",
+    "description": "Item of the Reports menu on the edit screen: opens the document's policy rule validation summary, which lists the policy rules it passed and failed."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
@@ -1186,6 +1346,26 @@
   "editScreen.reviewActivity.section": {
     "defaultMessage": "Section {sectionId}",
     "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
+  },
+  "editScreen.toolsPanel.policyRuleValidation": {
+    "defaultMessage": "<b>Policy Rule Validation Summary</b>: the policy rules the document passed and failed, with the reason for each.",
+    "description": "Edit screen info panel, the Reports menu: what the Policy Rule Validation Summary item shows. <b> marks the item name."
+  },
+  "editScreen.toolsPanel.processChanges": {
+    "defaultMessage": "<b>{processChanges}</b> saves, then processes the changes:",
+    "description": "Edit screen info panel, the list of buttons: introduces what Process Changes does, by where the document was opened from. <b> marks the button name; {processChanges} is its label."
+  },
+  "editScreen.toolsPanel.processChangesDocument": {
+    "defaultMessage": "On a document opened from its page, it asks you to confirm and lists the steps of the run that follows. The steps before the one it starts at are not repeated.",
+    "description": "Edit screen info panel: what Process Changes does on a document that is not in a review queue."
+  },
+  "editScreen.toolsPanel.processChangesQueueItem": {
+    "defaultMessage": "On a queue item, it asks how the review ends and lists the steps of the run that follows. <b>Complete the review</b> keeps your corrections; a section whose pages you changed is extracted again first. <b>Send back for reprocessing</b> discards your corrections and any page regrouping, and the document is processed again from classification (from the beginning in BDA mode).",
+    "description": "Edit screen info panel: what Process Changes does on a review queue item. <b> marks the names of the two options of the dialog it opens. Classification is a processing step; BDA mode is the processing mode that uses Bedrock Data Automation."
+  },
+  "editScreen.toolsPanel.processChangesTestStudio": {
+    "defaultMessage": "On a Test Studio document, it also writes the labels as reviewed ground truth. When no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.",
+    "description": "Edit screen info panel: what Process Changes does on a Test Studio document."
   },
   "guidedTour.i18n.closeAnnotation": {
     "defaultMessage": "Close annotation",
@@ -1508,7 +1688,7 @@
     "description": "Inbox info panel, \"On this page\" item. <b>Open</b> is the label of a button, shown in bold."
   },
   "home.toolsPanels.inboxRetention": {
-    "defaultMessage": "Messages are kept for a limited time and up to a per-user cap (Configuration › Processing Settings › HITL › Inbox messages).",
+    "defaultMessage": "Messages are kept for a limited time and up to a per-user cap (Configuration › Processing Settings › Review Routing › Inbox messages).",
     "description": "Inbox info panel, \"Good to know\" item. The parenthesis is the navigation path to the setting."
   },
   "home.toolsPanels.inboxSettings": {
@@ -2907,6 +3087,186 @@
     "defaultMessage": "Select finished documents that are not in review",
     "description": "Why the Send to review confirm button is disabled: no selected document can be sent."
   },
+  "reviewQueues.completionModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the review completion dialog."
+  },
+  "reviewQueues.completionModal.complete": {
+    "defaultMessage": "Complete the review",
+    "description": "Review outcome option: the review is finished with the corrections made."
+  },
+  "reviewQueues.completionModal.completeDescription": {
+    "defaultMessage": "Your corrections are kept and processing continues with them.",
+    "description": "Help under the Complete the review option."
+  },
+  "reviewQueues.completionModal.confirmComplete": {
+    "defaultMessage": "Complete review",
+    "description": "Primary button of the review completion dialog when Complete the review is chosen."
+  },
+  "reviewQueues.completionModal.confirmSendBack": {
+    "defaultMessage": "Send back",
+    "description": "Primary button of the review completion dialog when Send back for reprocessing is chosen."
+  },
+  "reviewQueues.completionModal.discardWarning": {
+    "defaultMessage": "The corrections and any page regrouping are discarded, and the document is processed again from classification (from the beginning in BDA mode).",
+    "description": "Warning shown when Send back for reprocessing is chosen. Classification is a processing step; BDA mode is the processing mode that uses Bedrock Data Automation."
+  },
+  "reviewQueues.completionModal.errorHeader": {
+    "defaultMessage": "The document was not sent back",
+    "description": "Heading of the error in the review completion dialog when a send-back failed or was refused."
+  },
+  "reviewQueues.completionModal.header": {
+    "defaultMessage": "Finish the review",
+    "description": "Header of the dialog that asks how a review ends, opened by Process Changes on a review item."
+  },
+  "reviewQueues.completionModal.noteDescription": {
+    "defaultMessage": "Why the document is sent back. Kept in the review history.",
+    "description": "Help under the label of the note of a send-back."
+  },
+  "reviewQueues.completionModal.noteLabel": {
+    "defaultMessage": "Note (optional)",
+    "description": "Label of the free-text note of a send-back."
+  },
+  "reviewQueues.completionModal.noteTooLong": {
+    "defaultMessage": "Keep the note to {max, number} characters.",
+    "description": "Error under the note of a send-back that is too long. {max} is the largest number of characters."
+  },
+  "reviewQueues.completionModal.outcomeLabel": {
+    "defaultMessage": "How does this review end?",
+    "description": "Label of the choice between completing a review and sending the document back."
+  },
+  "reviewQueues.completionModal.sendBack": {
+    "defaultMessage": "Send back for reprocessing",
+    "description": "Review outcome option: the document is processed again, without this review. The system decides where the run starts."
+  },
+  "reviewQueues.completionModal.sendBackDescription": {
+    "defaultMessage": "The document is processed again without this review. It can return to a review queue afterwards.",
+    "description": "Help under the Send back for reprocessing option."
+  },
+  "reviewQueues.definitionModal.defaultEnabledConstraint": {
+    "defaultMessage": "While the Default queue is off, no document is held for review.",
+    "description": "Constraint text under the Enabled switch of the review queue dialog, for the Default queue."
+  },
+  "reviewQueues.definitionModal.defaultQueueInfo": {
+    "defaultMessage": "The built-in routing rules send documents here, and so does a routing rule whose own queue is missing or disabled. Documents are held for review only while this queue is enabled.",
+    "description": "Notice at the top of the Settings dialog of the Default review queue."
+  },
+  "reviewQueues.definitionModal.enabledConstraint": {
+    "defaultMessage": "Documents a routing rule sends to a disabled queue go to the Default queue instead.",
+    "description": "Constraint text under the Enabled switch of the review queue dialog, for a queue other than the Default queue."
+  },
+  "reviewQueues.definitionModal.idConstraint": {
+    "defaultMessage": "Routing rules name the queue by this id.",
+    "description": "Constraint text under the Queue id field of the review queue dialog."
+  },
+  "reviewQueues.definitionModal.priorityConstraint": {
+    "defaultMessage": "A whole number. For information: orders the queues and Next item.",
+    "description": "Constraint text under the Priority field of the review queue dialog."
+  },
+  "reviewQueues.history.detailDefaultOutcome": {
+    "defaultMessage": "Default outcome",
+    "description": "Review history detail of a routing event: no routing rule matched, and the default outcome of the routing table decided."
+  },
+  "reviewQueues.history.detailLimit": {
+    "defaultMessage": "Limit: {limit, number} in a row",
+    "description": "Review history detail: how many times in a row a document may be placed in a review queue."
+  },
+  "reviewQueues.history.detailQueue": {
+    "defaultMessage": "Queue: {queue}",
+    "description": "Review history detail of a routing event: the id of the review queue the document was placed in."
+  },
+  "reviewQueues.history.detailRestartSections": {
+    "defaultMessage": "Sections extracted again: {sections}",
+    "description": "Review history detail of a completed review whose next run extracts some sections again, because the reviewer regrouped their pages. {sections} is the list of their ids."
+  },
+  "reviewQueues.history.detailRestartStep": {
+    "defaultMessage": "Run starts at: {step}",
+    "description": "Review history detail of a completed review: the processing step the run that follows the review starts at. {step} is the name of the step."
+  },
+  "reviewQueues.history.detailRoutingReason": {
+    "defaultMessage": "Routing reason: {reason}",
+    "description": "Review history detail of a routing event: the reason the routing rule gave for placing the document in the queue, with the values the document had. {reason} is that text."
+  },
+  "reviewQueues.history.detailRule": {
+    "defaultMessage": "Routing rule: {rule}",
+    "description": "Review history detail of a routing event: the routing rule that decided, by its label or its id."
+  },
+  "reviewQueues.history.detailStartStep": {
+    "defaultMessage": "Start step: {step}",
+    "description": "Review history detail of a send-back: the processing step the document is processed again from."
+  },
+  "reviewQueues.history.placementLimitReached": {
+    "defaultMessage": "Not routed again: placement limit reached",
+    "description": "Review history event: a rule would have sent the document to a queue again, but it had been placed as many times in a row as the profile allows, so processing continued."
+  },
+  "reviewQueues.history.rerouted": {
+    "defaultMessage": "Routed to a queue again after review",
+    "description": "Review history event: after a completed review, a routing rule sent the document to a review queue again."
+  },
+  "reviewQueues.history.routed": {
+    "defaultMessage": "Routed to a queue",
+    "description": "Review history event: a routing rule placed the document in a review queue."
+  },
+  "reviewQueues.history.routingEvaluationFailed": {
+    "defaultMessage": "Routing rules could not be evaluated",
+    "description": "Review history event: the routing table failed to evaluate after a completed review, so processing continued."
+  },
+  "reviewQueues.history.sentBack": {
+    "defaultMessage": "Sent back for reprocessing",
+    "description": "Review history event: the reviewer sent the document back to be processed again from a step."
+  },
+  "reviewQueues.policyFailures.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the failed policy rules dialog."
+  },
+  "reviewQueues.policyFailures.columnPages": {
+    "defaultMessage": "Pages",
+    "description": "Column of the failed policy rules dialog: the pages of the document the reason cites."
+  },
+  "reviewQueues.policyFailures.columnPolicy": {
+    "defaultMessage": "Policy",
+    "description": "Column of the failed policy rules dialog: the policy the policy rule belongs to."
+  },
+  "reviewQueues.policyFailures.columnReason": {
+    "defaultMessage": "Reason",
+    "description": "Column of the failed policy rules dialog: why policy rule validation failed the policy rule."
+  },
+  "reviewQueues.policyFailures.columnRule": {
+    "defaultMessage": "Policy rule",
+    "description": "Column of the failed policy rules dialog: the name of the policy rule."
+  },
+  "reviewQueues.policyFailures.empty": {
+    "defaultMessage": "No failed policy rule is listed for this review.",
+    "description": "Shown in the failed policy rules dialog when it has no row."
+  },
+  "reviewQueues.policyFailures.heading": {
+    "defaultMessage": "Failed policy rules ({count, number})",
+    "description": "Heading of the list of policy rules a document in review failed, under the routing reason. {count} is how many it failed in all."
+  },
+  "reviewQueues.policyFailures.line": {
+    "defaultMessage": "<b>{name}</b> · {policy} — <detail>{reason}</detail>",
+    "description": "One failed policy rule in the list under the routing reason. {name} is the name of the policy rule, {policy} the policy it belongs to, {reason} why policy rule validation failed it (possibly shortened). <b> marks the name; <detail> marks the text that opens the full reason."
+  },
+  "reviewQueues.policyFailures.modalHeader": {
+    "defaultMessage": "Failed policy rules ({count, number})",
+    "description": "Title of the dialog that lists the policy rules a document in review failed. {count} is how many it failed in all."
+  },
+  "reviewQueues.policyFailures.noReason": {
+    "defaultMessage": "No reason was given.",
+    "description": "Shown in place of the reason of a failed policy rule when policy rule validation gave none."
+  },
+  "reviewQueues.policyFailures.notAllStored": {
+    "defaultMessage": "The document failed {count, plural, one {# policy rule} other {# policy rules}}; {listed, plural, one {# is} other {# are}} listed here. The Policy Rule Validation Summary has all of them.",
+    "description": "Note in the failed policy rules dialog when the document failed more policy rules than are kept with its review. {listed} is how many are listed, {count} how many it failed. \"Policy Rule Validation Summary\" is the name of a report."
+  },
+  "reviewQueues.policyFailures.pages": {
+    "defaultMessage": "Pages: {pages}",
+    "description": "Under the full reason of a failed policy rule: the pages of the document the reason cites. {pages} is a list of page numbers."
+  },
+  "reviewQueues.policyFailures.showAll": {
+    "defaultMessage": "{count, plural, one {Show the # failed policy rule} other {Show all # failed policy rules}}",
+    "description": "Button under the first failed policy rules of a document in review: opens a dialog that lists all of them. {count} is how many there are."
+  },
   "reviewQueues.queuePage.adminDescription": {
     "defaultMessage": "Select items to assign them to an Annotator or unassign them. More actions moves them to another queue, removes them from the queues or skips their reviews. Edit opens an item without changing its assignment.",
     "description": "Description under the Items table header of a review queue, for an Admin. \"More actions\" and \"Edit\" name the table's menu and row action."
@@ -2959,13 +3319,197 @@
     "defaultMessage": "Skip All Reviews results",
     "description": "Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline."
   },
+  "reviewQueues.queuesPage.createQueue": {
+    "defaultMessage": "Create queue",
+    "description": "Button on the Review Management page that opens the dialog for a new production review queue."
+  },
+  "reviewQueues.queuesPage.defaultQueueOff": {
+    "defaultMessage": "The Default review queue is off, so routing rules are not evaluated.",
+    "description": "Warning above the Production Queues table on the Review Management page (Admins), when the Default review queue is disabled."
+  },
+  "reviewQueues.queuesPage.openDefaultQueueSettings": {
+    "defaultMessage": "Open Default queue settings",
+    "description": "Button in the warning that the Default review queue is off: opens the settings dialog of the Default queue, where it is turned on."
+  },
+  "reviewQueues.queuesPage.pageDescription": {
+    "defaultMessage": "Create and set up the production review queues, and list the Annotators who work them.",
+    "description": "Text under the heading of the Review Management page."
+  },
+  "reviewQueues.queuesPage.productionDescription": {
+    "defaultMessage": "System-wide queues for processed documents. While Review Routing is on in a document's configuration profile and the Default queue is enabled, the routing rules of that profile send the document to the queue a routing rule names. The Default queue receives the documents the built-in routing rules hold, and documents whose queue is missing or disabled.",
+    "description": "Text under the heading of the Production Queues table on the Review Management page. Review Routing is the name of a processing step and of its switch in a configuration profile."
+  },
+  "reviewQueues.queuesPage.queueCreated": {
+    "defaultMessage": "Created the queue {name}.",
+    "description": "Success notification after a production review queue is created. {name} is the name of the queue."
+  },
+  "reviewQueues.queuesPage.queueSaved": {
+    "defaultMessage": "Saved the queue {name}.",
+    "description": "Success notification after the settings of a production review queue are saved. {name} is the name of the queue."
+  },
+  "reviewQueues.queuesPage.reviewRoutingOff": {
+    "defaultMessage": "Review Routing is off in the active configuration profile, so no document is held for review. Turn it on in the profile's Processing Settings, on the <link>Configuration</link> page.",
+    "description": "Warning above the Production Queues table on the Review Management page (Admins), when the Review Routing switch of the active configuration profile is off. <link> marks the name of the page it links to; Processing Settings is the name of a tab of that page."
+  },
   "reviewQueues.reasons.extractionFailed": {
     "defaultMessage": "Extraction failed",
     "description": "Chip text of a review reason for a section whose extraction failed and left it with no extracted data (for example, a content filter withheld the model reply). Also the Reason column of a work list."
   },
+  "reviewQueues.references.checkAction": {
+    "defaultMessage": "read the routing rules that use this queue",
+    "description": "Completes the sentences \"Failed to …:\" and \"You do not have permission to …\" when the routing rules that use a review queue cannot be read."
+  },
+  "reviewQueues.references.containerDescription": {
+    "defaultMessage": "The routing rules, in every configuration profile, that send documents to this queue. Change them on the Routing Rules tab of the profile.",
+    "description": "Text under the heading of the routing rules section of a review queue's page."
+  },
+  "reviewQueues.references.containerErrorHeader": {
+    "defaultMessage": "Couldn't load the routing rules that use this queue",
+    "description": "Heading of the error in the routing rules section of a review queue's page."
+  },
+  "reviewQueues.references.containerHeader": {
+    "defaultMessage": "Routing rules that use this queue",
+    "description": "Heading of the section of a review queue's page that lists the routing rules that send documents to it."
+  },
+  "reviewQueues.references.current": {
+    "defaultMessage": "current",
+    "description": "Revision of a routing rule reference: the newest configuration of the profile, which is not published yet."
+  },
+  "reviewQueues.references.defaultOutcome": {
+    "defaultMessage": "Default outcome",
+    "description": "Shown instead of a routing rule when the default outcome of a routing table is what sends documents to the review queue."
+  },
+  "reviewQueues.references.deleteErrorHeader": {
+    "defaultMessage": "Couldn't check which routing rules use this queue",
+    "description": "Heading of the warning in the Delete queue dialog when the routing rules that use the queue cannot be read."
+  },
+  "reviewQueues.references.deleteErrorNote": {
+    "defaultMessage": "You can still delete the queue. Documents a routing rule sends to it will go to the Default queue instead.",
+    "description": "Text of the warning in the Delete queue dialog when the routing rules that use the queue cannot be read."
+  },
+  "reviewQueues.references.deleteFallback": {
+    "defaultMessage": "Documents these routing rules send to this queue will go to the Default queue instead.",
+    "description": "Text under the list of routing rules in the Delete queue dialog."
+  },
+  "reviewQueues.references.deleteHeader": {
+    "defaultMessage": "{count, plural, one {# routing rule sends} other {# routing rules send}} documents to this queue",
+    "description": "Heading of the warning in the Delete queue dialog that lists the routing rules that use the queue. {count} is how many."
+  },
+  "reviewQueues.references.deleteLoading": {
+    "defaultMessage": "Checking which routing rules use this queue",
+    "description": "Shown in the Delete queue dialog while the routing rules that use the queue are read."
+  },
+  "reviewQueues.references.emptyDescription": {
+    "defaultMessage": "To send documents here, add a routing rule on the Routing Rules tab of a configuration profile and choose this queue as its outcome.",
+    "description": "What to do next, under the empty state of the routing rules section of a review queue's page."
+  },
+  "reviewQueues.references.emptyTitle": {
+    "defaultMessage": "No routing rule sends documents to this queue.",
+    "description": "Shown in the routing rules section of a review queue's page when no routing rule names the queue."
+  },
+  "reviewQueues.references.loading": {
+    "defaultMessage": "Loading routing rules",
+    "description": "Loading text of the table of routing rules that send documents to a review queue."
+  },
+  "reviewQueues.references.openConfiguration": {
+    "defaultMessage": "Open Configuration",
+    "description": "Button in the empty routing rules section of a review queue's page that opens the configuration page."
+  },
+  "reviewQueues.references.openProfile": {
+    "defaultMessage": "Open the routing rules of {profile}",
+    "description": "Accessible name of the link from a routing rule reference to the Routing Rules tab of its configuration profile."
+  },
+  "reviewQueues.references.profileColumn": {
+    "defaultMessage": "Configuration profile",
+    "description": "Column header: the configuration profile whose routing rule sends documents to a review queue."
+  },
+  "reviewQueues.references.published": {
+    "defaultMessage": "published",
+    "description": "Revision of a routing rule reference: the configuration new documents run, when it has no revision number."
+  },
+  "reviewQueues.references.publishedRevision": {
+    "defaultMessage": "published r{revision, number}",
+    "description": "Revision of a routing rule reference: the configuration new documents run. {revision} is its revision number."
+  },
+  "reviewQueues.references.refresh": {
+    "defaultMessage": "Refresh routing rules",
+    "description": "Accessible name of the button that reads the routing rules of a review queue's page again."
+  },
+  "reviewQueues.references.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button that reads the routing rules that use a review queue again."
+  },
+  "reviewQueues.references.revisionColumn": {
+    "defaultMessage": "Revision",
+    "description": "Column header: which configuration of the profile holds the routing rule (the published revision, or the current one)."
+  },
+  "reviewQueues.references.ruleColumn": {
+    "defaultMessage": "Routing rule",
+    "description": "Column header: the routing rule that sends documents to a review queue."
+  },
+  "reviewQueues.references.ruleWithLabel": {
+    "defaultMessage": "{label} ({id})",
+    "description": "A routing rule that has a label. {label} is its label and {id} its id."
+  },
+  "reviewQueues.references.tableLabel": {
+    "defaultMessage": "Routing rules that use this queue",
+    "description": "Accessible name of the table of routing rules that send documents to a review queue."
+  },
+  "reviewQueues.routedBy.defaultOutcome": {
+    "defaultMessage": "Routed by the default outcome",
+    "description": "Why a document is in a review queue: no routing rule matched, and the default outcome of the routing table sent it there."
+  },
+  "reviewQueues.routedBy.placedInDefault": {
+    "defaultMessage": "{why} The document is in the Default queue instead.",
+    "description": "Shown with the routing decision when the queue it named could not take the document. {why} is a sentence that says why (the queue does not exist, is disabled, or the table could not be evaluated)."
+  },
+  "reviewQueues.routedBy.rule": {
+    "defaultMessage": "Routed by rule: {rule}",
+    "description": "Why a document is in a review queue: a routing rule sent it there. {rule} is the label of the rule, or its id."
+  },
+  "reviewQueues.routedBy.showLess": {
+    "defaultMessage": "Show less",
+    "description": "Button after a routing reason shown in full: shortens it again."
+  },
+  "reviewQueues.routedBy.showMore": {
+    "defaultMessage": "Show more",
+    "description": "Button after a shortened routing reason: shows the whole reason."
+  },
+  "reviewQueues.taskContext.counter": {
+    "defaultMessage": "({count, number})",
+    "description": "Counter beside the Review Reason heading. {count} is how many things the panel lists: the routing notice, the alerts and the failed policy rules."
+  },
+  "reviewQueues.taskContext.escalated": {
+    "defaultMessage": "Escalated",
+    "description": "Header of the info alert on a review task that was escalated; its body is the note left when escalating."
+  },
   "reviewQueues.taskContext.extractionFailed": {
     "defaultMessage": "Extraction failed for this section, so it has no extracted data to check.",
     "description": "Popover text on an \"Extraction failed\" review reason: the section was held for review because its extraction did not succeed (for example, a content filter withheld the model reply), not because of a field confidence."
+  },
+  "reviewQueues.taskContext.moreAlerts": {
+    "defaultMessage": "{count, plural, one {+# more alert} other {+# more alerts}}",
+    "description": "After the review reasons shown: how many more alerts the document has. {count} is that number."
+  },
+  "reviewQueues.taskContext.onlyLowestListed": {
+    "defaultMessage": "{count, plural, one {Only the lowest-confidence alert is listed.} other {Only the # lowest-confidence alerts are listed.}}",
+    "description": "Popover of the count of alerts that are not listed, because only the lowest-confidence ones are kept with the review. {count} is how many are listed."
+  },
+  "reviewQueues.taskContext.reasonConfidence": {
+    "defaultMessage": "Confidence {score}, threshold {threshold}",
+    "description": "In the popover of a review reason for a field below the confidence threshold. {score} is the confidence of the field and {threshold} the threshold, both as numbers with two decimals."
+  },
+  "reviewQueues.taskContext.reasonField": {
+    "defaultMessage": "Field: {field}",
+    "description": "In the popover of a review reason: the field the reason is about. {field} is the name of the field."
+  },
+  "reviewQueues.taskContext.reasonMissingRequired": {
+    "defaultMessage": "No extracted value; the class schema requires this field.",
+    "description": "In the popover of a review reason for a required field that extraction left empty."
+  },
+  "reviewQueues.taskContext.reasonSection": {
+    "defaultMessage": "Section {section}",
+    "description": "In the popover of a review reason: the section of the document the reason is about. {section} is the id of the section."
   },
   "reviewQueues.taskContext.sentBy": {
     "defaultMessage": "By {requestedBy}",
@@ -2977,7 +3521,99 @@
   },
   "reviewQueues.taskContext.sentToReview": {
     "defaultMessage": "Sent to review: {reason}",
-    "description": "Header of the info alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it."
+    "description": "Header of the alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it."
+  },
+  "reviewQueues.taskContext.showFewer": {
+    "defaultMessage": "Show fewer",
+    "description": "Button that goes back to showing only the first review reasons."
+  },
+  "reviewQueues.taskContext.showMoreAlerts": {
+    "defaultMessage": "{count, plural, one {Show # more alert} other {Show # more alerts}}",
+    "description": "Screen-reader label of the button that shows the review reasons not yet shown. {count} is how many more alerts there are."
+  },
+  "reviewQueues.taskContext.title": {
+    "defaultMessage": "Review Reason",
+    "description": "Heading of the panel above the editor that says why a document is in review."
+  },
+  "reviewQueues.toolsPanel.createAndDelete": {
+    "defaultMessage": "<b>Create queue</b> adds a queue that routing rules can name by its id. Deleting a queue moves its documents to the Default queue, and lists the routing rules that name it first.",
+    "description": "Review Management info panel, Production queues: creating and deleting a queue. <b> marks the name of the button."
+  },
+  "reviewQueues.toolsPanel.defaultQueue": {
+    "defaultMessage": "The Default queue receives the documents the built-in routing rules hold (failed extractions, confidence alerts, missing required fields) and documents whose queue is missing or disabled.",
+    "description": "Review Management info panel, Production queues: what the Default queue receives."
+  },
+  "reviewQueues.toolsPanel.reviewRoutingLink": {
+    "defaultMessage": "Review routing",
+    "description": "Learn more link in the Review Management info panels: the documentation page about routing rules."
+  },
+  "reviewQueues.toolsPanel.routing": {
+    "defaultMessage": "While Review Routing is on in a document's configuration profile and the Default queue is enabled, the routing rules of that profile decide whether the document is reviewed and send it to the queue a routing rule names. A warning on this page says when routing rules are not evaluated, and why.",
+    "description": "Review Management info panel, Production queues: how a document reaches a queue. Review Routing is the name of a processing step and of its switch in a configuration profile."
+  },
+  "reviewQueues.workItems.cancelPreferences": {
+    "defaultMessage": "Cancel",
+    "description": "Cancel button of the settings dialog of the work items table."
+  },
+  "reviewQueues.workItems.columnAge": {
+    "defaultMessage": "Age",
+    "description": "Column header (and column preference) of the work items table: how long the item has been in its queue."
+  },
+  "reviewQueues.workItems.columnDocument": {
+    "defaultMessage": "Document",
+    "description": "Column header (and column preference) of the work items table: the document, as a link that opens it."
+  },
+  "reviewQueues.workItems.columnOwner": {
+    "defaultMessage": "Annotator",
+    "description": "Column header (and column preference) of the work items table: the Annotator the item is assigned to."
+  },
+  "reviewQueues.workItems.columnPreferences": {
+    "defaultMessage": "Column preferences",
+    "description": "Title of the column choice in the settings of the work items table."
+  },
+  "reviewQueues.workItems.columnPriority": {
+    "defaultMessage": "Priority",
+    "description": "Column header (and column preference) of the work items table: the priority of the item."
+  },
+  "reviewQueues.workItems.columnQueue": {
+    "defaultMessage": "Queue",
+    "description": "Column header (and column preference) of the work items table: the review queue the item is in."
+  },
+  "reviewQueues.workItems.columnReason": {
+    "defaultMessage": "Reason",
+    "description": "Column header (and column preference) of the work items table: why the item is in review (the reason of its routing rule, or its first alert)."
+  },
+  "reviewQueues.workItems.columnSource": {
+    "defaultMessage": "Source",
+    "description": "Column header (and column preference) of the work items table: whether the item is production work or a Test Studio document."
+  },
+  "reviewQueues.workItems.columnState": {
+    "defaultMessage": "State",
+    "description": "Column header (and column preference) of the work items table: whether the item is waiting, assigned or in progress."
+  },
+  "reviewQueues.workItems.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Confirm button of the settings dialog of the work items table."
+  },
+  "reviewQueues.workItems.failedPolicyRules": {
+    "defaultMessage": "{count, plural, one {# failed policy rule} other {# failed policy rules}}",
+    "description": "After the reason of a work item, in its reason cell: how many policy rules its document failed. {count} is that number."
+  },
+  "reviewQueues.workItems.moreReasons": {
+    "defaultMessage": "+{count, number} more",
+    "description": "After the first alert of a work item, in its reason cell: how many more alerts the item has. {count} is that number."
+  },
+  "reviewQueues.workItems.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Title of the page size choice in the settings of the work items table."
+  },
+  "reviewQueues.workItems.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# item} other {# items}}",
+    "description": "A page size option in the settings of the work items table. {count} is the number of items per page."
+  },
+  "reviewQueues.workItems.preferences": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the settings dialog of the work items table."
   },
   "routes.auth.signOut": {
     "defaultMessage": "Sign Out",
@@ -3058,6 +3694,1054 @@
   "routes.unauth.redirecting": {
     "defaultMessage": "Redirecting to {provider}...",
     "description": "Text shown instead of the sign-in form while the browser is sent to the external identity provider. {provider} is its configured name."
+  },
+  "routing.aggregate.all": {
+    "defaultMessage": "All values",
+    "description": "How a condition reads a list: it holds when every value passes the test."
+  },
+  "routing.aggregate.any": {
+    "defaultMessage": "Any value",
+    "description": "How a condition reads a list: it holds when any value passes the test."
+  },
+  "routing.aggregate.count": {
+    "defaultMessage": "Number of values",
+    "description": "How a condition reads a list: the test is applied to how many values there are."
+  },
+  "routing.conditions.actionsAria": {
+    "defaultMessage": "Actions for condition {position, number}",
+    "description": "Accessible name of the menu of actions on one condition. {position} is the number of the condition, from 1."
+  },
+  "routing.conditions.add": {
+    "defaultMessage": "Add condition",
+    "description": "Button that adds a condition to a routing rule."
+  },
+  "routing.conditions.aggregateAria": {
+    "defaultMessage": "Match of condition {position, number}",
+    "description": "Accessible name of the list that says how a condition reads a list of values. {position} is the number of the condition, from 1."
+  },
+  "routing.conditions.aggregateColumn": {
+    "defaultMessage": "Match",
+    "description": "Field label: how a condition on a list of values is read (any value, all values, or their count)."
+  },
+  "routing.conditions.duplicate": {
+    "defaultMessage": "Duplicate",
+    "description": "Menu item that adds a copy of a routing condition under it."
+  },
+  "routing.conditions.empty": {
+    "defaultMessage": "No conditions. The routing rule matches every document.",
+    "description": "Shown in the list of conditions of a routing rule when it has none."
+  },
+  "routing.conditions.examples": {
+    "defaultMessage": "For example {first} or {second}",
+    "description": "Help under the value of a routing condition edited as an expression. {first} and {second} are two example expressions for the type of the chosen input."
+  },
+  "routing.conditions.inputAria": {
+    "defaultMessage": "Input of condition {position, number}",
+    "description": "Accessible name of the input list of one condition. {position} is the number of the condition, from 1."
+  },
+  "routing.conditions.inputColumn": {
+    "defaultMessage": "Input",
+    "description": "Field label: what a routing condition tests."
+  },
+  "routing.conditions.inputPlaceholder": {
+    "defaultMessage": "Choose an input",
+    "description": "Placeholder of the list of things a routing condition can test."
+  },
+  "routing.conditions.inputRequired": {
+    "defaultMessage": "Choose an input.",
+    "description": "Error under the input list of a routing condition with no input chosen."
+  },
+  "routing.conditions.limit": {
+    "defaultMessage": "A routing rule has at most {max, number} conditions.",
+    "description": "Shown under the conditions of a routing rule once it has the most allowed. {max} is that number."
+  },
+  "routing.conditions.moveDown": {
+    "defaultMessage": "Move down",
+    "description": "Menu item that moves a routing condition one place down."
+  },
+  "routing.conditions.moveUp": {
+    "defaultMessage": "Move up",
+    "description": "Menu item that moves a routing condition one place up."
+  },
+  "routing.conditions.pathAll": {
+    "defaultMessage": "All policy types",
+    "description": "Option that leaves the policy type empty, so the condition counts failed policy rules of every policy type."
+  },
+  "routing.conditions.pathAria": {
+    "defaultMessage": "What the input of condition {position, number} reads",
+    "description": "Accessible name of the list of fields, policy rules, policy types or classes of one condition. {position} is the number of the condition, from 1."
+  },
+  "routing.conditions.pathClass": {
+    "defaultMessage": "Class",
+    "description": "Field label: the document class a routing condition looks for among the sections of the document."
+  },
+  "routing.conditions.pathEmpty": {
+    "defaultMessage": "This profile has nothing to choose from",
+    "description": "Shown in a list of a routing condition when the profile has no fields, policy rules, policy types or classes to offer."
+  },
+  "routing.conditions.pathField": {
+    "defaultMessage": "Field",
+    "description": "Field label: the extracted field a routing condition reads."
+  },
+  "routing.conditions.pathPlaceholder": {
+    "defaultMessage": "Choose",
+    "description": "Placeholder of the list of fields, policy rules, policy types or classes of a routing condition."
+  },
+  "routing.conditions.pathPolicyRule": {
+    "defaultMessage": "Policy rule",
+    "description": "Field label: the policy rule whose verdict a routing condition reads."
+  },
+  "routing.conditions.pathPolicyType": {
+    "defaultMessage": "Policy type",
+    "description": "Field label: the policy type whose failed policy rules a routing condition counts."
+  },
+  "routing.conditions.pathRequired": {
+    "defaultMessage": "Choose what this input reads.",
+    "description": "Error under the list of a condition whose input needs a field, a policy rule or a class and has none."
+  },
+  "routing.conditions.remove": {
+    "defaultMessage": "Remove",
+    "description": "Menu item that removes one condition of a routing rule."
+  },
+  "routing.conditions.testAria": {
+    "defaultMessage": "Expression of condition {position, number}",
+    "description": "Accessible name of the field that holds the value of one condition as an expression. {position} is the number of the condition, from 1."
+  },
+  "routing.conditions.testRequired": {
+    "defaultMessage": "Enter a value.",
+    "description": "Error under a routing condition whose value is empty or incomplete."
+  },
+  "routing.conditions.title": {
+    "defaultMessage": "Condition {position, number}",
+    "description": "Title of the box of one condition of a routing rule. {position} is the number of the condition, from 1: the number a placeholder of the reason names."
+  },
+  "routing.conditions.valueLabel": {
+    "defaultMessage": "Value",
+    "description": "Label of the yes or no choice (or present or missing) that is the value of a routing condition."
+  },
+  "routing.conditions.valueNoInput": {
+    "defaultMessage": "Choose an input to enter its value.",
+    "description": "Shown in place of the value of a routing condition that has no input chosen yet."
+  },
+  "routing.dmn.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the import confirmation without changing the table."
+  },
+  "routing.dmn.confirmBody": {
+    "defaultMessage": "{file} holds {rules, plural, one {# routing rule} other {# routing rules}}. They replace every routing rule in the table.",
+    "description": "Text of the dialog that confirms an import. {file} is the name of the DMN file, {rules} the number of routing rules in it."
+  },
+  "routing.dmn.confirmHeader": {
+    "defaultMessage": "Replace the routing table?",
+    "description": "Title of the dialog that confirms replacing the routing table with an imported one."
+  },
+  "routing.dmn.confirmNote": {
+    "defaultMessage": "Nothing is saved until you save the configuration.",
+    "description": "Second sentence of the dialog that confirms an import of a routing table."
+  },
+  "routing.dmn.exportError": {
+    "defaultMessage": "The table could not be exported",
+    "description": "Heading of the error shown when the DMN export fails."
+  },
+  "routing.dmn.importAria": {
+    "defaultMessage": "DMN file to import",
+    "description": "Accessible name of the file picker that reads a routing table from a DMN file."
+  },
+  "routing.dmn.importError": {
+    "defaultMessage": "The file could not be imported",
+    "description": "Heading of the error shown when a DMN file cannot be read as a routing table."
+  },
+  "routing.dmn.replace": {
+    "defaultMessage": "Replace",
+    "description": "Button that replaces the routing table with the imported one."
+  },
+  "routing.dmn.tooLarge": {
+    "defaultMessage": "The file is larger than {limit, number} KB.",
+    "description": "Error for a DMN file that is too large to import. {limit} is the largest size in kilobytes."
+  },
+  "routing.fallback.evaluationError": {
+    "defaultMessage": "The table could not be evaluated.",
+    "description": "Why a document went to the Default queue: the routing table failed to evaluate."
+  },
+  "routing.fallback.queueDisabled": {
+    "defaultMessage": "The queue the routing rule names is disabled.",
+    "description": "Why a document went to the Default queue: the routing rule names a queue that is switched off."
+  },
+  "routing.fallback.queueMissing": {
+    "defaultMessage": "The queue the routing rule names does not exist.",
+    "description": "Why a document went to the Default queue: the routing rule names a queue that is not there."
+  },
+  "routing.guided.between": {
+    "defaultMessage": "Between",
+    "description": "Comparison of a routing condition on a number: from one number to another, both included."
+  },
+  "routing.guided.cannotShow": {
+    "defaultMessage": "The guided controls cannot show this expression.",
+    "description": "Why the link back to the guided controls is disabled: the expression is not one of the shapes they show."
+  },
+  "routing.guided.comparisonAria": {
+    "defaultMessage": "Comparison of condition {position, number}",
+    "description": "Accessible name of the list of comparisons of one condition. {position} is the number of the condition, from 1."
+  },
+  "routing.guided.comparisonLabel": {
+    "defaultMessage": "Comparison",
+    "description": "Field label: how the input of a routing condition is compared with the value (is one of, greater than, between)."
+  },
+  "routing.guided.editAsExpression": {
+    "defaultMessage": "Edit as expression",
+    "description": "Link under the value of a routing condition: shows the value as the DMN expression that is stored, to edit it as text."
+  },
+  "routing.guided.equals": {
+    "defaultMessage": "Equals",
+    "description": "Comparison of a routing condition on a number."
+  },
+  "routing.guided.expressionLabel": {
+    "defaultMessage": "Expression",
+    "description": "Label of the field that holds the value of a routing condition as a DMN expression."
+  },
+  "routing.guided.fromLabel": {
+    "defaultMessage": "From",
+    "description": "Field label: the lower number of the range a routing condition tests, included."
+  },
+  "routing.guided.greater": {
+    "defaultMessage": "Greater than",
+    "description": "Comparison of a routing condition on a number."
+  },
+  "routing.guided.greaterOrEqual": {
+    "defaultMessage": "At least",
+    "description": "Comparison of a routing condition on a number: greater than or equal to."
+  },
+  "routing.guided.isNotOneOf": {
+    "defaultMessage": "Is none of",
+    "description": "Comparison of a routing condition: the input equals none of the chosen values."
+  },
+  "routing.guided.isOneOf": {
+    "defaultMessage": "Is one of",
+    "description": "Comparison of a routing condition: the input equals one of the chosen values."
+  },
+  "routing.guided.less": {
+    "defaultMessage": "Less than",
+    "description": "Comparison of a routing condition on a number."
+  },
+  "routing.guided.lessOrEqual": {
+    "defaultMessage": "At most",
+    "description": "Comparison of a routing condition on a number: less than or equal to."
+  },
+  "routing.guided.missing": {
+    "defaultMessage": "Missing",
+    "description": "Value of a routing condition on a class: the document has no section of the class."
+  },
+  "routing.guided.no": {
+    "defaultMessage": "No",
+    "description": "Value of a routing condition on a yes or no input: no."
+  },
+  "routing.guided.notAvailable": {
+    "defaultMessage": "This value has no guided controls.",
+    "description": "Why the link to the guided controls is disabled: the input, or the type of its field, is edited as an expression only."
+  },
+  "routing.guided.notEquals": {
+    "defaultMessage": "Does not equal",
+    "description": "Comparison of a routing condition on a number."
+  },
+  "routing.guided.numberAria": {
+    "defaultMessage": "Number of condition {position, number}",
+    "description": "Accessible name of the number field of one condition (the lower number of a range). {position} is the number of the condition, from 1."
+  },
+  "routing.guided.numberLabel": {
+    "defaultMessage": "Number",
+    "description": "Field label: the number the input of a routing condition is compared with."
+  },
+  "routing.guided.present": {
+    "defaultMessage": "Present",
+    "description": "Value of a routing condition on a class: the document has a section of the class."
+  },
+  "routing.guided.removeValue": {
+    "defaultMessage": "Remove {value}",
+    "description": "Accessible name of the button that removes one typed value of a routing condition. {value} is the value."
+  },
+  "routing.guided.toAria": {
+    "defaultMessage": "Upper number of condition {position, number}",
+    "description": "Accessible name of the upper number field of a range of one condition. {position} is the number of the condition, from 1."
+  },
+  "routing.guided.toLabel": {
+    "defaultMessage": "To",
+    "description": "Field label: the upper number of the range a routing condition tests, included."
+  },
+  "routing.guided.typedPlaceholder": {
+    "defaultMessage": "Type a value and press Enter",
+    "description": "Placeholder of the field where the values of a routing condition on a text field are typed, one at a time."
+  },
+  "routing.guided.useGuided": {
+    "defaultMessage": "Use guided controls",
+    "description": "Link under the value of a routing condition edited as an expression: goes back to the pick lists and number fields."
+  },
+  "routing.guided.valueAria": {
+    "defaultMessage": "Value of condition {position, number}",
+    "description": "Accessible name of the yes or no choice of one condition. {position} is the number of the condition, from 1."
+  },
+  "routing.guided.valuesAria": {
+    "defaultMessage": "Values of condition {position, number}",
+    "description": "Accessible name of the list or field of values of one condition. {position} is the number of the condition, from 1."
+  },
+  "routing.guided.valuesEmpty": {
+    "defaultMessage": "This profile has no values to choose from",
+    "description": "Shown in the list of values of a routing condition when the profile has none to offer (no document classes)."
+  },
+  "routing.guided.valuesLabel": {
+    "defaultMessage": "Values",
+    "description": "Field label: the values the input of a routing condition is compared with."
+  },
+  "routing.guided.valuesPlaceholder": {
+    "defaultMessage": "Choose values",
+    "description": "Placeholder of the list of values of a routing condition."
+  },
+  "routing.guided.yes": {
+    "defaultMessage": "Yes",
+    "description": "Value of a routing condition on a yes or no input: yes."
+  },
+  "routing.input.classPresent": {
+    "defaultMessage": "Class is present",
+    "description": "Routing input: whether the document has a section of the class the condition names."
+  },
+  "routing.input.confidenceAlertCount": {
+    "defaultMessage": "Confidence alert count",
+    "description": "Routing input: the number of extracted fields whose confidence is under their threshold."
+  },
+  "routing.input.documentClass": {
+    "defaultMessage": "Document class",
+    "description": "Routing input: the class of the document."
+  },
+  "routing.input.extractionFailedCount": {
+    "defaultMessage": "Failed extraction count",
+    "description": "Routing input: the number of sections whose extraction failed, which have no extracted values."
+  },
+  "routing.input.failedPolicyRuleCount": {
+    "defaultMessage": "Failed policy rule count",
+    "description": "Routing input: the number of policy rules that failed, of one policy type or of all."
+  },
+  "routing.input.fieldValue": {
+    "defaultMessage": "Field value",
+    "description": "Routing input: the extracted value of a field."
+  },
+  "routing.input.missingRequiredFieldCount": {
+    "defaultMessage": "Missing required field count",
+    "description": "Routing input: the number of required fields that have no extracted value."
+  },
+  "routing.input.pageCount": {
+    "defaultMessage": "Page count",
+    "description": "Routing input: the number of pages of the document."
+  },
+  "routing.input.policyRuleVerdict": {
+    "defaultMessage": "Policy rule verdict",
+    "description": "Routing input: the verdict of one policy rule."
+  },
+  "routing.input.processingMode": {
+    "defaultMessage": "Processing mode",
+    "description": "Routing input: BDA mode or Pipeline mode."
+  },
+  "routing.input.reviewed": {
+    "defaultMessage": "Reviewed",
+    "description": "Routing input: whether a review of the document has been completed."
+  },
+  "routing.input.routeMissingRequiredFields": {
+    "defaultMessage": "Route missing required fields (setting)",
+    "description": "Routing input: the profile setting that says a document with missing required fields goes to review."
+  },
+  "routing.input.sectionClasses": {
+    "defaultMessage": "Section classes",
+    "description": "Routing input: the classes of the sections of the document."
+  },
+  "routing.input.sectionCount": {
+    "defaultMessage": "Section count",
+    "description": "Routing input: the number of sections of the document."
+  },
+  "routing.layout.actionsAria": {
+    "defaultMessage": "Actions for routing rule {id}",
+    "description": "Accessible name of the menu of actions on a routing rule. {id} is the id of the rule."
+  },
+  "routing.layout.actionsColumn": {
+    "defaultMessage": "Actions",
+    "description": "Column header: the actions on a routing rule."
+  },
+  "routing.layout.addRule": {
+    "defaultMessage": "Add routing rule",
+    "description": "Button that opens the dialog for a new routing rule."
+  },
+  "routing.layout.builtIn": {
+    "defaultMessage": "Built-in",
+    "description": "Badge on a routing rule that ships with the product."
+  },
+  "routing.layout.conditionsColumn": {
+    "defaultMessage": "Conditions",
+    "description": "Column header: the conditions of a routing rule."
+  },
+  "routing.layout.counter": {
+    "defaultMessage": "({count, number})",
+    "description": "Counter beside the heading of the Routing Rules tab. {count} is the number of routing rules in the table."
+  },
+  "routing.layout.defaultNoReview": {
+    "defaultMessage": "No review",
+    "description": "Default outcome option: a document no routing rule matches is not reviewed."
+  },
+  "routing.layout.defaultOutcomeDescription": {
+    "defaultMessage": "What happens to a document that no routing rule matches.",
+    "description": "Help under the label of the default outcome of the routing table."
+  },
+  "routing.layout.defaultOutcomeLabel": {
+    "defaultMessage": "Default outcome",
+    "description": "Label of the choice of what happens to a document no routing rule matches."
+  },
+  "routing.layout.defaultQueue": {
+    "defaultMessage": "Send to a review queue",
+    "description": "Default outcome option: a document no routing rule matches is placed in a review queue."
+  },
+  "routing.layout.defaultQueueLabel": {
+    "defaultMessage": "Queue for the default outcome",
+    "description": "Label of the list of review queues for the default outcome of the routing table."
+  },
+  "routing.layout.deleteBody": {
+    "defaultMessage": "The routing rule is removed from the table. Nothing is saved until you save the configuration.",
+    "description": "Text of the dialog that confirms deleting a routing rule."
+  },
+  "routing.layout.deleteCancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the confirmation of deleting a routing rule and keeps the routing rule."
+  },
+  "routing.layout.deleteConfirm": {
+    "defaultMessage": "Delete",
+    "description": "Button that confirms deleting a routing rule."
+  },
+  "routing.layout.deleteHeader": {
+    "defaultMessage": "Delete routing rule {id}?",
+    "description": "Title of the dialog that confirms deleting a routing rule. {id} is the id of the routing rule."
+  },
+  "routing.layout.description": {
+    "defaultMessage": "After policy rule validation, the first enabled routing rule whose conditions all hold decides whether a document is reviewed and in which queue. Routing rules are evaluated in the order shown.",
+    "description": "Text under the heading of the Routing Rules tab."
+  },
+  "routing.layout.duplicate": {
+    "defaultMessage": "Duplicate",
+    "description": "Menu item that adds a copy of a routing rule, under a new id, right after it."
+  },
+  "routing.layout.edit": {
+    "defaultMessage": "Edit",
+    "description": "Menu item that opens a routing rule in its dialog."
+  },
+  "routing.layout.editNamedRule": {
+    "defaultMessage": "Edit routing rule {id}",
+    "description": "Button in the error on the Routing Rules tab that opens the routing rule the server named. {id} is the id of the routing rule."
+  },
+  "routing.layout.emptyDescription": {
+    "defaultMessage": "Every document gets the default outcome.",
+    "description": "Text shown in the routing table when it has no routing rule."
+  },
+  "routing.layout.emptyTitle": {
+    "defaultMessage": "No routing rules",
+    "description": "Title shown in the routing table when it has no routing rule."
+  },
+  "routing.layout.enabledAria": {
+    "defaultMessage": "Routing rule {id} enabled",
+    "description": "Accessible name of the switch that turns a routing rule on or off. {id} is the id of the rule."
+  },
+  "routing.layout.enabledColumn": {
+    "defaultMessage": "Enabled",
+    "description": "Column header: whether a routing rule is switched on."
+  },
+  "routing.layout.exportDmn13": {
+    "defaultMessage": "Export DMN 1.3",
+    "description": "Menu item that downloads the routing table as a DMN version 1.3 file."
+  },
+  "routing.layout.exportDmn13Hint": {
+    "defaultMessage": "The version Camunda Modeler opens",
+    "description": "Second line of the Export DMN 1.3 menu item: why this older version is offered."
+  },
+  "routing.layout.exportDmn15": {
+    "defaultMessage": "Export DMN 1.5",
+    "description": "Menu item that downloads the routing table as a DMN version 1.5 file."
+  },
+  "routing.layout.header": {
+    "defaultMessage": "Routing Rules",
+    "description": "Heading of the Routing Rules tab of a configuration profile."
+  },
+  "routing.layout.idColumn": {
+    "defaultMessage": "Id",
+    "description": "Column header: the id of a routing rule."
+  },
+  "routing.layout.importDmn": {
+    "defaultMessage": "Import DMN",
+    "description": "Menu item that opens a file picker to read a routing table from a DMN file."
+  },
+  "routing.layout.labelColumn": {
+    "defaultMessage": "Label",
+    "description": "Column header: the name of a routing rule."
+  },
+  "routing.layout.moreActions": {
+    "defaultMessage": "More actions",
+    "description": "Menu beside the Add routing rule button: importing and exporting the table as DMN, restoring the built-in routing rules."
+  },
+  "routing.layout.moveDown": {
+    "defaultMessage": "Move down",
+    "description": "Menu item that moves a routing rule one place later in the order."
+  },
+  "routing.layout.moveUp": {
+    "defaultMessage": "Move up",
+    "description": "Menu item that moves a routing rule one place earlier in the order."
+  },
+  "routing.layout.noConditions": {
+    "defaultMessage": "Every document",
+    "description": "Shown in the conditions column for a routing rule with no conditions."
+  },
+  "routing.layout.notReviewed": {
+    "defaultMessage": "Not reviewed",
+    "description": "Outcome of a routing rule in the table: a matching document is not reviewed."
+  },
+  "routing.layout.openAria": {
+    "defaultMessage": "Routing rule {id}",
+    "description": "Accessible name of the link that opens a routing rule that has no label, where the link shows a dash. {id} is the id of the routing rule."
+  },
+  "routing.layout.outcomeColumn": {
+    "defaultMessage": "Outcome",
+    "description": "Column header: what a routing rule does with a document it matches."
+  },
+  "routing.layout.outcomeQueue": {
+    "defaultMessage": "Review queue: {queue}",
+    "description": "Outcome of a routing rule in the table: the review queue a matching document goes to. {queue} is the name of the queue."
+  },
+  "routing.layout.placementsDescription": {
+    "defaultMessage": "How many times in a row a document can be placed in a review queue: the first time, and each time a routing rule sends a reviewed document to a queue again. Above it, processing continues without another review.",
+    "description": "Help under the field that limits consecutive placements in a review queue."
+  },
+  "routing.layout.placementsError": {
+    "defaultMessage": "Enter a whole number from {min, number} to {max, number}.",
+    "description": "Error under the field that limits consecutive placements. {min} and {max} are the smallest and largest values allowed."
+  },
+  "routing.layout.placementsLabel": {
+    "defaultMessage": "Maximum placements in a row",
+    "description": "Label of the field that limits how many times in a row a document can be placed in a review queue."
+  },
+  "routing.layout.positionColumn": {
+    "defaultMessage": "Order",
+    "description": "Column header: the position of a routing rule in the evaluation order."
+  },
+  "routing.layout.queuePlaceholder": {
+    "defaultMessage": "Choose a queue",
+    "description": "Placeholder of the list of review queues for the default outcome."
+  },
+  "routing.layout.queuesError": {
+    "defaultMessage": "The review queues could not be loaded, so queues are shown by id and cannot be checked.",
+    "description": "Warning on the Routing Rules tab when the list of review queues fails to load."
+  },
+  "routing.layout.readOnly": {
+    "defaultMessage": "Only Admins can change routing rules.",
+    "description": "Notice on the Routing Rules tab for a user who is not an Admin."
+  },
+  "routing.layout.remove": {
+    "defaultMessage": "Delete",
+    "description": "Menu item that removes a routing rule from the table, after a confirmation."
+  },
+  "routing.layout.reorderAria": {
+    "defaultMessage": "Reorder routing rule {id}. Press space to pick it up, the arrow keys to move it and space to drop it.",
+    "description": "Accessible name of the drag handle of a routing rule. {id} is the id of the rule."
+  },
+  "routing.layout.reorderColumn": {
+    "defaultMessage": "Reorder",
+    "description": "Accessible header of the column of drag handles that reorder routing rules."
+  },
+  "routing.layout.restoreBuiltIn": {
+    "defaultMessage": "Restore built-in routing rules",
+    "description": "Menu item, and button of an empty table, that adds the built-in routing rules the table no longer has, at the end."
+  },
+  "routing.layout.restoreBuiltInNone": {
+    "defaultMessage": "The table has every built-in routing rule.",
+    "description": "Why the Restore built-in routing rules menu item is disabled."
+  },
+  "routing.layout.ruleLimit": {
+    "defaultMessage": "A table has at most {max, number} routing rules.",
+    "description": "Why a routing rule cannot be added or duplicated. {max} is the largest number of routing rules."
+  },
+  "routing.layout.serverErrorHeader": {
+    "defaultMessage": "The configuration was not saved: the routing table was refused",
+    "description": "Heading of the error on the Routing Rules tab when the server refused the configuration because of its routing table."
+  },
+  "routing.layout.shadowedHeader": {
+    "defaultMessage": "Routing rules that can never match",
+    "description": "Heading of the warning that lists routing rules an earlier routing rule always wins over."
+  },
+  "routing.layout.shadowedItem": {
+    "defaultMessage": "{rule} never matches: every document it would match is taken by {earlier}, which comes first.",
+    "description": "One line of the warning about unreachable routing rules. {rule} and {earlier} are rule ids."
+  },
+  "routing.layout.unknownDefaultQueue": {
+    "defaultMessage": "The default outcome sends documents to {queue}, which is not a review queue.",
+    "description": "Line of the warning about missing queues for the default outcome of the table. {queue} is a queue id."
+  },
+  "routing.layout.unknownQueueHeader": {
+    "defaultMessage": "Queues that do not exist",
+    "description": "Heading of the warning that lists routing rules whose review queue is not in the queue list."
+  },
+  "routing.layout.unknownQueueItem": {
+    "defaultMessage": "{rule} sends documents to {queue}, which is not a review queue. Create the queue in Review Management, or choose another.",
+    "description": "One line of the warning about missing queues. {rule} is a rule id and {queue} a queue id."
+  },
+  "routing.reason.bytes": {
+    "defaultMessage": "{used, number} of {max, number} bytes",
+    "description": "Under the reason of a routing outcome: how much of the size limit is used. {used} and {max} are numbers of bytes."
+  },
+  "routing.reason.conditionValue": {
+    "defaultMessage": "Comparison value of condition {position, number}",
+    "description": "Item of the Insert value menu: the value a condition of the routing rule compares its input with, for example the 1000 of \"> 1000\". {position} is the number of the condition, from 1."
+  },
+  "routing.reason.conditionsGroup": {
+    "defaultMessage": "This routing rule's conditions",
+    "description": "Group of the Insert value menu: what the conditions of the routing rule read and compare with."
+  },
+  "routing.reason.confidenceThreshold": {
+    "defaultMessage": "Confidence threshold",
+    "description": "Item of the Insert value menu: the confidence threshold of the profile."
+  },
+  "routing.reason.description": {
+    "defaultMessage": "What the reviewer reads on a document placed in the queue. An inserted value shows what the document has. Without a reason, one is generated.",
+    "description": "Help under the label of the reason of a routing outcome."
+  },
+  "routing.reason.documentGroup": {
+    "defaultMessage": "Document",
+    "description": "Group of the Insert value menu: values of the document that need nothing else to be named."
+  },
+  "routing.reason.insert": {
+    "defaultMessage": "Insert value",
+    "description": "Menu beside the reason of a routing outcome: writes a placeholder for a value of the document where the cursor is."
+  },
+  "routing.reason.label": {
+    "defaultMessage": "Reason for the reviewer (optional)",
+    "description": "Label of the field that holds the text a reviewer reads on a document a routing outcome placed in a review queue."
+  },
+  "routing.reason.placeholderLimit": {
+    "defaultMessage": "A reason has at most {max, number} values.",
+    "description": "Why the Insert value menu is disabled. {max} is the largest number of placeholders in a reason."
+  },
+  "routing.reason.policyNote": {
+    "defaultMessage": "Failed policy rules are listed for the reviewer automatically, with the reasons policy rule validation gave.",
+    "description": "Note under the reason of a routing outcome."
+  },
+  "routing.reason.tooLong": {
+    "defaultMessage": "The reason is longer than {max, number} bytes.",
+    "description": "Error under a reason of a routing outcome that is over the size limit. {max} is the limit in bytes."
+  },
+  "routing.ruleModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the routing rule dialog without keeping the edits."
+  },
+  "routing.ruleModal.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the routing rule dialog for a user who cannot change the routing rule."
+  },
+  "routing.ruleModal.conditionsCounter": {
+    "defaultMessage": "({count, number}/{max, number})",
+    "description": "Counter beside the Conditions heading of the routing rule dialog. {count} is the number of conditions and {max} the most a routing rule can have."
+  },
+  "routing.ruleModal.conditionsDescription": {
+    "defaultMessage": "The routing rule matches a document when every condition holds.",
+    "description": "Help under the Conditions heading of the routing rule dialog."
+  },
+  "routing.ruleModal.conditionsGroup": {
+    "defaultMessage": "Conditions",
+    "description": "Heading of the second group of the routing rule dialog: the conditions of the routing rule."
+  },
+  "routing.ruleModal.createHeader": {
+    "defaultMessage": "Add routing rule",
+    "description": "Title of the dialog that adds a routing rule."
+  },
+  "routing.ruleModal.editHeader": {
+    "defaultMessage": "Edit routing rule {id}",
+    "description": "Title of the dialog that edits a routing rule. {id} is the id of the routing rule."
+  },
+  "routing.ruleModal.enabledDescription": {
+    "defaultMessage": "A disabled routing rule is kept in the table and never evaluated.",
+    "description": "Help under the label of the switch that turns a routing rule on or off."
+  },
+  "routing.ruleModal.enabledLabel": {
+    "defaultMessage": "Enabled",
+    "description": "Label of the switch that turns a routing rule on or off."
+  },
+  "routing.ruleModal.enabledOff": {
+    "defaultMessage": "Disabled",
+    "description": "Text beside the switch of a routing rule that is off."
+  },
+  "routing.ruleModal.enabledOn": {
+    "defaultMessage": "Enabled",
+    "description": "Text beside the switch of a routing rule that is on."
+  },
+  "routing.ruleModal.idConstraint": {
+    "defaultMessage": "Lower-case letters, digits, hyphens, dots and underscores. It cannot be changed later.",
+    "description": "What an id of a routing rule may hold, and that it is fixed once saved, shown under the id field."
+  },
+  "routing.ruleModal.idDescription": {
+    "defaultMessage": "Recorded on each document it places.",
+    "description": "One-line help under the label of the id field of a routing rule. Kept to one line, so the id and the label stay level."
+  },
+  "routing.ruleModal.idInvalid": {
+    "defaultMessage": "Use 1 to 64 lower-case letters, digits, hyphens, dots or underscores, starting with a letter or a digit.",
+    "description": "Error under a routing rule id that is not in the allowed form."
+  },
+  "routing.ruleModal.idLabel": {
+    "defaultMessage": "Routing rule id",
+    "description": "Label of the field that holds the id of a routing rule."
+  },
+  "routing.ruleModal.idRequired": {
+    "defaultMessage": "Enter an id.",
+    "description": "Error under an empty routing rule id."
+  },
+  "routing.ruleModal.idTaken": {
+    "defaultMessage": "Another routing rule has this id.",
+    "description": "Error under a routing rule id that another routing rule of the table uses."
+  },
+  "routing.ruleModal.labelDescription": {
+    "defaultMessage": "The name reviewers see on a document it placed in a queue.",
+    "description": "One-line help under the label of the label field of a routing rule."
+  },
+  "routing.ruleModal.labelLabel": {
+    "defaultMessage": "Label",
+    "description": "Label of the field that holds the name of a routing rule shown to people."
+  },
+  "routing.ruleModal.outcomeGroup": {
+    "defaultMessage": "Outcome and reason",
+    "description": "Heading of the third group of the routing rule dialog: what happens to a matching document, and the reason the reviewer reads."
+  },
+  "routing.ruleModal.outcomeLabel": {
+    "defaultMessage": "When the routing rule matches",
+    "description": "Label of the choice of what a routing rule does with a document it matches."
+  },
+  "routing.ruleModal.outcomeNoReview": {
+    "defaultMessage": "No review",
+    "description": "Outcome of a routing rule: the document is not reviewed."
+  },
+  "routing.ruleModal.outcomeNoReviewDescription": {
+    "defaultMessage": "Processing continues without a review.",
+    "description": "Help under the outcome that leaves a document unreviewed."
+  },
+  "routing.ruleModal.outcomeQueue": {
+    "defaultMessage": "Send to a review queue",
+    "description": "Outcome of a routing rule: the document is placed in a review queue."
+  },
+  "routing.ruleModal.outcomeQueueDescription": {
+    "defaultMessage": "The document waits in the queue until a review is completed.",
+    "description": "Help under the outcome that places a document in a review queue."
+  },
+  "routing.ruleModal.previewLabel": {
+    "defaultMessage": "Reason for the document last tested",
+    "description": "Label, under the reason field of the routing rule dialog, of the reason a reviewer would read on the document last tested on the Routing Rules tab, shown when that test matched this routing rule."
+  },
+  "routing.ruleModal.previewNote": {
+    "defaultMessage": "From the last test on this tab, with the routing rule as it was then. Test again to see a change.",
+    "description": "Note under the reason of the document last tested, in the routing rule dialog."
+  },
+  "routing.ruleModal.queueEmpty": {
+    "defaultMessage": "No review queues. Create one in Review Management.",
+    "description": "Shown in the list of review queues of a routing rule when there are none."
+  },
+  "routing.ruleModal.queueLabel": {
+    "defaultMessage": "Review queue",
+    "description": "Label of the list of review queues a routing rule can send documents to."
+  },
+  "routing.ruleModal.queuePlaceholder": {
+    "defaultMessage": "Choose a queue",
+    "description": "Placeholder of the list of review queues of a routing rule."
+  },
+  "routing.ruleModal.queueRequired": {
+    "defaultMessage": "Choose the queue the routing rule sends documents to.",
+    "description": "Error under the queue list of a routing rule whose outcome is a queue and none is chosen."
+  },
+  "routing.ruleModal.ruleGroup": {
+    "defaultMessage": "Routing rule",
+    "description": "Heading of the first group of the routing rule dialog: the id, the label and whether the routing rule is enabled."
+  },
+  "routing.ruleModal.save": {
+    "defaultMessage": "Save routing rule",
+    "description": "Button that keeps the edits of the routing rule dialog in the table."
+  },
+  "routing.ruleModal.serverErrorHeader": {
+    "defaultMessage": "The configuration was not saved",
+    "description": "Heading of the error shown in the routing rule dialog when the server refused the configuration because of this routing rule."
+  },
+  "routing.ruleModal.viewHeader": {
+    "defaultMessage": "Routing rule {id}",
+    "description": "Title of the dialog that shows a routing rule to a user who cannot change it. {id} is the id of the routing rule."
+  },
+  "routing.testPanel.decisionContinue": {
+    "defaultMessage": "No review: processing continues",
+    "description": "Result of a routing test: the document would not be reviewed."
+  },
+  "routing.testPanel.decisionHold": {
+    "defaultMessage": "Held for review",
+    "description": "Result of a routing test: the document would wait in a review queue."
+  },
+  "routing.testPanel.decisionLabel": {
+    "defaultMessage": "Decision",
+    "description": "Label of the result of a routing test: whether the document would be held for review."
+  },
+  "routing.testPanel.errorHeader": {
+    "defaultMessage": "The table could not be tested",
+    "description": "Heading of the error shown when the routing test fails."
+  },
+  "routing.testPanel.fallbackLabel": {
+    "defaultMessage": "Why the Default queue",
+    "description": "Label of the reason a routing test placed the document in the Default queue instead of the queue the routing rule names."
+  },
+  "routing.testPanel.header": {
+    "defaultMessage": "Test on a document",
+    "description": "Heading of the section that tries the routing table on one document."
+  },
+  "routing.testPanel.inputsLabel": {
+    "defaultMessage": "Inputs read",
+    "description": "Label of the list of values the routing test read from the document."
+  },
+  "routing.testPanel.inputsNone": {
+    "defaultMessage": "None: no enabled routing rule reads an input.",
+    "description": "Shown when a routing test read no value from the document."
+  },
+  "routing.testPanel.intro": {
+    "defaultMessage": "See what this table, as edited here, decides for a document that has been processed. Nothing is saved and the document is not changed.",
+    "description": "Text under the heading of the routing test section."
+  },
+  "routing.testPanel.keyLabel": {
+    "defaultMessage": "Document key",
+    "description": "Label of the field that takes the object key of the document to test the routing table on."
+  },
+  "routing.testPanel.keyPlaceholder": {
+    "defaultMessage": "batch-1/invoice.pdf",
+    "description": "Example object key shown in the empty document key field of the routing test."
+  },
+  "routing.testPanel.queueLabel": {
+    "defaultMessage": "Review queue",
+    "description": "Label of the queue a routing test would place the document in."
+  },
+  "routing.testPanel.queueNone": {
+    "defaultMessage": "None",
+    "description": "Shown as the queue of a routing test whose document would not be reviewed."
+  },
+  "routing.testPanel.reasonLabel": {
+    "defaultMessage": "Reason for the reviewer",
+    "description": "Label of the reason a routing test would place the document in a review queue with: the text a reviewer reads, with the values of the tested document."
+  },
+  "routing.testPanel.reasonSourceAdmin": {
+    "defaultMessage": "The reason as written, with the values of this document.",
+    "description": "Under the reason of a routing test: the text is the reason an Admin wrote for the outcome, filled in for the tested document."
+  },
+  "routing.testPanel.reasonSourceFallback": {
+    "defaultMessage": "Generated: the outcome has no reason, or its reason could not be filled in for this document.",
+    "description": "Under the reason of a routing test: the text was generated, because the outcome has no reason of its own or it failed."
+  },
+  "routing.testPanel.ruleDefault": {
+    "defaultMessage": "None: the default outcome applied",
+    "description": "Shown as the matched routing rule of a routing test when no routing rule matched."
+  },
+  "routing.testPanel.ruleLabel": {
+    "defaultMessage": "Matched routing rule",
+    "description": "Label of the routing rule a test matched."
+  },
+  "routing.testPanel.staleHeader": {
+    "defaultMessage": "The table refers to things this document does not have",
+    "description": "Heading of the warning that lists what the routing table names and the tested document lacks (a class, a section result)."
+  },
+  "routing.testPanel.test": {
+    "defaultMessage": "Test",
+    "description": "Button that runs the routing table on the document."
+  },
+  "routing.warnings.defaultQueueOff": {
+    "defaultMessage": "The Default review queue is off, so routing rules are not evaluated and documents use the document-page review flow. Turn it on in <link>Review Management</link>.",
+    "description": "Warning on the Routing Rules tab, for an Admin, when the Default review queue is disabled. <link> marks the name of the page where queues are managed."
+  },
+  "routing.warnings.openProcessingSettings": {
+    "defaultMessage": "Open Processing Settings",
+    "description": "Button in the warning that Review Routing is off: shows the Processing Settings tab, where the switch is."
+  },
+  "routing.warnings.policyOff": {
+    "defaultMessage": "Tests a policy rule result; policy rule validation is off",
+    "description": "Warning on a routing rule whose condition or reason reads a policy rule result, in a profile where policy rule validation is off or has no policies."
+  },
+  "routing.warnings.reviewRoutingOff": {
+    "defaultMessage": "Review Routing is off for this profile, so no document is held for review and these routing rules are not evaluated.",
+    "description": "Warning on the Routing Rules tab of a profile whose Review Routing switch (in Processing Settings) is off."
+  },
+  "runPlan.picker.blockedFor": {
+    "defaultMessage": "Not available for {count, number} of {total, number} documents. {why}",
+    "description": "Shown under a start step option that cannot be chosen for a selection of several documents. {count} of the {total} selected documents cannot start there; {why} is a sentence with the reason of the first of them."
+  },
+  "runPlan.picker.description": {
+    "defaultMessage": "The run does this step and every later step again. What the earlier steps produced is kept.",
+    "description": "Help text under the label of the start step options."
+  },
+  "runPlan.picker.label": {
+    "defaultMessage": "Start at",
+    "description": "Label of the group of options that chooses the pipeline step a reprocess starts at."
+  },
+  "runPlan.picker.unavailable": {
+    "defaultMessage": "Not available for this document.",
+    "description": "Shown under a start step option that cannot be chosen, when the server gave no reason."
+  },
+  "runPlan.plannedSteps.causeAdded": {
+    "defaultMessage": "added",
+    "description": "Why a run extracts a section again, in parentheses after the section id: the section was added to the document."
+  },
+  "runPlan.plannedSteps.causeNoResult": {
+    "defaultMessage": "no result",
+    "description": "Why a run extracts a section again, in parentheses after the section id: the section has no extracted values."
+  },
+  "runPlan.plannedSteps.causePagesChanged": {
+    "defaultMessage": "pages changed",
+    "description": "Why a run extracts a section again, in parentheses after the section id: the pages of the section were changed."
+  },
+  "runPlan.plannedSteps.heading": {
+    "defaultMessage": "Steps of the run",
+    "description": "Heading above the list of the processing steps a run will do, shown in a dialog before the run starts (finishing a review, or Process Changes)."
+  },
+  "runPlan.plannedSteps.listLabel": {
+    "defaultMessage": "The processing steps in order, each with whether the run does it",
+    "description": "Accessible name of the list of the processing steps a run will do. Read by screen readers; not shown."
+  },
+  "runPlan.plannedSteps.loadFailed": {
+    "defaultMessage": "The steps of the run could not be loaded",
+    "description": "Heading of the warning shown in place of the list of the processing steps a run will do, when reading it failed. The reason follows it."
+  },
+  "runPlan.plannedSteps.loading": {
+    "defaultMessage": "Loading the steps of the run",
+    "description": "Shown while the list of the processing steps a run will do is being read from the server."
+  },
+  "runPlan.plannedSteps.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button in the warning shown when the steps of a run could not be loaded: read them again."
+  },
+  "runPlan.plannedSteps.section": {
+    "defaultMessage": "{sectionId} ({cause})",
+    "description": "One entry of the list of sections a run extracts again. {sectionId} is the id of the section, for example 2; {cause} is why it is extracted again, for example \"pages changed\"."
+  },
+  "runPlan.plannedSteps.sections": {
+    "defaultMessage": "Sections extracted again: {sections}",
+    "description": "Line under the list of the processing steps a run will do. {sections} is a list of section ids, each with why it is extracted again, for example \"2 (pages changed), 4 (added)\"."
+  },
+  "runPlan.plannedSteps.startsAt": {
+    "defaultMessage": "Starts at {step}",
+    "description": "Line above the list of the processing steps a run will do. {step} is the name of the step the run starts at, for example Policy Rule Validation."
+  },
+  "runPlan.plannedSteps.stateNotEnabled": {
+    "defaultMessage": "Not enabled",
+    "description": "State of a processing step in the list of the steps a run will do: the run reaches this step, and the configuration has it switched off."
+  },
+  "runPlan.plannedSteps.stateRun": {
+    "defaultMessage": "Runs",
+    "description": "State of a processing step in the list of the steps a run will do: the run does this step."
+  },
+  "runPlan.plannedSteps.stateSkipped": {
+    "defaultMessage": "Skipped",
+    "description": "State of a processing step in the list of the steps a run will do: the run does not do this step."
+  },
+  "runPlan.reason.malwareGate": {
+    "defaultMessage": "The document was held or refused by the malware scan.",
+    "description": "Why a start step cannot be chosen: the document is still being scanned for malware, or the scan refused it."
+  },
+  "runPlan.reason.notFailed": {
+    "defaultMessage": "The document did not fail, so there is no failed run to resume.",
+    "description": "Why \"Resume from the failed step\" cannot be chosen: the document is not in the failed status."
+  },
+  "runPlan.reason.other": {
+    "defaultMessage": "Not available ({code}).",
+    "description": "Shown under a start step option that cannot be chosen, for a reason code this screen has no sentence for. {code} is the code."
+  },
+  "runPlan.reason.otherProfileBeginningOnly": {
+    "defaultMessage": "Under a different configuration profile, a run starts at the beginning.",
+    "description": "Why a later start step cannot be chosen: the reprocess names a configuration profile other than the one the document was processed with."
+  },
+  "runPlan.reason.outputMissing": {
+    "defaultMessage": "The document does not have the output of the earlier steps.",
+    "description": "Why a start step cannot be chosen: a step before it has not produced what this step reads."
+  },
+  "runPlan.reason.revisionChangesMode": {
+    "defaultMessage": "The chosen revision changes the processing mode, so the run starts at the beginning.",
+    "description": "Why a later start step cannot be chosen: the chosen configuration revision switches between BDA mode and Pipeline mode."
+  },
+  "runPlan.reason.revisionHasPreprocessingHook": {
+    "defaultMessage": "The chosen revision has a preprocessing hook, which a later start would skip.",
+    "description": "Why a later start step cannot be chosen: the chosen configuration revision runs a hook before the first step."
+  },
+  "runPlan.reason.runInProgress": {
+    "defaultMessage": "The document is being processed. Wait for the run to finish, or abort it.",
+    "description": "Why a start step cannot be chosen: a run of the document is in progress."
+  },
+  "runPlan.reason.stepNotInMode": {
+    "defaultMessage": "This step does not exist in the document's processing mode.",
+    "description": "Why a start step cannot be chosen: the step is not part of BDA mode or Pipeline mode, whichever the document uses."
+  },
+  "runPlan.reason.unknownStep": {
+    "defaultMessage": "This is not a step a run can start at.",
+    "description": "Why a start step cannot be chosen: the server does not know the step."
+  },
+  "runPlan.step.applyReviewChanges": {
+    "defaultMessage": "Apply Review Changes",
+    "description": "Name of a processing step: the run that follows a completed review applies the reviewer's corrections to the document. Shown in lists of the steps of a run; a run cannot be told to start at it."
+  },
+  "runPlan.step.assessment": {
+    "defaultMessage": "Assessment",
+    "description": "Start step option: the run starts at assessment (confidence scoring)."
+  },
+  "runPlan.step.beginning": {
+    "defaultMessage": "Beginning",
+    "description": "Start step option: the run starts at the first step. Shown for a document processed in BDA mode."
+  },
+  "runPlan.step.classification": {
+    "defaultMessage": "Classification",
+    "description": "Start step option: the run starts at classification."
+  },
+  "runPlan.step.evaluation": {
+    "defaultMessage": "Evaluation",
+    "description": "Start step option: the run starts at evaluation."
+  },
+  "runPlan.step.extraction": {
+    "defaultMessage": "Extraction",
+    "description": "Start step option: the run starts at extraction."
+  },
+  "runPlan.step.policyRuleValidation": {
+    "defaultMessage": "Policy Rule Validation",
+    "description": "Start step option: the run starts at policy rule validation."
+  },
+  "runPlan.step.resume": {
+    "defaultMessage": "Resume from the failed step",
+    "description": "Start step option for a failed document: the run starts at the first step that has no output."
+  },
+  "runPlan.step.reviewRouting": {
+    "defaultMessage": "Review Routing",
+    "description": "Name of a processing step: the run decides whether the document goes to a review queue. Shown in lists of the steps of a run; a run cannot be told to start at it."
+  },
+  "runPlan.step.summarization": {
+    "defaultMessage": "Summarization",
+    "description": "Start step option: the run starts at summarization."
+  },
+  "runPlan.stepPipeline.beginning": {
+    "defaultMessage": "OCR (beginning)",
+    "description": "Start step option for a document processed in Pipeline mode: the run starts at OCR, the first step."
+  },
+  "schemaBuilder.inspector.excludeDescription": {
+    "defaultMessage": "When checked, sections classified as this class are SKIPPED by downstream stages (extraction, assessment, summarization, policy rule validation, evaluation). Use for static boilerplate pages (instructions, legal notices, cover pages) that carry no extractable data.",
+    "description": "Help under the Exclude from Processing checkbox of a document class in the schema builder."
+  },
+  "stepFlow.skippedStatus.skipped": {
+    "defaultMessage": "Skipped",
+    "description": "Status of a processing step, in the document processing flow viewer, that the run did not do because its run plan skipped it."
+  },
+  "stepFlow.viewer.beginningBda": {
+    "defaultMessage": "Bedrock Data Automation",
+    "description": "Name of the first processing step of a document in BDA mode, in the document processing flow viewer."
+  },
+  "stepFlow.viewer.beginningPipeline": {
+    "defaultMessage": "OCR",
+    "description": "Name of the first processing step of a document in Pipeline mode, in the document processing flow viewer."
+  },
+  "stepFlow.viewer.skippedNote": {
+    "defaultMessage": "Skipped by the run plan. This run started at {step}.",
+    "description": "Explains, in the document processing flow viewer, a processing step the run did not do. {step} is the name of the step the run started at."
+  },
+  "stepFlow.viewer.skippedNoteRejected": {
+    "defaultMessage": "Skipped by the run plan. This run recorded a rejected review and did no processing step.",
+    "description": "Explains, in the document processing flow viewer, a processing step of a run that only recorded a rejected review."
   },
   "testStudio.addProcessedDocuments.notCompletedBody": {
     "defaultMessage": "Only documents that finished processing can be added to a test set.",

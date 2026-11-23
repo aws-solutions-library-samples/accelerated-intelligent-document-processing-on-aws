@@ -3,10 +3,11 @@
 //
 // The edit page's direct edit of any processed document, in review or not: the shared
 // editor over its sections, with the evaluation baseline where the document has one.
-// Save writes the edits without reprocessing; Process Changes saves them, confirms,
-// then submits them through processChanges, so evaluation and summarization re-run on
-// them and OCR, classification and extraction are not repeated; Cancel leaves for the
-// document's page. Edit Page Grouping saves a new grouping.
+// Save writes the edits without reprocessing; Process Changes saves them, confirms
+// with the steps the server plans (the run starts at policy rule validation when every
+// section has a result, so the earlier steps are not repeated), then submits them
+// through processChanges; Cancel leaves for the document's page. Edit Page Grouping
+// saves a new grouping.
 //
 // A document in a review queue opens here read-only (for a role that does not work
 // queues, or while the queue's mirror lags): it is edited from its queue item, and
@@ -32,6 +33,7 @@ import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { PROCESS_CHANGES_LABEL } from '../common/labels';
 import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
+import { NO_RULE_VALIDATION_REASON } from '../document-actions/action-reasons';
 import { HOME_CRUMB, editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { useDocumentEdit } from './document-edit-adapter';
@@ -262,6 +264,8 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
           reportUri: finished ? doc.summaryReportUri || undefined : undefined,
           unavailableReason: unfinishedReason ?? NO_SUMMARY_REASON,
         },
+        // Available whenever the document has the report, as on the document page.
+        ruleValidation: { reportUri: doc.ruleValidationResultUri || undefined, unavailableReason: NO_RULE_VALIDATION_REASON },
         offerReport: true,
       },
       notices: [],
@@ -284,7 +288,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         refreshDisabledReason: saving ? 'Saving your changes…' : undefined,
         primaryDisabledReason: processReason,
         primaryHint:
-          'Save your changes and process them: evaluation and summarization re-run; OCR, classification and extraction are not repeated.',
+          'Save your changes and process them. The confirmation lists the steps of the run; the steps before the one it starts at are not repeated.',
         offerHistory: true,
       },
       editor: {
@@ -311,7 +315,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
             Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> and the document
             is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document
             page&apos;s <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen&apos;s{' '}
-            <b>{PROCESS_CHANGES_LABEL}</b> re-runs evaluation and summarization only.
+            <b>{PROCESS_CHANGES_LABEL}</b> keeps the values a section already has.
           </>
         ),
         save: async (next) => {
@@ -326,10 +330,11 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         baseline: evaluation.baseline,
       },
       process: {
-        confirm: { kind: 'reprocess', bdaMode },
+        // Where the run starts is the server's decision; the confirmation shows the steps it answers.
+        confirm: { kind: 'reprocess' },
         run: async () => {
           await adapter.processChanges();
-          return { to: leaveTo, message: `Processing the changes to ${name}: evaluation and summarization are re-running.` };
+          return { to: leaveTo, message: `Processing the changes to ${name}.` };
         },
       },
       baseline: async () => {

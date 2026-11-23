@@ -296,13 +296,20 @@ capabilities:
       finalize run applies the corrections; Test Studio has one queue per test set
       for labelling ground truth. It works in both modes; without confidence scoring
       only BDA's blueprint confidence can queue a document. The hooks before the
-      review point run twice and must be idempotent.
+      review point run twice and must be idempotent. Which documents are held, and in
+      which review queue, is decided by the profile's routing rules: the built-in ones
+      hold a failed extraction, a confidence alert and a missing required field in the
+      Default queue, and an Admin can add routing rules on document values, classes and
+      policy rule results that send a document to another queue with a reason for the
+      reviewer.
     evidence:
       - docs/human-review.md
       - docs/review-queues.md#overview
       - docs/review-queues.md#limits-and-behaviour-to-know
+      - docs/review-routing.md
     modes: [bda, pipeline]
-    configuration: [hitl.enabled, hitl.confidence_threshold, hitl.route_missing_required_fields]
+    configuration: [hitl.enabled, hitl.confidence_threshold, hitl.route_missing_required_fields, routing]
+    tags: [preset:review-routing-showcase]
     related:
       - capability:assessment-confidence
       - question:review-needs
@@ -414,6 +421,7 @@ capabilities:
       - preset:lending-package-sample-govcloud
       - preset:ocr-benchmark
       - preset:realkie-fcc-verified
+      - preset:review-routing-showcase
       - preset:rule-validation
       - preset:rvl-cdip
       - preset:rvl-cdip-package-sample

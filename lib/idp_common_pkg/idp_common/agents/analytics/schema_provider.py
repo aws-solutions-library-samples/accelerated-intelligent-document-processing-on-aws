@@ -641,6 +641,8 @@ def get_rule_validation_tables_description() -> str:
 - `reasoning` (string): Explanation for the recommendation
 - `supporting_pages` (string): JSON array of page numbers
 - `validation_date` (timestamp): When the validation was performed
+- `rule_id` (string): Stable id of the rule, `<policy type>.<rule key>`. Null for rows written before rule ids existed
+- `verdict` (string): The recommendation as one of `pass`, `fail`, `not_found`, `unknown`. Null for rows written before verdicts existed. Prefer it to `recommendation` when counting, because `recommendation` is free text
 
 **Partitioned by**: date (YYYY-MM-DD format)
 

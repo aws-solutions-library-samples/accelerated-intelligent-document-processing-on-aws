@@ -115,6 +115,8 @@ class IDPClient:
         tenancy: TenancyOperation - Tenant declarations, access policies, audit
         terraform: TerraformOperation - Terraform-only operations (moving a
             genai-idp-terraform deployment onto the built-in module)
+        review_queues: ReviewQueueOperation - Production review queues (list,
+            create, update, delete)
     """
 
     def __init__(
@@ -170,6 +172,7 @@ class IDPClient:
             ManifestOperation,
             McpOperation,
             PublishOperation,
+            ReviewQueueOperation,
             SearchOperation,
             StackOperation,
             TenancyOperation,
@@ -194,6 +197,7 @@ class IDPClient:
         self.tenancy: TenancyOperation = TenancyOperation(self)
         self.mcp: McpOperation = McpOperation(self)
         self.terraform: TerraformOperation = TerraformOperation(self)
+        self.review_queues: ReviewQueueOperation = ReviewQueueOperation(self)
 
     @property
     def stack_name(self) -> Optional[str]:

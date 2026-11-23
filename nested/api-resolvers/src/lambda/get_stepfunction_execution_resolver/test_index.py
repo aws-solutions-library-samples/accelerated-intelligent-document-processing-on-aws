@@ -1438,8 +1438,8 @@ class TestACaughtFailureOnASucceededExecutionReadsFailed:
             if with_exit:
                 history.add("TaskStateExited", name="EvaluationStep")
             failing_state_name = "EvaluationStep"
-        history.add("TaskStateEntered", name="RecordEvaluationFailure").add(
-            "TaskStateExited", name="RecordEvaluationFailure"
+        history.add("TaskStateEntered", name="RecordEvaluationFailureStep").add(
+            "TaskStateExited", name="RecordEvaluationFailureStep"
         ).add("ExecutionSucceeded")
         return history, failing_state_name
 
@@ -1465,7 +1465,7 @@ class TestACaughtFailureOnASucceededExecutionReadsFailed:
         """The #1139 shape at step scope: the state the `Catch` moved into succeeded."""
         history, _ = self._caught_then_recovered("LambdaFunctionTimedOut", True)
         steps = parse_execution_history(history.events)
-        handler = next(s for s in steps if s["name"] == "RecordEvaluationFailure")
+        handler = next(s for s in steps if s["name"] == "RecordEvaluationFailureStep")
         assert handler["status"] == "SUCCEEDED"
 
     def test_the_execution_carries_no_top_level_error(self):

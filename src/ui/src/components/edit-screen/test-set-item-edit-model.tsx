@@ -39,7 +39,7 @@ import {
   mayChangeClassFor,
   versionBadgeText,
 } from '../test-studio/annotation-edit-flags';
-import type { EditAction } from './EditScreen';
+import type { EditAction, ReviewOutcomeAction } from './EditScreen';
 import type { EditModel, EditNavigation, ReviewActivity } from './edit-model';
 import { NOT_ASSIGNED_MESSAGE, useTestSetItemEdit } from './test-set-item-edit-adapter';
 import { useTestSetEditorSlots } from './test-set-editor-slots';
@@ -87,7 +87,7 @@ export const notReviewedMessage = (name: string): string =>
 class NotReviewedYet extends Error {}
 
 /** What a failed action was trying to do, in the error it reports. */
-const FAILED_ACTION: Record<EditAction, string> = {
+const FAILED_ACTION: Record<Exclude<EditAction, ReviewOutcomeAction>, string> = {
   claim: 'claim this document',
   skip: 'skip this document',
   process: 'process the changes to this document',
@@ -430,7 +430,11 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
       cancelTo: leavePath(queuePath),
       failures: {
         surface: 'flash',
-        describe: (action, err) => (err instanceof NotReviewedYet ? err.message : describeApiError(err, FAILED_ACTION[action])),
+        // Reject and send-back end a Production review; this mode offers neither, so neither can fail here.
+        describe: (action, err) =>
+          err instanceof NotReviewedYet
+            ? err.message
+            : describeApiError(err, action === 'reject' || action === 'send-back' ? FAILED_ACTION.process : FAILED_ACTION[action]),
         // A failed claim has re-read the document already.
         after: (action) => {
           if (action !== 'claim') void reload();

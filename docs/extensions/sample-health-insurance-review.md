@@ -67,7 +67,11 @@ It exercises the full host contract:
   pipeline-hooks dispatcher (which reads hooks from the configuration profile the document is processed
   under — the active one unless another was chosen at upload)
   invokes the feature's hook Lambda, which derives the claim status and records
-  it in the feature's own DynamoDB table. The hook is shipped as part of the
+  it in the feature's own DynamoDB table, with whether a reviewer had completed a
+  review (`reviewed`) and what started the run (`runKind`). A document held in a
+  review queue reaches the hook twice, before the review and after it, and the
+  later status replaces the earlier one; a document whose review is rejected keeps
+  the status recorded before the review. The hook is shipped as part of the
   config preset above rather than via a separate `registerFeatureHooks` call —
   that keeps it attached to the very profile the admin activates, instead of
   being orphaned in whatever profile happened to be active at install time.

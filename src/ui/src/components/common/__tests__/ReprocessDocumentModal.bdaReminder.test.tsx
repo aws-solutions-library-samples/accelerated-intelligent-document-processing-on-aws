@@ -14,7 +14,8 @@
 
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 
 const state = vi.hoisted(() => ({
   configs: {} as Record<string, Record<string, unknown>>,
@@ -57,6 +58,8 @@ vi.mock('../../../hooks/use-configuration', async () => {
 });
 
 vi.mock('../ConfigRevisionSelector', () => ({ default: () => null }));
+// The dialog also asks which steps the run can start at; that is not what this suite is about.
+vi.mock('../../run-plan/run-plan-api', () => ({ getReprocessOptions: async () => [] }));
 
 import ReprocessDocumentModal from '../ReprocessDocumentModal';
 

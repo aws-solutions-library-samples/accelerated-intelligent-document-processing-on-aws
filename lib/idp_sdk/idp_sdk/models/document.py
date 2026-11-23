@@ -13,6 +13,49 @@ from idp_common.review_queues.statuses import ReviewStatus
 from .base import DocumentBucket, DocumentState, RerunStep
 
 
+def _whole_numbers(values: Any) -> List[int]:
+    """The whole numbers of a list the lookup function returned, as ints."""
+    if not isinstance(values, list):
+        return []
+    return [
+        int(value)
+        for value in values
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value == value // 1
+    ]
+
+
+class ReviewPolicyFailure(BaseModel):
+    """A policy rule the document failed, as its reviewer is shown it."""
+
+    rule_id: str = Field(default="", description="<policy type>.<rule key>")
+    policy: str = Field(default="", description="The policy the rule belongs to")
+    name: str = Field(
+        default="", description="The rule's key: the id without its policy type"
+    )
+    reason: str = Field(
+        default="",
+        description=(
+            "The explanation policy rule validation stored for the rule, shortened"
+        ),
+    )
+    pages: List[int] = Field(
+        default_factory=list, description="The page numbers the explanation cites"
+    )
+
+    @classmethod
+    def from_lookup(cls, failure: Dict[str, Any]) -> "ReviewPolicyFailure":
+        """Build from one entry of the lookup function's ``policyFailures``."""
+        return cls(
+            rule_id=str(failure.get("ruleId") or ""),
+            policy=str(failure.get("policy") or ""),
+            name=str(failure.get("name") or ""),
+            reason=str(failure.get("reason") or ""),
+            pages=_whole_numbers(failure.get("pages")),
+        )
+
+
 class ReviewInfo(BaseModel):
     """A document's review-queue status (HITL review queues).
 
@@ -31,12 +74,46 @@ class ReviewInfo(BaseModel):
         default=None, description="When the reviewer completed or rejected it"
     )
     reject_reason: Optional[str] = Field(default=None, description="Reject reason")
+    queue_name: Optional[str] = Field(
+        default=None, description="The review queue's name, as people see it"
+    )
+    routed_by: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "What placed the document in the queue: the routing rule that "
+            "matched, or the person who sent it there"
+        ),
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "What the reviewer reads: the routing rule's reason with the "
+            "document's values in it. None when no reason is recorded"
+        ),
+    )
+    policy_failures: List[ReviewPolicyFailure] = Field(
+        default_factory=list,
+        description=(
+            "The first policy rules the document failed, whichever routing rule "
+            "placed it"
+        ),
+    )
+    policy_failure_count: int = Field(
+        default=0,
+        description=(
+            "How many policy rules the document failed; policy_failures may list fewer"
+        ),
+    )
 
     @classmethod
     def from_lookup(cls, review: Optional[Dict[str, Any]]) -> Optional["ReviewInfo"]:
         """Build from the lookup function's ``review`` block (camelCase)."""
         if not review or not review.get("status"):
             return None
+        routed = review.get("routedBy")
+        routed = routed if isinstance(routed, dict) else {}
+        failures = routed.get("policyFailures")
+        counted = _whole_numbers([routed.get("policyFailureCount")])
         return cls(
             status=review["status"],
             queue=review.get("queue"),
@@ -45,6 +122,15 @@ class ReviewInfo(BaseModel):
             reviewed_by=review.get("reviewedBy"),
             disposed_at=review.get("disposedAt"),
             reject_reason=review.get("rejectReason"),
+            queue_name=review.get("queueName"),
+            routed_by=review.get("routedBy"),
+            reason=str(routed.get("reason") or "") or None,
+            policy_failures=[
+                ReviewPolicyFailure.from_lookup(failure)
+                for failure in (failures if isinstance(failures, list) else [])
+                if isinstance(failure, dict)
+            ],
+            policy_failure_count=counted[0] if counted else 0,
         )
 
 
@@ -114,8 +200,49 @@ class DocumentReprocessResult(BaseModel):
     """Result of reprocessing a single document."""
 
     document_id: str = Field(description="Document identifier")
-    step: RerunStep = Field(description="Pipeline step being reprocessed")
+    step: RerunStep = Field(description="The step that was asked for")
     queued: bool = Field(description="Whether document was successfully queued")
+    status: str = Field(
+        default="",
+        description=(
+            "QUEUED, REFUSED (the document cannot be processed again as asked) "
+            "or FAILED (an error while queuing it)"
+        ),
+    )
+    start_step: Optional[str] = Field(
+        default=None,
+        description="The step the run starts at, after aliases and 'resume'",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="The code that explains a refusal, or the error of a failure",
+    )
+    message: Optional[str] = Field(
+        default=None, description="The refusal or the failure, in words"
+    )
+
+
+class ReprocessStepOption(BaseModel):
+    """One step of a document's processing mode, and whether a run can start at it."""
+
+    id: str = Field(description="Step id")
+    available: bool = Field(description="Whether a reprocess can start at this step")
+    skippable: bool = Field(description="Whether a run can leave this step out")
+    reason: Optional[str] = Field(
+        default=None, description="The code that says why the step is unavailable"
+    )
+
+
+class ReprocessOption(BaseModel):
+    """What one document can be reprocessed from."""
+
+    document_id: str = Field(description="Document identifier")
+    mode: str = Field(description="Processing mode: 'pipeline' or 'bda'")
+    default_step: str = Field(description="The step a reprocess starts at by default")
+    steps: List[ReprocessStepOption] = Field(
+        default_factory=list,
+        description="Every step of the document's mode, in pipeline order",
+    )
 
 
 # Backward compatibility alias

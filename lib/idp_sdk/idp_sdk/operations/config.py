@@ -241,10 +241,10 @@ class ConfigOperation:
         Args:
             features: A feature set (``min``, ``core``, ``all``), or one or more
                 section names, comma-separated or as a list (see
-                ``parse_features``). ``all`` is every section except hitl, chat
-                and rule_validation. Uploaded, every setting the template
-                writes resets the deployment's value to the default, so edit it
-                first
+                ``parse_features``). ``all`` is every section except hitl, chat,
+                rule_validation and routing. Uploaded, every setting the
+                template writes resets the deployment's value to the default,
+                so edit it first
             pattern: Pattern to use (pattern-1, pattern-2)
             output: Optional output file path
             include_prompts: Include prompt templates
@@ -427,6 +427,104 @@ class ConfigOperation:
             return None
         classes = user_config.get("classes")
         return len(classes) if isinstance(classes, list) else 0
+
+    def routing_to_dmn(self, config: Any, dmn_version: str = "1.5") -> str:
+        """Write a configuration's review routing table as DMN XML.
+
+        The conversion is local: it reads no stack and calls no AWS service. The
+        DMN file holds the routing table (its rules, conditions and outcomes) and
+        can be opened in a DMN editor; ``routing_from_dmn`` reads it back.
+
+        Args:
+            config: A configuration as a dict, or the path of a YAML or JSON
+                configuration file. Its ``routing`` section is converted; a dict
+                that is a routing section itself (it has ``tables``) is accepted
+                too
+            dmn_version: The DMN version to write: "1.5" or "1.3"
+
+        Returns:
+            The DMN XML
+
+        Raises:
+            IDPValidationError: the configuration has no routing section, or the
+                section cannot be written as a DMN decision table
+        """
+        from pydantic import ValidationError
+
+        from idp_common.config.routing_models import RoutingConfig
+        from idp_common.decision_tables.models import DecisionTableError
+        from idp_common.review_queues import routing_dmn
+
+        if isinstance(config, str):
+            config = self._load_config_file(config)
+        if not isinstance(config, dict):
+            raise IDPValidationError(
+                "The configuration must be a mapping with a routing section"
+            )
+        section = config.get("routing") if "routing" in config else config
+        if not isinstance(section, dict) or "tables" not in section:
+            raise IDPValidationError("The configuration has no routing section")
+        try:
+            routing = RoutingConfig.model_validate(section)
+            return routing_dmn.export_xml(routing, dmn_version=dmn_version)
+        except ValidationError as e:
+            raise IDPValidationError(
+                f"The routing section is not valid: {e.error_count()} problem(s), "
+                f"the first at "
+                f"{'.'.join(str(part) for part in e.errors()[0]['loc']) or 'the top'}"
+            ) from e
+        except DecisionTableError as e:
+            raise IDPValidationError(
+                f"The routing section cannot be written: {e}"
+            ) from e
+
+    def routing_from_dmn(self, xml: Any) -> dict:
+        """Read a DMN decision table as a review routing section.
+
+        The conversion is local: it reads no stack and calls no AWS service, so
+        the queues the rules name are not checked here. They are checked when a
+        configuration that holds the section is uploaded to a stack.
+
+        Args:
+            xml: The DMN XML, as text or bytes
+
+        Returns:
+            ``{"routing": {...}}``: the section under its configuration key, ready
+            to be merged into a configuration or written to a file and uploaded
+
+        Raises:
+            IDPValidationError: the XML is not a decision table this product can
+                read. The message names what is wrong
+        """
+        from idp_common.decision_tables.models import DecisionTableError
+        from idp_common.review_queues import routing_dmn
+
+        if not isinstance(xml, (str, bytes)) or not xml.strip():
+            raise IDPValidationError("The DMN XML is empty")
+        try:
+            routing = routing_dmn.import_xml(xml)
+        except DecisionTableError as e:
+            raise IDPValidationError(f"The DMN file cannot be read: {e}") from e
+        return {"routing": routing.model_dump()}
+
+    def _routing_queue_lookup(self, stack_name: str, user_config: Any):
+        """A lookup of the stack's production review queues, for an upload.
+
+        Routing rules name review queues by id, and a rule that names a queue the
+        stack does not have is refused when it is saved. The lookup is built only
+        for a configuration that has a routing section. A stack with no review
+        queues table answers None: queue ids are then checked for their form.
+        """
+        if not isinstance(user_config, dict) or "routing" not in user_config:
+            return None
+        table = self._client._get_stack_resources(stack_name).get("HITLTable")
+        if not table:
+            return None
+        from idp_common.review_queues.queue_defs import production_queue_lookup
+        from idp_common.review_queues.store import ReviewStore
+
+        store = ReviewStore(table, region=self._client._region)
+        return production_queue_lookup(store.queue_defs)
 
     def migrate(
         self,
@@ -692,7 +790,10 @@ class ConfigOperation:
             **kwargs: Additional parameters
 
         Returns:
-            ConfigUploadResult with upload status
+            ConfigUploadResult with upload status. Its ``warnings`` list what the
+            saved configuration will not do although the upload succeeded, for
+            example a routing rule that tests a policy rule result while policy
+            rule validation is off for the profile.
         """
         config_version = resolve_config_profile(
             config_profile, config_version, required=True
@@ -793,12 +894,17 @@ class ConfigOperation:
                     version_created = True
 
             config_json = json.dumps(user_config)
+            # What the saved configuration will not do although the save is
+            # accepted: the manager adds to this list and still returns a bool.
+            warnings: list[str] = []
             success = manager.handle_update_custom_configuration(
                 config_json,
                 version=config_version,
                 description=description,
                 created_by=created_by,
                 revision_notes=revision_notes,
+                routing_queue_lookup=self._routing_queue_lookup(name, user_config),
+                warnings=warnings,
             )
 
             # Report the revision this upload produced. Without it a caller can
@@ -825,7 +931,8 @@ class ConfigOperation:
                 version_created=version_created,
                 revision=revision,
                 error=None if success else "Upload failed",
-                warnings=validation_warnings,
+                # What validation found, then what the save accepted and will not do.
+                warnings=[*validation_warnings, *warnings],
             )
         except Exception as e:
             return ConfigUploadResult(

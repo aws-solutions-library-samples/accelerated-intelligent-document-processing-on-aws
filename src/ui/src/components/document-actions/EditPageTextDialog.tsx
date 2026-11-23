@@ -7,6 +7,7 @@
 // extracted again. If the reprocess fails, the editor stays open with Retry reprocess and
 // Restore original text, so the text is never left changed without saying so.
 import React from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import { submitProcessChanges } from '../common/process-changes';
@@ -29,6 +30,15 @@ interface EditPageTextDialogProps {
 export const reprocessPageText = (objectKey: string, page: { pageId: string; textUri: string }): Promise<void> =>
   submitProcessChanges(objectKey, [], [{ pageId: Number(page.pageId), textModified: true, classReset: false, newTextUri: page.textUri }]);
 
+const messages = defineMessages<{ saveNotice: NoMessageValues }>({
+  saveNotice: {
+    id: 'documentActions.editPageText.saveNotice',
+    defaultMessage:
+      "Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.",
+    description: 'Notice in the Edit Page Text dialog of the document page: what its Save and Reprocess button does.',
+  },
+});
+
 const EditPageTextDialog = ({
   objectKey,
   pages,
@@ -38,6 +48,7 @@ const EditPageTextDialog = ({
   onUnfinished,
   onDismiss,
 }: EditPageTextDialogProps): React.JSX.Element => {
+  const intl = useIntl();
   const { setSuccessMessage } = useAppContext();
   const name = documentName(objectKey);
   return (
@@ -48,7 +59,7 @@ const EditPageTextDialog = ({
       isReadOnly={false}
       saveLabel="Save and Reprocess"
       saveDisabledReason={disabledReason}
-      saveNotice="Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared."
+      saveNotice={intl.formatMessage(messages.saveNotice)}
       onSave={async (page) => {
         await reprocessPageText(objectKey, page);
         setSuccessMessage(`Saved page ${page.pageId}'s text of ${name}. The sections that hold it are being extracted again.`);

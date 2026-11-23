@@ -419,6 +419,45 @@ bucket, so once the cause is fixed (typically a KMS or policy change denying
 `dynamodb:GetItem` on the ConfigurationTable) re-upload the object or redrive the
 queue. A refused document appears in the document list as **Failed** with the reason.
 
+### Review Routing
+
+The Review Routing step (`RoutingFunction`) decides after policy rule validation
+whether a document is held in a review queue (see
+[Review Routing](review-routing.md)). It publishes these metrics in the stack's
+namespace:
+
+| Metric | Published when | What to do |
+|---|---|---|
+| `RoutingDecisions` (dimension `Decision`: `hold`, `continue`, `rejected`) | Every decision | The share of `hold` is the share of documents sent to review |
+| `RoutingStaleReference` | A routing rule referred to something that could not be read for the document: a class the profile no longer has, a policy rule result when policy rule validation left no summary, a section result that could not be read | Check the routing rule against the profile's classes and Policy Schema; **Test on a document** on the Routing Rules tab names the reference |
+| `RoutingPlacementLimit` | A reviewed document was sent to a queue again more times in a row than `routing.max_consecutive_placements` allows, and continued without another review | Add `reviewed = false` to the routing rule that keeps matching, or raise the limit |
+| `RoutingReasonFallback` (dimension `Cause`: `no_reason`, `render_error`) | A document was given the generated reason: its routing rule has no reason of its own (`no_reason`), or that reason could not be filled in for the document (`render_error`) | `no_reason` is informational; write a reason on the routing rule to replace the generated text. For `render_error`, find the routing rule in the `event=routing_reason_render_failed` log line and check its placeholders |
+
+Each decision is also one log line, `event=routing_decision decision=… reason=… rule=…
+queue=… reason_source=…`, in `/<StackName>-PATTERNSTACK-<id>/lambda/RoutingFunction`.
+`reason` says why the step decided as it did. A document that was not held because
+routing rules are not evaluated is logged with one of:
+
+| `reason` | Why no document is held |
+|---|---|
+| `hitl_off` | Review Routing is off in the document's configuration profile (`hitl.enabled`) |
+| `default_queue_off` | The Default review queue is missing or disabled |
+| `no_review_store` | The stack has no review queues (a headless deployment) |
+| `test_studio` | The document belongs to a Test Studio run |
+
+The other values are listed in
+[Logs and metrics](review-routing.md#logs-and-metrics). `reason_source` is `admin` or
+`fallback` for a held document, and the reason the reviewer reads is never logged:
+it can hold extracted values. A routing table that cannot be evaluated is logged as
+`event=routing_evaluation_failed` with the error, and the document goes to the
+Default queue rather than past review.
+
+The step that applies a completed review (`ApplyReviewChangesFunction`) logs to
+`/<StackName>-PATTERNSTACK-<id>/lambda/ApplyReviewChangesFunction`. Both names come
+from the nested pattern stack, so list on the `/<StackName>-PATTERNSTACK` prefix to
+find them. Both functions are on the pattern dashboard's Lambda widgets with the
+other processing functions.
+
 ### Confidence Assessment Degraded
 
 Confidence assessment is an *enrichment* pass: extraction has already run,
@@ -678,6 +717,8 @@ The solution creates centralized logging across all components:
 - `/aws/lambda/OCRFunction`: OCR processing logs and errors
 - `/aws/lambda/ClassificationFunction`: Classification processing logs
 - `/aws/lambda/ExtractionFunction`: Extraction processing logs
+- `/<StackName>-PATTERNSTACK-<id>/lambda/RoutingFunction`: Review Routing decisions, one line per document
+- `/<StackName>-PATTERNSTACK-<id>/lambda/ApplyReviewChangesFunction`: The step that applies a completed review
 - `/aws/lambda/TrackingFunction`: Document tracking and status logs
 - The REST API's access logs and the dispatcher Lambda's log group: Web UI API activity (the dispatcher is the single entry point for every UI query and mutation)
 
@@ -1340,7 +1381,7 @@ against 6) to have any effect: if the BDA bound is the larger of the two, the
 execution-level bound fires first and the document simply ends `TIMED_OUT`, instead of
 the BDA step failing with a catchable `States.Timeout` that the pipeline can record.
 
-In BDA mode (`use_bda: true`) the `BDA_InvokeDataAutomation` step uses the Step
+In BDA mode (`use_bda: true`) the `InvokeDataAutomationStep` step uses the Step
 Functions `.waitForTaskToken` integration: it blocks until something outside the
 state machine returns the token. The return path is
 BDA job → EventBridge (`BDAEventRule`) → `BDACompletionFunction` → task token

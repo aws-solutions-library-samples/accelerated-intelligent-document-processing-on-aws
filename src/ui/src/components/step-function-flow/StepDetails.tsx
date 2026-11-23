@@ -6,15 +6,9 @@ import { Box, SpaceBetween, ExpandableSection, Button, Alert, Container } from '
 import './StepDetails.css';
 import { parseStepFunctionPayload } from '../../graphql/awsjson-parsers';
 import { useFormatters } from '../../i18n/format';
-
-interface StepConfig {
-  summarization?: { enabled?: boolean };
-  // v0.6: confidence enablement lives under extraction.confidence; the slim
-  // assessment carrier still exposes `enabled` for the step itself.
-  extraction?: { confidence?: { enabled?: boolean } };
-  assessment?: { enabled?: boolean };
-  evaluation?: { enabled?: boolean };
-}
+import { isStepDisabled, type StepConfig } from './is-step-disabled';
+import SkippedStatus from './SkippedStatus';
+import { SKIPPED_STATUS } from './skipped-steps';
 
 interface Step {
   name: string;
@@ -27,6 +21,8 @@ interface Step {
   error?: string;
   mapIterations?: number;
   mapIterationDetails?: Step[];
+  /** Set on the entry of a step the run plan skipped: why it was not done. */
+  skipNote?: string;
 }
 
 interface JsonDisplayProps {
@@ -78,37 +74,14 @@ const JsonDisplay = ({ data = null }: JsonDisplayProps): React.JSX.Element | nul
   );
 };
 
-// Helper function to check if a step is disabled based on configuration
-const isStepDisabled = (stepName: string, config: StepConfig | null | undefined): boolean => {
-  if (!config) return false;
-
-  const stepNameLower = stepName.toLowerCase();
-
-  // Check if this is a summarization step
-  if (stepNameLower.includes('summarization') || stepNameLower.includes('summary')) {
-    return config.summarization?.enabled === false;
-  }
-
-  // Check if this is an assessment step
-  if (stepNameLower.includes('assessment') || stepNameLower.includes('assess')) {
-    return (config.extraction?.confidence?.enabled ?? config.assessment?.enabled) === false;
-  }
-
-  // Check if this is an evaluation step
-  if (stepNameLower.includes('evaluation') || stepNameLower.includes('evaluate')) {
-    return config.evaluation?.enabled === false;
-  }
-
-  return false;
-};
-
 const StepDetails = ({ step, formatDuration, getStepIcon, mergedConfig = null }: StepDetailsProps): React.JSX.Element => {
   const { formatDateTime } = useFormatters();
   const [inputExpanded, setInputExpanded] = useState(false);
   const [outputExpanded, setOutputExpanded] = useState(false);
   const [errorExpanded, setErrorExpanded] = useState(true); // Default to expanded for errors
 
-  const stepDisabled = isStepDisabled(step.name, mergedConfig);
+  const stepSkipped = step.status === SKIPPED_STATUS;
+  const stepDisabled = !stepSkipped && isStepDisabled(step.name, mergedConfig);
 
   const formatJson = (jsonString: string | undefined): string => {
     if (!jsonString) return '';
@@ -137,6 +110,27 @@ const StepDetails = ({ step, formatDuration, getStepIcon, mergedConfig = null }:
       console.warn('Failed to copy to clipboard:', error);
     }
   };
+
+  // A step the run plan skipped was never entered: it has a name and a reason, and no
+  // times, input, output or error to show.
+  if (stepSkipped) {
+    return (
+      <div className="step-details">
+        <SpaceBetween size="l">
+          <Box>
+            <SpaceBetween direction="horizontal" size="m" alignItems="center">
+              <div className="step-details-icon">{getStepIcon(step.name, step.type, step.status)}</div>
+              <div>
+                <Box variant="h3">{step.name}</Box>
+                <SkippedStatus />
+              </div>
+            </SpaceBetween>
+          </Box>
+          {step.skipNote && <Alert type="info">{step.skipNote}</Alert>}
+        </SpaceBetween>
+      </div>
+    );
+  }
 
   return (
     <div className="step-details">

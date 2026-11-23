@@ -13,7 +13,8 @@ later about the same S3 object:
 * ``upload_resolver`` decides whether to mint a presigned POST,
 * the configuration resolver's dry run tells the UI what will happen,
 * ``queue_sender`` does it for real at ingest,
-* the reprocess resolver does it for a re-run,
+* the reprocess service does it for a re-run (the reprocess resolver and every
+  other sender that reprocesses a document go through it),
 * the MCP ``process`` tool decides whether a scoped caller's document is written.
 
 **The resolver's own suite cannot see any of this**, by construction: it tests the
@@ -71,8 +72,9 @@ CALL_SITES = {
     "nested/api-resolvers/src/lambda/configuration_resolver/index.py": (
         "the dry run the upload panel shows the user before they upload"
     ),
-    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": (
-        "re-resolves on a re-run"
+    "lib/idp_common_pkg/idp_common/run_plan/reprocess.py": (
+        "re-resolves on a re-run, for the reprocess resolver and every other caller "
+        "of the reprocess service"
     ),
     "src/lambda/agentcore_mcp_handler/tools/batch_run.py": (
         "the MCP process tool's check, for a caller with a configuration scope, of "
@@ -159,9 +161,10 @@ SCOPE_BEARING = {
         "return, because it must null individual response fields rather than "
         "refuse; see test_the_dry_runs_own_check_covers_the_declared_profile",
     ),
-    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": (
+    "lib/idp_common_pkg/idp_common/run_plan/reprocess.py": (
         True,
-        "a mapping must not move a scoped caller's document out of their scope",
+        "a mapping must not move a scoped caller's document out of their scope; the "
+        "service is handed the scope by the resolver that authorised the caller",
     ),
     "src/lambda/agentcore_mcp_handler/tools/batch_run.py": (
         True,

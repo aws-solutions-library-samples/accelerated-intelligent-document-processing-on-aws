@@ -360,7 +360,7 @@ class PolicyClassificationService:
         generated_at = result_data.get("generated_at", "N/A")
 
         # Match orchestrator markdown format
-        md = f"""# Rule Validation Summary: {doc_id}
+        md = f"""# Policy Rule Validation Summary: {doc_id}
 
 ## Status: {status}
 

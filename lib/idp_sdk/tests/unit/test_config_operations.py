@@ -333,3 +333,86 @@ classes: []
         assert result.success is False
         assert result.error is not None
         assert "Cannot upload managed configuration" in result.error
+
+    @staticmethod
+    def _upload_with_a_save_that_collects(
+        mock_manager_class, mock_boto3, mock_open, collected
+    ):
+        """Upload through a manager whose save adds ``collected`` to its list."""
+        import io
+
+        mock_paginator = mock_boto3.return_value.get_paginator.return_value
+        mock_paginator.paginate.return_value = [
+            {
+                "StackResourceSummaries": [
+                    {
+                        "LogicalResourceId": "ConfigurationTable",
+                        "PhysicalResourceId": "test-table",
+                    }
+                ]
+            }
+        ]
+        mock_open.return_value.__enter__.return_value = io.StringIO(
+            "use_bda: false\nclasses: []\n"
+        )
+
+        def save(config, *, warnings, **kwargs):
+            warnings.extend(collected)
+            return True
+
+        mock_manager = mock_manager_class.return_value
+        mock_manager.get_configuration.return_value = {"version": "test-version"}
+        mock_manager.handle_update_custom_configuration.side_effect = save
+        mock_manager.resolve_published_revision.return_value = 4
+
+        client = IDPClient(stack_name="test-stack")
+        return client.config.upload(
+            config_file="config.yaml", config_version="test-version", validate=False
+        )
+
+    # The manager is autospecced in the two cases below, so the keyword the upload
+    # hands the save is one the real `handle_update_custom_configuration` takes: a
+    # keyword it does not have raises, and the upload reports a failure.
+    @patch("builtins.open", create=True)
+    @patch("boto3.client")
+    @patch(
+        "idp_common.config.configuration_manager.ConfigurationManager", autospec=True
+    )
+    def test_upload_returns_the_warnings_the_save_collected(
+        self, mock_manager_class, mock_boto3, mock_open
+    ):
+        """What the saved configuration will not do reaches the caller, in order."""
+        collected = [
+            "Routing table 'review-routing', rule 'by-count': this routing rule "
+            "tests a policy rule result (failed_policy_rule_count), and policy "
+            "rule validation is off for this profile or it has no policies, so "
+            "the routing rule never matches.",
+            "Routing table 'review-routing', default outcome: the reason shows a "
+            "policy rule result ({failed_policy_rule_count}), which is empty "
+            "while policy rule validation is off.",
+        ]
+
+        result = self._upload_with_a_save_that_collects(
+            mock_manager_class, mock_boto3, mock_open, collected
+        )
+
+        assert result.error is None
+        assert result.success is True
+        assert result.warnings == collected
+        assert result.revision == 4
+
+    @patch("builtins.open", create=True)
+    @patch("boto3.client")
+    @patch(
+        "idp_common.config.configuration_manager.ConfigurationManager", autospec=True
+    )
+    def test_upload_with_nothing_to_warn_about_has_no_warnings(
+        self, mock_manager_class, mock_boto3, mock_open
+    ):
+        result = self._upload_with_a_save_that_collects(
+            mock_manager_class, mock_boto3, mock_open, []
+        )
+
+        assert result.error is None
+        assert result.success is True
+        assert result.warnings == []

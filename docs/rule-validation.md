@@ -33,7 +33,11 @@ https://github.com/user-attachments/assets/bac617ec-edb0-4719-827f-175571a4b9f5
 
 ### How to Enable Rule Validation
 
-Rule Validation is available in **Pipeline mode** (the default processing mode). You can enable it in two ways:
+Policy rule validation runs in **both processing modes**, Pipeline mode and BDA mode: it is a step of the shared part of the workflow, after extraction and before Review Routing. In either mode it runs when **Enabled** is on (`rule_validation.enabled`) and the profile has at least one policy class.
+
+In BDA mode, check that the profile holds the step's settings (`rule_validation.fact_extraction` with a model, and `rule_validation.rule_validation_orchestrator`). A profile that was switched to BDA mode in the web UI keeps the ones it had. A configuration supplied to the stack with `use_bda: true` is completed from the BDA system defaults, which hold no `rule_validation` section, so it has to carry those settings itself; without `rule_validation.fact_extraction` the step fails for a document that matches a policy class. The settings are listed under [Configuration](#configuration).
+
+You can enable it in two ways:
 
 **Option 1: During Stack Deployment**
 - When deploying the CloudFormation stack, select the **rule-validation** configuration preset
@@ -44,7 +48,7 @@ Rule Validation is available in **Pipeline mode** (the default processing mode).
 - Open the IDP-ACC Web UI
 - Navigate to Configuration → Import
 - Select **rule-validation** from the Config Library
-- Toggle on Rule Validation
+- In **Processing Settings → Policy Rule Validation (Optional)**, check that **Enabled** is on
 
 ### Two-Step Process for Any Industry
 
@@ -82,8 +86,8 @@ Rule validation works for any industry using this two-step process:
    - Specify what attributes to extract from each section
    - These extracted attributes provide context to the AI for better validation
 
-3. **Configure Rule Schema**
-   - Go to Configuration → **Rule Schema** tab
+3. **Configure the Policy Schema**
+   - Go to Configuration → **Policy Schema** tab
    - Paste the rules from Step 1 (or your own rules)
    - Organize into rule types
    - Add detailed descriptions for each rule
@@ -140,20 +144,58 @@ Want to see it in action first? We provide a complete healthcare example with sa
 
 ### State Machine Integration
 
-Rule validation is integrated into the pipeline mode workflow after extraction:
+Policy rule validation is a step of the processing workflow, after extraction and
+assessment and before Review Routing. The steps from policy rule validation on are
+the same in Pipeline mode and BDA mode:
 
 ```
-OCR → Classification → Extraction → Policy Classification → Rule Validation (Map) → Orchestration
+OCR → Classification → Extraction → Assessment → Policy Rule Validation → Review Routing → Summarization → Evaluation
 ```
 
-The workflow includes:
-1. **Policy Classification Step**: Determines which policy types apply to the document
-2. **Rule Validation Map State**: Processes sections in parallel for matched policy types only
-3. **Orchestration Step**: Consolidates results and makes final compliance decisions
+The step has three states:
+1. **Policy classification** (`PolicyClassificationStep`): determines which policy types apply to the document
+2. **Validation by section** (the `ValidatePolicyRulesBySection` Map state, running `PolicyRuleValidationStep`): processes sections in parallel for matched policy types only
+3. **Consolidation** (`PolicyRuleConsolidationStep`): consolidates the results and gives every policy rule its verdict
 
-## Human-in-the-Loop (HITL)
+In the web UI the step is called **Policy Rule Validation**. Its policy rules are
+edited on the **Policy Schema** tab, its settings are the **Policy Rule Validation
+(Optional)** section of **Processing Settings** (before **Review Routing
+(Optional)**, as in the pipeline), and its report is the **Policy Rule Validation
+Summary**.
 
-HITL review of rule validation results is not supported. When HITL is enabled for extraction, rule validation automatically skips on the second execution and reuses results from the first run.
+### When the step runs
+
+- On a document's first run, when `rule_validation.enabled` is on and the profile
+  has at least one policy.
+- Again on the run after a **completed review**, on the corrected values (see
+  [Human review](#human-review)).
+- On a reprocess that starts at policy rule validation or at an earlier step.
+  **Reprocess** can also start at a later step, or skip policy rule validation; the
+  document then keeps the result it has.
+- After **Process Changes** on a document whose field values were edited, which starts
+  at this step.
+
+## Human review
+
+Policy rule validation runs **before** [Review Routing](./review-routing.md), so a
+routing rule can send a document to a review queue because of a policy rule's verdict
+(`policy_rule_verdict`, `failed_policy_rule_count`). A document that is held is
+reviewed with its policy rule validation results available, and its review record
+lists the policy rules it failed, with the explanation given for each, whichever
+routing rule placed it (see
+[Failed policy rules](./review-routing.md#failed-policy-rules)). The reviewer reads
+them in the queue item's **Review Reason** panel, and opens the whole report with
+**Reports › Policy Rule Validation Summary** on the edit page.
+
+A routing rule that reads a policy rule result has nothing to read while policy rule
+validation does not run for the profile. Saving a profile in that state is accepted
+with a warning that names each such routing rule (see
+[Warnings](./review-routing.md#warnings)).
+
+When the review is completed, policy rule validation runs again on the corrected
+values, and the summary is replaced. A document that is reviewed therefore runs the
+step twice. Reviewers correct extracted values; the verdicts themselves are not
+edited.
 
 ### No-Policy-Match Behavior
 
@@ -181,7 +223,9 @@ This separation provides several benefits:
 
 ### Basic Configuration
 
-Configure rule validation in your pattern configuration file:
+Configure policy rule validation in the `rule_validation` section of the
+configuration. In the Web UI it is the **Policy Rule Validation (Optional)** section
+of **Configuration → Processing Settings**:
 
 ```yaml
 rule_validation:
@@ -438,6 +482,40 @@ Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidate
 }
 ```
 
+Each policy type's rules are under `rule_details`:
+
+```json
+"rule_details": {
+  "global_periods": {
+    "verdict_counts": {"pass": 1, "fail": 1, "not_found": 0, "unknown": 0},
+    "rules": [
+      {
+        "rule_id": "global_periods.same_day_em",
+        "z3_rule_id": null,
+        "rule": "An E/M service on the day of a procedure needs modifier 25",
+        "recommendation": "Fail",
+        "verdict": "fail",
+        "supporting_pages": ["3"],
+        "reasoning": "…"
+      }
+    ]
+  }
+}
+```
+
+- **`rule_id`** is `policy_type.rule_key`: the policy type and the rule's key in the
+  Policy Schema. It is stable across runs and is what a
+  [routing rule](./review-routing.md#policy-rule-verdicts-in-routing-rules) names. The
+  Markdown report shows it beside the rule text. A rule that has an
+  `x-aws-idp-rule-id` (see [Z3 Symbolic Rule Validation Engine](./rule-validation-z3.md))
+  also carries it, as `z3_rule_id`.
+- **`verdict`** is the recommendation as one of four fixed values: `pass`, `fail`,
+  `not_found` (for **Information Not Found**) or `unknown` (any other label, and a rule
+  that got no recommendation). `recommendation` keeps the label as configured.
+  `overall_statistics` and each policy type also carry `verdict_counts`. With
+  [customized recommendation options](#customizing-recommendation-options), the counts
+  by label work as before and every custom label reads as `unknown` in `verdict`.
+
 Two things to know if you read this file programmatically.
 
 **`supporting_pages` is always a list of strings.** Page references reach the summary
@@ -462,7 +540,7 @@ failed is a different case and is reported per section — see
 Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidated_summary.md`:
 
 ```markdown
-# Rule Validation Summary
+# Policy Rule Validation Summary: doc_123
 
 **Document ID:** doc_123
 **Status:** COMPLETE
@@ -691,6 +769,11 @@ Rule validation costs depend on:
 - Document size and chunking
 - Model selection
 - Prompt caching effectiveness
+- Whether the document is reviewed: a document held in a review queue runs the step
+  again after its review is completed
+
+The verdict pass makes one model call per policy rule the symbolic engine did not
+decide, for every document, including a document with one section.
 
 **Cost Optimization Tips**:
 1. Use prompt caching on busy stacks: a cached prefix that is read again within five minutes is billed at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but one that is never read again is billed at about 25% more than uncached, and a prefix below the model's minimum is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))

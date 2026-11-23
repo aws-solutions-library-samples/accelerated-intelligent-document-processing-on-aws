@@ -2173,6 +2173,8 @@ class ConfigurationManager:
         revision_notes: Optional[str] = None,
         *,
         write_guard: Optional[WriteGuard] = None,
+        routing_queue_lookup: Optional[Callable[[str], Any]] = None,
+        warnings: Optional[List[str]] = None,
     ) -> bool:
         """
         Handle the updateConfiguration GraphQL mutation.
@@ -2208,6 +2210,20 @@ class ConfigurationManager:
                 It raises to refuse the write (see :data:`WriteGuard`). Without one
                 the write is not role-checked, which is the case for IAM callers
                 (CLI, SDK); the cross-field checks run either way.
+            routing_queue_lookup: Returns a production review queue by id, or
+                ``None`` when there is none
+                (``routing_validation.QueueLookup``). When the write changes the
+                ``routing`` section, the queues its rules name are checked with
+                it. Without one, queue ids are checked for their form only, which
+                is the case on a stack with no review table.
+            warnings: A list this operation adds to: what the configuration it
+                saves will not do although the save is accepted
+                (``routing_validation.routing_warnings``). Every save adds them,
+                whether or not it changes the ``routing`` section, because
+                turning policy rule validation off is what makes a stored
+                routing rule stop matching. Reset to default adds none. The
+                return value stays the success flag; without a list nothing is
+                collected.
 
         Returns:
             True on success
@@ -2307,6 +2323,8 @@ class ConfigurationManager:
             # Frontend sends the complete config to become the new default
             config = IDPConfig(**config_dict)
             self._reject_inert_gating_hooks(config, config_dict)
+            self._validate_routing(config, config_dict, routing_queue_lookup)
+            self._collect_routing_warnings(config, warnings)
             if write_guard is not None:
                 write_guard(
                     self._get_full_config_for_version(DEFAULT_VERSION),
@@ -2348,6 +2366,8 @@ class ConfigurationManager:
                 # Validate
                 full_config = IDPConfig(**full_dict)
                 self._reject_inert_gating_hooks(full_config, config_dict)
+                self._validate_routing(full_config, config_dict, routing_queue_lookup)
+                self._collect_routing_warnings(full_config, warnings)
                 if write_guard is not None:
                     write_guard(
                         self._get_full_config_for_version(version) or default_config,
@@ -2367,6 +2387,8 @@ class ConfigurationManager:
                 # No default available, try to save as-is
                 config = IDPConfig(**config_dict)
                 self._reject_inert_gating_hooks(config, config_dict)
+                self._validate_routing(config, config_dict, routing_queue_lookup)
+                self._collect_routing_warnings(config, warnings)
                 if write_guard is not None:
                     write_guard(self._get_full_config_for_version(version), config, version)
                 self.save_configuration(
@@ -2423,6 +2445,8 @@ class ConfigurationManager:
         # Validate and save the full config
         updated_config = IDPConfig(**current_dict)
         self._reject_inert_gating_hooks(updated_config, config_dict)
+        self._validate_routing(updated_config, config_dict, routing_queue_lookup)
+        self._collect_routing_warnings(updated_config, warnings)
         if write_guard is not None:
             write_guard(before_config, updated_config, version)
         self.save_configuration(
@@ -2478,6 +2502,62 @@ class ConfigurationManager:
         reject_inert_gating_hooks(
             config.model_dump(mode="python"), delta, log=logger
         )
+
+    @staticmethod
+    def _validate_routing(
+        config: IDPConfig,
+        delta: Optional[Dict[str, Any]],
+        queue_lookup: Optional[Callable[[str], Any]],
+    ) -> None:
+        """Refuse a write whose ``routing`` section could not be evaluated.
+
+        Runs only when the write itself carries ``routing``: `delta` is what this
+        write asked to change, and a save that does not touch the section must
+        not be refused over a routing table it never mentioned. A stored table
+        can go stale without a save (a queue is deleted, a field leaves a class
+        schema), and the routing step tolerates that at run time by falling back
+        to the Default queue, so an Author must still be able to save the rest
+        of the profile.
+
+        Like ``_reject_inert_gating_hooks``, this is the WRITE boundary only and
+        deliberately not an ``IDPConfig`` validator: a revision a document is
+        pinned to must always load. Reset-to-default and ``restore_revision`` do
+        not run it, for the same reason they skip the gating-hook check: both
+        copy something that was valid when it was saved, and both must stay
+        possible when a queue has since been deleted.
+
+        A write that still carries the single-outcome shape (a routing rule with
+        ``outcome``, a ``default_outcome`` with ``kind`` or ``queue``) is refused
+        first, on the raw ``delta``.
+
+        Raises:
+            ConfigurationValidationError: naming the table, the rule and the input.
+        """
+        if not isinstance(delta, dict) or "routing" not in delta:
+            return
+        from .routing_validation import refuse_retired_routing_shape, validate_routing
+
+        # On the section as the write carries it: the models drop the keys of the
+        # single-outcome shape, so `config` no longer shows that it was written.
+        refuse_retired_routing_shape(delta["routing"])
+        validate_routing(config, queue_lookup=queue_lookup)
+
+    @staticmethod
+    def _collect_routing_warnings(
+        config: IDPConfig, warnings: Optional[List[str]]
+    ) -> None:
+        """Add what the ``routing`` section of ``config`` will not do to ``warnings``.
+
+        Unlike ``_validate_routing`` this does not look at the delta: a save that
+        only turns policy rule validation off leaves the ``routing`` section as
+        it was and still makes its routing rules that test a policy rule result
+        stop matching. A caller that passes no list collects nothing.
+        """
+        if warnings is None:
+            return
+        from .routing_validation import routing_warnings
+
+        warnings.extend(routing_warnings(config))
 
     def _get_full_config_for_version(self, version: str) -> Optional[IDPConfig]:
         """
@@ -2913,12 +2993,12 @@ def bda_routing(
 ) -> BdaRouting:
     """How a document processed under ``config_version`` is routed.
 
-    The queue processor's routing rule (``start_workflow`` and
-    ``routing_configuration`` in ``src/lambda/queue_processor/index.py``), stated
-    once for the processChanges resolver, which must know before it requeues a
+    The queue processor's routing rule (``resolve_processing_mode`` in
+    ``idp_common.run_plan.mode``, which ``start_workflow`` calls), stated here
+    for the processChanges resolver, which must know before it requeues a
     document whether the run will be a BDA one: a BDA run keeps the sections a
     document already has, so an edit that clears a section's values is not carried
-    through it. The queue processor still carries the rule inline; its unit suites
+    through it. The queue processor does not come through here; its unit suites
     stub ``idp_common.config`` as a plain module, so routing it through here is a
     change to those suites.
 

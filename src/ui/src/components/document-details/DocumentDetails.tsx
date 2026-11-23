@@ -11,6 +11,7 @@ import { documentFailedModel, documentMissingModel, loadingDocumentModel } from 
 import mapDocumentsAttributes from '../common/map-document-attributes';
 import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
+import { DEFAULT_START_STEP, notQueued } from '../run-plan/reprocess-options';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
 import { DOCUMENTS_PATH } from '../../routes/constants';
 
@@ -215,31 +216,39 @@ const DocumentDetails = (): React.JSX.Element => {
   };
 
   // Function to handle reprocess confirmation
-  const handleReprocessConfirm = async (version?: string, revision?: number) => {
-    logger.debug('Reprocessing document', objectKey, 'with version', version, 'r', revision);
+  // Reprocess, from the dialog, which closes when the run was queued and otherwise
+  // shows why it was not.
+  const handleReprocessConfirm = async (version?: string, revision?: number, startStep?: string) => {
+    logger.debug('Reprocessing document', objectKey, 'with version', version, 'r', revision, 'from', startStep);
     setIsReprocessLoading(true);
     try {
-      const result = await reprocessDocuments([objectKey], version, revision);
-      logger.debug('Reprocess result', result);
-      // Close the modal
-      setIsReprocessModalVisible(false);
-
-      // Immediately clear stale sections/pages so the UI doesn't show old data
-      // while waiting for the backend pipeline to start and send subscription updates.
-      // Not when the call failed (it reports why): the document is unchanged.
-      if (document && result !== false) {
+      const results = await reprocessDocuments([objectKey], version, revision, startStep);
+      logger.debug('Reprocess result', results);
+      // The request failed (it reports why): the document is unchanged.
+      if (results === false) return null;
+      const queued = notQueued(results).length === 0;
+      if (document && queued) {
+        // A run from the beginning produces everything again: clear the stale sections
+        // and pages at once, so the page doesn't show old data until the run reports.
+        // A run from a later step keeps what the earlier steps produced.
+        const fromBeginning = !startStep || startStep === DEFAULT_START_STEP;
         setDocument({
           ...document,
           objectStatus: 'QUEUED',
-          sections: [],
-          pages: [],
-          evaluationReportUri: '',
-          summaryReportUri: '',
-          ruleValidationResultUri: '',
-          metering: null,
-          confidenceAlertCount: 0,
+          ...(fromBeginning
+            ? {
+                sections: [],
+                pages: [],
+                evaluationReportUri: '',
+                summaryReportUri: '',
+                ruleValidationResultUri: '',
+                metering: null,
+                confidenceAlertCount: 0,
+              }
+            : {}),
         } as MappedDocument);
       }
+      return results;
     } finally {
       setIsReprocessLoading(false);
     }

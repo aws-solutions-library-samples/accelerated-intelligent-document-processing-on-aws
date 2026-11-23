@@ -5,18 +5,57 @@
 // and of a queue's page, Production or Test Studio.
 import React from 'react';
 import { HelpPanel } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 
 import LearnMoreLinks from '../common/LearnMoreLinks';
 
-const LearnMore = (): React.JSX.Element => (
-  <LearnMoreLinks
-    links={[
-      { text: 'Review queues', docsPath: 'review-queues/' },
-      { text: 'Human review', docsPath: 'human-review/' },
-      { text: 'Test Studio', docsPath: 'test-studio/' },
-    ]}
-  />
-);
+const messages = defineMessages<{
+  reviewRoutingLink: NoMessageValues;
+  routing: NoMessageValues;
+  defaultQueue: NoMessageValues;
+  createAndDelete: { readonly b: MessageTag };
+}>({
+  reviewRoutingLink: {
+    id: 'reviewQueues.toolsPanel.reviewRoutingLink',
+    defaultMessage: 'Review routing',
+    description: 'Learn more link in the Review Management info panels: the documentation page about routing rules.',
+  },
+  routing: {
+    id: 'reviewQueues.toolsPanel.routing',
+    defaultMessage:
+      "While Review Routing is on in a document's configuration profile and the Default queue is enabled, the routing rules of that profile decide whether the document is reviewed and send it to the queue a routing rule names. A warning on this page says when routing rules are not evaluated, and why.",
+    description:
+      'Review Management info panel, Production queues: how a document reaches a queue. Review Routing is the name of a processing step and of its switch in a configuration profile.',
+  },
+  defaultQueue: {
+    id: 'reviewQueues.toolsPanel.defaultQueue',
+    defaultMessage:
+      'The Default queue receives the documents the built-in routing rules hold (failed extractions, confidence alerts, missing required fields) and documents whose queue is missing or disabled.',
+    description: 'Review Management info panel, Production queues: what the Default queue receives.',
+  },
+  createAndDelete: {
+    id: 'reviewQueues.toolsPanel.createAndDelete',
+    defaultMessage:
+      '<b>Create queue</b> adds a queue that routing rules can name by its id. Deleting a queue moves its documents to the Default queue, and lists the routing rules that name it first.',
+    description: 'Review Management info panel, Production queues: creating and deleting a queue. <b> marks the name of the button.',
+  },
+});
+
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
+
+const LearnMore = (): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <LearnMoreLinks
+      links={[
+        { text: 'Review queues', docsPath: 'review-queues/' },
+        { text: intl.formatMessage(messages.reviewRoutingLink), docsPath: 'review-routing/' },
+        { text: 'Human review', docsPath: 'human-review/' },
+        { text: 'Test Studio', docsPath: 'test-studio/' },
+      ]}
+    />
+  );
+};
 
 export const ReviewManagementToolsPanel = (): React.JSX.Element => (
   <HelpPanel header={<h2>Review Management</h2>} footer={<LearnMore />}>
@@ -27,7 +66,15 @@ export const ReviewManagementToolsPanel = (): React.JSX.Element => (
       </p>
       <h3>Production queues</h3>
       <ul>
-        <li>A document whose fields raised confidence alerts goes to the Default queue, when HITL is enabled in its configuration.</li>
+        <li>
+          <FormattedMessage {...messages.routing} />
+        </li>
+        <li>
+          <FormattedMessage {...messages.defaultQueue} />
+        </li>
+        <li>
+          <FormattedMessage {...messages.createAndDelete} values={{ b: bold }} />
+        </li>
         <li>
           <b>Settings</b> sets a queue&apos;s name, priority, time limit, eligible Annotators and Enabled switch. A saved change shows at
           once.

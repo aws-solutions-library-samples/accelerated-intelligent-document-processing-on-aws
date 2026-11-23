@@ -310,6 +310,11 @@ to compare, so this gate says nothing about it.
 | `prefix_mappings.py` | Config prefix mappings — which profile a document processes under, decided by its Input-bucket prefix. See [Config prefix mappings](#config-prefix-mappings--prefix_mappingspy). |
 | `tenants.py` | Tenant declarations — the prefix subtrees and profile pattern of each tenant, and the boundary checks over mappings, scopes and ingest. See [Tenant declarations](#tenant-declarations--tenantspy). |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
+| `routing_models.py` | The `routing` section: `RoutingConfig`, `RoutingTable`, `RoutingRule`, `RoutingCondition`, `RoutingAction`, `RoutingDefaultOutcome`, `builtin_rules()`, and the two helpers every reader of an outcome uses, `review_queue_of()` and `queue_actions()`. See [Review routing](#review-routing--the-routing-section). |
+| `routing_validation.py` | `validate_routing()` and the input catalogue (`ROUTING_INPUTS`): what a routing table may read and what is checked when one is saved. Also `routing_warnings()` (what an accepted save will not do) and `refuse_retired_routing_shape()`. |
+| `routing_reason.py` | The reason of a routing rule: `parse_reason()` (its placeholders, checked at save) and `render_reason()` (the text a reviewer reads), `format_value()`, `cut_bytes()`. Standard library only. |
+| `feature_flags.py` | Whether an optional step does its work for a configuration, one answer per step for every caller: `policy_rule_validation_enabled()`, `review_routing_enabled()` (`hitl.enabled`), `confidence_enabled()`, and `step_enabled()`, which gives all of them by step id. |
+| `routing_references.py` | `find_queue_references()`: which profiles' routing rules send documents to a review queue, in the published configuration and in a newer revision. |
 | `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
@@ -840,6 +845,230 @@ from the value the same configuration hashes to now. The curve keys are unaffect
 (they are recomputed from the captured body, never read from the index), but
 anything that compares *stored* index fingerprints must treat a mismatch on a
 pre-normalization revision as "unknown" rather than "changed".
+
+## Review routing — the `routing` section
+
+`IDPConfig.routing` (`routing_models.RoutingConfig`) holds a profile's review routing
+table: the routing rules the Review Routing step evaluates after policy rule
+validation to decide whether a document is held in a review queue. The user-facing
+description is
+[docs/review-routing.md](../../../../docs/review-routing.md); the evaluation is in
+[`review_queues`](../review_queues/README.md#routing-both-processing-modes) and
+[`decision_tables`](../decision_tables/README.md).
+
+**The shape.** A `RoutingTable` holds ordered `RoutingRule`s and a
+`RoutingDefaultOutcome`. A routing rule has `id`, `label`, `enabled`, `conditions`
+(`RoutingCondition`: `input`, `path`, `aggregate`, `test`), `actions` and `reason`.
+The default outcome has `actions` and `reason`.
+
+- `actions` is a list of `RoutingAction` (`type`, `queue`). `ACTION_REVIEW_QUEUE`
+  (`"review_queue"`) is the one action type: it sends the document to the review
+  queue that `queue` names. An empty list means the document is not reviewed.
+- `review_queue_of(actions)` is the one reader of "which queue": the queue of the
+  first `review_queue` action, `""` when there is none. `queue_actions(queue)` is
+  its inverse, `[RoutingAction(queue=queue)]` for a queue id and `[]` for `""`. The
+  DMN mapping (and through it the routing step) and `routing_references` use them,
+  so nothing else reads the list itself.
+- `reason` is what the reviewer reads. See
+  [The reason](#the-reason--routing_reasonpy).
+
+**The models carry no validation of their own beyond types.** `RoutingConfig` has
+one validator, which reads `max_consecutive_placements` as a whole number and clamps
+it to 1–10. `stage`, `hit_policy`, `engine`, `aggregate` and the action `type` are
+plain strings, not `Literal` types, so a revision written by newer code still loads.
+Everything else (limits, input names, tests, paths, actions, reasons, queues) is
+checked at the write boundary, not in the model, for the reason the gating-hook
+check gives: a revision a document is pinned to must always load, even when a queue
+it names has since been deleted or a field has left a class schema.
+
+**Defaults.** A configuration with no `routing` section gets one table,
+`review-routing`, holding the built-in routing rules (`builtin_rules()`), in this
+order: `builtin-extraction-failed`, `builtin-confidence-alerts` and
+`builtin-missing-required`. Each has the Default queue as its one action and a
+reason (`BUILTIN_EXTRACTION_FAILED_REASON`, `BUILTIN_CONFIDENCE_REASON`,
+`BUILTIN_MISSING_REQUIRED_REASON`), and the default outcome has no action and no
+reason. The failed extraction comes first: such a section has no fields, so its
+required fields are missing too, and the first routing rule that matches gives the
+reviewer the reason. The same values, the reasons included, are in
+`system_defaults/base-routing.yaml`; the gate described under
+[`system_defaults/` and the models must describe the same settings](#system_defaults-and-the-models-must-describe-the-same-settings)
+compares the section whole. At run time a configuration with no table is evaluated
+with the built-in one (`routing_step.routing_table`).
+
+**Validation at the write boundary.** `ConfigurationManager._validate_routing` runs
+from every save path of `handle_update_custom_configuration`, and only when the
+write itself carries `routing`. A save that does not mention the section is not
+refused over a stored table that went stale, so an Author can still save the rest of
+a profile after a queue was deleted. Reset-to-default and `restore_revision` do not
+run it: both copy something that was valid when it was saved. It does two things,
+in this order:
+
+1. `refuse_retired_routing_shape(delta["routing"])`, on the section **as the write
+   carries it**. A routing rule that holds an `outcome` key, and a `default_outcome`
+   that holds `kind` or `queue`, are refused with the form to write instead. The
+   check has to read the raw section: the models drop a key they do not define, so
+   by the time the configuration is an `IDPConfig` such a routing rule has no
+   action and would be saved as "not reviewed" without a word.
+2. `routing_validation.validate_routing(config, queue_lookup=…)`, on the
+   configuration about to be saved. It checks, in order:
+   1. the limits (one table; routing rules per table; conditions per routing rule;
+      the id pattern; the byte sizes of label, path, test and the serialised
+      section);
+   2. `stage`, `hit_policy` (`FIRST`) and that `engine` is registered in
+      `decision_tables.ENGINES`;
+   3. the actions of the default outcome and of every routing rule: each action's
+      `type` is `review_queue`, an outcome holds at most one action, and that
+      action names a queue whose id has the queue-id form;
+   4. the reason of the default outcome and of every routing rule (below);
+   5. each condition: the input is in the catalogue, it has a path exactly where the
+      catalogue needs one, the aggregate fits the input, and the test parses
+      (`decision_tables.sfeel`) with literals that fit the input's type;
+   6. a `field_value` path exists in the class schema it names (or in at least one
+      class when it names none), a policy rule id or policy type exists in the
+      Policy Schema, and a `class_present` class is a class of the profile, compared
+      without regard to case;
+   7. with a `queue_lookup`, every queue an action names exists and is a production
+      queue. A disabled queue is accepted; the routing step falls back to the
+      Default queue. The configuration resolver passes a lookup, and so does an SDK
+      or CLI upload to a stack that has a review table. Without one, queue ids are
+      checked for their form only.
+
+It raises `ConfigurationValidationError` naming the table, the routing rule, and the
+input, the action or the reason placeholder. The web UI's Routing Rules tab reads
+the same limits and input catalogue from a generated file
+(`scripts/generate_run_step_catalog.py` writes `routing-inputs.json`), so the form
+and the server agree.
+
+**The input catalogue.** `ROUTING_INPUTS` is a tuple of `RoutingInput` (`name`,
+`label`, `type`, `needs_path`, `is_list`, `path_kind`, `path_optional`, `choices`).
+`path_kind` says what a path names: a field (`PATH_FIELD`), a policy rule id
+(`PATH_POLICY_RULE`), a policy type (`PATH_POLICY_TYPE`) or a class (`PATH_CLASS`).
+`choices` are the values a guided control offers for an input with a fixed set of
+them: `VERDICT_CHOICES` for `policy_rule_verdict` (the verdicts of
+`rule_validation.orchestrator.VERDICTS`, restated because importing
+`rule_validation` loads the solver) and `MODE_CHOICES` for `processing_mode`.
+`policy_input(name)` is true for an input that reads a result of policy rule
+validation. `class_present` (`PATH_CLASS`, boolean) is true when a processed
+section has the class its path names; it is the condition for a package that lacks
+a document it should contain.
+
+### The reason — `routing_reason.py`
+
+A reason is text with placeholders in braces. `parse_reason(text)` returns its
+`Placeholder`s in the order written (`text` as written, `kind`, and `input` and
+`path` or `index`), and raises `ReasonSyntaxError` with the problem and the
+character it is at. `render_reason(text, resolve)` replaces each placeholder with
+`format_value(resolve(placeholder))`.
+
+| Written | Kind | Stands for |
+|---|---|---|
+| `{input}` or `{input:path}` | `input` | A routing input, as a condition names it. The path is everything after the first `:`, so `{field_value:Invoice:Total}` reads `field_value` with the path `Invoice:Total` |
+| `{condition_N.value}` (N from 1 to 99) | `condition_value` | What the routing rule's N-th condition compares with |
+| `{confidence_threshold}` | `confidence_threshold` | The profile's confidence threshold |
+| `{{`, `}}` | — | A literal `{`, `}` |
+
+A `{` or `}` that is none of these is a syntax error, and so are an empty
+placeholder and an empty input or path beside the colon. Spaces around a token and
+its parts are ignored.
+
+Rendering is one pass over the text, so what a value holds is never read as a
+placeholder or an escape. `format_value` writes `None`, an empty string and an empty
+list as `ABSENT` (`(no value)`), a boolean as `yes` or `no`, a whole number without
+a fraction (an `int`, a `float` or a `Decimal`), a list as its first
+`MAX_LIST_ITEMS` items and how many more there are, and anything else as compact
+JSON. Each value is cut to `MAX_VALUE_BYTES` and the whole text to
+`MAX_RENDERED_REASON_BYTES` (`cut_bytes` cuts between two characters and ends the
+text with `ELLIPSIS`).
+
+`format_prompt` (`idp_common.bedrock`) is not used for this: it leaves an unknown
+token in the text, has no marker for an absent value and no escape for a brace, and
+lives in a package that builds a client when it is imported. This module imports the
+standard library only, because the save validation and the routing Lambda both load
+it.
+
+At save, `validate_routing` refuses a reason that is longer than `MAX_REASON_BYTES`,
+that belongs to an outcome with no `review_queue` action (nobody would read it),
+that does not parse, or that holds more than `MAX_REASON_PLACEHOLDERS` placeholders.
+Each placeholder is then checked as a condition would be: the input exists, it has a
+path exactly where the catalogue needs one, and the field, policy rule id, policy
+type or class the path names exists. `{condition_N.value}` is refused in the default
+outcome's reason, and when the routing rule has fewer than N conditions.
+
+### Warnings — `routing_warnings`
+
+`routing_validation.routing_warnings(config)` returns what a configuration's
+`routing` section will not do although a save of it is accepted. It answers only
+when policy rule validation does not run for the configuration
+(`feature_flags.policy_rule_validation_enabled` is false: the step is off, or the
+profile has no policies): one warning for each **enabled** routing rule whose
+conditions test a policy rule result, one for each whose reason only shows one, and
+one for a default outcome's reason that does. It is pure and never raises.
+
+`handle_update_custom_configuration(..., warnings=[...])` adds them to the list the
+caller passes, on the save-as-default path, both save-as-version paths and the
+ordinary update; reset-to-default adds none. Its return value stays the success
+flag. It collects on **every** save, not only one that carries `routing`, because
+turning policy rule validation off is what makes a stored routing rule stop
+matching. The configuration resolver returns the list as `warnings` of
+`updateConfiguration`, the SDK as `ConfigUploadResult.warnings`, after the
+validation warnings, and `idp-cli config-upload` prints the whole list once, in its
+`Warnings:` block on standard output. A warning names the table and
+`rule '<id>'` in the form a refusal does.
+
+### The Review Routing switch
+
+`hitl.enabled` is the switch, and `feature_flags.review_routing_enabled(config)` is
+its one reader: the routing step, `review_queues.routing` and `step_enabled` all call
+it. It is false for `None` and for a configuration that does not set the key, which
+is the model default and the value in `system_defaults/base-confidence.yaml`. Both
+stay off, so a revision a document is pinned to, and a stack that is upgraded, read
+as they did.
+
+A new stack gets the switch on from the stack-deployment custom resource
+(`src/lambda/update_configuration`, `seed_review_routing`), which decides it for
+each profile it is about to save. The first of these that applies decides:
+
+1. The supplied configuration (the preset or the custom configuration, read before
+   it is merged with the system defaults) sets the switch: it is left.
+2. The profile is stored already: its value is written, so an update carries what
+   the profile has.
+3. This is the stack's first deployment (a Create with no stored `default`) and the
+   stack has a review table (the `HITLTableName` property, empty on a headless
+   stack): on.
+4. The stored `default` profile has a value: it is written, so a profile a
+   deployment adds starts as `default` is.
+5. Otherwise it is left at the system default, off.
+
+A profile created later starts from `default` (`saveAsVersion`), so it takes
+`default`'s value unless the save sets the key. The test deployments that process
+documents unattended upload `scripts/sdlc/config/review-routing-off.yaml` to the
+`default` profile after the stack is deployed.
+
+### Who may change it, pinned reads and queue references
+
+**Who may change it.** `handle_update_custom_configuration` and `restore_revision`
+take a `write_guard` (`WriteGuard = Callable[[Optional[IDPConfig], IDPConfig, str],
+None]`), called before every save with the configuration before the write, the
+configuration about to be saved and the profile. The configuration resolver passes a
+guard that raises `PermissionError` when the `routing` section differs and the caller
+is not an Admin. The library has no notion of roles: a caller that passes no guard
+(the CLI and SDK, which are authorised by IAM) is not role-checked, and the
+validation above runs either way.
+
+**Pinned reads.** The routing step and the apply-review step read the configuration
+at the revision the document is pinned to (see
+[Reading a pinned revision](#reading-a-pinned-revision)), so a routing rule saved
+while a document is in flight, or in review, does not change how that document is
+routed. `testRoutingTable` with no table of its own reads the same pinned
+configuration. A pinned revision is resolved against `default` as the head is
+(#1955), so a revision that holds no `routing` section, such as one saved before
+routing tables existed, routes with the table `default` holds: the built-in one
+unless an Admin changed `default`'s.
+
+**Queue references.** `routing_references.find_queue_references(queue_id, …)` reads a
+page of profiles and returns the routing rules (and default outcomes) that send
+documents to the queue, from each profile's published revision and, when it differs,
+from its newest revision. It is what `getReviewQueueReferences` returns.
 
 ## Config prefix mappings — `prefix_mappings.py`
 

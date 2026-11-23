@@ -25,7 +25,7 @@
 > `scripts/api_rbac_expectations.yaml`, the dispatcher / queue-processor /
 > review-queue / MCP interceptor source, the Terraform translator
 > (`terraform/translator`) and `lib/idp_sdk/idp_sdk/_core/terraform_deploy.py`. The
-> main user pool has **five** groups; **180** operations are routable through the
+> main user pool has **five** groups; **188** operations are routable through the
 > dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover;
 > §5.2 covers the three non-REST authenticated entry points (chat streaming, the
@@ -117,7 +117,7 @@ flowchart TD
 | **Edge / WAF** | CloudFront, optional WAFv2 (REGIONAL) | SPA delivery with a content security policy in both hosting modes; optional IP allow-list WebACL on the REST API stage, whose requests are logged to `aws-waf-logs-<StackName>-api` (`ApiWafLogGroup`, KMS-encrypted) |
 | **Authentication** | Amazon Cognito (2 user pools + 1 identity pool) | Main user pool (**5 RBAC groups**: Admin, Author, Reviewer, Annotator, Viewer), which also holds the MCP app clients (`ExternalAppClient` for signed-in users, `MCPConnectorClient` and each Admin-created client-credentials app); Identity Pool mints the SigV4 credentials the chat Function URL requires; separate M2M pool for the Jobs API |
 | **Secrets** | AWS Secrets Manager (CMK-encrypted) | With `EnableMCP=true`: the stack-created MCP clients' IDs and secrets (`McpConnectorClientSecret`, `McpUserClientSecret`, published as the ARNs `MCPConnectorClientSecretArn` and `MCPClientSecretArn`, never as values), one secret per Admin-created MCP credential under `<StackName>/mcp/credentials/`, and the key that signs MCP caller identities (`McpCallerSigningSecret`) |
-| **Encryption keys** | AWS KMS customer-managed key | One stack-owned CMK (`CustomerManagedEncryptionKey`, `EnableKeyRotation: true`) used by 11 of the 13 buckets, the DynamoDB tables except `InstalledFeaturesTable` (AWS-managed key), the SQS queues, the Secrets Manager secrets and 134 of the 136 explicitly declared log groups; the optional bastion host adds a second key of its own |
+| **Encryption keys** | AWS KMS customer-managed key | One stack-owned CMK (`CustomerManagedEncryptionKey`, `EnableKeyRotation: true`) used by 11 of the 13 buckets, the DynamoDB tables except `InstalledFeaturesTable` (AWS-managed key), the SQS queues, the Secrets Manager secrets and 136 of the 139 explicitly declared log groups; the optional bastion host adds a second key of its own |
 | **Compute** | AWS Lambda (130+ functions) | Processing logic, API resolvers, agents, hooks |
 | **Monitoring** | Amazon CloudWatch | Alarms, dashboards, KMS-encrypted log groups |
 
@@ -317,25 +317,25 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `allowedConfigVersions` and `allowedTestSets` scope, per-object ownership and review-queue eligibility**, and repeats the group check | Nothing forces a per-object check to exist or to match the right object (AUTH.T16) |
 
-**181 operations** are routable — 44 mapped directly by the
+**188 operations** are routable — 44 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **127** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **134** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 182, not 181, because one field (`getCircuitBreakerStatus`)
+three sets sum to 189, not 188, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 181, which is exactly the number of entries in
+union is 188, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
-| Admin only | 50 |
-| Admin + Author | 42 |
+| Admin only | 52 |
+| Admin + Author | 43 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 27 |
-| Admin + Author + Viewer | 15 |
-| Admin + Annotator + Reviewer | 14 |
+| Admin + Author + Viewer | 16 |
+| Admin + Annotator + Reviewer | 16 |
 | Admin + Annotator + Author | 11 |
 | Any authenticated user, group or no group (`ANY`) | 8 |
-| Admin + Reviewer | 9 |
+| Admin + Reviewer | 10 |
 | Admin + Annotator | 1 |
 | Annotator only | 1 |
 | All five groups | 1 |
@@ -383,7 +383,7 @@ no profile and is refused every document. Per-user document ownership is not mod
 at all; per-*tenant* isolation is, through tenant declarations (see
 [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)).
 
-Beyond the group check, **61** operations verify config-version scope, **10** filter
+Beyond the group check, **65** operations verify config-version scope, **10** filter
 their result rows by it, and **21** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
@@ -532,8 +532,8 @@ to the whole Output bucket.
 > access-log bucket and the Web UI asset bucket use SSE-S3 (`AES256`) instead,
 > which is appropriate — one is a log sink S3 itself writes to, the other holds
 > public SPA assets. The DynamoDB tables (except `InstalledFeaturesTable`, which
-> uses the AWS-managed key), the SQS queues, the Secrets Manager secrets and 134 of
-> the 136 explicitly declared CloudWatch log groups also use the CMK; the knowledge-base stack declares no log
+> uses the AWS-managed key), the SQS queues, the Secrets Manager secrets and 136 of
+> the 139 explicitly declared CloudWatch log groups also use the CMK; the knowledge-base stack declares no log
 > groups for its five functions, which therefore take Lambda's defaults. **All 13 buckets** block public access, enable
 > versioning, and carry a bucket policy that denies any request where
 > `aws:SecureTransport` is false, so cleartext access is refused at the bucket

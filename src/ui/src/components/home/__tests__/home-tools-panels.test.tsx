@@ -41,4 +41,11 @@ describe('the Inbox info panel', () => {
       /background jobs, the outcome of asynchronous requests, and reminders when a task is due/,
     );
   });
+
+  it('names the section that holds the retention settings as the configuration page does: Review Routing', () => {
+    const { container } = renderWithIntl(<InboxToolsPanel />);
+
+    expect(container.textContent).toContain('(Configuration › Processing Settings › Review Routing › Inbox messages)');
+    expect(container.textContent).not.toMatch(/Human review ›/);
+  });
 });

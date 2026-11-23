@@ -20,9 +20,14 @@ Key features:
 """
 
 import logging
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+from idp_common.field_paths import (
+    FieldPathError,
+    PathComponent,
+    parse_path,
+    walk_path,
+)
 from idp_common.schema.multi_instance import INSTANCES_KEY
 
 from .exceptions import ExtractionError
@@ -30,58 +35,6 @@ from .models import RuleJSON
 from .type_coercion import NUMERIC_TYPES, coerce_numeric_reading
 
 logger = logging.getLogger(__name__)
-
-# `name`, `name[0]`, `name[0][2]`, `name[-1]`.
-#
-# The key must be NON-EMPTY. Allowing an empty one let `a.[0].b` match with
-# key="", which resolved to a silent miss — indistinguishable from an absent
-# optional parameter, which is the exact failure mode this module's error handling
-# exists to avoid.
-_SUBSCRIPT_RE = re.compile(r"^(?P<key>[^\[\]]+)(?P<subs>(?:\[-?\d+\])+)$")
-# A subscript with no property name in front of it: `[0]`, `[-1]`. Not a legal
-# dot-notation segment, so it is a malformed path rather than a key.
-_EMPTY_KEY_SUBSCRIPT_RE = re.compile(r"^(?:\[-?\d+\])+$")
-
-
-def _split_subscripts(
-    component: str, path: str, rule_id: Optional[str]
-) -> Tuple[str, List[int]]:
-    """Split ``name[0][2]`` into ``("name", [0, 2])``.
-
-    A component with no subscripts returns an empty index list, so the ordinary
-    dot-notation path is unaffected.
-
-    A component is treated as subscripted ONLY when it is a non-empty key followed
-    by one or more bracketed integers. Anything else is an ordinary key, brackets
-    and all — so a legitimate data key like ``Amount[USD]`` (plausible in an ERP
-    payload) still resolves by plain lookup and still just *misses*, exactly as it
-    did before subscripts existed. Turning that into a hard error would convert
-    "this rule was never firing" into "this document fails", which is a worse
-    outcome than the latent bug.
-
-    The one shape that IS rejected is a subscript with no key at all (``[0]``,
-    ``.[1].x``). That cannot be a real dot-notation segment, so it is unambiguously
-    a malformed path — and letting it match with an empty key resolved it to a
-    silent miss, indistinguishable from an absent optional parameter, which is the
-    exact failure mode this module's error handling exists to avoid.
-    """
-    if _EMPTY_KEY_SUBSCRIPT_RE.match(component):
-        raise ExtractionError(
-            message=(
-                f"Invalid list subscript in path component {component!r} (in "
-                f"path {path!r}): a subscript needs a property name before it, "
-                f"e.g. name[0]"
-            ),
-            operation="extract_path",
-            rule_id=rule_id,
-            data_path=path,
-        )
-    match = _SUBSCRIPT_RE.match(component)
-    if not match or not match.group("subs"):
-        return component, []
-    subs = match.group("subs")
-    indices = [int(value) for value in re.findall(r"\[(-?\d+)\]", subs)]
-    return match.group("key"), indices
 
 
 class DataExtractor:
@@ -288,85 +241,50 @@ class DataExtractor:
         if path in path_cache:
             return path_cache[path]
 
-        # Validate path syntax
-        if not path or not isinstance(path, str):
+        # The grammar is `idp_common.field_paths`': every component is parsed
+        # before any data is read, so a malformed path is reported as malformed
+        # whatever the data happens to contain.
+        try:
+            components = parse_path(path)
+        except FieldPathError as error:
             raise ExtractionError(
-                message=f"Path must be a non-empty string, got: {path}",
+                message=str(error),
                 operation="extract_path",
                 rule_id=rule_id,
                 data_path=path,
-            )
+            ) from None
 
-        # Split path into components
-        # Parse EVERY component before traversing, so a malformed path is reported
-        # as malformed whatever the data happens to contain. Parsing lazily inside
-        # the loop meant a bad segment later in the path was masked by an ordinary
-        # miss earlier in it — the error surfaced or not depending on the document,
-        # which is the worst of both behaviours.
-        components = [
-            (component, *_split_subscripts(component, path, rule_id))
-            for component in path.split(".")
-        ]
+        def _name_the_wrapper(
+            level: dict, component: PathComponent, walked: List[str]
+        ) -> None:
+            # A missing key resolves to None (rather than raising) on purpose —
+            # the caller decides required vs optional — but that means a path
+            # that has become WRONG looks identical to an optional parameter that
+            # is simply absent, and the rule quietly stops firing. The one case
+            # where we can confidently name the cause is a multi-instance class
+            # (#715), whose result is {"instances": [...]}: say so instead of
+            # leaving the author to wonder why the rule went silent.
+            if INSTANCES_KEY in level and component.key != INSTANCES_KEY:
+                logger.warning(
+                    "Rule path '%s' looks for '%s' at '%s', which is not "
+                    "there — but that level DOES have a '%s' list, so this "
+                    "looks like a multi-instance class whose records sit one "
+                    "level down. The rule will NOT fire as written. Address "
+                    "an instance explicitly, e.g. '%s[0].%s'.",
+                    path,
+                    component.key,
+                    ".".join(walked) or "<root>",
+                    INSTANCES_KEY,
+                    INSTANCES_KEY,
+                    component.key,
+                )
 
-        # Traverse the nested structure
-        current = data
-        traversed_path = []
-
-        for component, key, indices in components:
-            traversed_path.append(component)
-
-            # Check if current level is a dictionary
-            if not isinstance(current, dict):
-                # Path goes deeper but current value is not a dict
-                # This means the path doesn't exist
-                path_cache[path] = None
-                return None
-
-            # Check if component exists at current level
-            if key not in current:
-                # Path component doesn't exist. Returning None (rather than
-                # raising) is deliberate — the caller decides required vs
-                # optional — but that means a path that has become WRONG looks
-                # identical to an optional parameter that is simply absent, and
-                # the rule quietly stops firing. The one case where we can
-                # confidently name the cause is a multi-instance class (#715),
-                # whose result is {"instances": [...]}: say so instead of
-                # leaving the author to wonder why the rule went silent.
-                if INSTANCES_KEY in current and key != INSTANCES_KEY:
-                    logger.warning(
-                        "Rule path '%s' looks for '%s' at '%s', which is not "
-                        "there — but that level DOES have a '%s' list, so this "
-                        "looks like a multi-instance class whose records sit one "
-                        "level down. The rule will NOT fire as written. Address "
-                        "an instance explicitly, e.g. '%s[0].%s'.",
-                        path,
-                        key,
-                        ".".join(traversed_path[:-1]) or "<root>",
-                        INSTANCES_KEY,
-                        INSTANCES_KEY,
-                        key,
-                    )
-                path_cache[path] = None
-                return None
-
-            # Move to next level
-            current = current[key]
-
-            for index in indices:
-                if not isinstance(current, (list, tuple)):
-                    path_cache[path] = None
-                    return None
-                try:
-                    current = current[index]
-                except IndexError:
-                    # Out of range is a miss, not an error — same contract as a
-                    # missing key, so an optional parameter still behaves.
-                    path_cache[path] = None
-                    return None
-
-        # Cache and return the result
-        path_cache[path] = current
-        return current
+        # A miss (a missing key, a non-container on the way, an index out of
+        # range) is None, the same contract as before, so an optional parameter
+        # still behaves. `None` is cached too.
+        value = walk_path(data, components, on_missing_key=_name_the_wrapper)
+        path_cache[path] = value
+        return value
 
     def _convert_type(
         self,

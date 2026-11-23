@@ -224,8 +224,8 @@ pipeline reads it. The user-facing description, with the input routes and limits
 is [docs/document-attributes.md](../../docs/document-attributes.md).
 
 `idp_common.document_attributes` is the one implementation of the rules; the SDK,
-the queue sender (through `Document.from_s3_event`) and the reprocess resolver all
-call it.
+the queue sender (through `Document.from_s3_event`) and the reprocess service
+(`idp_common.run_plan.reprocess`, which the reprocess resolver runs) all call it.
 
 - `validate_attributes(candidate)` returns the set or raises
   `AttributeValidationError` naming every violation. Use it on any route with a
@@ -256,8 +256,10 @@ Three properties to keep when extending it:
 - **The intake snapshot is authoritative.** `from_s3_event(..., read_attributes=False)`
   skips the read for a caller that already holds the stored set: the malware-gate
   verdict path does, and copies the set and its drop warning from the tracking row,
-  so a sidecar edited during the scan cannot change them. Reprocess copies them
-  from the row for the same reason.
+  so a sidecar edited during the scan cannot change them. The reprocess service
+  copies them from the row for the same reason when a run starts at the beginning
+  and recreates the row (`ReprocessService._start_over`); a run that starts at a
+  later step keeps the row.
 - **`update_document` never writes them.** Only `create_document` does, so a
   whole-document update from a payload without attributes cannot clear them.
 

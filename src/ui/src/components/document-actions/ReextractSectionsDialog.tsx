@@ -5,6 +5,7 @@
 // current class and pages (processChanges), without regrouping. A section with no class,
 // or one its configuration skips, can't be chosen.
 import React, { useState } from 'react';
+import { defineMessages, useIntl } from 'react-intl';
 import { Alert, Box, Button, FormField, Modal, Multiselect, SpaceBetween } from '@cloudscape-design/components';
 import type { MultiselectProps } from '@cloudscape-design/components';
 
@@ -33,6 +34,16 @@ interface ReextractSectionsDialogProps {
 
 const plural = (n: number) => (n > 1 ? 's' : '');
 
+const messages = defineMessages<{ consequence: { readonly sections: string } }>({
+  consequence: {
+    id: 'documentActions.reextractSections.consequence',
+    defaultMessage:
+      'These sections are extracted again: {sections}. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.',
+    description:
+      'Warning in the Re-extract Sections dialog of the document page. {sections} is the list of chosen sections, for example "Section 1, Section 3".',
+  },
+});
+
 const ReextractSectionsDialog = ({
   objectKey,
   sections,
@@ -40,6 +51,7 @@ const ReextractSectionsDialog = ({
   onDone,
   onDismiss,
 }: ReextractSectionsDialogProps): React.JSX.Element => {
+  const intl = useIntl();
   const { setSuccessMessage } = useAppContext();
   const [chosen, setChosen] = useState<readonly MultiselectProps.Option[]>([]);
   const [busy, setBusy] = useState(false);
@@ -110,10 +122,7 @@ const ReextractSectionsDialog = ({
         </FormField>
         {chosenSections.length > 0 && (
           <Alert type="warning">
-            These sections are extracted again: {ids.map((id) => `Section ${id}`).join(', ')}. Their extracted values, including any
-            corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review
-            is marked as completed, and its rule validation results are cleared. Other sections keep their values; OCR and classification
-            are not repeated.
+            {intl.formatMessage(messages.consequence, { sections: ids.map((id) => `Section ${id}`).join(', ') })}
           </Alert>
         )}
       </SpaceBetween>
