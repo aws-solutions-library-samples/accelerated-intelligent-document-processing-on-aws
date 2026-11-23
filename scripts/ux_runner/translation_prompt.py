@@ -26,7 +26,10 @@ fenced ``json`` block of the final message, at most :data:`MAX_REPORT_BYTES`;
 kinds and severities from fixed sets; screen and flow ids from the run's own
 lists; screenshot names of one fixed shape that the harness itself copied out of
 the session; every text field through the caller's redactor, then flattened and
-cut. An item that breaks a rule is dropped and counted, and a report that cannot
+cut. An item that breaks a rule is dropped and counted, and kept as a
+:class:`Refused` record: its fields redacted and cut the same way, and the
+rule it broke, in fixed words, so that nothing the model reported is lost
+unseen. A blank ``flow`` reads as no flow. A report that cannot
 be read at all is an outcome, ``unreadable``, never an exception. A screen claimed
 as reached without its screenshot counts as not reached, so every reached screen
 in a report has a picture behind it. The findings remain the model's claims, and
@@ -173,12 +176,46 @@ class Visit:
     screenshot: str | None
 
 
+#: The fields of a refused item its record keeps; any other key is left out.
+_SCREEN_FIELDS = ("id", "path", "reached", "screenshot")
+_FINDING_FIELDS = (
+    "screen",
+    "path",
+    "flow",
+    "kind",
+    "severity",
+    "shown",
+    "expected",
+    "screenshot",
+    "note",
+)
+
+
+@dataclass(frozen=True)
+class Refused:
+    """One item of a report that was not read, and why.
+
+    ``part`` is the list it was in, ``screens`` or ``findings``, and ``index`` its
+    place there. ``reason`` is the rule it broke, in fixed words. ``item`` holds the
+    item's own fields of :data:`_SCREEN_FIELDS` or :data:`_FINDING_FIELDS` (an item
+    that is not an object, as ``value``), each text redacted, flattened and cut as
+    a finding's is, a number as text so that the redactor reads it, and anything
+    else by its type alone. Items past their list's bound are one record, whose
+    ``item`` is ``None``.
+    """
+
+    part: str
+    index: int
+    reason: str
+    item: Mapping[str, Any] | None
+
+
 @dataclass(frozen=True)
 class Report:
     """What :func:`parse_report` read. ``outcome`` is ``read`` or ``unreadable``;
     ``problem`` says why a report is unreadable, in fixed words; ``dropped``
-    counts the items refused; ``unconfirmed`` the screens claimed as reached
-    without their screenshot."""
+    counts the items refused, and ``refused`` records them; ``unconfirmed`` the
+    screens claimed as reached without their screenshot."""
 
     locale: str
     outcome: str
@@ -187,6 +224,7 @@ class Report:
     findings: tuple[Finding, ...]
     dropped: int
     unconfirmed: int
+    refused: tuple[Refused, ...] = ()
 
 
 def kinds_for(locale: str) -> tuple[str, ...]:
@@ -510,45 +548,52 @@ class _Reader:
             return True, str(value)
         return False, None
 
-    def visit(self, item: object) -> tuple[Visit | None, bool]:
-        """A screen entry, and whether it was demoted for a missing picture."""
+    def visit(self, item: object) -> tuple[Visit | None, bool, str]:
+        """A screen entry and whether it was demoted for a missing picture, or
+        ``None`` and the rule it broke."""
         if not isinstance(item, dict):
-            return None, False
+            return None, False, "it is not an object"
         screen, path = item.get("id"), self.path(item.get("path"))
         reached = item.get("reached")
         named, shot = self.screenshot(item.get("screenshot"))
-        if (
-            not _member(screen, self.screen_ids)
-            or path is None
-            or not isinstance(reached, bool)
-            or not named
-        ):
-            return None, False
+        if not _member(screen, self.screen_ids):
+            return None, False, "its id is not one of the run's screens"
+        if path is None:
+            return None, False, "its path is not a route of the UI"
+        if not isinstance(reached, bool):
+            return None, False, "its reached is not true or false"
+        if not named:
+            return None, False, "its screenshot is not one the harness copied"
         confirmed = reached and shot is not None
-        return Visit(str(screen), path, confirmed, shot), reached and not confirmed
+        return Visit(str(screen), path, confirmed, shot), reached and not confirmed, ""
 
-    def finding(self, item: object) -> Finding | None:
+    def finding(self, item: object) -> tuple[Finding | None, str]:
+        """A finding, or ``None`` and the rule it broke. A blank ``flow`` is no flow."""
         if not isinstance(item, dict):
-            return None
+            return None, "it is not an object"
         screen, flow = item.get("screen"), item.get("flow")
+        if isinstance(flow, str) and not flow.strip():
+            flow = None
         kind, severity = item.get("kind"), item.get("severity")
         path = self.path(item.get("path"))
         named, shot = self.screenshot(item.get("screenshot"))
         shown, expected, note = (
             self.text(item.get(key)) for key in ("shown", "expected", "note")
         )
-        if (
-            not _member(screen, self.screen_ids)
-            or (flow is not None and not _member(flow, self.flow_ids))
-            or not _member(kind, self.kinds)
-            or not _member(severity, SEVERITIES)
-            or path is None
-            or not named
-            or shown is None
-            or expected is None
-            or note is None
-        ):
-            return None
+        if not _member(screen, self.screen_ids):
+            return None, "its screen is not one of the run's screens"
+        if flow is not None and not _member(flow, self.flow_ids):
+            return None, "its flow is not one of the run's flows"
+        if not _member(kind, self.kinds):
+            return None, f"its kind is not one a {self.locale} review reports"
+        if not _member(severity, SEVERITIES):
+            return None, "its severity is not high, medium or low"
+        if path is None:
+            return None, "its path is not a route of the UI"
+        if not named:
+            return None, "its screenshot is not one the harness copied"
+        if shown is None or expected is None or note is None:
+            return None, "its shown, expected or note is not text"
         return Finding(
             screen=str(screen),
             path=path,
@@ -559,7 +604,29 @@ class _Reader:
             expected=expected,
             screenshot=shot,
             note=note,
-        )
+        ), ""
+
+    def kept(self, value: object) -> object:
+        """One value of a refused item as its record holds it: text redacted,
+        flattened and cut, a number as text, true, false or null as they are, and
+        anything else as the name of its type."""
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return self.text(json.dumps(value))
+        if isinstance(value, str):
+            return self.text(value)
+        return f"({type(value).__name__})"
+
+    def refused(
+        self, part: str, index: int, reason: str, item: object, fields: Sequence[str]
+    ) -> Refused:
+        """The record of an item the report's ``part`` held at ``index``."""
+        if isinstance(item, dict):
+            kept = {key: self.kept(item[key]) for key in fields if key in item}
+        else:
+            kept = {"value": self.kept(item)}
+        return Refused(part, index, reason, kept)
 
 
 def _member(value: object, allowed: Collection[str]) -> bool:
@@ -615,25 +682,49 @@ def parse_report(
         return _unreadable(locale, "the report's screens or findings is not a list")
     dropped = max(0, len(entries) - MAX_SCREEN_ENTRIES)
     dropped += max(0, len(items) - MAX_FINDINGS)
+    refused: list[Refused] = []
     visits: list[Visit] = []
     unconfirmed = 0
-    for entry in entries[:MAX_SCREEN_ENTRIES]:
-        visit, demoted = reader.visit(entry)
+    for index, entry in enumerate(entries[:MAX_SCREEN_ENTRIES]):
+        visit, demoted, reason = reader.visit(entry)
         if visit is None:
             dropped += 1
+            refused.append(
+                reader.refused("screens", index, reason, entry, _SCREEN_FIELDS)
+            )
             continue
         visits.append(visit)
         unconfirmed += demoted
+    refused += _past_bound("screens", entries, MAX_SCREEN_ENTRIES)
     findings: list[Finding] = []
-    for item in items[:MAX_FINDINGS]:
-        finding = reader.finding(item)
+    for index, item in enumerate(items[:MAX_FINDINGS]):
+        finding, reason = reader.finding(item)
         if finding is None:
             dropped += 1
+            refused.append(
+                reader.refused("findings", index, reason, item, _FINDING_FIELDS)
+            )
         else:
             findings.append(finding)
+    refused += _past_bound("findings", items, MAX_FINDINGS)
     return Report(
-        locale, "read", "", tuple(visits), tuple(findings), dropped, unconfirmed
+        locale,
+        "read",
+        "",
+        tuple(visits),
+        tuple(findings),
+        dropped,
+        unconfirmed,
+        tuple(refused),
     )
+
+
+def _past_bound(part: str, listed: Sequence[object], bound: int) -> list[Refused]:
+    """One record for the items of ``part`` past its bound, which are not read."""
+    beyond = len(listed) - bound
+    if beyond <= 0:
+        return []
+    return [Refused(part, bound, f"{beyond} item(s) past the bound of {bound}", None)]
 
 
 def _cell(text: object, limit: int = FIELD_CHARS) -> str:
@@ -669,7 +760,10 @@ def report_markdown(report: Report, *, screens_href: str = "screens") -> str:
             "screenshot count as not reached."
         )
     if report.dropped:
-        lines.append(f"{report.dropped} item(s) of the report broke its rules.")
+        lines.append(
+            f"{report.dropped} item(s) of the report broke its rules; `refused` in "
+            "`findings.json` lists each with the rule it broke."
+        )
     lines.append(
         "These are the model's claims, each with the screenshot it saved, if any."
     )
@@ -700,7 +794,7 @@ def report_markdown(report: Report, *, screens_href: str = "screens") -> str:
 
 
 def summary(report: Report) -> Mapping[str, Any]:
-    """The report as plain data for ``run.json``."""
+    """The report as plain data for ``findings.json``."""
     return {
         "locale": report.locale,
         "outcome": report.outcome,
@@ -711,4 +805,5 @@ def summary(report: Report) -> Mapping[str, Any]:
         "dropped": report.dropped,
         "findings": [asdict(finding) for finding in report.findings],
         "by_kind": dict(sorted(Counter(f.kind for f in report.findings).items())),
+        "refused": [asdict(item) for item in report.refused],
     }

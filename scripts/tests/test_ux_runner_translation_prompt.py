@@ -7,8 +7,9 @@ The glossary is a fixture written here in the shape of
 as data through its path. The screens are held to the routes of
 ``src/ui/src/routes/constants.ts``, and the flows come from the real
 ``scripts/ux_flows.yaml``. The report parser is fed hostile answers: the checks
-pin that every one of them ends as a dropped item or an ``unreadable`` outcome,
-never as an exception or as text that was not redacted, flattened and cut.
+pin that every one of them ends as a dropped item, recorded with the rule it
+broke, or an ``unreadable`` outcome, never as an exception or as text that was not
+redacted, flattened and cut.
 """
 
 from __future__ import annotations
@@ -462,60 +463,117 @@ def test_the_last_json_block_is_the_report() -> None:
     assert _parse(text).outcome == "read"
 
 
+_KIND = "its kind is not one a fr-CA review reports"
+_SCREEN = "its screen is not one of the run's screens"
+_FLOW = "its flow is not one of the run's flows"
+_PATH = "its path is not a route of the UI"
+_SHOT = "its screenshot is not one the harness copied"
+_TEXT = "its shown, expected or note is not text"
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "override",
+    ("override", "reason"),
     [
-        {"kind": "not_externalized"},
-        {"kind": "typo"},
-        {"kind": ["english_left"]},
-        {"severity": "critical"},
-        {"screen": "admin"},
-        {"screen": ["upload"]},
-        {"flow": "9.9"},
-        {"flow": {"id": "5.1"}},
-        {"path": "javascript:alert(1)"},
-        {"path": "#/documents\n"},
-        {"screenshot": "fr-CA-users.png"},
-        {"screenshot": "en-XA-upload.png"},
-        {"screenshot": "../fr-CA-upload.png"},
-        {"screenshot": ["fr-CA-upload.png"]},
-        {"shown": 42},
-        {"note": ["a"]},
+        ({"kind": "not_externalized"}, _KIND),
+        ({"kind": "typo"}, _KIND),
+        ({"kind": ["english_left"]}, _KIND),
+        ({"severity": "critical"}, "its severity is not high, medium or low"),
+        ({"screen": "admin"}, _SCREEN),
+        ({"screen": ["upload"]}, _SCREEN),
+        ({"flow": "9.9"}, _FLOW),
+        ({"flow": "none"}, _FLOW),
+        ({"flow": {"id": "5.1"}}, _FLOW),
+        ({"path": "javascript:alert(1)"}, _PATH),
+        ({"path": "#/documents\n"}, _PATH),
+        ({"screenshot": "fr-CA-users.png"}, _SHOT),
+        ({"screenshot": "en-XA-upload.png"}, _SHOT),
+        ({"screenshot": "../fr-CA-upload.png"}, _SHOT),
+        ({"screenshot": ["fr-CA-upload.png"]}, _SHOT),
+        ({"shown": 42}, _TEXT),
+        ({"note": ["a"]}, _TEXT),
     ],
 )
-def test_a_finding_that_breaks_a_rule_is_dropped_and_counted(
-    override: dict[str, Any],
+def test_a_finding_that_breaks_a_rule_is_dropped_counted_and_recorded(
+    override: dict[str, Any], reason: str
 ) -> None:
     report = _parse(_answer(findings=[_finding(), _finding(**override)]))
     assert report.outcome == "read"
     assert len(report.findings) == 1
     assert report.dropped == 1
+    (refused,) = report.refused
+    assert (refused.part, refused.index, refused.reason) == ("findings", 1, reason)
 
 
 @pytest.mark.unit
-def test_a_finding_that_is_not_an_object_is_dropped_and_counted() -> None:
-    report = _parse(_answer(findings=[_finding(), "english_left", None, 7]))
-    assert (len(report.findings), report.dropped) == (1, 3)
+@pytest.mark.parametrize("flow", ["", "  \t"], ids=["empty", "blank"])
+def test_a_blank_flow_is_read_as_no_flow(flow: str) -> None:
+    report = _parse(_answer(findings=[_finding(flow=flow)]))
+    assert [finding.flow for finding in report.findings] == [None]
+    assert (report.dropped, report.refused) == (0, ())
+
+
+@pytest.mark.unit
+def test_a_refused_item_keeps_its_own_fields_redacted_and_cut() -> None:
+    item = _finding(
+        flow="9.9",
+        shown="SECRET\n" + "é" * 400,
+        severity=7,
+        path=["#/x"],
+        extra="SECRET",
+    )
+    (refused,) = _parse(_answer(findings=[item])).refused
+    assert (refused.part, refused.index, refused.reason) == ("findings", 0, _FLOW)
+    kept = dict(refused.item or {})
+    assert kept.pop("shown").startswith("[redacted] éé")
+    assert kept == {
+        "screen": "upload",
+        "path": "(list)",
+        "flow": "9.9",
+        "kind": "english_left",
+        "severity": "7",
+        "expected": "Téléverser des documents",
+        "screenshot": "fr-CA-upload.png",
+        "note": "page title",
+    }
+    (cut,) = _parse(_answer(findings=[_finding(flow="9.9", note="n" * 400)])).refused
+    assert len((cut.item or {})["note"]) == translation_prompt.FIELD_CHARS
+
+
+@pytest.mark.unit
+def test_a_finding_that_is_not_an_object_is_dropped_counted_and_recorded() -> None:
+    report = _parse(_answer(findings=[_finding(), "english_left", None, 7, [1]]))
+    assert (len(report.findings), report.dropped) == (1, 4)
+    assert [(r.index, r.reason, r.item) for r in report.refused] == [
+        (1, "it is not an object", {"value": "english_left"}),
+        (2, "it is not an object", {"value": None}),
+        (3, "it is not an object", {"value": "7"}),
+        (4, "it is not an object", {"value": "(list)"}),
+    ]
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "entry",
+    ("entry", "reason"),
     [
-        "upload",
-        {"id": "admin", "reached": True},
-        {"id": ["upload"], "reached": True},
-        {"id": "upload", "reached": "yes"},
-        {"id": "upload", "reached": True, "screenshot": "fr-CA-users.png"},
-        {"id": "upload", "reached": True, "path": "https://elsewhere.example/"},
+        ("upload", "it is not an object"),
+        ({"id": "admin", "reached": True}, "its id is not one of the run's screens"),
+        ({"id": ["upload"], "reached": True}, "its id is not one of the run's screens"),
+        ({"id": "upload", "reached": "yes"}, "its reached is not true or false"),
+        ({"id": "upload", "reached": True, "screenshot": "fr-CA-users.png"}, _SHOT),
+        (
+            {"id": "upload", "reached": True, "path": "https://elsewhere.example/"},
+            _PATH,
+        ),
     ],
 )
-def test_a_screen_entry_that_breaks_a_rule_is_dropped_and_counted(
-    entry: Any,
+def test_a_screen_entry_that_breaks_a_rule_is_dropped_counted_and_recorded(
+    entry: Any, reason: str
 ) -> None:
     report = _parse(_answer(screens=[entry]))
     assert (report.outcome, report.visits, report.dropped) == ("read", (), 1)
+    (refused,) = report.refused
+    assert (refused.part, refused.index, refused.reason) == ("screens", 0, reason)
 
 
 @pytest.mark.unit
@@ -560,6 +618,12 @@ def test_entries_past_their_bounds_are_counted_as_dropped(
     monkeypatch.setattr(translation_prompt, "MAX_SCREEN_ENTRIES", 1)
     report = _parse(_answer(findings=[_finding()] * 5))
     assert (len(report.findings), len(report.visits), report.dropped) == (2, 1, 4)
+    assert report.refused == (
+        translation_prompt.Refused("screens", 1, "1 item(s) past the bound of 1", None),
+        translation_prompt.Refused(
+            "findings", 2, "3 item(s) past the bound of 2", None
+        ),
+    )
 
 
 # The page -------------------------------------------------------------------
@@ -596,7 +660,10 @@ def test_the_page_counts_tabulates_links_and_lists_what_was_missed() -> None:
     )
     assert "2 finding(s) (clipped 1, english_left 1); 1 screen(s) reached" in page
     assert "1 screen(s) claimed as reached without a screenshot" in page
-    assert "1 item(s) of the report broke its rules." in page
+    assert (
+        "1 item(s) of the report broke its rules; `refused` in `findings.json` "
+        "lists each with the rule it broke." in page
+    )
     assert "These are the model's claims" in page
     assert "[fr-CA-upload.png](screens/fr-CA-upload.png)" in page
     assert "documents #/documents/upload (flow 5.1)" in page
@@ -608,9 +675,16 @@ def test_the_page_counts_tabulates_links_and_lists_what_was_missed() -> None:
 
 
 @pytest.mark.unit
-def test_the_summary_is_plain_data_for_the_run_record() -> None:
+def test_the_summary_is_plain_data_for_the_findings_file() -> None:
     summary = translation_prompt.summary(_parse(_answer()))
     assert json.loads(json.dumps(summary)) == summary
     assert summary["by_kind"] == {"english_left": 1}
     assert (summary["screens_reached"], summary["screens_listed"]) == (1, 2)
     assert summary["findings"][0]["screenshot"] == "fr-CA-upload.png"
+    assert summary["refused"] == []
+    refused = translation_prompt.summary(
+        _parse(_answer(findings=[_finding(flow="9.9")]))
+    )["refused"]
+    assert json.loads(json.dumps(refused)) == refused
+    assert refused[0]["reason"] == _FLOW
+    assert refused[0]["item"]["flow"] == "9.9"

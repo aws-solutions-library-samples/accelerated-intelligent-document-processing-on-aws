@@ -463,6 +463,44 @@ def test_findings_and_screenshots_land_in_the_files_with_no_secret(
 
 
 @pytest.mark.unit
+def test_refused_report_items_land_redacted_in_the_findings_file(
+    tmp_path: Path, runtime: FakeRuntime
+) -> None:
+    def item(flow: str, shown: str) -> dict[str, Any]:
+        return {
+            "screen": "upload",
+            "flow": flow,
+            "kind": "english_left",
+            "severity": "medium",
+            "shown": shown,
+            "expected": "",
+            "screenshot": "fr-CA-upload.png",
+            "note": "title",
+        }
+
+    value = {
+        "locale": "fr-CA",
+        "screens": [],
+        "findings": [item("", "Upload"), item("9.9", f"Upload {LOGIN} {ACCOUNT}")],
+    }
+    runtime.answers = ["```json\n" + json.dumps(value) + "\n```\n"]
+    _, record, out = _run(tmp_path, runtime, "--locale", "fr-CA")
+    assert record["locales"][0]["findings"] == 1
+    text = (out / review.FINDINGS_JSON).read_text(encoding="utf-8")
+    (locale,) = json.loads(text)["locales"]
+    assert [finding["flow"] for finding in locale["findings"]] == [None]
+    (refused,) = locale["refused"]
+    assert (refused["part"], refused["index"]) == ("findings", 1)
+    assert refused["reason"] == "its flow is not one of the run's flows"
+    assert refused["item"]["flow"] == "9.9"
+    assert refused["item"]["shown"].startswith("Upload ")
+    for secret in (LOGIN, ACCOUNT):
+        assert secret not in text
+    page = (out / review.FINDINGS_MD).read_text(encoding="utf-8")
+    assert "`refused` in `findings.json` lists each with the rule it broke" in page
+
+
+@pytest.mark.unit
 def test_a_locale_the_ui_cannot_show_fails_alone_and_the_next_runs(
     tmp_path: Path, runtime: FakeRuntime
 ) -> None:
