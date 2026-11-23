@@ -1001,7 +1001,8 @@ account.
 **What stays English.** These are not translated:
 
 - the admin, configuration and Test Studio screens, including the configuration editor's help
-  text, and Test Studio's own text on a test-set item's edit page;
+  text, and Test Studio's own text on a test-set item's edit page and on a test set's queue page
+  in Review Studio;
 - `(Active)`, which marks the active configuration profile in the profile lists of the
   **Upload Documents** page and the **Reprocess** and **Skip All Reviews by profile** dialogs;
 - on the **Edit Page Grouping** board, the instructions and announcements a screen reader reads
@@ -1016,6 +1017,8 @@ account.
   working;
 - error messages from the backend that carry no code the UI can translate, and the short
   fallbacks shown when an error has no text of its own, such as `Unknown error`;
+- the names and descriptions the backend sends for the agents on the **Document Analytics** page,
+  for the Inbox's message types and for the review queues, such as the **Default** queue;
 - extensions that do not translate their own text, and the names extensions are listed under.
   The standard controls inside an extension, such as pagination or a dialog's close button,
   follow the UI language anyway, so such an extension shows them in French around its English
