@@ -2,21 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Button, Icon, Hotspot } from '@cloudscape-design/components';
+import { Button, Icon } from '@cloudscape-design/components';
 import { AgentChatProvider, useAgentChatContext } from '../../contexts/agentChat';
 import AgentChatLayout from './AgentChatLayout';
 import { WELCOME_PATH } from '../../routes/constants';
+import { isQuickStartEnabled } from '../../utils/quick-start-flag';
+import { TourHotspot } from '../../contexts/tourHotspots';
 import './QuickStartWidget.css';
 
 const WidgetHeaderTitle = (): React.JSX.Element => {
   const { agentChatState } = useAgentChatContext();
   const title = agentChatState.mode === 'quick_start' ? 'Quick Start' : 'Agent Companion Chat';
   return <span className="quick-start-widget-title">{title}</span>;
-};
-
-const isWidgetEnabled = (): boolean => {
-  const flag = import.meta.env.VITE_ENABLE_QUICK_START_WIDGET;
-  return flag === undefined || flag === 'true' || flag === true;
 };
 
 const DRAG_THRESHOLD = 4;
@@ -249,7 +246,7 @@ const QuickStartWidget = (): React.JSX.Element | null => {
     setMounted(false);
   }, []);
 
-  if (!isWidgetEnabled() || location.pathname === WELCOME_PATH) {
+  if (!isQuickStartEnabled() || location.pathname === WELCOME_PATH) {
     return null;
   }
 
@@ -272,7 +269,7 @@ const QuickStartWidget = (): React.JSX.Element | null => {
   return (
     <div className="quick-start-widget">
       <div ref={launcherRef} className="quick-start-widget-launcher-wrap" style={launcherWrapStyle}>
-        <Hotspot hotspotId="quick-start-launcher" side="left">
+        <TourHotspot hotspotId="quick-start-launcher" side="left">
           <button
             type="button"
             className="quick-start-widget-launcher"
@@ -282,7 +279,7 @@ const QuickStartWidget = (): React.JSX.Element | null => {
           >
             <Icon name="gen-ai" size="medium" />
           </button>
-        </Hotspot>
+        </TourHotspot>
       </div>
       <div ref={panelRef} className="quick-start-widget-panel" role="dialog" aria-label="Assistant" style={panelStyle}>
         {mounted && (

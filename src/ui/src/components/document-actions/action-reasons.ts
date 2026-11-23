@@ -35,3 +35,15 @@ export const BASELINE_COPYING_REASON = 'A copy to the evaluation baseline is in 
 export const SECTION_NO_DATA_REASON = 'This section has no data yet';
 /** A page row's View / Edit Page Text when the page has no text. */
 export const PAGE_NO_TEXT_REASON = 'No text available';
+/** Send to review needs the Default review queue (Send to review, bulk and single). */
+export const REVIEW_QUEUE_OFF_REASON = 'The Default review queue is off';
+/** Send to review of a document still processing. */
+export const NOT_FINISHED_REASON = 'This document has not finished processing';
+/** Send to review of a document already in a review. */
+export const ALREADY_IN_REVIEW_REASON = 'This document is already in review';
+/** Skip All Reviews (N selected) with no selected document that has a pending review. */
+export const NO_SKIPPABLE_SELECTION_REASON = 'Select documents with a pending review';
+/** Send to review (N selected) with no selected finished document outside review. */
+export const NO_SENDABLE_SELECTION_REASON = 'Select finished documents that are not in review';
+/** The Document List's Review menu in the Test Studio view. */
+export const TEST_STUDIO_REVIEW_MENU_REASON = 'Review actions apply to production documents';

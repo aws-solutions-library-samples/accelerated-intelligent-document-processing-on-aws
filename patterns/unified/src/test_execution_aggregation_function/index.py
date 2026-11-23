@@ -15,7 +15,7 @@ import os
 import re
 import threading
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -654,6 +654,29 @@ def aggregate_test_run_with_stickler(
                 exc_info=True,
             )
 
+        # Empty predictions, beside the figures above rather than folded into
+        # them (#2052). Its own try so a failure here cannot cost the run the
+        # main calibration metrics.
+        if confidence_metrics is not None:
+            try:
+                confidence_metrics["empty_values"] = _empty_value_confidence_metrics(
+                    untagged_comparisons
+                )
+                empty_values = confidence_metrics["empty_values"]
+                logger.info(
+                    "Empty predictions: %d (%d wrong, %d with confidence); "
+                    "AUROC including empty values=%s",
+                    empty_values["count"],
+                    empty_values["wrong"],
+                    empty_values["with_confidence"],
+                    empty_values["including_empty"].get("auroc", {}).get("value"),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to compute empty-value confidence metrics: {e}",
+                    exc_info=True,
+                )
+
         ecab_metrics = None
         try:
             # Use the SAME index-collapsing accumulator subclass so ECARB's
@@ -980,32 +1003,40 @@ def _load_comparison_results(
 
     excluded_doc_keys: List[str] = []
 
-    # Execute parallel S3 loads
+    # Execute parallel S3 loads, and fold the results in document-key order.
+    # The scan returns items in an order nothing promises and the loads finish
+    # in whatever order the threads happen to, and folding each result as its
+    # future completed made the comparison list Stickler receives - and the
+    # order the weighted scores are summed in - differ between two aggregations
+    # of the same results. Stickler's error-capture-at-budget metric breaks
+    # ties between equal confidences by input order, so that moved whole
+    # errors, not only the last digits (#2133). ``executor.map`` yields in input
+    # order whatever order the loads finish in. The keys are compared as strings
+    # because the scan can return a number where a record's ``ObjectKey`` should
+    # be a string (#2165), and one such record must not fail the whole run.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(load_document_results, doc_key): doc_key
-            for doc_key in docs_to_load
-        }
+        loaded = list(
+            executor.map(load_document_results, sorted(docs_to_load, key=str))
+        )
 
-        for future in as_completed(futures):
-            result = future.result()
-            if result["success"]:
-                comparison_results.extend(result["comparisons"])
-                if result["weighted_score"] is not None:
-                    doc_weighted_scores[result["doc_key"]] = result["weighted_score"]
-                elif result.get("excluded_from_scoring"):
-                    # Doc had section results but every one was a no-op — keep
-                    # it visible as "excluded" so the UI can distinguish this
-                    # from a load failure.
-                    excluded_doc_keys.append(result["doc_key"])
-                if result.get("graded_scores"):
-                    doc_graded_packet_scores[result["doc_key"]] = result[
-                        "graded_scores"
-                    ]
-                if result.get("classification_errors"):
-                    doc_classification_errors[result["doc_key"]] = result[
-                        "classification_errors"
-                    ]
+    for result in loaded:
+        if result["success"]:
+            comparison_results.extend(result["comparisons"])
+            if result["weighted_score"] is not None:
+                doc_weighted_scores[result["doc_key"]] = result["weighted_score"]
+            elif result.get("excluded_from_scoring"):
+                # Doc had section results but every one was a no-op — keep
+                # it visible as "excluded" so the UI can distinguish this
+                # from a load failure.
+                excluded_doc_keys.append(result["doc_key"])
+            if result.get("graded_scores"):
+                doc_graded_packet_scores[result["doc_key"]] = result[
+                    "graded_scores"
+                ]
+            if result.get("classification_errors"):
+                doc_classification_errors[result["doc_key"]] = result[
+                    "classification_errors"
+                ]
 
     logger.info(
         f"Loaded {len(comparison_results)} comparison results for test run {test_run_id}"
@@ -1777,6 +1808,99 @@ class _IndexCollapsingConfidenceAccumulator:
             )
         self._fields_with += other_state.get("confidence_fields_with", 0)
         self._fields_total += other_state.get("confidence_fields_total", 0)
+
+
+def _empty_value_confidence_metrics(
+    comparison_results: List[Dict[str, Any]],
+    metrics: Optional[List[Any]] = None,
+) -> Dict[str, Any]:
+    """Calibration over empty predictions, reported beside the main figures (#2052).
+
+    The run-level AUROC / ECE / Brier score above are computed from Stickler's
+    ``prediction_confidences``, which has no entry for a field the extractor
+    returned as null. This block makes that exclusion visible instead of silent:
+
+    * ``count`` / ``wrong`` — every empty prediction (``empty_values`` module's
+      definition) and how many of them were wrong (a missed field).
+    * ``with_confidence`` — how many of those carried a confidence score.
+    * ``overall`` — AUROC / ECE / Brier over the empty predictions alone. A scorer
+      that rates missed fields above correctly empty ones reads below 0.5 here.
+    * ``including_empty`` — the same metrics over every scored field with the
+      empty predictions added, which is the figure to compare with
+      ``confidence_metrics.overall``.
+    * ``sections_without_record`` — sections written before the evaluation service
+      recorded empty-value confidences. Their null predictions are counted but
+      cannot be scored, so a non-zero value means ``with_confidence`` is a floor.
+
+    Additive by design: nothing here changes ``overall`` or ``fields``, so stored
+    reports, the API and the UI keep their existing meaning.
+    """
+    from stickler.structured_object_evaluator.models.confidence import (
+        AUROCMetric,
+        BrierScoreMetric,
+        ECEMetric,
+    )
+    from stickler.structured_object_evaluator.models.confidence.calculator import (
+        ConfidenceCalculator,
+    )
+    from stickler.structured_object_evaluator.models.confidence.metrics import (
+        ConfidencePair,
+    )
+
+    from idp_common.evaluation.empty_values import (
+        EMPTY_PREDICTION_CONFIDENCES_KEY,
+        empty_value_observations,
+        has_empty_prediction_record,
+    )
+
+    if metrics is None:
+        metrics = [AUROCMetric(), ECEMetric(), BrierScoreMetric()]
+    calculator = ConfidenceCalculator(metrics=metrics)
+
+    count = 0
+    wrong = 0
+    sections_without_record = 0
+    empty_pairs: List[Any] = []
+    all_pairs: List[Any] = []
+    for scr in comparison_results:
+        if not isinstance(scr, dict):
+            continue
+        if not has_empty_prediction_record(scr):
+            sections_without_record += 1
+        section_count, section_wrong, scored = empty_value_observations(scr)
+        count += section_count
+        wrong += section_wrong
+        empty_pairs.extend(
+            ConfidencePair(
+                is_match=is_match, confidence=confidence, similarity=similarity
+            )
+            for _path, confidence, is_match, similarity in scored
+        )
+        field_comparisons = scr.get("field_comparisons") or []
+        if not field_comparisons:
+            continue
+        confidences = {
+            **(scr.get(EMPTY_PREDICTION_CONFIDENCES_KEY) or {}),
+            **(scr.get("prediction_confidences") or {}),
+        }
+        extraction = calculator.extract_from_dicts(field_comparisons, confidences)
+        for pairs in extraction.keyed_pairs.values():
+            all_pairs.extend(pairs)
+
+    def _compute(pairs: List[Any]) -> Dict[str, Any]:
+        out = {metric.name: metric.compute(pairs) for metric in metrics}
+        if "brier_score" in out and "brier" not in out:
+            out["brier"] = out.pop("brier_score")
+        return out
+
+    return {
+        "count": count,
+        "wrong": wrong,
+        "with_confidence": len(empty_pairs),
+        "sections_without_record": sections_without_record,
+        "overall": _compute(empty_pairs),
+        "including_empty": _compute(all_pairs),
+    }
 
 
 def _rename_brier_score_key(

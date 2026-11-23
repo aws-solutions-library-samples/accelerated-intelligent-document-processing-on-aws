@@ -28,7 +28,8 @@
 #                  the title card (start --say).
 #   persona        The Cognito group the demo is recorded as (Admin, Author,
 #                  Reviewer, Annotator, Viewer).
-#   duration_target  "m:ss". Published demos run 2–5 minutes; aim for 2–4.
+#   duration_target  "m:ss". Published demos run 2–5 minutes; aim for 2–4. A
+#                  new-viewer overview of the whole product may run longer.
 #   fixtures       What must exist before recording, and how to make it. Shipped
 #                  samples and synthetic data unless the user agreed otherwise.
 #   chapters       One per `mark`. `label` is the chapter name, `say` the narration
@@ -255,3 +256,285 @@ storyboards:
     docs: docs/multi-tenancy.md
     category: Access Control & Tenant Isolation
     last_recorded: {date: 2026-11-05, version: 0.6.13}
+
+  - id: terraform-deploy-update-migrate
+    title: Deploy the IDP Accelerator with Terraform
+    source: 'CHANGELOG [0.6.15] Added — Experimental Terraform deployment; migrate-from-genai-idp-terraform'
+    audience: Teams that standardise on Terraform or OpenTofu, and current genai-idp-terraform users
+    hook: >-
+      Every release of the IDP Accelerator now ships as a Terraform module as well as
+      CloudFormation templates. In the next few minutes we deploy it from a published
+      module and from a local clone, update it, and plan a move off the
+      genai-idp-terraform repository, all from the command line.
+    persona: Admin
+    duration_target: '4:30'
+    fixtures:
+      - A Terraform deployment made with idp-cli deploy --terraform from the published
+        0.6.15 module, with its state directory (reused, not created for the demo).
+      - A scratch root configuration with one module block pointing at the published
+        zip URL, used for init and plan only — never applied.
+      - An upstream genai-idp-terraform deployment at the pinned tag, seeded with
+        sample documents and users, made with scripts/sdlc/terraform_migration_test.py
+        --stop-after seed --keep and torn down with --teardown-only afterwards.
+      - Terminal footage is real command output, captured with script(1), redacted
+        (account ids, emails) and long output trimmed, replayed in a local file://
+        terminal page in the recorded tab. The web UI is a disposable Admin user
+        from ux_test_session.py setup, torn down after.
+    chapters:
+      - label: One release, two formats
+        say: >-
+          Each release publishes its Terraform module beside its CloudFormation
+          templates, in the same bucket, with a checksum, and a small pointer file
+          that always names the newest one.
+        do:
+          - Terminal - aws s3 ls of the release's terraform/ prefix; curl the
+            idp-terraform-latest.json pointer.
+      - label: The published module in your own configuration
+        say: >-
+          If you already run Terraform, the accelerator is one module block. Point its
+          source at the release zip, give it a name and an admin email, and init and
+          plan as usual. The module is generated from the same templates, so it
+          deploys the same resources with the same settings.
+        do:
+          - Terminal - cat main.tf; terraform init (module download); terraform plan
+            ending in its Plan summary line.
+      - label: Or let idp-cli write it for you
+        say: >-
+          For a quicker start, idp-cli deploy with the terraform flag writes the root
+          configuration, plans, checks the plan and applies it. The parameters are the
+          same CloudFormation parameter names you already use.
+        do:
+          - Terminal - idp-cli deploy --terraform against the existing deployment's
+            directory; show the generated main.tf, terraform.tfvars and
+            idp-cli-parameters.json, and the init, plan, check and apply lines.
+      - label: Build and deploy from a local clone
+        say: >-
+          To deploy your own changes, add from-code and point it at your clone. It
+          builds and publishes the templates and the module to your own bucket, then
+          deploys that module the same way.
+        do:
+          - Terminal - idp-cli deploy --terraform --from-code . ; show the build and
+            publish summary, then the plan and apply.
+      - label: Updates keep your data safe
+        say: >-
+          Updating is the same command with only what changes. idp-cli remembers the
+          earlier parameters, and it refuses any plan that would delete or replace a
+          bucket, table, user pool or key, unless we explicitly allow it.
+        do:
+          - Terminal - idp-cli deploy --terraform --parameters with one setting
+            changed; show the small plan and the apply. If rehearsal finds a safe
+            parameter that triggers it, show the stateful-replace refusal.
+      - label: Still the same IDP
+        say: >-
+          A small read-only CloudFormation label lets idp-cli and the SDK find a
+          Terraform deployment by name, so the commands you already know work
+          unchanged. Here we send a sample document through it.
+        do:
+          - Terminal - describe the label's description and tags; idp-cli process
+            --stack-name with a sample document.
+      - label: The web application you know
+        say: >-
+          And the web application is exactly the one you know. The document we sent is
+          processed and classified, and the deployment info shows the version it runs.
+        do:
+          - Browser - the deployment's web UI, signed in as a disposable Admin; open the
+            processed document; scroll to its sections and to Deployment Info.
+      - label: Moving off genai-idp-terraform
+        say: >-
+          The separate genai-idp-terraform repository is now deprecated. The migrate
+          command moves a deployment onto the built-in module in place. Its plan
+          phase reads the old state and decides, for every resource, whether it is
+          adopted, recreated or kept, so documents, configuration, users and
+          passwords stay.
+        do:
+          - Terminal - idp-cli terraform migrate-from-genai-idp-terraform plan against
+            the seeded upstream deployment; show the verdict table and the files it
+            writes.
+      - label: Every phase is a dry run first
+        say: >-
+          Each later phase is a dry run until we add apply, and the command refuses
+          anything it cannot prove is safe. The migration guide walks through every
+          step.
+        do:
+          - Terminal - migrate-from-genai-idp-terraform --help listing the phases in
+            order.
+    closing: >-
+      Terraform support is experimental, and we want your feedback. If anything does
+      not work, open an issue on GitHub and we will do our best to fix it quickly.
+      From now on, every release ships for Terraform and CloudFormation at the same
+      time. Start with the Terraform Deployment page in the documentation.
+    takeaways:
+      - Every release now ships for CloudFormation and Terraform at the same time
+      - Use the published module in your own Terraform, or idp-cli deploy --terraform
+      - --from-code builds and deploys your local clone the same way
+      - Updates refuse to replace buckets, tables, user pools and keys unless you allow it
+      - Migrate from genai-idp-terraform in place, and tell us what breaks on GitHub
+    not_shown:
+      - A full first apply (about half an hour); the published-module chapter stops at
+        plan, and the idp-cli chapters run against an existing deployment
+      - The migration phases after plan (check-retention through detach) — plan only,
+        by choice; they are listed, not run
+      - Headless and GovCloud module variants, --terraform-assume-role-arn, deleting
+        a Terraform deployment
+      - Feature-platform extensions, which still install as CloudFormation stacks
+    docs: docs/terraform.md
+    category: Command Line Interface (CLI)
+    last_recorded:
+      date: '2026-11-13'
+      version: 0.6.15
+
+  - id: idp-overview-documents-to-decisions
+    title: 'The GenAI IDP Accelerator: from documents to decisions'
+    source: Feature overview for docs/idp-in-action.html (the product landing page)
+    audience: 'New viewers: customers, SAs and partners meeting the accelerator for the first
+      time'
+    hook: In the next eight minutes, we take a packet of loan documents, and a brand-new document
+      type, from a plain description of what we need to structured, reviewed, measured data,
+      and see every major part of the GenAI IDP Accelerator along the way.
+    persona: Admin
+    duration_target: '8:00'
+    fixtures:
+    - A fresh stack with hitl.enabled true in the default profile.
+    - Shipped samples processed beforehand (lending, bank statement, insurance, healthcare,
+      pay stub) so the lists and analytics have content.
+    - 'Two Test Studio runs of 10 Fake W-2 documents: fake-w2 (Claude Sonnet 5 extraction) and
+      a w2-nova-lite profile (Amazon Nova 2 Lite extraction).'
+    - No Quick Start or Agent Chat history; no rehearsal copy of lending_package.pdf at the
+      root.
+    chapters:
+    - label: What it is
+      say: The GenAI IDP Accelerator is open-source sample code from AWS that runs in your own
+        AWS account. It's serverless, built on Lambda, Step Functions, SQS and DynamoDB, so
+        it scales from one document to millions and you pay only for what you process. It uses
+        the Amazon Bedrock models you choose for each step. Everything here comes from one CloudFormation
+        template, with this web interface on top. These are documents it has already processed,
+        each with its status, the configuration that processed it, and how many values need
+        a second look.
+      do:
+      - Document List with the processed shipped samples on screen.
+    - label: Quick Start / Approve the configuration
+      say: A new deployment doesn't know our documents yet. Say we also need to process supplier
+        invoices. With Quick Start we describe them in plain language, and it drafts the document
+        class and its fields for us. There's no schema to write by hand. It can also start from
+        an example document you attach. In a few seconds it proposes the class, with every field
+        and its type, including the line-item table. We approve it, and Quick Start saves it
+        as a new configuration profile and makes it active, ready to process invoices.
+      do:
+      - Open Quick Start from the side navigation; type the supplier-invoice description (real
+        keystrokes, not fill); send; pause until the schema table renders; scroll it into view.
+      - Type 'Looks good. Approve it.'; pause until the profile is created and activated.
+    - label: Upload the lending packet / The processing workflow
+      say: 'Now the main event: a loan application packet. It''s one PDF that holds several
+        different documents, the way they usually arrive. We pick the sample lending packet
+        that ships with the accelerator, and choose the configuration profile to process it
+        with, the lending configuration, rather than the invoice profile we just created. Documents
+        can also arrive by dropping them into the input bucket, or from the command line in
+        batches. And a sample can bring its own tuned configuration with it, imported in the
+        same step. It''s queued, and a Step Functions workflow takes over: OCR, classification,
+        extraction, confidence assessment, rule validation and a summary, with concurrency limits
+        and retries built in. This one takes about a minute.'
+      do:
+      - Close Quick Start; Upload Documents; Sample documents; pick Lending Package; untick
+        the import checkbox; choose the default profile; Process sample.
+      - Pause while it processes (about a minute); resume on the Document List showing it in
+        review. Do not open the document page before its tracking record exists.
+    - label: One upload, many documents / Extraction and confidence
+      say: 'The packet comes back as separate documents. Each section has its class and its
+        pages: a pay slip, a driver''s license, a check, a bank statement, a W-2 and a homeowner''s
+        insurance application. We sorted nothing beforehand. The accelerator found where each
+        document starts and ends. And when a section comes back with something missing, such
+        as an empty list on the driver''s license, it''s marked as degraded, so a gap is never
+        silent. We open the pay slip. Every field is extracted to the schema, and each value
+        has a confidence score against its own threshold. Selecting a value highlights exactly
+        where on the page it came from, so nobody has to hunt for it. Values below their threshold
+        are flagged at the top as review reasons, so we know which ones to check, and the rest
+        can flow straight through. Boxes can come from the OCR geometry or from the model itself,
+        set in the configuration.'
+      do:
+      - Open lending_package.pdf; scroll to Document Sections.
+      - Section 1 Actions, Edit Data; close the side navigation; highlight CurrentNetPay on
+        the page image.
+    - label: Human review
+      say: Those flags sent the document to a review queue, so it waits for a person before
+        it finishes. As the reviewer, we check the net pay against the highlighted box on the
+        page. It's right, so we confirm it and process the changes. A finalize run produces
+        the reviewed output, and the original stays on record as an earlier version.
+      do:
+      - Process Changes; land on the Default review queue.
+    - label: Configuration
+      say: 'Behind all of this is the configuration. Here is the invoice profile Quick Start
+        created: the document class, its attributes and their types, and the shared line-item
+        class. The same profile holds the prompts, the model for each step, few-shot examples,
+        and a single switch to run documents through Bedrock Data Automation instead. Every
+        change is saved as a new revision, and every document records the revision that processed
+        it.'
+      do:
+      - View/Edit Configuration; open the Quick Start profile; Document Schema tab.
+    - label: Test Studio / Compare two runs
+      say: Before a change reaches production, we measure it. Here two runs of the same ten
+        W-2 forms used two different extraction models. Test Studio scores every field against
+        ground truth and adds up the cost, so we compare them side by side. Test sets come from
+        documents you've already processed, from public datasets like this one, or from synthetic
+        documents the test set generator creates. The larger model is about fifteen points more
+        accurate, at about twice the cost per page. Now that is a decision we can make with
+        numbers, document by document, instead of a guess.
+      do:
+      - Test Executions; tick both Fake W-2 runs (scroll the table into view first); Test Comparison.
+      - Scroll to Average Accuracy.
+    - label: Ask your documents / Knowledge Base
+      say: 'Now we ask questions across every processed document. Agent Chat routes the question
+        to its analytics agent, which works out which tables to query, writes and runs the SQL
+        against the reporting database, and draws the answer. Here is the chart it produced:
+        document sections processed, by document class, ready to explore or switch to another
+        chart type. Other agents in the same chat explain failed documents from their logs,
+        or answer questions about the accelerator itself. For questions about what the documents
+        actually say, the Knowledge Base answers in plain language. We ask for the borrower''s
+        net pay, and it answers two hundred ninety-one dollars and ninety cents, issued by Any
+        Company Corp, and cites the document it found the answer in. Every answer is grounded
+        in your own processed documents, not the open web.'
+      do:
+      - Agent Chat; ask for a bar chart of sections per document class; pause until the chart
+        renders; scroll to it and hold several seconds before the next mark.
+      - Knowledge Base; ask for the borrower's net pay and employer.
+    - label: Cost and control / Prices, capacity and users
+      say: 'Every document shows an itemized estimate of what it cost: the OCR pages, and the
+        model tokens for each step, including prompt-cache savings, at list prices administrators
+        can replace with their own rates. This six-page packet came to about seven and a half
+        cents a page. Administrators manage the prices, plan capacity against their Bedrock
+        and Textract service quotas, and decide who sees what. Admin, Author, Reviewer, Annotator
+        and Viewer roles are enforced on the server, and a user can be limited to the configuration
+        profiles of their own use case, or to their own tenant''s documents.'
+      do:
+      - Back to the document; Reports, Estimated Cost; scroll to the total; close.
+      - View / Edit Pricing; Capacity Planning. Do NOT open User Management on a stack whose
+        admin is a real address.
+    - label: Beyond the web UI
+      say: 'Everything here is available from code too. The command line deploys the accelerator,
+        sends batches and downloads results, the Python SDK does the same from your applications,
+        and the MCP server brings documents and analytics into AI assistants such as Amazon
+        Quick Suite. And extensions install into a running deployment without forking the code:
+        PII anonymization before the models see a page, a generator for labeled synthetic test
+        sets, an auto optimizer for prompts and models, and more to come.'
+      do:
+      - Extensions catalog.
+    closing: That's the GenAI IDP Accelerator. It handles any document type, gives every value
+      its evidence, brings in people where they're needed, and measures accuracy, all in your
+      own AWS account. Deploy it with CloudFormation or Terraform, and start with the IDP in
+      Action page.
+    takeaways:
+    - Describe a document type and get a working configuration
+    - Packets are split, classified and extracted, with evidence for every value
+    - People review only the values that need it
+    - Accuracy and cost are measured before a change ships
+    - Open source and serverless, in your own AWS account
+    not_shown:
+    - BDA mode (one configuration switch; named in the Configuration chapter)
+    - Discovery, deployment, GovCloud and Terraform (named in the closing only)
+    - The CLI and SDK in a terminal (the recorder captures the browser; the page embeds the
+      existing IDP CLI video)
+    - User Management (it lists the stack admin's real address)
+    docs: docs/idp-in-action.md
+    category: Overview & Getting Started
+    last_recorded:
+      date: '2026-11-15'
+      version: 0.6.15

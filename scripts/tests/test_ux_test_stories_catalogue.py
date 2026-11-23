@@ -38,11 +38,11 @@ CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 MATRIX_HEADING = "## Permission Matrix"
 MATRIX_HEADER = "Feature / API"
 MATRIX_ROW_RE = re.compile(
-    r"^  (?P<label>\S(?:.*?\S)?) {2,}(?P<cells>\S+(?: +\S+){3})\s*$"
+    r"^  (?P<label>\S(?:.*?\S)?) {2,}(?P<cells>\S+(?: +\S+){4})\s*$"
 )
 TICK = "✅"
 CROSS = "❌"
-TICK_MARKS = frozenset("†*")
+TICK_MARKS = frozenset("†*‡")
 BULLET_RE = re.compile(r"^[-*] ")
 SECTION_RE = re.compile(r"^## \[(?P<label>[^\]]+)\]")
 LEAD_RE = re.compile(r"\A(?:⚠️?\s*)?\*\*(?P<lead>.+?)\*\*")
@@ -1649,8 +1649,8 @@ def test_section_anchors_are_the_h1_to_h3_headings_deduplicated_like_anchors() -
 @pytest.mark.unit
 def test_the_permission_matrix_parser_reads_every_row_of_docs_rbac() -> None:
     columns, rows = _rbac_matrix(RBAC_DOC.read_text(encoding="utf-8"))
-    assert columns == ("Admin", "Author", "Reviewer", "Viewer")
-    assert set(stories.SIGN_IN_GROUPS) - set(columns) == {"Annotator"}
+    assert columns == ("Admin", "Author", "Reviewer", "Viewer", "Annotator")
+    assert set(columns) == set(stories.SIGN_IN_GROUPS)
     assert {
         "Upload documents",
         "View document details",
@@ -1705,15 +1705,6 @@ def test_every_rbac_row_exists_and_agrees_with_each_persona_expectation(
             continue
         for persona, expectation in story.expectations:
             group = catalogue.persona(persona).group
-            if group not in columns:
-                if expectation != "allowed":
-                    problems.append(
-                        f"story {story.id}: as.{persona} = {expectation} ({group}), "
-                        f"but docs/rbac.md's Permission Matrix has no {group} column "
-                        "to hold that against; add the column before a story expects "
-                        f"a {group} to be refused"
-                    )
-                continue
             cell = row.get(group, "")
             allows = _cell_allows(cell)
             checked += 1
@@ -1737,6 +1728,8 @@ def test_every_rbac_row_exists_and_agrees_with_each_persona_expectation(
         ("✅†", True),
         ("✅*†", True),
         ("✅*", True),
+        ("✅‡", True),
+        ("✅†‡", True),
         ("❌", False),
         ("✅x", None),
         ("-", None),

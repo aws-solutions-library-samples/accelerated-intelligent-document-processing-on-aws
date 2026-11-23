@@ -2,8 +2,8 @@
 title: "Confidence Calibration — Can the Score Route Human Review?"
 ---
 
-<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
-<!-- SPDX-License-Identifier: MIT-0 -->
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
 
 # Confidence Calibration — Can the Score Route Human Review?
 
@@ -285,8 +285,17 @@ standard error above the bar.
 
 **This is not a recommendation to change the default.** The default is a cost
 decision, and the cost gap is large: `base-confidence.yaml` records a live A/B at
-~$0.0011 per document on Nova Lite against ~$0.145 on Sonnet 5, about 130×. Nothing
-measured here disturbs that number. What the page changes is the *basis* on which the
+~$0.0011 per document on Nova Lite against ~$0.145 on Sonnet 5, about 130×. That
+A/B was run at release 0.6.0, and both figures would have been priced from
+`config_library/pricing.yaml` as it then stood. Both rates have since been
+corrected: Sonnet 5 was 1.5× today's rate on every unit
+([#1830](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1830)),
+and Nova Lite charged cache writes at the full input rate where they are now free
+([#1405](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1405)).
+Its token counts were not kept, so neither figure has been re-priced. Scaling the
+Sonnet 5 figure by 1/1.5 gives about $0.097 per document; the Nova Lite figure is
+overstated by an unknown amount, so the ratio is at least about 88×. Both are
+estimates rather than measurements. Nothing measured here disturbs the conclusion that the gap is large. What the page changes is the *basis* on which the
 trade-off is made — the comment justifying Nova Lite spoke only to cost, and the
 calibration half of the trade was assumed rather than measured. Deployments that use
 confidence as an **alerting** signal against a threshold are largely unaffected: the

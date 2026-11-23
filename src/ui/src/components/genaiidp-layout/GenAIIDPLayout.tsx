@@ -23,7 +23,8 @@ import DiscoveryPage from '../discovery/DiscoveryPage';
 import DiscoveryJobDetails from '../discovery/DiscoveryJobDetails';
 import UserManagementLayout from '../user-management/UserManagementLayout';
 import ConfigPrefixMappingsLayout from '../config-prefix-mappings/ConfigPrefixMappingsLayout';
-import { appLayoutLabels } from '../common/labels';
+import McpConfigurationLayout from '../mcp-configuration/McpConfigurationLayout';
+import { useAppLayoutLabels } from '../common/labels';
 
 import Navigation from './navigation';
 import Breadcrumbs from './breadcrumbs';
@@ -47,6 +48,7 @@ interface GenAIIDPLayoutProps {
 
 const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
 
   const notifications = useNotifications();
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -136,6 +138,7 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
               <Route path="users" element={<UserManagementLayout />} />
               {/* Above the path="*" catch-all below, or it never matches. */}
               <Route path="prefix-mappings" element={<ConfigPrefixMappingsLayout />} />
+              <Route path="mcp" element={<McpConfigurationLayout />} />
               <Route path="*" element={<DocumentDetails />} />
             </Routes>
           )

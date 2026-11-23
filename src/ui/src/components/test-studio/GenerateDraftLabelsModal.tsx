@@ -31,6 +31,7 @@ import { generateClient } from '../../api/client-shim';
 import { getConfigVersions, getTestSetDocuments } from '../../graphql/generated';
 import { renderConfidence, renderLabelSource } from './TestSetDetail';
 import type { TestSetDocumentItem } from './TestSetDetail';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 const logger = new ConsoleLogger('GenerateDraftLabelsModal');
@@ -67,6 +68,7 @@ interface Props {
 }
 
 const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss, onSubmit, submitting }: Props): React.JSX.Element => {
+  const { locale } = useFormatters();
   // null = the profile's current configuration.
   const [configRevision, setConfigRevision] = useState<number | null>(null);
   const [configVersion, setConfigVersion] = useState<SelectProps.Option>({
@@ -336,7 +338,7 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
                   {
                     id: 'confidence',
                     header: 'Confidence',
-                    cell: (item: TestSetDocumentItem) => renderConfidence(item.minConfidence, item.confidenceThreshold),
+                    cell: (item: TestSetDocumentItem) => renderConfidence(item.minConfidence, item.confidenceThreshold, locale),
                   },
                   {
                     id: 'note',

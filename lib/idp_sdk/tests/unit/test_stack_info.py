@@ -18,12 +18,13 @@ things "absent" can mean here:
   ``outputs.get(key, "")``, so a renamed output degrades to an empty string that
   every caller will treat as a name. Each such key is asserted to be exactly
   ``""`` rather than ``None`` or missing, because that is what callers see.
-* A **resource** that is missing behaves two ways depending on which one it is:
-  a missing ``DocumentQueue`` raises out of ``get_resources`` entirely, while a
-  missing ``TrackingTable`` degrades to ``""``. Both are pinned; the asymmetry is
-  the kind of thing that gets "tidied" in the wrong direction. The ``""`` becomes
-  an error only in ``tracking_table_name``, which the operations that need the
-  table call and the rest never do.
+* A **resource** that is missing degrades to ``""``, for the queue as for
+  ``TrackingTable``. The queue used to raise out of ``get_resources`` entirely,
+  which failed every caller — including the ones that never send to the queue —
+  on a Terraform deployment, whose label stack carries the module's outputs and
+  lists none of its resources. The queue URL is now read from the
+  ``SQSDocumentQueueUrl`` output first, with the resource list as a fallback, and
+  ``""`` becomes an error only in the callers that need the queue.
 
 Most tests run against ``moto``'s CloudFormation with a real template, so the
 physical ids are the ones CloudFormation itself would produce — an SQS queue's
@@ -231,18 +232,35 @@ def test_the_settings_parameter_name_is_derived_and_never_verified(aws):
 
 
 @pytest.mark.unit
-def test_a_missing_document_queue_makes_the_whole_resolution_fail(aws):
-    """``_get_queue_url`` raises, and ``get_resources`` does not catch it.
+def test_the_queue_url_comes_from_the_output_when_the_stack_has_one(aws):
+    """The output first, because it is the only source a Terraform deployment's
+    label stack has: it carries the module's outputs and lists no resources."""
+    outputs = dict(ALL_OUTPUTS)
+    outputs["SQSDocumentQueueUrl"] = (
+        "https://sqs.us-east-1.amazonaws.com/123456789012/from-the-output"
+    )
+    create_stack(template(outputs, with_queue=False))
 
-    So a stack that is not an IDP stack fails loudly at the first thing that asks
-    for its resources, rather than returning a mapping full of empty strings.
-    That is the desirable behaviour, and it is asymmetric with the tracking table
-    below, which is why both are asserted.
+    resources = StackInfo(STACK_NAME, REGION).get_resources()
+
+    assert resources["DocumentQueueUrl"] == outputs["SQSDocumentQueueUrl"]
+
+
+@pytest.mark.unit
+def test_a_missing_document_queue_degrades_to_an_empty_string(aws, caplog):
+    """Neither the output nor the resource: ``""``, not an exception.
+
+    It raised, which failed `get_resources()` for every caller — including
+    operations such as the MCP ``get_results`` tool, which never sends to the
+    queue, and which is how a Terraform nightly's Step 12 failed. The callers
+    that do send to the queue check the value.
     """
     create_stack(template(ALL_OUTPUTS, with_queue=False))
 
-    with pytest.raises(ValueError, match="DocumentQueue not found in stack resources"):
-        StackInfo(STACK_NAME, REGION).get_resources()
+    resources = StackInfo(STACK_NAME, REGION).get_resources()
+
+    assert resources["DocumentQueueUrl"] == ""
+    assert resources["DocumentsTable"] == TABLE_NAME
 
 
 @pytest.mark.unit
@@ -600,18 +618,18 @@ def test_a_table_lookup_that_fails_returns_an_empty_string(aws):
 
 
 @pytest.mark.unit
-def test_a_queue_lookup_that_fails_raises(aws):
-    """``_get_queue_url`` re-raises, so the same permission gap is fatal here.
-
-    The two helpers read the same API through the same client and disagree about
-    what a failure means. That is the asymmetry this pair of tests exists to make
-    visible.
-    """
+def test_a_queue_lookup_that_fails_degrades_like_the_table_lookup(aws, caplog):
+    """The two helpers read the same API through the same client, and a failure
+    now means the same thing in both: ``""``, logged. The queue used to re-raise,
+    which made a permission gap — or a stack that lists no resources at all, as a
+    Terraform deployment's label stack does — fatal for every caller of
+    ``get_resources()``."""
     stack_info = StackInfo(STACK_NAME, REGION)
     stack_info.cfn = BrokenPaginator()
 
-    with pytest.raises(RuntimeError, match="AccessDenied on list_stack_resources"):
-        stack_info._get_queue_url()
+    with caplog.at_level("WARNING"):
+        assert stack_info._get_queue_url() == ""
+    assert "AccessDenied on list_stack_resources" in caplog.text
 
 
 # ---------------------------------------------------------------------------

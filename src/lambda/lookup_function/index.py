@@ -6,6 +6,7 @@ import boto3
 import json
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 from log_sanitizer import sanitize_event_for_logging
 from review_statuses import ReviewStatus
 import logging
@@ -16,19 +17,21 @@ logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_
 # Get LOG_LEVEL from environment variable with INFO as default
 
 def calculate_durations(timestamps):
+    # Callers pass every key, with None for a stage not reached yet (a refused
+    # document never starts a workflow), so test the values, not key presence.
     try:
         durations = {}
-        if 'QueuedTime' in timestamps and 'WorkflowStartTime' in timestamps:
+        if timestamps.get('QueuedTime') and timestamps.get('WorkflowStartTime'):
             queue_time = (datetime.fromisoformat(timestamps['WorkflowStartTime']) - 
                          datetime.fromisoformat(timestamps['QueuedTime'])).total_seconds() * 1000
             durations['queue'] = int(queue_time)
             
-        if 'WorkflowStartTime' in timestamps and 'CompletionTime' in timestamps:
+        if timestamps.get('WorkflowStartTime') and timestamps.get('CompletionTime'):
             processing_time = (datetime.fromisoformat(timestamps['CompletionTime']) - 
                              datetime.fromisoformat(timestamps['WorkflowStartTime'])).total_seconds() * 1000
             durations['processing'] = int(processing_time)
             
-        if 'InitialEventTime' in timestamps and 'CompletionTime' in timestamps:
+        if timestamps.get('InitialEventTime') and timestamps.get('CompletionTime'):
             total_time = (datetime.fromisoformat(timestamps['CompletionTime']) - 
                          datetime.fromisoformat(timestamps['InitialEventTime'])).total_seconds() * 1000
             durations['total'] = int(total_time)
@@ -63,6 +66,25 @@ def review_info(item):
         'disposedAt': item.get('ReviewDisposedAt'),
         'rejectReason': item.get('ReviewRejectReason'),
     }
+
+
+def _native(value):
+    """DynamoDB Decimals as int/float, so the response is JSON-serialisable."""
+    if isinstance(value, Decimal):
+        return int(value) if value % 1 == 0 else float(value)
+    if isinstance(value, list):
+        return [_native(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _native(v) for k, v in value.items()}
+    return value
+
+
+def document_attributes(item):
+    """The caller-supplied attributes snapshotted at intake (#1851), or None."""
+    stored = item.get('DocumentAttributes')
+    if not isinstance(stored, dict) or not stored:
+        return None
+    return _native(stored)
 
 
 def get_document_status(object_key, status_only=False):
@@ -108,7 +130,23 @@ def get_document_status(object_key, status_only=False):
             },
             'review': review_info(item),
         }
-        
+
+        # Only when the document has any, so a response for a document uploaded
+        # without attributes is unchanged.
+        attributes = document_attributes(item)
+        if attributes:
+            result['attributes'] = attributes
+
+        # A document refused at ingest (for example, outside every tenant's
+        # prefixes under strict tenant isolation) never starts a workflow, so the
+        # refusal reason on the tracking record is the only explanation there is.
+        # Return it as `error`, the field callers read, rather than leaving them to
+        # report an unexplained failure.
+        refusal = item.get('ConfigAssignmentError')
+        if refusal:
+            result['error'] = refusal
+            result['failed_step'] = 'QueueSender'
+
         # If status_only mode, skip expensive Step Functions queries
         if status_only:
             return result

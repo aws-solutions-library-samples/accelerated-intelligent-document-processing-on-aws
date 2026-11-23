@@ -9,6 +9,7 @@
 import React from 'react';
 import { act, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -71,14 +72,17 @@ const CounterProbe = (): React.JSX.Element => {
   );
 };
 
+// The navigation badge's visually-hidden suffix is a message, so the probe renders under an IntlProvider.
 const renderAll = () =>
   render(
-    <MemoryRouter initialEntries={['/inbox']}>
-      <InboxProvider>
-        <CounterProbe />
-        <InboxPage />
-      </InboxProvider>
-    </MemoryRouter>,
+    <IntlProvider locale="en" defaultLocale="en">
+      <MemoryRouter initialEntries={['/inbox']}>
+        <InboxProvider>
+          <CounterProbe />
+          <InboxPage />
+        </InboxProvider>
+      </MemoryRouter>
+    </IntlProvider>,
   );
 
 const text = (id: string) => screen.getByTestId(id).textContent;

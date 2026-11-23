@@ -20,6 +20,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.mcp_access import Caller
+
+#: An unscoped Admin: these tests are about the tools' own behaviour, which the
+#: caller's scope does not change for an unscoped caller.
+ADMIN = Caller("user", "u", "u", ["Admin"], None, None, True)
+
 HANDLER_DIR = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
@@ -83,7 +89,7 @@ def test_search_returns_structured_error_without_strands(monkeypatch):
     _block_strands(monkeypatch)
     tools = importlib.import_module("tools")
 
-    result = tools.get_tool("search").execute(query="how many documents?")
+    result = tools.get_tool("search").execute(query="how many documents?", caller=ADMIN)
 
     assert result["success"] is False
     assert "dependencies are not installed" in result["error"]
@@ -93,7 +99,7 @@ def test_search_returns_structured_error_without_strands(monkeypatch):
 def test_get_results_requires_batch_or_document_id():
     tools = importlib.import_module("tools")
 
-    result = tools.get_tool("get_results").execute()
+    result = tools.get_tool("get_results").execute(caller=ADMIN)
 
     assert result["success"] is False
     assert result["error"] == "missing_identifier"
@@ -123,7 +129,7 @@ def test_get_results_by_document_id(monkeypatch):
     }
 
     result = tools.get_tool("get_results").execute(
-        document_id="s3://output-bucket/Borrowing_Notice_#3.pdf/"
+        caller=ADMIN, document_id="s3://output-bucket/Borrowing_Notice_#3.pdf/"
     )
 
     assert result["success"] is True
@@ -148,9 +154,50 @@ def test_get_results_by_batch_id_still_works(monkeypatch):
         "documents": [{"document_id": "a.pdf"}, {"document_id": "b.pdf"}],
     }
 
-    result = tools.get_tool("get_results").execute(batch_id="mcp-batch-1")
+    result = tools.get_tool("get_results").execute(batch_id="mcp-batch-1", caller=ADMIN)
 
     assert result["success"] is True
     assert result["count"] == 2
     batch.get_results.assert_called_once()
     batch.get_document_results.assert_not_called()
+
+
+def test_batch_run_ids_from_the_same_second_differ(monkeypatch):
+    """#2113: the content path passes its own id to the SDK and uploads under
+    ``temp/{batch_id}/``, so it must not be timestamp-only. The clock is frozen in
+    the SDK's id helper and in the `datetime` module itself, which a local
+    `from datetime import datetime` in the tool would read."""
+    import datetime as datetime_module
+    import re
+
+    import idp_sdk
+
+    real_datetime = datetime_module.datetime
+    frozen = real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime_module.timezone.utc)
+
+    class _FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz is None else frozen.astimezone(tz)
+
+        @classmethod
+        def utcnow(cls):
+            return frozen.replace(tzinfo=None)
+
+    # The helper's own module globals, reached through the public export.
+    monkeypatch.setitem(
+        idp_sdk.generate_timestamped_id.__globals__, "datetime", _FrozenDatetime
+    )
+    monkeypatch.setattr(datetime_module, "datetime", _FrozenDatetime)
+
+    batch_run = importlib.import_module("tools.batch_run")
+    if hasattr(batch_run, "datetime"):
+        monkeypatch.setattr(batch_run, "datetime", _FrozenDatetime)
+    tool = batch_run.BatchRunTool.__new__(batch_run.BatchRunTool)
+
+    first = tool._generate_batch_id("mcp-content")
+    second = tool._generate_batch_id("mcp-content")
+    assert first != second
+    for batch_id in (first, second):
+        assert re.fullmatch(r"mcp-content-20260102-030405-[0-9a-f]{8}", batch_id)
+    assert tool._generate_batch_id(None).startswith("mcp-batch-20260102-030405-")

@@ -56,7 +56,8 @@ STATEFUL_TYPES: dict[str, str] = {
     ),
     "AWS::OpenSearchServerless::Collection": "the vector index's documents",
     "AWS::SecretsManager::Secret": (
-        "a value set after deployment (the external MCP agent credentials)"
+        "a value set after deployment (the external MCP agent credentials), or a "
+        "client secret the MCP connector and Amazon Quick are configured with"
     ),
     # Custom resources whose Delete removes data. An address change without a
     # moved block deletes the invocation, which runs the handler's Delete.
@@ -64,6 +65,12 @@ STATEFUL_TYPES: dict[str, str] = {
     "Custom::S3VectorsKnowledgeBase": "the S3 Vectors knowledge base",
     "Custom::InvokeCreateOSSIndexLambdaFunction": (
         "the OpenSearch Serverless vector index"
+    ),
+    "Custom::McpCredentialsCleanup": (
+        "every MCP service credential, which its Delete revokes"
+    ),
+    "Custom::McpDefaultCredential": (
+        "the stack-created MCP client's registry row, which its Delete removes"
     ),
 }
 
@@ -220,10 +227,17 @@ def _ref(node: _Node, name: str) -> frozenset[str]:
 
 
 def _getatt(node: _Node, name: str, attr: str) -> frozenset[str]:
+    from .translate import echoed_property
+
     plan = node.tr.plans.get(name)
     if plan is None:
         return EMPTY
     if plan.kind == "custom":
+        echoed = echoed_property(node.tr.t["Resources"][name], attr)
+        if echoed is not None:
+            # Rendered as the property itself (ECHOED_CUSTOM_ATTRS), so it is
+            # as known at plan as that property is.
+            return _sources(node, echoed)
         return frozenset({_source_id(node, name)})
     if plan.kind == "module":
         out = attr.removeprefix("Outputs.")

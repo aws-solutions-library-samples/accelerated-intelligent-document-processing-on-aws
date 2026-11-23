@@ -242,6 +242,12 @@ render the section empty (no content items added). A config that supplies its
 **own** extraction `task_prompt` must include the placeholder itself — exactly
 once, since `_build_prompt_content` splits on it and ignores it otherwise.
 
+`{DOCUMENT_IMAGE}` may appear at most once too, but a repeat is refused rather than
+ignored: `_build_prompt_content` raises `DocumentImagePlaceholderError` (the shared
+rule in `idp_common/document_image_placeholder.py`) for the whole template, before
+the few-shot split, and `_build_extraction_content` lets it out instead of falling
+back to the default prompt as it does for other formatting errors.
+
 Example fields are read under either the `x-aws-idp-*` names or the legacy
 camelCase names (`x-aws-idp-class-prompt` / `x-aws-idp-attributes-prompt` / `x-aws-idp-image-path`). Unreadable
 example images log a warning and the example is sent as text-only rather than
@@ -1050,6 +1056,34 @@ working deployment.
 Rollback refuses to flatten a baseline holding more than one record, because that
 would discard ground truth the user authored.
 
+## Bedrock Guardrails
+
+When `GUARDRAIL_ID_AND_VERSION` is set (the stack's `BedrockGuardrailId` and
+`BedrockGuardrailVersion`), both extraction modes send the guardrail with every
+model request:
+
+- **Simple mode** calls `BedrockClient.invoke_model`, which adds `guardrailConfig`
+  to the `converse` request.
+- **Advanced (agentic) mode** builds its Strands `BedrockModel` itself, because the
+  boto config, session and request fields are its own. It adds
+  `strands_guardrail_kwargs()`, so the guardrail reaches every turn of the agent
+  loop, sharded runs included.
+
+With no guardrail configured, the helper returns an empty dict and the model is
+built exactly as before.
+
+Two effects are expected on the agentic path. Both are inferred from the request
+shape and have not been measured on a live stack:
+
+- A guardrail intervention should end that turn with the guardrail's blocked-output
+  message instead of a tool call, leaving the section without an extraction, just
+  as an intervention does in Simple mode.
+- The guardrail is sent with every turn of the loop, so its per-request cost should
+  grow with the number of turns rather than once per section.
+
+See `idp_common/bedrock/README.md` for how the variable is parsed and which paths
+send it.
+
 ## Error Handling
 
 The ExtractionService has built-in error handling:
@@ -1058,6 +1092,65 @@ The ExtractionService has built-in error handling:
 2. If extraction fails for any reason, the error is captured in `document.errors`
 3. All errors are logged for debugging
 4. Few-shot example loading errors are handled gracefully with fallback to standard prompts
+
+### A failed agent run is still metered — `idp_common.utils.metering.failure_metering`
+
+`structured_output_async` returns its metering only when it returns. When the agent
+loop raises (throttle exhaustion, `ModelInvalidToolUseSequence`, a context overflow,
+a `max_tokens` stop `_salvage_truncated_extraction` cannot recover) or ends without a
+valid extraction, the usage of every model call the agent completed is attached to
+the exception with `attach_failure_metering`, under the same
+`<context>/bedrock/<model>` key the success path uses. The exception keeps its class,
+because Step Functions retries and the service's own handlers match on it.
+
+The usage is read once, from `agent.event_loop_metrics.accumulated_usage`. In the
+pinned `strands-agents` that total is added to as soon as a model response arrives
+(so a `max_tokens` turn is in it) and is never reset by a later `invoke_async` on the
+same agent, so one reading covers every feedback round and every resumed retry. Do
+not add readings together: each is cumulative. A call that raised before a response
+arrived recorded no usage, and none is invented for it.
+
+The total includes conversation summarization. When the conversation outgrows the
+model's context window, Strands' `SummarizingConversationManager` summarizes its
+oldest turns by calling the agent's model directly rather than through the event
+loop, so on its own that call's usage reaches no metric. The agent is therefore
+built with `MeteredSummarizingConversationManager`
+(`idp_common/agents/utils/conversation_manager.py`), which leaves Strands'
+summarization unchanged and adds each summary's usage to
+`agent.event_loop_metrics` with `update_usage`, the method the event loop uses for
+an ordinary turn. The summary is made by the extraction model, so its tokens are
+under the same `<context>/bedrock/<model>` key, on the success path and on this one
+([#1952](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1952)).
+It refuses a `summarization_agent`, at construction or assigned later, because
+that agent would record the usage on its own metrics.
+`tests/unit/extraction/test_agentic_summarization_metering.py` scans every tracked
+production module except that one and fails on any identifier, parameter,
+keyword, import or non-docstring string or bytes literal that names Strands'
+summarizing manager, its `generate_summary` helper, the method the subclass
+overrides, `summarization_agent`, or the `Agent` `context_manager` option, which
+builds an unmetered manager internally. That
+covers a dictionary of `Agent` arguments, `getattr` and `importlib`. It cannot see
+a name assembled at run time from pieces, or `Agent` arguments loaded from data.
+
+Two callers read it with `failure_metering(e)`, and only from the exception they
+caught, never from its `__cause__`:
+
+* `_escalate_failing_fields` adds it to the escalation metering it returns, so a
+  failed escalation, which keeps the original result, still reports the calls it
+  made.
+* `process_document_section` adds it to `document.metering` before re-raising, so
+  the document the caller holds carries it. The extraction Lambda then fails, and a
+  failed workflow saves no metering to the reports, so on that path the usage is on
+  the in-memory document and goes no further.
+
+In the in-process sharded path the failing shard's exception carries that shard's
+usage only. Shards that finished are not added to it. On the Step Functions
+Distributed Map route each shard runs in its own Lambda, and nothing there reads
+the attached usage: a shard that fails fails its iteration, and its usage goes
+nowhere.
+
+Tests: `tests/unit/extraction/test_agentic_failure_metering.py`, which runs the real
+agent with only `converse_stream` scripted.
 
 ### A raising failure still reaches the section's record — `idp_common.extraction.failure`
 
@@ -1076,6 +1169,26 @@ wraps its service call and, in the `except` block, calls
   around `process_document_section`;
 - `patterns/unified/src/extraction_function/sfn_runtime_handler.py`, `mode="merge"`
   — the Distributed Map shard merge, around `merge_section_shards`.
+
+**One failure does not raise: a content-filter block.** When the model's reply
+is withheld by Bedrock's content filter (`bedrock_utils.is_content_filter_block`,
+which matches `CONTENT_FILTER_BLOCK_MESSAGE` on a `ValidationException` anywhere
+in the explicit `__cause__` chain), `process_document_section` calls
+`_handle_content_filtered` instead of re-raising. It writes an empty
+`result.json` with `metadata.content_filtered: true`, replaces the section's
+extraction-stage issues with one error-severity `extraction_failed` issue naming
+the block, and returns without touching `document.errors`, so the ProcessSections
+Map iteration succeeds and the collate step completes the document (#2038). The
+assessment service reads `metadata.content_filtered` and gives its skip the same
+reason. The same handling applies to a reply withheld by stop reason
+(`bedrock_utils.ModelOutputWithheld`, raised after the Simple-mode model call and
+by agentic extraction when its last regeneration round is withheld). With
+`hitl.enabled`, the issue is a human-review reason
+(`review_queues.reasons.failed_extraction_issue`): an `extraction_failed` reason in
+queue mode and a pending section in legacy HITL, so the document is held for review
+rather than completing with the section empty. Not covered: `run_one_section_shard`
+on the Distributed Map path, where a blocked or withheld shard still fails
+`ExtractionShardMap`.
 
 Three properties it relies on, and one it deliberately does not do:
 
@@ -1274,7 +1387,7 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
 > verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
 > warns at `idp-cli config-validate` / SDK validate time — the web UI does not validate
-> on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
+> on save; its prompt preview (Preview prompts) shows the decision per class. Runtime per-section decision,
 > not a config rejection: a stored config must keep loading, and the new key is a
 > free-form class key that older releases ignore.
 
@@ -1503,9 +1616,9 @@ Configure agentic extraction in your configuration file:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"  # Anthropic Claude recommended for agentic
   agentic:
-    enabled: true
     max_concurrent_batches: 1  # Parallel processing (2-10 for very large docs)
     table_parsing:
       enabled: true  # Enable deterministic table parser tool
@@ -1518,7 +1631,9 @@ extraction:
     enabled: false             # see "Schema-Constraint Validation" below
 ```
 
-> **Every `agentic.*` sub-option only takes effect when `agentic.enabled: true`**
+> **Every `agentic.*` sub-option only takes effect when `agentic.enabled` resolves
+> to `true`** (that is, `extraction.mode: advanced`; `mode` is authoritative and
+> overwrites `agentic.enabled` whenever it is set)
 > — `table_parsing`, `validation`, and `max_concurrent_batches` are all ignored
 > for non-agentic extraction. In the **Configuration UI** these options are
 > progressively disclosed: they appear only after you enable Agentic Extraction,
@@ -1541,8 +1656,9 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
      same labels): they become the header rather than data, and a
      warning says how many rows were taken. A one-page table is left as it was,
      because one page cannot tell a short all-text data row from a label row. The
-     check runs over the text `parse_table` is given, so on the sharded path a
-     shard holding a single page of the table is not recovered; the whole-section pre-flight parse sees every page
+     check runs over the text `parse_table` parses, so on the sharded path a
+     shard holding a single page of the table is not recovered; the whole-section
+     pre-flight parse sees every page
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)
@@ -1554,11 +1670,39 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
    - Falls back to LLM extraction for complex layouts or poor quality
    - Cross-validates low-confidence cells using multimodal reasoning
 
+**What it parses.** The tool parses the section's own OCR text, `--- PAGE N ---`
+markers included: the extraction service passes the section's OCR text it holds
+(`structured_output(table_source_text=...)`, and each shard's own text on the
+sharded path), and `create_parse_table_tool(source_text=...)` holds it. The agent
+calls `parse_table()` with no `table_text`, and a `table_text` it sends anyway is
+ignored (`ignored_table_text: true` in the result). Asking the model to pass the
+document would make the tool's input model output: as many output tokens as the
+section holds, and a copy that need not match the OCR. The blank-header recovery
+above compares the label rows that open each page, so a copy whose repeated label
+rows drift turns it off and the header rows come back as data (on
+`samples/Nuveen.pdf`, 534 rows for a 532-row table). A tool built without
+`source_text` -- any `structured_output` caller that passes no `table_source_text`,
+such as agentic rules discovery -- parses the `table_text` it is given, as before,
+and then both the tool description and the system prompt tell the model to pass the
+table's Markdown. `text_source` in the result says which text was parsed.
+Because the agent can no longer scope the parse by passing a slice of the text,
+`table_indices` names exactly the tables `map_table_to_schema` maps (each once, in
+document order; a list that selects nothing maps nothing), and the result's top
+level and summary then describe just those tables (`tables` itself still lists
+every table found, with `tables_found` their number). The summary also lists every
+table found, by index, columns and row count, so the agent can choose. Same-column tables left out of
+the selection are named in a warning, since they may be fragments of a selected
+one. `table_index` only chooses which table the top level shows, as before; it
+does not change what is mapped. To have the parser read Markdown the agent
+reconstructed itself (after `view_image` on a page whose OCR table is malformed),
+use `parse_table` without `table_text` for the rest and enter those rows with
+`extraction_tool` or `apply_json_patches`.
+
 ### How It Works
 
 ```
 1. Agent analyzes document and identifies Markdown tables
-2. Agent calls parse_table(table_text, expected_columns)
+2. Agent calls parse_table(expected_columns) — the tool parses the section's OCR text itself
 3. Tool returns:
    - Structured rows as list of dicts
    - Quality metrics (parse_success_rate, avg_confidence)
@@ -1648,21 +1792,22 @@ assigned a page range"). The concrete assignment is appended per shard by
 `agentic_idp._run_shard_agent`, which adds `You are processing shard i of N,
 covering pages A-B of T` immediately after the block.
 
-Two sentences of that block are, however, actively **wrong** when a shard agent
-reads them, so both sharded call sites pass
+Two sentences of that block read differently from inside a shard, so both
+sharded call sites pass
 `_append_preflight_table_guidance(..., scope_note=_SHARD_SCOPE_NOTE)`, which
-inserts a correcting paragraph directly after the page-marker rule (the
-single-agent path passes nothing, keeping its text byte-identical):
+inserts a scope paragraph directly after the page-marker rule; the single-agent
+path passes no scope note. On every path the block tells the agent to call
+`parse_table` with no `table_text`, because the tool holds the text the agent
+was given:
 
-- "extract ONLY text between markers for your pages" — a shard's text already
-  contains only its pages, and every shard after the first is prefixed with a
+- "extract ONLY your pages' values" — a shard's text already contains only its
+  pages, and every shard after the first is prefixed with a
   `--- DOCUMENT HEADER (page 1, for context only) ---` block that
   `_build_shard_payloads` deliberately places **outside** the `--- PAGE N ---`
-  markers because it carries the table's column-header row. An agent obeying the
-  rule literally discards that header, the deterministic parse then fails on text
-  starting mid-table, and the agent falls back to emitting rows itself — a
-  completeness risk, not only a cost one. The note tells the shard to pass **all**
-  of its text to `parse_table`, header block included.
+  markers because it carries the table's column-header row (and none of page 1's
+  data rows, so parsing it in every shard duplicates nothing). `parse_table`
+  parses the shard's text as built, header block included, and the note tells the
+  shard so and to call it with no `table_text`.
 - the table and row totals are **section-wide** (`_preflight_table_parse` parses
   the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system prompt
   tells the agent to verify `row_count` against the document and never stop until
@@ -1758,8 +1903,8 @@ Key behaviors:
 ```yaml
 # Enable sharded concurrent extraction (up to 4 shards in parallel)
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   agentic:
-    enabled: true
     max_concurrent_batches: 4
     shard_token_budget: 8000    # default; lower if shards still overflow, raise for 1M-context models
     max_pages_per_shard: 5      # default; page ceiling so large docs always shard (0 = disable)
@@ -1768,8 +1913,9 @@ extraction:
 ```
 
 **Document-size guidance.** The defaults above are tuned to work without
-hand-tuning on large documents (validated at scale on 100- and 200-page
-single- and multi-table PDFs). For very large documents (100+ pages) prefer the
+hand-tuning on large documents. The largest document the benchmark suite has
+measured is 66 pages and 3,200 rows (`docs/benchmarking/config-guidance.md`);
+larger documents have not been measured. For very large documents (100+ pages) prefer the
 Step Functions Distributed Map runtime (`runtime: step_functions`) so each shard
 runs in its own Lambda and the section is not bound by the single-Lambda 15-min
 ceiling; the in-process runtime still shards correctly but a 200-page section may
@@ -1841,6 +1987,7 @@ separate downstream step, controlled by `extraction.confidence.mode`:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   confidence:
     enabled: true                     # master on/off — false disables confidence entirely
     mode: separate                    # off | "separate" (default) | "integrated"
@@ -1851,7 +1998,6 @@ extraction:
                                       # ('llm' also accepted, but discouraged: same
                                       #  prompt and cost as llm_grounded, no grounding)
   agentic:
-    enabled: true
     max_concurrent_batches: 4         # sharded; confidence scoring runs per-shard
 hitl:
   enabled: false                      # route low-confidence fields to human review
@@ -1989,8 +2135,7 @@ validation still fails.
 
 ```yaml
 extraction:
-  agentic:
-    enabled: true
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   validation:                 # sibling of `agentic`
     enabled: false            # Off by default (no behavior change on upgrade)
     check_formats: true       # Enforce JSON-Schema 'format' keywords
@@ -2052,6 +2197,19 @@ How it works:
 **Escalation model precedence:** per-class `x-aws-idp-extraction-escalation-model`
 schema extension → global `validation.escalation_model` → the extraction model
 itself (escalation becomes a plain second attempt).
+
+**Escalation metering context.** Every escalation model call, in both modes and
+both escalation scopes, is metered under `ESCALATION_METERING_CONTEXT`
+(`ExtractionEscalation`) from `extraction/service.py`. Simple mode used
+`Extraction-Escalation` before that constant existed, so stored reporting rows
+from earlier releases carry that spelling; a reader that groups escalation cost
+must accept both. Capacity Planning is one such reader: it plans escalation as
+its own demand line on the escalation model, measures the escalation rate from
+these keys, and keeps them out of the Extraction line, so both spellings are
+matched in `ESCALATION_METERING_PREFIXES` in
+`src/lambda/calculate_capacity/index.py`. Renaming the context needs that tuple
+changed too; `test_evaluation_and_escalation_demand.py` beside it reads the
+constant from this module and fails if the two disagree.
 
 **Configuration UI.** The global `validation` block (enabled / check_formats /
 fail_action / escalation_model) is editable under **Extraction → Agentic
@@ -2157,9 +2315,9 @@ When OCR confidence data is unavailable, the tool relies on `parse_success_rate`
 ```yaml
 # config.yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true
       max_empty_line_gap: 5  # Handle multi-page statements
@@ -2187,7 +2345,7 @@ classes:
 
 **Extraction flow**:
 1. Agent identifies transaction table in OCR text
-2. Calls `parse_table(table_text)` → Returns 1020 rows with quality metrics
+2. Calls `parse_table()` → Returns 1020 rows with quality metrics
 3. Tool warnings: "ℹ️ Successfully recovered 3 gaps in table data"
 4. Calls `map_table_to_schema(column_mapping={"Date": "date", "Description": "description", ...}, value_transforms={"amount": "strip_currency"})` → All 1020 rows transformed instantly
 5. Calls `finalize_table_extraction(table_array_field="transactions", scalar_fields={"account_number": "12345678", "statement_period": "January 2024"})` → Validated against Pydantic model

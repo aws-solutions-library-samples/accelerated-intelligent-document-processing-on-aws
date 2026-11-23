@@ -229,6 +229,52 @@ def test_s3_operation():
     # ... operations happen against moto mock
 ```
 
+## Service errors in retry tests: let botocore build them
+
+A test of a retry decision (does this ladder, decorator or classifier retry this
+error?) must not write the `ClientError` by hand. botocore builds the real one from
+the HTTP reply, and the shapes differ from what a test author imagines: a 5xx whose
+body names no error type (empty, or a front end's HTML page) gets the bare status as
+its code (`"500"`), a modelled error is raised as the client's own subclass
+(`ThrottlingException`, not `ClientError`), and `ResponseMetadata` carries the real
+status. No hand-built error had the bare-status shape, so the Bedrock client failed
+those calls on the first attempt while every retry test passed (#2036).
+
+Describe the **reply** instead, and let a real client turn it into the error, with
+`lib/idp_common_pkg/tests/unit/_botocore_errors.py`:
+
+```python
+from tests.unit._botocore_errors import (
+    bare_replies, named_reply, ok_reply, scripted_client, service_error,
+)
+
+# For code that receives errors from a stub (a fake Lambda client, a decorated
+# function): the error a real client raises for one reply.
+throttle = service_error(named_reply("ThrottlingException"))          # status from the model
+denied = service_error(named_reply("AccessDeniedException", 403, service="lambda"),
+                       "Invoke", "lambda")
+for reply in bare_replies(503):                                        # empty and HTML bodies
+    assert service_error(reply).response["Error"]["Code"] == "503"
+
+# For code that holds the client itself (the BedrockClient ladders): a real client
+# answering its calls with these replies in order.
+runtime, served = scripted_client([bare_replies(500)[0], ok_reply(body)])
+```
+
+The replies enter at botocore's `before-send` event, so everything after it (status
+handling, the protocol's error parser, the exception factory) is botocore's code,
+and nothing is sent. Clients are built once per service per process; a call costs
+well under a millisecond, so this adds no measurable time. `named_reply` takes the
+status the service model declares and refuses a code the model does not declare
+unless you pass the status. Patch the ladder's sleep or backoff to zero as usual.
+
+It does not cover errors delivered inside an event stream (`EventStreamError`, and
+the streaming APIs' lower-cased codes such as `internalServerException`), or
+transport failures below `before-send` (a dropped connection, a read timeout); build
+those as the existing tests do. A test whose subject is a code **vocabulary** rather
+than a reply (every code in a list is retried) may also keep a hand-built error, so
+that a real 5xx status cannot let the server-error rule pass it instead.
+
 ## Fake credentials in fixtures
 
 Secret scanners read this repository, and a fixture that looks like a real AWS
@@ -369,9 +415,10 @@ would cover `scripts/tests`, `scripts/sdlc/tests`, `scripts/srt/tests` and
 `scripts/security/tests`, which is the whole gate layer.
 
 **Being registered in `RUN_ROOTS` does not mean a suite runs on a pull request.**
-`make test` runs in neither CI. CI runs `make test-cicd -C lib/idp_common_pkg` and
-`make test-packages-cicd`, and the second is a hand-enumerated recipe — so a new root
-has to be added there as well, on its own `cd <dir> && $(PYTEST_HERMETIC) …` line if it
+`make test` runs in neither CI. CI runs `make test-cicd -C lib/idp_common_pkg`,
+`make coverage-all-cicd` (every suite a coverage tree measures) and
+`make test-packages-cicd`, and the last is a hand-enumerated recipe — so a new root
+that no coverage tree measures has to be added there as well, on its own `cd <dir> && $(PYTEST_HERMETIC) …` line if it
 defines a module named `index`. `scripts/tests/test_src_lambda_tests_in_ci.py` derives
 both sides and fails until you do; 22 roots holding 506 tests were in `RUN_ROOTS` and
 in neither CI before it was generalised beyond `src/lambda/`. Everything gated goes

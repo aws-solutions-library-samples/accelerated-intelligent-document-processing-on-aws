@@ -196,6 +196,29 @@ def worker_share(jobs: int, cpus: int | None = None) -> int:
     return max(2, cpus // max(1, jobs))
 
 
+#: The measurement core for every coverage report the ratchet reads (this script's
+#: trees, and idp_common's `test-cicd`, which exports the same value):
+#: ``sys.monitoring`` (PEP 669), available from Python 3.12 and coverage 7.4, instead
+#: of the default C tracer.
+#:
+#: Measured on 2026-11-12 on 4 CPUs, the size of a GitHub runner, running what the
+#: ``unit_tests`` CI job runs: ``test-cicd`` for idp_common took 485 s under the C
+#: tracer and 249 s under ``sysmon``, and ``coverage-all-cicd`` over the other ten
+#: trees took 2,417 s and 589 s. The ``scripts`` tree alone, the longest, took 389 s,
+#: against 434 s with no coverage at all. The ratchet passed on both runs over the same
+#: 566 files, and of 981 measured files only two differed, each by a line or two that
+#: ``sysmon`` recorded and the C tracer did not. This repository measures **line**
+#: coverage only; branch coverage under ``sysmon`` needs Python 3.14, and coverage
+#: falls back to the C tracer with a warning rather than failing if that is asked for.
+#:
+#: Set with ``setdefault``, so ``COVERAGE_CORE=ctrace`` in the caller's environment
+#: still selects the other core for a comparison run.
+#: ``scripts/tests/test_coverage_all.py::test_the_configured_core_is_the_one_coverage_uses``
+#: asserts the installed coverage really selects it, since an unknown or unsupported
+#: core is not an error.
+COVERAGE_CORE = "sysmon"
+
+
 def subprocess_coverage_env(
     data_dir: Path, source_dir: Path, env: dict[str, str] | None = None
 ) -> dict[str, str]:
@@ -242,6 +265,9 @@ def subprocess_coverage_env(
     out["COVERAGE_PROCESS_START"] = str(SUBPROCESS_RC)
     out["COVERAGE_FILE"] = str(Path(data_dir).resolve() / ".coverage")
     out["COVERAGE_SUBPROCESS_SOURCE"] = str(Path(source_dir).resolve())
+    # The core is inherited by every child, so the subprocesses are measured by the
+    # same core as the parent. See COVERAGE_CORE.
+    out.setdefault("COVERAGE_CORE", COVERAGE_CORE)
     return out
 
 
@@ -586,13 +612,9 @@ def run(
         except Exception:  # pragma: no cover - malformed report
             total = None
     output = (result.stdout or "") + (result.stderr or "") if capture else ""
-    # 5 == no tests collected for the marker, which is not a failure of this script.
-    return (
-        tree.name,
-        (0 if result.returncode in (0, 5) else result.returncode),
-        total,
-        output,
-    )
+    # 5 == no tests collected. Returned as-is: whether that is a failure depends on
+    # whether this run is the gate (`--fail-on-empty`), which only `main` knows.
+    return (tree.name, result.returncode, total, output)
 
 
 def main() -> int:
@@ -635,6 +657,17 @@ def main() -> int:
         "--serial",
         action="store_true",
         help="do not pass -n auto for ANY tree (trees that declare serial are always serial)",
+    )
+    parser.add_argument(
+        "--fail-on-empty",
+        action="store_true",
+        help=(
+            "treat a tree that collects no tests (pytest exit 5) as failed. "
+            "`make coverage-all-cicd` passes it: in CI this script is the only run of "
+            "most of these suites, so a tree that silently stops collecting must fail "
+            "rather than pass with a vacuous report. Without it, exit 5 is tolerated, "
+            "for a local run whose marker filter legitimately selects nothing."
+        ),
     )
     args = parser.parse_args()
 
@@ -751,6 +784,8 @@ def main() -> int:
         name, code, total, output = run(
             tree, python, parallel=parallel, workers=workers, capture=jobs > 1
         )
+        if code == 5 and not args.fail_on_empty:
+            code = 0
         with lock:
             if jobs > 1:
                 # Printed as one block per tree, under the lock. Several trees' pytest

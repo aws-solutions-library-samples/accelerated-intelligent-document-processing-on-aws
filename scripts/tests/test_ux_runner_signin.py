@@ -731,11 +731,16 @@ def test_a_sidebar_that_never_appears_gives_no_facts_once_the_wait_is_over() -> 
 @pytest.mark.unit
 def test_the_links_read_are_the_ones_the_ui_source_renders() -> None:
     """Each fact's ``href`` and label are those navigation.tsx gives the
-    Deployment Info item, so a change to either there fails here first."""
+    Deployment Info item, so a change to either there fails here first. The
+    label is the English of a message (``defaultMessage: 'Stack Name:
+    {stackName}'``) and the item formats that message with that argument."""
     source = NAVIGATION_TSX.read_text(encoding="utf-8")
     for href, label in signin.DEPLOYMENT_INFO_LINKS.values():
         item = (
-            rf"text: `{re.escape(label)} \$\{{settings\.\w+\}}`,\s*"
+            rf"(?P<key>\w+): \{{\s*id: '[\w.]+',\s*"
+            rf"defaultMessage: '{re.escape(label)} \{{(?P<arg>\w+)\}}',"
+            r"[\s\S]*?"
+            r"text: intl\.formatMessage\(messages\.(?P=key), \{ (?P=arg): [^}]+ \}\),\s*"
             rf"href: '{re.escape(href)}'"
         )
         assert re.search(item, source), f"navigation.tsx renders no {label} {href}"

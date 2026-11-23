@@ -9,6 +9,7 @@ import React from 'react';
 import { Box, Button, Modal, Table } from '@cloudscape-design/components';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime } from '../../utils/date-time';
 
 type HistoryEntry = ReviewItemDetail['history'][number];
@@ -25,6 +26,12 @@ const EVENT_LABELS: Record<string, string> = {
   completed: 'Completed',
   rejected: 'Rejected',
   removed: 'Removed from review',
+  skipped: 'Skipped (Skip All Reviews)',
+  // The legacy review's records (the document's HITLReviewHistory).
+  skip_all: 'Skipped (Skip All Reviews)',
+  section_reviewed: 'Section review completed',
+  finalize_send_failed: 'Finalize pending retry',
+  sent_to_review: 'Sent to review',
   moved: 'Moved',
   withdrawn: 'Withdrawn',
   superseded: 'Superseded',
@@ -51,37 +58,40 @@ export const entryDetails = (entry: HistoryEntry): EntryDetails => {
 };
 
 /** The review activity of one cycle, newest first. Shared with the unified editor's History. */
-export const ReviewHistoryTable = ({ history }: { history: ReviewItemDetail['history'] }): React.JSX.Element => (
-  <Table
-    variant="embedded"
-    items={[...history].reverse()}
-    trackBy={(entry) => `${entry.at}-${entry.event}`}
-    columnDefinitions={[
-      { id: 'at', header: 'When', cell: (entry) => formatDateTime(entry.at) },
-      { id: 'event', header: 'Event', cell: (entry) => eventLabel(entry.event) },
-      { id: 'actor', header: 'By', cell: (entry) => entry.actor || '-' },
-      {
-        id: 'reason',
-        header: 'Reason',
-        cell: (entry) => {
-          const { reason, note } = entryDetails(entry);
-          if (!reason && !note) return '-';
-          return (
-            <Box>
-              {reason}
-              {note && (
-                <Box variant="small" color="text-body-secondary">
-                  {note}
-                </Box>
-              )}
-            </Box>
-          );
+export const ReviewHistoryTable = ({ history }: { history: ReviewItemDetail['history'] }): React.JSX.Element => {
+  const { locale } = useFormatters();
+  return (
+    <Table
+      variant="embedded"
+      items={[...history].reverse()}
+      trackBy={(entry) => `${entry.at}-${entry.event}`}
+      columnDefinitions={[
+        { id: 'at', header: 'When', cell: (entry) => formatDateTime(entry.at, locale) },
+        { id: 'event', header: 'Event', cell: (entry) => eventLabel(entry.event) },
+        { id: 'actor', header: 'By', cell: (entry) => entry.actor || '-' },
+        {
+          id: 'reason',
+          header: 'Reason',
+          cell: (entry) => {
+            const { reason, note } = entryDetails(entry);
+            if (!reason && !note) return '-';
+            return (
+              <Box>
+                {reason}
+                {note && (
+                  <Box variant="small" color="text-body-secondary">
+                    {note}
+                  </Box>
+                )}
+              </Box>
+            );
+          },
         },
-      },
-    ]}
-    empty={<Box color="text-body-secondary">Nothing has happened to this item yet.</Box>}
-  />
-);
+      ]}
+      empty={<Box color="text-body-secondary">Nothing has happened to this item yet.</Box>}
+    />
+  );
+};
 
 interface ReviewHistoryModalProps {
   history: ReviewItemDetail['history'];

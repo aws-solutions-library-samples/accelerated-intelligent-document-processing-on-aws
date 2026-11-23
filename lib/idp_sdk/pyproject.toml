@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "idp-sdk"
-version = "0.6.14"
+version = "0.6.15"
 description = "Python SDK for IDP Accelerator - programmatic access to document processing capabilities"
 authors = [{name = "AWS"}]
 license = {text = "MIT-0"}
@@ -68,3 +68,7 @@ lambda = [
 
 [tool.setuptools.packages.find]
 include = ["idp_sdk*"]
+
+[tool.setuptools.package-data]
+# The fit-check report contract, read at run time to validate fit-report.json.
+idp_sdk = ["_core/fit_check/fit-report.schema.json"]

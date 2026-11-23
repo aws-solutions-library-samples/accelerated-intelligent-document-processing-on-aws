@@ -77,6 +77,7 @@ import {
   versionBadgeText,
 } from './annotation-edit-flags';
 import { createLatestResponseGuard } from './latestResponseOnly';
+import { useFormatters } from '../../i18n/format';
 
 export type { QueueItem } from '../edit-screen/test-set-item-edit-adapter';
 
@@ -146,6 +147,7 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const { settings } = useSettingsContext();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { canAnnotate, isAdmin, isAnnotatorOnly, canWorkTestSetQueues, loading: roleLoading } = useUserRole();
+  const { formatNumber, locale } = useFormatters();
   // An item opened from here keeps this page in its breadcrumbs: under Review Management for an Admin, Queues otherwise.
   const itemOrigin = isAdmin ? 'review' : 'queues';
   const reviewWork = useOptionalReviewWork();
@@ -678,15 +680,15 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
                 {impact &&
                   metric(
                     'Estimated label accuracy',
-                    formatPct(1 - impact.baselineError, estimateDecimals),
+                    formatPct(1 - impact.baselineError, locale, estimateDecimals),
                     impact.residualError < impact.baselineError
-                      ? `${formatPct(1 - impact.residualError, estimateDecimals)} after the recommended review`
+                      ? `${formatPct(1 - impact.residualError, locale, estimateDecimals)} after the recommended review`
                       : 'reviewing more will refine this',
                   )}
                 {impact &&
                   metric(
                     'Evidence',
-                    impact.totalObservations.toLocaleString(),
+                    formatNumber(impact.totalObservations),
                     /* `prior` means the number comes from other sets; reviewing changes that. */
                     impact.estimateConfidence === 'prior'
                       ? 'measurements — estimate still based on other sets'
@@ -845,7 +847,8 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
               {
                 id: 'confidence',
                 header: 'Confidence',
-                cell: (item) => renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold) ?? '—',
+                cell: (item) =>
+                  renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold, locale) ?? '—',
               },
               {
                 id: 'annotator',

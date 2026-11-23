@@ -3,6 +3,7 @@
 
 import React from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -81,11 +82,17 @@ const inbox = {
 // What beginUnreadSync hands back: applies the listed unread count (never stale here).
 const applyUnread = vi.fn();
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 const renderPage = (path = '/inbox') =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <InboxPage />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 const wrapper = () => createWrapper(document.body);
@@ -137,6 +144,18 @@ describe('InboxPage', () => {
     inbox.beginUnreadSync.mockReturnValue(applyUnread);
     inboxRef.current = { unreadCount: 2, changeToken: 0, recent: [], loaded: true, ...inbox };
     localStorage.clear();
+  });
+
+  it('starts every column but Action at a set width, so a long title cannot widen the table', async () => {
+    renderPage();
+    await loaded();
+    const widths = table()
+      .findColumnHeaders()
+      .map((h) => h.getElement().closest('th')!.style.width);
+    // Received 143 (10% wider than 130), Title a fixed 340, Type 120, Severity 110.
+    // Action, the last column, has only a minimum and fills what is left on a real
+    // page (jsdom has no container width, so it stays at that minimum here).
+    expect(widths.slice(-5)).toEqual(['143px', '340px', '120px', '110px', '80px']);
   });
 
   it('shows the loading state while messages load', async () => {

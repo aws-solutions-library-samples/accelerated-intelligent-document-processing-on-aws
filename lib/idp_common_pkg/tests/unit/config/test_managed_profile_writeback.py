@@ -44,7 +44,7 @@ from idp_common.config.configuration_manager import (
 )
 from idp_common.config.constants import CONFIG_TYPE_CONFIG, DEFAULT_VERSION
 from idp_common.config.merge_utils import merge_config_with_defaults
-from idp_common.config.models import IDPConfig
+from idp_common.config.models import ConfidenceConfig, IDPConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _LIBRARY = _REPO_ROOT / "config_library"
@@ -215,16 +215,25 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     manager.activate_version(name)
 
     # Simulate "a field added since this profile was saved": drop a nested key
-    # that `default` carries from the stored body.
+    # that `default` carries from the stored body. The key must be one whose code
+    # default differs from the stored value, or the revision without it already
+    # runs the same configuration and there is nothing to record: a field whose
+    # default equals the shipped value (test_system_defaults_value_parity.py) is
+    # not observable by its absence.
     item = manager._decompress_item(_head(manager, name))
-    assert item["summarization"].get("model"), "the fixture must remove a real key"
-    del item["summarization"]["model"]
+    stored = item["extraction"]["confidence"].get("model")
+    assert stored, "the fixture must remove a real key"
+    assert stored != ConfidenceConfig().model, (
+        "the removed key's code default equals its stored value, so removing it "
+        "changes nothing a revision runs"
+    )
+    del item["extraction"]["confidence"]["model"]
     manager.table.put_item(Item=manager._compress_item(item))
     # The published revision was recorded by the same older release, so it lacks
     # the key too, and the head is provably that revision.
     published = manager.resolve_published_revision(name)
     body = manager.revisions.get_body(name, published)
-    del body["summarization"]["model"]
+    del body["extraction"]["confidence"]["model"]
     manager.revisions.put_body(name, published, body)
     manager.revisions.update_entry(
         name, published, storedHash=_stored_content_hash(item)
@@ -235,7 +244,9 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     merged = manager.get_merged_configuration(name)
 
     assert merged is not None
-    assert merged.summarization.model, "the absent key must be backfilled"
+    assert merged.extraction.confidence.model == stored, (
+        "the absent key must be backfilled"
+    )
     assert writes.calls == [], "a read of a profile with history writes nothing"
     manager.record_resolution_against_default(name)
     assert "PutItem" in writes.calls, "a genuine backfill must still be persisted"

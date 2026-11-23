@@ -2,6 +2,9 @@
 title: "Development Environment Setup Guide on Linux"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Development Environment Setup Guide on Linux
 
 # Introduction
@@ -195,7 +198,7 @@ make setup-venv
 source .venv/bin/activate
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies. When Node.js 22.12 or later is on `PATH`, it also installs the web UI and docs-site npm dependencies and the `basedpyright` type checker, which lint, type checking and the UI tests need; without Node it prints a warning and finishes, since deploying does not need Node. `make setup-node` installs the Node side on its own and fails on any error. Run it again after a `git pull` that changes `src/ui/package-lock.json`.
 
 # Step 7: Test the Build
 

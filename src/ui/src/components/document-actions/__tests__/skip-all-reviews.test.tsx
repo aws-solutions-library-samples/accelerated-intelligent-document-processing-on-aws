@@ -12,7 +12,8 @@
  */
 
 import React from 'react';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -104,7 +105,7 @@ const doc = (over: Record<string, unknown> = {}) => ({
 
 const getDocumentDetailsFromIds = vi.fn();
 const renderPanel = (item = doc()) =>
-  render(
+  renderWithIntl(
     <DocumentPanel
       item={item as never}
       getDocumentDetailsFromIds={getDocumentDetailsFromIds}
@@ -157,7 +158,7 @@ describe('Skip All Reviews', () => {
     await waitFor(() => expect(state.graphql).toHaveBeenCalled());
     expect(state.graphql.mock.calls[0][0]).toEqual({
       query: skipAllSectionsReview,
-      variables: { objectKey: 'packet.pdf', reason: 'Duplicate document', note: 'same as invoice-2' },
+      variables: { objectKey: 'packet.pdf', reason: 'Duplicate document', note: 'same as invoice-2', resubmit: true },
     });
     await waitFor(() => expect(state.setSuccessMessage).toHaveBeenCalledWith('Skipped the review of packet.pdf.'));
     expect(getDocumentDetailsFromIds).toHaveBeenCalledWith(['packet.pdf']);
@@ -187,6 +188,31 @@ describe('Skip All Reviews', () => {
         .click(),
     );
     await waitFor(() => expect(state.setErrorMessage).toHaveBeenCalledWith(`Failed to skip all sections: ${message}`));
+  });
+
+  it('sends resubmit: false when the resubmit option is unticked', async () => {
+    renderPanel();
+    detailBar.chooseMenuItem('More Actions', 'Skip All Reviews');
+    const modal = await waitFor(() =>
+      shown(
+        createWrapper(document.body)
+          .findAllModals()
+          .find((m) => m.findHeader().getElement().textContent === 'Skip All Section Reviews'),
+      ),
+    );
+    act(() => modal.findContent().findCheckbox()!.findNativeInput().click());
+    const select = modal.findContent().findSelect()!;
+    act(() => select.openDropdown());
+    act(() => select.selectOptionByValue('Duplicate document'));
+    act(() =>
+      modal
+        .findFooter()!
+        .findAllButtons()
+        .find((b) => b.getElement().textContent === 'Skip All Reviews')!
+        .click(),
+    );
+    await waitFor(() => expect(state.graphql).toHaveBeenCalled());
+    expect(state.graphql.mock.calls[0][0].variables.resubmit).toBe(false);
   });
 
   it('is available for a legacy review pending', () => {

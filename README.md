@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 
 
+🎬 **[See IDP in Action](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/idp-in-action.html)** — an illustrated tour of the main features, with an eight-minute overview video
+
 📖 **[Browse the Documentation Site](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/)** — searchable, with sidebar navigation
 
 ## Table of Contents
@@ -28,6 +30,7 @@ SPDX-License-Identifier: MIT-0
     - [Processing Modes](#processing-modes)
     - [Python Development](#python-development)
     - [Planning \& Operations](#planning--operations)
+    - [Solution Profile](#solution-profile)
   - [Security](#security)
   - [Contributing](#contributing)
   - [Project Governance](#project-governance)
@@ -49,7 +52,7 @@ Concierge support for customization, deployment, and integration of production u
 
 **Prefer AWS CDK?** This solution is also available as [GenAI IDP Accelerator for AWS CDK](https://github.com/cdklabs/genai-idp), providing the same functional capabilities through AWS CDK constructs for customers who prefer Infrastructure-as-Code with CDK.
 
-**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating to the built-in Terraform module](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
+**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating from genai-idp-terraform](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
 
 ## Key Features
 
@@ -100,8 +103,6 @@ To quickly deploy the GenAI-IDP solution in your AWS account:
 | US East (N.Virginia)      | us-east-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | EU Central (Frankfurt)      | eu-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | Canada (Central)      | ca-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
-
-> ⚠️ The **Canada (Central)** button serves artifacts from v0.6.12 onward. Until that release is published it answers a CloudFormation "template not found" error; deploy an earlier release from source instead (see [Canada (Central) Region Model Support](./docs/canada-region-model-support.md)).
 
 3. When the stack deploys for the first time, you'll receive an email with a temporary password to access the web UI
 4. Use this temporary password for your first login to set up a permanent password
@@ -166,8 +167,14 @@ the index instead of from `lib/`. See
 See the [Deployment Guide](./docs/deployment.md#testing-the-solution) for more detailed testing instructions.
 
 IMPORTANT: If you have not previously done so, you must [request access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) to the following Amazon Bedrock models:
-- Amazon: All Nova models, plus Titan Text Embeddings V2
-- Anthropic: Claude 3.x models, Claude 4.x models
+- Amazon: Nova 2 Lite, Nova Lite and Nova Pro; Titan Text Embeddings V2 (knowledge base)
+- Anthropic: Claude Sonnet 5 (including its 1M-context variant), Claude Opus 4.8 (1M
+  context), Claude Opus 4.6 (1M context), Claude Sonnet 4.6 and Claude Haiku 4.5
+- Cohere: Embed v4 (multi-document discovery)
+
+These are the models the shipped configuration defaults call. Request access to any
+other model your own configuration names, in the Region you deploy to. The GovCloud,
+EU and Canada guides list the defaults and inference-profile mappings used there.
 
 ## Updating an Existing Deployment
 
@@ -245,12 +252,16 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [Threat Model](./docs/threat-model.md) - STRIDE threat model: trust boundaries, controls in place, residual risks and open items
 - [Cost Calculator](./docs/cost-calculator.md) - Framework for estimating solution costs
 
+### Solution Profile
+
+From the first release after 0.6.15, each GitHub Release carries a **solution profile**: a small, versioned set of YAML files describing what the accelerator does, where it can be extended, where it stops (with numbers), the questions that test whether it fits a need, and how a delivery usually starts. It is built from the release tag, every statement cites its evidence, and it is meant for anyone, including an AI assistant, judging fit before deploying. See [Solution Profile](./docs/solution-profile.md) for how to download, verify and read it.
+
 ## Security
 
 Security artifacts live under [`security/`](./security/README.md) so that coverage
 and results are auditable rather than asserted.
 
-- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 109 threats
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 120 threats
   across the architecture, pipeline, web UI and API, agent and chat
   features, extension points and analytics stack. Each entry records the controls
   that address it and, where they do not fully cover it, the residual risk. Threats

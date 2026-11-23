@@ -44,6 +44,8 @@ amplifytools.xcconfig
 #amplify-do-not-edit-end
 
 .env*
+# Empty marker that flags a UI build for the en-XA pseudo-locale (issue #1770); never committed
+.pseudo-locale
 
 public/lex-web-ui-loader-config.json
 public/lex-web-ui-loader.css

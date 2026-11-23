@@ -9,9 +9,11 @@ This function deletes the session metadata from ChatSessionsTable and all messag
 import json
 import logging
 import os
+import time
 
 import boto3
 from botocore.exceptions import ClientError
+from chat_session_owner import claim_chat_session, holds_session_row
 from log_sanitizer import sanitize_event_for_logging
 
 # Configure logging
@@ -24,6 +26,9 @@ dynamodb = boto3.resource("dynamodb")
 # Get environment variables
 CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
+# Who each session id belongs to, keyed by sessionId. See chat_session_owner.py.
+CHAT_SESSION_OWNERS_TABLE = os.environ.get("CHAT_SESSION_OWNERS_TABLE")
+DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
 # Mirrors the switch in get_agent_chat_messages_resolver, so the read and the
 # delete side of a session answer the same question the same way. Default on.
@@ -44,33 +49,38 @@ class ResourceAccessDenied(PermissionError):
     """
 
 
-def _caller_owns_session(session_id: str, user_id: str) -> bool:
-    """Whether ``user_id`` owns ``session_id``, per ChatSessionsTable.
+def _caller_owns_session(session_id: str, user_id: str, caller_sub: str) -> bool:
+    """Whether the caller owns ``session_id``, per ChatSessionOwnersTable.
 
-    ChatSessionsTable is keyed (userId, sessionId), so a hit for this caller is
-    what establishes ownership. Fails **closed** on a DynamoDB error: an
-    ownership question this cannot answer must not resolve to "yes" on the path
-    that then deletes.
-
-    The unconfigured-table case returns True, matching the read side's stated
-    early-deployment behaviour rather than introducing a second convention; that
-    residual is why the enforcement switch above exists and is documented as the
-    configuration an operator must complete.
+    The same question getChatMessages asks, answered by the same function
+    (``chat_session_owner.claim_chat_session``), so the read and the delete side
+    of one session cannot disagree. The caller's own ChatSessionsTable row counts
+    only for an id nobody owns yet — a session written before the owner table
+    existed — because sending a message under any id used to create one. Never
+    registers an unused id. Fails **closed** on an unconfigured table or a
+    DynamoDB error: an ownership question this cannot answer must not resolve to
+    "yes" on the path that then deletes.
     """
-    if not CHAT_SESSIONS_TABLE:
-        logger.warning(
-            "CHAT_SESSIONS_TABLE is not configured; cannot verify chat session "
-            "ownership before deleting. Allowing; set CHAT_SESSIONS_TABLE in the "
-            "Lambda environment to enable ownership enforcement."
+    if not (CHAT_SESSION_OWNERS_TABLE and CHAT_SESSIONS_TABLE):
+        logger.error(
+            "CHAT_SESSION_OWNERS_TABLE or CHAT_SESSIONS_TABLE is not configured; "
+            "cannot verify chat session ownership before deleting, denying."
         )
-        return True
+        return False
 
+    sessions_table = dynamodb.Table(CHAT_SESSIONS_TABLE)
     try:
-        sessions_table = dynamodb.Table(CHAT_SESSIONS_TABLE)
-        response = sessions_table.get_item(
-            Key={"userId": user_id, "sessionId": session_id}
+        return claim_chat_session(
+            dynamodb.Table(CHAT_SESSION_OWNERS_TABLE),
+            session_id,
+            caller_sub,
+            expires_after=int(time.time()) + DATA_RETENTION_DAYS * 24 * 60 * 60,
+            allow_new=False,
+            has_stored_messages=lambda: True,  # not consulted when allow_new=False
+            holds_earlier_record=lambda: holds_session_row(
+                sessions_table, user_id, session_id
+            ),
         )
-        return "Item" in response
     except ClientError as e:
         logger.error(
             f"Error verifying session ownership before delete for user={user_id} "
@@ -104,6 +114,10 @@ def handler(event, context):
         # Get user identity from context for security
         identity = event.get("identity", {})
         user_id = identity.get("username") or identity.get("sub") or "anonymous"
+        # What a session's owner is recorded as (ChatSessionOwnersTable).
+        caller_sub = identity.get("sub") or (identity.get("claims") or {}).get(
+            "sub"
+        ) or ""
         
         logger.info(f"Deleting agent chat session {session_id} (user: {user_id})")
 
@@ -126,13 +140,13 @@ def handler(event, context):
         # the delete side of one session now answer the same question with the
         # same control, rather than the read side alone.
         if ENFORCE_CHAT_SESSION_OWNERSHIP:
-            if user_id == "anonymous":
+            if user_id == "anonymous" or not caller_sub:
                 logger.warning(
                     "Rejecting deleteChatSession request with no resolvable user "
                     "identity in event.identity (username/sub both absent)."
                 )
                 raise PermissionError("Unauthorized: caller identity not available.")
-            if not _caller_owns_session(session_id, user_id):
+            if not _caller_owns_session(session_id, user_id, caller_sub):
                 logger.warning(
                     f"Rejecting deleteChatSession: user={user_id} does not own "
                     f"session={session_id}"

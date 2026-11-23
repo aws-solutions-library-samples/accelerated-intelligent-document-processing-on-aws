@@ -2,10 +2,10 @@
 title: "Reporting Database"
 ---
 
-# Reporting Database
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Reporting Database
 
 The GenAI IDP Accelerator includes a comprehensive reporting database that captures detailed metrics about document processing. This database is implemented as AWS Glue tables over Amazon S3 data in Parquet format, making it queryable through Amazon Athena for analytics and reporting purposes.
 
@@ -136,14 +136,34 @@ This table is partitioned by date (YYYY-MM-DD format).
 
 The `metering` table captures detailed usage metrics and cost information for each document processing operation:
 
-**Rows are per run.** Each processing run of a document writes the usage of that run
-only. A run that resubmits a stored document (**Process Changes**, finishing or
+**Rows are per run.** Each processing run of a document — one workflow execution —
+writes the usage of that run only, once, under that execution. A run that resubmits a stored document (**Process Changes**, finishing or
 skipping a review, `idp-cli rerun-inference` or the SDK rerun) reports the stages it ran
 and none of the earlier runs' usage, so summing a document's rows over all runs gives
 its total usage without counting any run twice. The document's tracking record (the
 **Estimated Cost** in the Web UI) keeps the cumulative total of every run. Documents
 reprocessed before this behaviour was introduced keep the figures they were saved
 with: their rows are not rewritten.
+
+**Failed runs are included.** An execution that ends `FAILED`, `TIMED_OUT` or
+`ABORTED` writes the usage its stages had recorded on the document's tracking record
+before it stopped, so a sum over the table is actual spend, failed attempts
+included. Usage the failing step itself incurred is generally not recorded there and
+is not included; classification and summarization are the exception, because an
+attempt of either that fails transiently writes the usage of the calls it completed to
+the tracking record (as does a summarization that fails outright). Only the most recent
+failed attempt of a step is there, because each retry starts by replacing that record's
+usage; see [Cost calculator](cost-calculator.md). Rows written before `execution_status` existed hold NULL in it and come
+from executions that succeeded. To break failed attempts out:
+
+```sql
+SELECT COALESCE(execution_status, 'SUCCEEDED') AS execution_status,
+       COUNT(DISTINCT execution_arn) AS executions,
+       SUM(estimated_cost) AS cost
+FROM metering
+WHERE date = '2026-11-18'
+GROUP BY 1
+```
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -158,6 +178,9 @@ with: their rows are not rewritten.
 | timestamp | timestamp | Document COMPLETION time — when the workflow ended and the row was written. Same value as the partition. |
 | initial_event_time | timestamp | Original queue time — when the document was first enqueued. Preserved for consumers who need queue-time semantics. |
 | config_version | string | Configuration profile used for processing |
+| document_class | string | The document's class, derived from its sections: the one class, `mixed` for several, `unknown` for none |
+| execution_arn | string | The workflow execution the usage was incurred in. NULL on rows written before the column existed |
+| execution_status | string | How that execution ended: `SUCCEEDED`, `FAILED`, `TIMED_OUT` or `ABORTED`. NULL on rows written before the column existed |
 
 **Partitioned by `date` + `hour`** (both string; `YYYY-MM-DD` and `HH`).
 Partition values reflect **completion time** (write time), not queue
@@ -185,7 +208,8 @@ Aggregate columns on `metering_hourly` / `metering_daily` (cost per
 service/unit): `sum_value, sum_cost`.
 
 Aggregate columns on `metering_docs_hourly` / `metering_docs_daily`
-(doc-grain volume/pages): `n_docs, sum_pages`. `number_of_pages` is
+(doc-grain volume/pages/runs): `n_docs, sum_pages, n_runs`.
+`number_of_pages` is
 stamped identically on every metering row per document, so aggregating
 it at the (service_api, unit) grain of `metering_hourly` would fan the
 page count out by the number of rows a doc touches; the `metering_docs_*`
@@ -198,6 +222,21 @@ subquery to collapse the fan-out.
 processed across two hours counts twice). For strict cross-day
 unique-doc counts, query raw `metering` with
 `COUNT(DISTINCT document_id)`.
+
+`n_runs` counts document **runs** — one run is one
+`(document_id, timestamp)` pair in raw `metering`, so reprocessing a
+document raises `n_runs` without raising `n_docs`. Unlike `n_docs` it is
+additive: a run falls in exactly one hour, so `SUM(n_runs)` is exact at
+either grain and over any range it fully covers.
+
+⚠️ **`n_runs` is NULL for partitions older than the data-mart migration
+window**, and `SUM` skips NULLs — so a query reaching past that boundary
+returns a number covering only part of the range, with nothing marking it
+short. Select `COUNT(*)` and `COUNT("n_runs")` alongside any `SUM("n_runs")`
+and treat them differing as "partially recorded". The column carries the
+same warning as its Glue comment, so it is visible from the catalog too. See
+[`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
+measurements behind both claims.
 
 See [`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
 consumer tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),
@@ -333,7 +372,9 @@ When a document is processed and a new section type (classification) is detected
 1. Creates a new Glue table for that section type (e.g., `document_sections_invoice`, `document_sections_receipt`, `document_sections_w2`)
 2. Configures the table with appropriate schema based on the extracted data
 3. Sets up partition projection for efficient date-based queries
-4. Updates the table schema if new fields are detected in subsequent documents
+4. Adds a column to the table when a later document has a field the table does not have yet
+
+The table's columns accumulate across documents. A field that one document of a class has and the next does not stays a column, so queries written against it keep working; columns are never removed or renamed by processing. Glue stores column names in lowercase, and the comparison with a document's field names ignores case, so a document whose fields the table already has causes no table update. When a column's type in the table differs from the type the reporting step writes to the Parquet files (for example a `timestamp` column recorded as `string`), the next document of that class corrects the column's type in place. A new table likewise gets one column per name ignoring case, so two field names in one document that differ only by case become a single column. An update keeps the table-level parameters already on the table, such as those the document sections crawler records, and sets only the ones the reporting step manages (the Parquet classification and the partition projection settings).
 
 **Important:** Section type names are normalized to lowercase for consistency with case-sensitive S3 paths. For example, a section classified as "W2" will create a table named `document_sections_w2` with data stored in `document_sections/w2/`.
 
@@ -347,7 +388,7 @@ Document sections are stored in dynamically created tables based on the section 
 | section_id | string | Unique identifier for the section |
 | document_id | string | Unique identifier for the document |
 | section_classification | string | Type/class of the section |
-| section_confidence | double | Confidence score for the section classification |
+| section_confidence | string | Confidence score for the section classification, written as a string like every other non-timestamp section column (cast before comparing); null when the classifier produced no score |
 | timestamp | timestamp | When the document was processed |
 | config_version | string | Configuration profile used for processing |
 
@@ -355,7 +396,7 @@ Document sections are stored in dynamically created tables based on the section 
 The remaining columns are dynamically inferred from the JSON extraction results and vary by section type. Common patterns include:
 - Nested JSON objects are flattened using dot notation (e.g., `customer.name`, `customer.address.street`)
 - Arrays are converted to JSON strings
-- Primitive values (strings, numbers, booleans) are preserved as their native types
+- Every other value is stored as a string, including numbers and booleans, so cast before aggregating; only `timestamp` and `evaluation_date` are written with a timestamp type
 
 **Partitioning:**
 Each section type table is partitioned by date (YYYY-MM-DD format) for efficient querying.

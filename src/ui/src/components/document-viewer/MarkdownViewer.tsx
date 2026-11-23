@@ -33,6 +33,10 @@ const logger = new ConsoleLogger('MarkdownViewer');
 // Default height for the simple mode
 const MARKDOWN_DEFAULT_HEIGHT = '600px';
 
+/** Text for an HTML context: the print window's <title> is built as a string. */
+const escapeHtmlText = (value: string): string =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
 const MarkdownViewer = ({
   content,
   documentName,
@@ -129,7 +133,7 @@ const MarkdownViewer = ({
       <!DOCTYPE html>
       <html>
         <head>
-          <title>${title || 'Report'} - ${documentName || 'Document'}</title>
+          <title>${escapeHtmlText(title || 'Report')} - ${escapeHtmlText(documentName || 'Document')}</title>
           <style>
             body { font-family: Arial, sans-serif; padding: 20px; }
             table { border-collapse: collapse; margin: 16px 0; width: auto; }

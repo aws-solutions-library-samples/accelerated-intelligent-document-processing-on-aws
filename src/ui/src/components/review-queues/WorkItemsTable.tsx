@@ -7,11 +7,13 @@ import React, { useMemo, useState } from 'react';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { ButtonDropdownProps, SelectProps, TableProps } from '@cloudscape-design/components';
 import { Badge, Box, ButtonDropdown, Link, Pagination, Select, SpaceBetween, Table, TextFilter } from '@cloudscape-design/components';
+import { useIntl } from 'react-intl';
 
 import { distinguishingNames } from '../common/distinguishing-names';
-import { paginationLabels } from '../common/labels';
+import { usePaginationLabels } from '../common/labels';
 import TruncatedText from '../common/TruncatedText';
-import { NoDataState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
+import { NoDataState, TableHeader, TableNoMatchState, filterCounterText } from '../common/table';
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import { SOURCE_LABELS } from './work-items';
 import type { WorkItem, WorkSource } from './work-items';
@@ -42,8 +44,15 @@ const SOURCE_OPTIONS: SelectProps.Option[] = [
   { value: 'test-set', label: SOURCE_LABELS['test-set'] },
 ];
 
-const age = (iso: string | null): React.ReactNode =>
-  iso ? <span title={formatDateTime(iso)}>{formatRelativeTime(iso)}</span> : <Box color="text-status-inactive">—</Box>;
+/** An item's age in the UI locale; a column's `cell` cannot call a hook, so this is a component. */
+const Age = ({ iso }: { iso: string | null }): React.JSX.Element => {
+  const { locale } = useFormatters();
+  return iso ? (
+    <span title={formatDateTime(iso, locale)}>{formatRelativeTime(iso, locale)}</span>
+  ) : (
+    <Box color="text-status-inactive">—</Box>
+  );
+};
 
 /** Characters of the document name shown before its middle is cut. */
 const DOCUMENT_NAME_CHARS = 40;
@@ -79,7 +88,7 @@ const baseColumns = (displayName: (item: WorkItem) => string): TableProps.Column
     sortingField: 'queue',
   },
   { id: 'priority', header: 'Priority', width: 100, cell: (item) => item.priority ?? '—', sortingField: 'priority' },
-  { id: 'age', header: 'Age', width: 110, cell: (item) => age(item.enqueuedAt), sortingField: 'enqueuedAt' },
+  { id: 'age', header: 'Age', width: 110, cell: (item) => <Age iso={item.enqueuedAt} />, sortingField: 'enqueuedAt' },
   {
     id: 'reason',
     header: 'Top reason',
@@ -156,6 +165,8 @@ const WorkItemsTable = ({
   showStatusFilter = false,
   empty,
 }: WorkItemsTableProps): React.JSX.Element => {
+  const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const [source, setSource] = useState<SelectProps.Option>(ALL_SOURCES);
   const [state, setState] = useState<SelectProps.Option>(ALL_STATES);
   const displayNames = useMemo(() => distinguishingNames(items.map((i) => i.objectKey)), [items]);
@@ -254,7 +265,7 @@ const WorkItemsTable = ({
             {...filterProps}
             filteringPlaceholder="Find items"
             filteringAriaLabel="Find items"
-            countText={getFilterCounterText(filteredItemsCount ?? 0)}
+            countText={filterCounterText(intl, filteredItemsCount ?? 0)}
           />
           {showStatusFilter && (
             <Select

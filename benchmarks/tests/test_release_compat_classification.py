@@ -562,3 +562,88 @@ def test_native_upload_without_a_release_to_validate_against_is_an_error(monkeyp
     with pytest.raises(SystemExit) as exc:
         run_matrix.main()
     assert exc.value.code == 2
+
+
+def test_a_decision_model_cell_is_still_refused_against_a_release_without_it():
+    """The method-selected skip is bounded by the cell's own method: a cell that
+    selects ``decision_model`` cannot be run on a release that drops its block."""
+    classification = {
+        "split_then_classify": {
+            "section_classification": {
+                "method": "decision_model",
+                "decision_model": {"max_pages": 1},
+            }
+        }
+    }
+    path = "classification.split_then_classify.section_classification.decision_model.max_pages"
+    assert release_model_check._unselected_method_block(classification, path) is False
+    classification["split_then_classify"]["section_classification"]["method"] = "llm"
+    assert release_model_check._unselected_method_block(classification, path) is True
+    assert (
+        release_model_check._unselected_method_block(
+            classification, "classification.combined.llm.model"
+        )
+        is False
+    )
+
+
+def test_an_embeddings_block_is_inert_unless_the_cell_selects_embeddings():
+    """``embeddings`` (#1657) is read only under ``method: embeddings``, and
+    ``low_confidence`` under either non-LLM method, so a release that drops them
+    from an ``llm`` cell runs the same cell, while an ``embeddings`` cell is still
+    refused there."""
+    section: dict = {"method": "llm", "embeddings": {"temperature": 0.034}}
+    classification = {"split_then_classify": {"section_classification": section}}
+    base = "classification.split_then_classify.section_classification."
+    assert release_model_check._unselected_method_block(
+        classification, base + "embeddings.temperature"
+    )
+    assert release_model_check._unselected_method_block(
+        classification, base + "low_confidence.min_confidence"
+    )
+    section["method"] = "embeddings"
+    assert not release_model_check._unselected_method_block(
+        classification, base + "embeddings.temperature"
+    )
+    assert not release_model_check._unselected_method_block(
+        classification, base + "low_confidence.min_confidence"
+    )
+    section["method"] = "decision_model"
+    assert release_model_check._unselected_method_block(
+        classification, base + "embeddings.temperature"
+    )
+    assert not release_model_check._unselected_method_block(
+        classification, base + "low_confidence.min_confidence"
+    )
+
+
+def test_a_page_order_other_than_scan_is_still_refused_against_a_release_without_it():
+    """The prior-behaviour skip is bounded by the value: ``pageOrder: scan`` is what
+    a release without the key does, so dropping it is inert, while
+    ``printed_page_numbers`` asks for behaviour that release does not have."""
+    path = "classification.document_shape.pageOrder"
+    classification = {"document_shape": {"pageOrder": "scan"}}
+    assert release_model_check._inert_at_prior_behaviour(classification, path) is True
+    classification["document_shape"]["pageOrder"] = "printed_page_numbers"
+    assert release_model_check._inert_at_prior_behaviour(classification, path) is False
+    assert (
+        release_model_check._inert_at_prior_behaviour(
+            {"document_shape": {"sectionSplitting": "scan"}},
+            "classification.document_shape.sectionSplitting",
+        )
+        is False
+    )
+
+
+@needs_nested_release
+def test_a_non_default_page_order_fails_against_the_nested_release(
+    built, nested_release_lib
+):
+    """End to end through ``check_config``: the release that predates ``pageOrder``
+    still refuses a cell that asks for printed-page ordering."""
+    cfg = copy.deepcopy(built["split-disabled"])
+    cfg["classification"]["document_shape"]["pageOrder"] = "printed_page_numbers"
+    errors = release_model_check.check_config(cfg, nested_release_lib)
+    assert any(
+        e.startswith("classification.document_shape.pageOrder ") for e in errors
+    ), errors

@@ -81,10 +81,38 @@ from botocore.httpsession import URLLib3Session
 
 from idp_common.lambda_deadline import attempt_cannot_finish
 
+from .guardrail import guardrail_id_and_version_from_env
 from .model_utils import get_model_max_output_tokens
 from .session import get_bedrock_session
 
 logger = logging.getLogger(__name__)
+
+
+_guardrail_warning_logged = False
+
+
+def _warn_guardrail_not_applied(model_id: str) -> None:
+    """Log, once per process, that the configured guardrail is not sent here.
+
+    The Responses API request carries no guardrail: neither
+    :func:`build_responses_request` nor the signing helpers add one, and whether
+    the bedrock-mantle endpoint honours one has not been established. A stack
+    with ``GUARDRAIL_ID_AND_VERSION`` set therefore sends GPT-5.x requests without
+    it, and saying so in the log is better than a guardrail that is configured
+    and silently absent.
+    """
+    global _guardrail_warning_logged
+    if _guardrail_warning_logged:
+        return
+    if guardrail_id_and_version_from_env() is None:
+        return
+    _guardrail_warning_logged = True
+    logger.warning(
+        "A Bedrock guardrail is configured (GUARDRAIL_ID_AND_VERSION) but is not "
+        "applied to OpenAI Responses API models; model=%s",
+        model_id,
+    )
+
 
 # SigV4 signing service name for the bedrock-mantle endpoint. Matches the IAM
 # action namespace (``bedrock-mantle:CreateInference``). Overridable via env var
@@ -256,6 +284,12 @@ def is_openai_responses_model(model_id: Optional[str]) -> bool:
     """Return True if the model must be invoked via the OpenAI Responses API.
 
     Handles a defensive region prefix even though these IDs carry none today.
+
+    The ID is matched as written: no whitespace is stripped and case is not
+    folded. ``BedrockClient.invoke_model`` routes on this predicate and then
+    sends the ID on with nothing removed but the region prefix, so normalising
+    here alone would send an unnormalised ID to bedrock-mantle rather than make
+    it valid.
 
     Args:
         model_id: Bedrock model ID (e.g., ``openai.gpt-5.4``).
@@ -941,6 +975,7 @@ def stream_responses_api(
     # but keep the import local so the module's import cost is unchanged.
     import urllib3
 
+    _warn_guardrail_not_applied(model_id)
     client._put_metric("BedrockRequestsTotal", 1)
 
     region = resolve_mantle_region(model_id, client.region)
@@ -1157,6 +1192,7 @@ def invoke_responses_api(
         IncompleteOutputError: The response was truncated mid-JSON.
         RuntimeError: On other non-retryable errors or after exhausting retries.
     """
+    _warn_guardrail_not_applied(model_id)
     client._put_metric("BedrockRequestsTotal", 1)
 
     region = resolve_mantle_region(model_id, client.region)

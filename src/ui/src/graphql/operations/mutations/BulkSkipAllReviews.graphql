@@ -1,0 +1,21 @@
+mutation BulkSkipAllReviews($input: BulkSkipAllReviewsInput!) {
+  bulkSkipAllReviews(input: $input) {
+    dryRun
+    runMode
+    syncLimit
+    approximate
+    eligibleCount
+    limitReached
+    counts {
+      outcome
+      count
+    }
+    results {
+      objectKey
+      outcome
+      kind
+      detail
+    }
+    jobId
+  }
+}

@@ -295,7 +295,32 @@ class ReviewSweeper:
         new.sweep_at_ms = self._now_ms() + delay_ms
         self._write(item, new)
 
+    def _abandon_manual(self, item: ReviewItemRecord, report: SweepReport) -> None:
+        """A Send to review item still HOLDING never became claimable: undo the send
+        (restore the tracking row, delete the status object and the item)."""
+        from .send_to_review import SendToReviewService
+
+        table = getattr(getattr(self.document_service, "client", None), "table", None)
+        if table is None:
+            logger.error("event=review_sweep_manual_abandon_failed reason=no_table")
+            return
+        SendToReviewService(
+            self.store,
+            table,
+            lambda _k: None,
+            self.s3,
+            self.output_bucket,
+            notifier=self.notify,
+            clock=self.clock,
+            sync_limit=lambda: 1,
+        ).abandon(item)
+        report.holds_reaped += 1
+        self.metric("ReviewManualHoldsAbandoned", 1)
+
     def _visit_holding(self, item: ReviewItemRecord, report: SweepReport) -> None:
+        if item.origin == "manual":
+            self._abandon_manual(item, report)
+            return
         describe = (
             self._describe(item.phase1_execution_arn)
             if item.phase1_execution_arn

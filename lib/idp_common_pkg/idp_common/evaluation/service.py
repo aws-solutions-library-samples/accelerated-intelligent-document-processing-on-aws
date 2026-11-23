@@ -9,6 +9,7 @@ the Stickler library for structured object comparison.
 """
 
 import concurrent.futures
+import contextvars
 import logging
 import os
 import time
@@ -20,11 +21,15 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 if TYPE_CHECKING:
     from idp_common.evaluation.stickler_backend import StructuredModel
 
-from idp_common import s3
+from idp_common import s3, utils
 from idp_common.config.models import IDPConfig
 from idp_common.evaluation.contract import (
     STICKLER_RESULT_VERSION,
     evaluation_results_key,
+)
+from idp_common.evaluation.empty_values import (
+    EMPTY_PREDICTION_CONFIDENCES_KEY,
+    empty_prediction_confidences,
 )
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
@@ -36,6 +41,7 @@ from idp_common.evaluation.stickler_backend import (
     DocSplitClassificationMetrics,
     SticklerConfigMapper,
     attach_page_confidence,
+    collect_evaluation_metering,
     compute_boundary_and_label_accuracy,
     compute_graded_packet_metrics,
     get_stickler_model,
@@ -44,6 +50,7 @@ from idp_common.evaluation.stickler_backend import (
     transform_stickler_result,
 )
 from idp_common.models import Document, Section, Status
+from idp_common.utils.transient_errors import is_transient_error, reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -606,6 +613,12 @@ class EvaluationService:
             return extraction_data, confidence_scores
 
         except Exception as e:
+            # A throttled, 5xx or timed-out read says nothing about the document,
+            # and scoring its fields as misses would record a depressed accuracy
+            # with no retry. Surface it as TransientError so EvaluationStep runs
+            # again (#2129). A missing object or an unparseable body is
+            # deterministic and keeps the empty-data fallback.
+            reraise_if_transient(e, where="evaluation")
             logger.error(
                 f"Error loading extraction results from {uri}: {str(e)}", exc_info=True
             )
@@ -1545,6 +1558,28 @@ class EvaluationService:
                     f"Field comparisons enabled: {len(field_comparisons)} detailed comparisons available"
                 )
 
+            # Keep the confidence of every empty prediction (#2052). The None
+            # values were removed above before the models were built, so
+            # Stickler's ``prediction_confidences`` has no entry for a field the
+            # extractor returned as null, and a scorer that rates missed fields
+            # highly would be invisible in the run-level calibration metrics.
+            # Recorded under its own key so the existing figures keep their
+            # meaning; the aggregation Lambda reports it beside them.
+            stickler_result[EMPTY_PREDICTION_CONFIDENCES_KEY] = (
+                empty_prediction_confidences(
+                    field_comparisons,
+                    stickler_result.get("prediction_confidences"),
+                    lambda path: (
+                        (
+                            self._get_confidence_for_field(confidence_scores, path)
+                            or {}
+                        ).get("confidence")
+                        if confidence_scores
+                        else None
+                    ),
+                )
+            )
+
             # Transform Stickler result to IDP format
             section_result = self._transform_stickler_result(
                 section,
@@ -1581,6 +1616,9 @@ class EvaluationService:
             return section_result
 
         except ValueError as ve:
+            # A ValueError explicitly raised from a transient cause is not a
+            # schema error; let it out like the branch below does (#2049).
+            reraise_if_transient(ve, where="evaluation")
             # Schema configuration error - determine specific cause for better messaging
             error_message = str(ve)
             logger.error(
@@ -1646,6 +1684,11 @@ class EvaluationService:
             )
 
         except Exception as e:
+            # A transient LLM-judge failure (the comparator raises it as
+            # TransientError) must reach the Lambda, so EvaluationStep retries the
+            # document. Recorded here as a failed section, it would score every
+            # field of the section 0.0 with no retry (#2049).
+            reraise_if_transient(e, where="evaluation")
             # Data validation error or other issues
             logger.error(
                 f"Error evaluating section {section.section_id}: {str(e)}",
@@ -1801,6 +1844,11 @@ class EvaluationService:
         """
         Evaluate extraction results for an entire document using Stickler.
 
+        The Bedrock usage of the evaluation's LLM comparisons is added to
+        ``actual_document.metering`` under the ``Evaluation`` context, on every
+        exit including a failed evaluation, because those calls were billed
+        either way.
+
         This method maintains the same API as the legacy implementation but uses
         Stickler for comparison logic.
 
@@ -1812,6 +1860,23 @@ class EvaluationService:
         Returns:
             Updated actual document with evaluation results
         """
+        with collect_evaluation_metering() as collector:
+            try:
+                return self._evaluate_document(
+                    actual_document, expected_document, store_results
+                )
+            finally:
+                actual_document.metering = utils.merge_metering_data(
+                    actual_document.metering or {}, collector.snapshot()
+                )
+
+    def _evaluate_document(
+        self,
+        actual_document: Document,
+        expected_document: Document,
+        store_results: bool,
+    ) -> Document:
+        """Body of :meth:`evaluate_document`, run inside its metering scope."""
         try:
             # Start timing
             start_time = time.time()
@@ -1906,6 +1971,10 @@ class EvaluationService:
                 )
 
             except Exception as e:
+                # The doc split metrics are supplemental, so a failure computing
+                # them is recorded and the evaluation goes on, but a transient
+                # section read must reach the retry (#2129).
+                reraise_if_transient(e, where="evaluation")
                 logger.error(
                     f"Error calculating doc split metrics: {str(e)}", exc_info=True
                 )
@@ -2005,8 +2074,12 @@ class EvaluationService:
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all section evaluations to the executor
+                # Each worker runs in a copy of this context so the comparisons
+                # it makes reach this document's metering collector (a
+                # ContextVar does not cross into a pool thread on its own).
                 future_to_section = {
                     executor.submit(
+                        contextvars.copy_context().run,
                         self._process_section,
                         actual_section,
                         expected_section,
@@ -2015,9 +2088,21 @@ class EvaluationService:
                     for actual_section, expected_section in section_pairs
                 }
 
-                # Collect results as they complete
+                # Wait for every section, stopping at the first transient
+                # failure: the whole evaluation is retried, so the sections not
+                # yet started would be wasted judge calls.
                 for future in concurrent.futures.as_completed(future_to_section):
-                    section_id = future_to_section[future]
+                    error = future.exception()
+                    if error is not None and is_transient_error(error):
+                        for pending in future_to_section:
+                            pending.cancel()
+                        raise error
+
+                # Fold the results in section order rather than completion
+                # order, so the document's weighted score (a float sum) and its
+                # excluded-sections list are the same on every evaluation of
+                # the same document (#2133).
+                for future, section_id in future_to_section.items():
                     try:
                         result, metrics = future.result()
                         if result is None:
@@ -2096,6 +2181,7 @@ class EvaluationService:
                             unweighted_score_count += 1
 
                     except Exception as e:
+                        # A transient failure was raised by the wait above.
                         logger.error(
                             f"Error evaluating section {section_id}: {traceback.format_exc()}"
                         )
@@ -2241,6 +2327,9 @@ class EvaluationService:
             return actual_document
 
         except Exception as e:
+            # A transient judge failure propagates so the step is retried; any
+            # other error is recorded on the document, as before (#2049).
+            reraise_if_transient(e, where="evaluation")
             logger.error(f"Error evaluating document: {traceback.format_exc()}")
             actual_document.errors.append(f"Evaluation error: {str(e)}")
             return actual_document

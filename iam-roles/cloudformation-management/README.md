@@ -1258,6 +1258,7 @@ logs:*
 - `CreateExportTask`, `DescribeExportTasks`
 - `PutMetricFilter`, `DeleteMetricFilter`, `DescribeMetricFilters`
 - `PutResourcePolicy`, `DeleteResourcePolicy`, `DescribeResourcePolicies`
+- `CreateLogDelivery`, `DeleteLogDelivery` (the API WAF web ACL's request logging, when WAF is enabled)
 - `TagResource`, `UntagResource`, `ListTagsForResource`
 
 </details>
@@ -1415,7 +1416,7 @@ APIs (`DescribeStacks`, `ListStacks`, `ValidateTemplate`) are not
 resource-scopable at all. Narrowing this to an action list would need a
 CloudTrail-derived inventory from a real create, update and delete.
 
-### `<service>:*` on `Resource: "*"` for 25 services
+### `<service>:*` on `Resource: "*"` for each deployed service
 
 Two separate reasons, and both need to be addressed to narrow either half:
 
@@ -1525,8 +1526,9 @@ the load-bearing controls are who holds `iam:PassRole` on it and, optionally, a
   it directly, so there are no sessions to time out or credentials to rotate.
 
 ### Permission Scope
-- **Broad service access**: `cloudformation:*` plus `<service>:*` on 25 services,
-  all on `Resource: "*"`. See ["What Remains Broad, and Why"](#what-remains-broad-and-why).
+- **Broad service access**: `cloudformation:*` plus `<service>:*` for each service
+  the templates deploy (the list is in `IDP-Cloudformation-Service-Role.yaml`), all
+  on `Resource: "*"`. See ["What Remains Broad, and Why"](#what-remains-broad-and-why).
 - **IAM is the exception**: scoped by action, by resource name prefix, and by
   `iam:PermissionsBoundary` / `iam:PassedToService` conditions, with explicit
   denies on boundary tampering, self-modification and credential creation.

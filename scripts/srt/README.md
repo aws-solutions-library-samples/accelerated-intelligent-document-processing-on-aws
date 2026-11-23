@@ -122,6 +122,7 @@ This ensures suppressions persist across:
   - `srtconfig.json` - Tool configuration
   - `issues.json` - Working copy (copied from scripts/srt/)
   - Assessment results and reports
+  - `verdict.json` - What the gate concluded (`run.py` writes it once every check has run; `badge.py` reads it)
 - `scripts/srt/issues.json` - **Committed to git** (suppression database)
 
 ## GitLab CI Job Details
@@ -193,6 +194,27 @@ cover the same resource in the source `template.yaml` — and `srt fix` writes i
 back as `resolved`, which is not sticky, so the next scan re-detects it as
 `reopened` and *that* gates. Use `make srt-clean` to match CI exactly.
 `scripts/srt/tests/test_ci_paths.py` enforces this on the committed baseline.
+
+## Status badge on GitLab
+
+On `develop`, the GitLab pipeline publishes the gate's verdict as a badge. The
+`srt_security_review` job renders `srt-badge.svg` from `.srt/verdict.json` with
+`badge.py` in its `after_script`, so the badge is rendered on a failure too. The
+`pages` job then publishes that one file as the project's Pages site, and a
+project badge named "SRT" displays it.
+
+| Badge | Meaning |
+|---|---|
+| `0 open high` (green) | The gate passed |
+| `N open high` (red) | N HIGH findings are not dispositioned in `scripts/srt/issues.json` |
+| `scan incomplete` (orange) | A scanner did not run, so the result is unreliable |
+| `stale suppressions` (orange) | The register holds suppressions that shield nothing |
+| `no result` (grey) | The scan stopped before reaching a verdict |
+
+It is published from the pipeline instead of being read from the job's artifacts.
+GitLab's "latest artifacts for a ref" URL serves only the latest successful
+pipeline, so a failing gate would keep showing the last green badge. GitHub has
+no equivalent; its pull-request checks show the same verdict.
 
 ## Detecting a scanner that silently didn't run
 

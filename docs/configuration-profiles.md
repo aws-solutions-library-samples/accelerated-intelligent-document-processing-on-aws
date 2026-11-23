@@ -212,6 +212,22 @@ profile is chosen you can instead pin an earlier one:
 The revision picker appears only when the profile actually has history — a
 dropdown whose only entry is "Current" is noise rather than a choice.
 
+A pinned revision is read the way the profile itself is read. Every setting the
+revision holds is used as saved, an empty one included: a revision that stored an
+empty `max_tokens` still requests the model's maximum output. A setting the revision
+does not have, which is usually one a later release added, takes the current
+`default` profile's value instead of the code's built-in default, which for a prompt
+is empty. Two things follow:
+
+- The stored revision is never changed. Revision History, **Compare** and
+  `idp-cli config-download --config-revision` show it as it was saved.
+- A pinned revision reproduces every setting it holds exactly. A setting it lacks
+  follows `default`, so changing that setting in `default` changes it for documents
+  and test runs pinned to the revision too.
+
+**Restore** saves the revision as a pinned read runs it, so the restored profile
+includes the settings filled in from `default`.
+
 ### Revisions from the CLI and SDK
 
 Everything above is also reachable programmatically, which is what lets an
@@ -368,8 +384,10 @@ editor, the history and what new documents run stay the same configuration.
 Some things follow from that:
 
 - Documents submitted after the new revision use `default`'s values for the
-  filled-in settings. Documents already pinned to the earlier revision keep it, and
-  so does a Test Studio run.
+  filled-in settings. Documents and Test Studio runs already pinned to the earlier
+  revision keep it, and read it with the same fill-in
+  ([see above](#selecting-a-revision-for-processing-or-testing)), so they run the
+  same values until `default` changes again.
 - Once recorded, those values belong to the profile. A later change to the same
   settings in `default` no longer reaches it, the way it reaches a setting the
   profile still lacks. To take a later `default` value, set it on the profile
@@ -693,9 +711,11 @@ draining across a revision promotion runs entirely on the revision published whe
 document arrived instead of splitting across both. And **a mapping is not a security
 boundary on ingest**: a principal holding `s3:PutObject` on the Input bucket chooses
 its own prefix, and therefore its own profile, with no API call for anything to check.
-It can also set `x-amz-meta-submission-source`, which is the stronger of the two
-levers — an object carrying it is exempt from mappings **entirely**, so a refusing
-mapping does not refuse it. Neither is reachable through the web UI: the presigned
+It can also set `x-amz-meta-submission-source` to `test-studio` or `pii-anonymizer`,
+the two values this solution's own producers write, which is the stronger of the two
+levers — an object carrying one of those is exempt from mappings **entirely**, so a
+refusing mapping does not refuse it. Any *other* value is ignored and the object is
+mapped like any upload. Neither lever is reachable through the web UI: the presigned
 POST it mints lists the fields the browser may send, and S3 rejects any other, so a
 UI upload cannot claim to be an internal producer. [Strict tenant
 isolation](multi-tenancy.md#strict-mode) closes the visibility half of this — a document
@@ -756,7 +776,11 @@ worry about.
 
 Some documents are written into the Input bucket by the solution itself, with a
 profile it chose on purpose, and a mapping never overrides those. They are identified
-by a `submission-source` marker on the object:
+by a `submission-source` marker on the object, and **only by its exact value**:
+`test-studio` or `pii-anonymizer`. An object carrying any other value — including a
+differently-cased spelling of one of those — is treated as an ordinary upload, so it is
+mapped, and refused by a "Refuse the conflict" mapping, like any other. These are the
+only two producers in the solution that write the marker:
 
 - **Test Studio runs** carry the profile and revision the run is defined by.
   Overriding it would not fail the run — it would produce accuracy and confidence
@@ -767,6 +791,58 @@ by a `submission-source` marker on the object:
 The **Jobs/batch API** is *not* exempt, which is intended: it stamps metadata only
 when its caller chose a profile, so a job with a choice is adjudicated by the conflict
 mode like any other upload, and a job without one is mapped.
+
+For prefixes with strict ownership, use **Mapping wins** or **Refuse the conflict**
+rather than **Upload metadata wins**: metadata lets whoever uploads choose any profile.
+A team that runs several profiles is best given one mapping per sub-prefix, and leaving
+those mappings on **Published** keeps promotion an ordinary publish.
+
+### A mapping whose profile does not exist
+
+A document that lands under a mapping naming a Configuration Profile that does not
+exist is **refused**: it is recorded as **Failed**, with a reason naming the mapping's
+prefix and the missing profile, and it is not processed under the profile its upload
+named or under the active profile. The routing policy for that prefix is known and
+says the documents belong to a profile that cannot run, so processing them under any
+other profile is exactly the re-routing a mapping exists to prevent. The same holds
+on reprocess, which refuses the request, and in the **Test a key** dry run, which
+reports the refusal.
+
+It cannot normally happen: creating a mapping refuses a profile that does not exist,
+and deleting a profile is refused while any mapping names it. Reaching it means the
+profile went by another route, such as a direct write to the configuration table. Fix
+it by recreating the profile or changing or deleting the mapping, then submit the
+document again.
+
+### When the mappings cannot be read
+
+If the mapping set cannot be read when a document arrives — a throttle, a KMS or
+table-policy denial, a misconfigured stack — the document is **not** held: it is
+processed under the profile its upload named, or the active profile, with no mapping
+applied, and `PrefixMappingLookupFailed` is published. Each such document (other than
+the Test Studio and PII-anonymizer documents mappings never apply to) also carries
+a **warning processing issue** (`config_prefix_mapping_lookup_failed`), shown beside its
+configuration in the Document Details panel and counted in the document list's issue
+badge, so the documents affected by the window can be found and reprocessed once the
+mappings are readable. The issue records the error's type, never its message, because
+an AWS error message can carry a role ARN.
+
+### Change history
+
+Every create, edit and delete made through the API appends a record to the mappings'
+**change history**: who made it, when, and the mapping as it was before and after. The
+record is written in the same DynamoDB transaction as the change, so the history cannot
+record a change that did not happen or miss one that did. It is append-only — nothing in
+the solution updates or deletes a record — and it is kept for mappings that have since
+been deleted. A principal with direct write access to the configuration table can still
+alter records, as it can alter the mappings themselves; point-in-time recovery on that
+table is the control for that, and a direct table write records no history at all.
+
+On the **Prefix Mappings** page, open **Change history** to see the log newest first,
+or use a mapping's **History** action to see only that mapping's changes. The API is
+`listConfigPrefixMappingHistory`, below. The number of records is not capped: each one
+is a separate item holding two entries' worth of fields, so it neither grows the item
+ingest reads nor approaches DynamoDB's item-size limit.
 
 ### Checking a mapping before trusting it
 
@@ -823,16 +899,16 @@ upload resolver when it mints a presigned POST.
 
 | Metric | Meaning |
 |---|---|
-| `PrefixMappingApplied` | A mapping **matched** this key. Read it as "a mapping was consulted", not "the mapping decided": it is also published when the conflict mode handed the decision to the upload's own metadata, and when the mapped profile turned out to be missing |
+| `PrefixMappingApplied` | A mapping **matched** this key. Read it as "a mapping was consulted", not "the mapping decided": it is also published when the conflict mode handed the decision to the upload's own metadata |
 | `PrefixMappingConflict` | A mapping and upload metadata disagreed and one of them won; the dimension names which. A **refusal** is not counted here — it publishes `PrefixMappingRejected` and nothing else |
 | `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document |
-| `PrefixMappingLookupFailed` | The mapping set could not be read, so documents fell back to previous behaviour |
-| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that no longer exists. A missing **revision** is not detected — see below |
+| `PrefixMappingLookupFailed` | The mapping set could not be read, so documents fell back to previous behaviour. Each such document carries a warning processing issue |
+| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that does not exist, and the document was refused. It is not also counted as `PrefixMappingRejected`. A missing **revision** is not detected — see below |
 
 **Three of the five are alarmed.** `PrefixMappingLookupFailed` and
-`PrefixMappingUnresolvable` fire on the *first* occurrence, because both mean documents
-are being processed under something other than what was configured and neither is
-otherwise visible. `PrefixMappingRejected` alarms on volume instead — more than five
+`PrefixMappingUnresolvable` fire on the *first* occurrence: the first means documents
+are being processed with no mapping applied, and the second that every document
+arriving at a prefix is being refused until the mapping or its profile is fixed. `PrefixMappingRejected` alarms on volume instead — more than five
 refusals in each of two consecutive five-minute periods — because one refusal is the
 mapping working as configured; a sustained stream of them means a producer is
 submitting to a prefix whose mapping it does not satisfy. A read failure is deliberately
@@ -868,7 +944,7 @@ When a document is processed, the configuration profile used is recorded:
    | `document-pin` | Kept from the previous run | A reprocess with no explicit profile reused what the document already carried |
    | `explicit-request` | Chosen when reprocessing | A profile named in the Reprocess dialog |
    | `internal-producer` | Pinned by the submitting feature | A `submission-source` producer (Test Studio, the PII anonymizer) pinned its own |
-   | `rejected` | Refused at ingest | A "Refuse the conflict" mapping failed the document, and no configuration was applied to it. The row still shows the profile the **upload** declared — that is deliberate, since a document with no profile is invisible to every scope-restricted user, including the one whose upload was refused |
+   | `rejected` | Refused at ingest | A "Refuse the conflict" mapping failed the document, or a mapping named a profile that does not exist, and no configuration was applied to it. The row still shows the profile the **upload** declared — that is deliberate, since a document with no profile is invisible to every scope-restricted user, including the one whose upload was refused |
 
 4. **UI Display**: The profile appears in the Document List table; the profile,
    its source, and the mapping prefix when one applied appear in the Document Details
@@ -1005,7 +1081,12 @@ rather than failing the read.
   shipped one, and the write-back then freezes it into the profile. Set the field
   explicitly on the profile if you want it pinned.
 
-## GraphQL API Reference
+## API Reference
+
+The Web UI calls each operation below through the REST API dispatcher at
+`POST /op/<operation>`. The operation names, parameters and return types are
+declared in `nested/api-resolvers/src/api/schema.graphql`, which is the API
+contract; no GraphQL service runs.
 
 ### Queries
 
@@ -1030,6 +1111,7 @@ rather than failing the read.
 | `deleteConfigProfileRevision` | `profileName: String!`, `revision: Int!` | Delete one revision (Admin only; cannot delete the current one) |
 | `putConfigPrefixMapping` | `prefix: String!`, `configProfile: String!`, `configRevision: Int`, `metadataPrecedence: String`, `enabled: Boolean`, `description: String` | Create or replace the mapping for `prefix`, which is its identity. Admin only. Omit `configRevision` to follow the profile's published revision; `metadataPrecedence` is `mapping`, `metadata` or `reject` |
 | `deleteConfigPrefixMapping` | `prefix: String!` | Remove one mapping. Admin only. Does **not** release a revision pin the mapping made |
+| `listConfigPrefixMappingHistory` | `prefix: String`, `limit: Int`, `before: Int` | The mappings' append-only change log, newest first: each entry's `seq`, `timestamp`, `actor`, `prefix`, `action` (`create`, `update` or `delete`) and the mapping `before` and `after`. `prefix` narrows it to one mapping, including one since deleted; `limit` is at most 100; pass the response's `nextBefore` as `before` for the next page. **Admin only**, and not scope-filtered, for the reason the list is not |
 
 All revision operations are scope-checked at the **profile**: a revision is content
 inside a profile, never its own access-control object. See [RBAC](rbac.md).

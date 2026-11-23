@@ -1,0 +1,1 @@
+# idp_common comes from IDPCommonBaseLayer; boto3 from the Lambda runtime.

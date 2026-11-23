@@ -1195,7 +1195,9 @@ class TestMinItemsIsAHardFloorInAdvancedMode:
         text = (
             root / "lib/idp_common_pkg/idp_common/extraction/agentic_idp.py"
         ).read_text(encoding="utf-8")
-        assert 'raise ValueError("Failed to generate valid structured output.")' in text
+        # The exception is built and handed to ``attach_failure_metering`` before it
+        # is raised (#1923), so the constructor is what is matched, not ``raise``.
+        assert 'ValueError("Failed to generate valid structured output.")' in text
 
     def test_each_shard_agent_gets_the_whole_sections_floor(self):
         """The case the guidance turns on: the floor is PER SHARD, not at the merge.

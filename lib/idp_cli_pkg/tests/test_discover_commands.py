@@ -2432,21 +2432,43 @@ def test_save_to_config_suppresses_the_stdout_schema_dump(runner, sdk, tmp_path)
 
 
 @pytest.mark.unit
-def test_documents_that_failed_embedding_are_reported_as_a_warning(
-    runner, sdk, tmp_path
-):
-    """`noise_documents` is reported so a silently-shrunk corpus is visible.
+def test_noise_documents_are_reported_as_left_in_no_class(runner, sdk, tmp_path):
+    """`noise_documents` is documents clustering dropped, and is worded as such.
 
-    The count is documents the pipeline could not place in any cluster. The CLI
-    calls them "documents failed embedding" while the model field documents them
-    as "couldn't be clustered (noise/outliers)" — two different causes, and the
-    wording here picks one of them. Either way the number reaching the user is the
-    field's, which is what this asserts.
+    They were embedded and clustered, but their cluster was smaller than the
+    minimum and was discarded, so no discovered class covers them. Calling them
+    "failed embedding" (as this summary once did) sends the user to look for an
+    embedding error that never happened. Each path is listed so the user can see
+    which samples to add siblings for.
     """
     from idp_cli.cli import multi_discover
 
     sdk.client.discovery.run_multi_doc.return_value = _multidoc_result(
-        noise_documents=3, total_documents=7
+        noise_documents=2,
+        noise_document_keys=["corpus/odd-one.pdf", "corpus/other-one.pdf"],
+        total_documents=7,
+    )
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+
+    result = runner.invoke(multi_discover, ["--dir", str(corpus)], env=WIDE)
+
+    assert result.exit_code == 0, result.output
+    assert "2 documents were left in no class" in result.output
+    assert "corpus/odd-one.pdf" in result.output
+    assert "corpus/other-one.pdf" in result.output
+    assert "failed embedding" not in result.output
+
+
+@pytest.mark.unit
+def test_failed_embeddings_are_reported_on_their_own_line(runner, sdk, tmp_path):
+    """An embedding failure is a different cause from noise and is named as one."""
+    from idp_cli.cli import multi_discover
+
+    sdk.client.discovery.run_multi_doc.return_value = _multidoc_result(
+        failed_embeddings=3,
+        failed_embedding_keys=["corpus/broken.pdf"],
+        total_documents=7,
     )
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -2455,15 +2477,25 @@ def test_documents_that_failed_embedding_are_reported_as_a_warning(
 
     assert result.exit_code == 0, result.output
     assert "3 documents failed embedding" in result.output
+    assert "corpus/broken.pdf" in result.output
+    assert "left in no class" not in result.output
 
 
 @pytest.mark.unit
-def test_zero_noise_documents_prints_no_warning(runner, sdk, tmp_path):
-    """The guard is `> 0`, so a clean run says nothing about noise."""
+def test_listed_paths_are_printed_literally_not_as_rich_markup(runner, sdk, tmp_path):
+    """A filename is user data; brackets in it must not be read as Rich markup.
+
+    Unescaped, `[bold]` would vanish into styling and `[/yellow]` would close the
+    warning's own tag (or raise a MarkupError), so the user would not see the
+    name of the file to fix.
+    """
     from idp_cli.cli import multi_discover
 
     sdk.client.discovery.run_multi_doc.return_value = _multidoc_result(
-        noise_documents=0
+        noise_documents=1,
+        noise_document_keys=["corpus/[bold]odd[/bold].pdf"],
+        failed_embeddings=1,
+        failed_embedding_keys=["corpus/a[/yellow]b.pdf"],
     )
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -2471,7 +2503,24 @@ def test_zero_noise_documents_prints_no_warning(runner, sdk, tmp_path):
     result = runner.invoke(multi_discover, ["--dir", str(corpus)], env=WIDE)
 
     assert result.exit_code == 0, result.output
+    assert "corpus/[bold]odd[/bold].pdf" in result.output
+    assert "corpus/a[/yellow]b.pdf" in result.output
+
+
+@pytest.mark.unit
+def test_a_clean_run_prints_neither_warning(runner, sdk, tmp_path):
+    """Both guards are `> 0`, so a clean run says nothing about either."""
+    from idp_cli.cli import multi_discover
+
+    sdk.client.discovery.run_multi_doc.return_value = _multidoc_result()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+
+    result = runner.invoke(multi_discover, ["--dir", str(corpus)], env=WIDE)
+
+    assert result.exit_code == 0, result.output
     assert "failed embedding" not in result.output
+    assert "left in no class" not in result.output
 
 
 @pytest.mark.unit

@@ -24,10 +24,11 @@ from idp_common.dynamodb.ttl import calculate_ttl
 from idp_common.models import (
     Document,
     Page,
-    ProcessingIssue,
     Section,
     Status,
     coerce_revision,
+    deserialize_issue_list,
+    serialize_issue_list,
 )
 from idp_common.review_queues.statuses import LEGACY_PENDING
 from idp_common.utils import cumulative_metering
@@ -437,25 +438,9 @@ def serialize_processing_issues(section: Section) -> List[Dict[str, Any]]:
     """
     Serialize a Section's structured processing issues to compact camelCase
     dicts mirroring the GraphQL ``ProcessingIssue`` type. ``details`` is
-    JSON-stringified rather than stored as a nested map, keeping the attribute
-    to one scalar regardless of the blob's shape. Note no consumer reads
-    ``details`` back today (the API resolvers strip it — it is not part of the
-    GraphQL type); it is written for parity with the live doc item.
+    JSON-encoded so the tracking item stays a flat, schema-friendly shape.
     """
-    issues_data: List[Dict[str, Any]] = []
-    for issue in section.processing_issues or []:
-        issue_item: Dict[str, Any] = {
-            "stage": issue.stage,
-            "severity": issue.severity,
-            "code": issue.code,
-            "message": issue.message,
-        }
-        if issue.root_cause:
-            issue_item["rootCause"] = issue.root_cause
-        if issue.details:
-            issue_item["details"] = json.dumps(issue.details, default=str)
-        issues_data.append(issue_item)
-    return issues_data
+    return serialize_issue_list(section.processing_issues or [])
 
 
 class DocumentDynamoDBService:
@@ -540,6 +525,13 @@ class DocumentDynamoDBService:
             item["SubmissionSource"] = document.submission_source
         if document.test_set_id:
             item["TestSetId"] = document.test_set_id
+        # Caller-supplied attributes, snapshotted at intake (#1851). Written only
+        # when present, so a document without any gets exactly the item it always
+        # did. Floats go in as Decimal; a whole-valued float reads back as an int.
+        if document.attributes:
+            item["DocumentAttributes"] = convert_floats_to_decimal(
+                dict(document.attributes)
+            )
         # Which object version the malware gate is waiting on. Written HERE, on
         # create, rather than by a later update: the gate's compare-and-set reads
         # it, so a window in which the row exists without it is a window in which
@@ -563,6 +555,14 @@ class DocumentDynamoDBService:
             item["ConfigMappingPrefix"] = document.config_mapping_prefix
         if document.config_assignment_error:
             item["ConfigAssignmentError"] = document.config_assignment_error
+        # Document-level processing issues, which only ingest writes today (#597):
+        # the row is created before any section exists, so this is the one channel
+        # an ingest-time warning has. The count is written beside it so the
+        # document list's badge has text behind it from the first moment the row
+        # exists, rather than only after the workflow's first whole-document write.
+        if document.processing_issues:
+            item["ProcessingIssues"] = serialize_issue_list(document.processing_issues)
+            item["ProcessingIssueCount"] = document.processing_issue_count
 
         if expires_after:
             item["ExpiresAfter"] = expires_after
@@ -978,6 +978,17 @@ class DocumentDynamoDBService:
             # build a filter on it without also handling the fact that it is never
             # REMOVEd: a document that once carried an issue keeps the attribute
             # after a later run clears it.
+            # The document-level list is written under the same gate as the count
+            # it contributes to, so the two are always written from one object.
+            # SET only, never REMOVEd: `create_document` replaces the whole row, so
+            # a new ingest or a reprocess already starts it empty.
+            if document.processing_issues:
+                set_expressions.append("#DocProcessingIssues = :DocProcessingIssues")
+                expression_names["#DocProcessingIssues"] = "ProcessingIssues"
+                expression_values[":DocProcessingIssues"] = serialize_issue_list(
+                    document.processing_issues
+                )
+
             if issue_count > 0:
                 set_expressions.append("#HasProcessingIssues = :HasProcessingIssues")
                 expression_names["#HasProcessingIssues"] = "HasProcessingIssues"
@@ -1119,28 +1130,12 @@ class DocumentDynamoDBService:
                             }
                         )
 
-                # Convert persisted processing issues back to ProcessingIssue.
-                processing_issues = []
-                issues_data = section_data.get("ProcessingIssues", [])
-                if issues_data:
-                    for iss in issues_data:
-                        details = iss.get("details")
-                        if isinstance(details, str):
-                            try:
-                                details = json.loads(details)
-                            except (json.JSONDecodeError, TypeError):
-                                details = {}
-                        processing_issues.append(
-                            ProcessingIssue(
-                                stage=iss.get("stage", ""),
-                                severity=iss.get("severity", "info"),
-                                code=iss.get("code", ""),
-                                message=iss.get("message", ""),
-                                root_cause=iss.get("rootCause", ""),
-                                section_id=section_data.get("Id"),
-                                details=details or {},
-                            )
-                        )
+                # Convert persisted processing issues back to ProcessingIssue,
+                # through the same helper the document-level list uses.
+                processing_issues = deserialize_issue_list(
+                    section_data.get("ProcessingIssues"),
+                    section_id=section_data.get("Id"),
+                )
 
                 doc.sections.append(
                     Section(
@@ -1188,6 +1183,14 @@ class DocumentDynamoDBService:
         doc.missing_required_field_count = int(
             item.get("MissingRequiredFieldCount") or 0
         )
+        # Read back for the same reason: a load->write round trip must not drop the
+        # ingest-time issue from the count it contributes to.
+        doc.processing_issues = deserialize_issue_list(item.get("ProcessingIssues"))
+        # Read back so a load->write round trip (reprocess, a review finalize run)
+        # carries the intake snapshot rather than an empty set.
+        stored_attributes = item.get("DocumentAttributes")
+        if isinstance(stored_attributes, dict):
+            doc.attributes = convert_decimals_to_native(stored_attributes)
 
         # Convert Review Status fields
         doc.hitl_status = item.get("HITLStatus")

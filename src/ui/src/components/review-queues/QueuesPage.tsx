@@ -10,6 +10,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { useIntl } from 'react-intl';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { ButtonDropdownProps, TableProps } from '@cloudscape-design/components';
 import {
@@ -33,11 +34,12 @@ import type { ReviewQueueDefinition, TestSetQueueSummary, ReviewQueueHealth } fr
 import useAppContext from '../../contexts/app';
 import usePolling from '../../hooks/use-polling';
 import { describeApiError } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime } from '../../utils/date-time';
 import { productionQueuePath, testSetQueuePath } from '../../routes/constants';
 import type { ReviewManagementView } from '../../routes/constants';
-import { paginationLabels } from '../common/labels';
-import { NoDataState, TableNoMatchState, getFilterCounterText } from '../common/table';
+import { usePaginationLabels } from '../common/labels';
+import { NoDataState, TableNoMatchState, filterCounterText } from '../common/table';
 import QueueDefinitionModal from './QueueDefinitionModal';
 import type { TestSetQueueTarget } from './QueueDefinitionModal';
 import { fetchQueuesOverview, reviewErrorCode } from './review-api';
@@ -96,11 +98,14 @@ export const AnnotatorsCell = ({ eligible }: { eligible: readonly string[] | nul
 };
 
 const QueuesPage = (): React.JSX.Element => {
+  const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const view: ReviewManagementView = searchParams.get('view') === 'test' ? 'test' : 'production';
   const setView = (next: ReviewManagementView) => setSearchParams(next === 'test' ? { view: 'test' } : {}, { replace: true });
   const { setSuccessMessage } = useAppContext();
+  const { locale } = useFormatters();
 
   const [definitions, setDefinitions] = useState<ReviewQueueDefinition[] | null>(null);
   const [overview, setOverview] = useState<ReviewQueueHealth[] | null>(null);
@@ -376,7 +381,7 @@ const QueuesPage = (): React.JSX.Element => {
   /** A stored count, or "Preparing…" while the set's summaries are built. */
   const testSetCount = (row: TestSetRow, n: number | null | undefined): React.ReactNode =>
     n != null ? (
-      <span title={row.ref.queueCountsAt ? `Counted ${formatDateTime(row.ref.queueCountsAt)}` : undefined}>{n}</span>
+      <span title={row.ref.queueCountsAt ? `Counted ${formatDateTime(row.ref.queueCountsAt, locale)}` : undefined}>{n}</span>
     ) : preparing(row) ? (
       'Preparing…'
     ) : (
@@ -507,7 +512,7 @@ const QueuesPage = (): React.JSX.Element => {
                   {...production.filterProps}
                   filteringPlaceholder="Find queues"
                   filteringAriaLabel="Find production queues"
-                  countText={getFilterCounterText(production.filteredItemsCount ?? 0)}
+                  countText={filterCounterText(intl, production.filteredItemsCount ?? 0)}
                 />
               }
               pagination={<Pagination {...production.paginationProps} ariaLabels={paginationLabels} />}
@@ -551,7 +556,7 @@ const QueuesPage = (): React.JSX.Element => {
                   {...testStudio.filterProps}
                   filteringPlaceholder="Find test sets"
                   filteringAriaLabel="Find Test Studio queues"
-                  countText={getFilterCounterText(testStudio.filteredItemsCount ?? 0)}
+                  countText={filterCounterText(intl, testStudio.filteredItemsCount ?? 0)}
                 />
               }
               pagination={<Pagination {...testStudio.paginationProps} ariaLabels={paginationLabels} />}

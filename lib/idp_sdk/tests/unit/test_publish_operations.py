@@ -151,19 +151,17 @@ class TestBuildResolvesRegionAndBucket:
     def test_no_region_anywhere_is_a_configuration_error(
         self, tmp_path, monkeypatch, publisher
     ):
-        """``build`` must refuse before doing any work, naming the three places a
-        region can come from.
+        """``build`` must refuse before doing any work, naming where a Region can
+        come from.
 
-        ``boto3.Session`` is replaced rather than having the environment
-        cleared, because botocore's region chain includes an IMDS provider: on an
-        EC2 host the real session answers with the instance's region and the test
-        would pass locally for the wrong reason and fail in CI.
+        Every source is cleared: both variables, the profile, the config file and
+        boto3's default session. botocore does not read the Region from EC2
+        instance metadata, so this resolves nothing on an EC2 host as well.
         """
-
-        class NoRegionSession:
-            region_name = None
-
-        monkeypatch.setattr(pub.boto3, "Session", NoRegionSession)
+        for name in ("AWS_DEFAULT_REGION", "AWS_REGION", "AWS_PROFILE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
 
         client = IDPClient()
         with pytest.raises(IDPConfigurationError, match="Region is required"):
@@ -171,13 +169,17 @@ class TestBuildResolvesRegionAndBucket:
 
         assert RecordingPublisher.instances == []
 
-    def test_the_boto3_session_region_is_used_when_none_is_passed(
+    def test_the_default_session_region_is_used_when_none_is_passed(
         self, source_tree, monkeypatch, publisher, aws_credentials
     ):
-        class SessionInOregon:
-            region_name = "us-west-2"
+        """A Region given to ``boto3.setup_default_session`` is honoured.
 
-        monkeypatch.setattr(pub.boto3, "Session", SessionInOregon)
+        ``AWS_DEFAULT_REGION`` names another Region, and a freshly built
+        ``boto3.Session()`` would read that instead, publishing into a Region the
+        caller's own boto3 clients do not reach.
+        """
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        boto3.setup_default_session(region_name="us-west-2")
 
         client = IDPClient()
         result = client.publish.build(
@@ -186,6 +188,22 @@ class TestBuildResolvesRegionAndBucket:
 
         assert result.bucket == f"{BUCKET_BASENAME}-us-west-2"
         assert RecordingPublisher.instances[0].args[2] == "us-west-2"
+
+    def test_with_only_aws_region_set_it_is_used(
+        self, source_tree, monkeypatch, publisher, aws_credentials
+    ):
+        """boto3 does not read ``AWS_REGION``; the publish resolves it anyway."""
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+
+        client = IDPClient()
+        result = client.publish.build(
+            source_dir=str(source_tree), bucket=BUCKET_BASENAME, prefix=PREFIX
+        )
+
+        assert result.bucket == f"{BUCKET_BASENAME}-eu-central-1"
+        assert RecordingPublisher.instances[0].args[2] == "eu-central-1"
 
     def test_an_explicit_region_beats_the_client_region(
         self, source_tree, publisher, aws_credentials

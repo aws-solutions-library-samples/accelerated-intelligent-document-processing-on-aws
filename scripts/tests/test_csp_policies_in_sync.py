@@ -98,8 +98,11 @@ def _directive_list(policy: str) -> list[tuple[str, str]]:
         chunk = chunk.strip()
         if not chunk:
             continue
-        name, _, sources = chunk.partition(" ")
-        parsed.append((name, re.sub(r"\s+", " ", sources).strip()))
+        # Directive names are case-insensitive and end at any ASCII whitespace,
+        # which is how browsers read them.
+        name, *rest = re.split(r"[\t\n\f\r ]+", chunk, maxsplit=1)
+        sources = rest[0] if rest else ""
+        parsed.append((name.lower(), re.sub(r"\s+", " ", sources).strip()))
     return parsed
 
 
@@ -284,3 +287,220 @@ def test_the_guard_can_actually_see_both_policies():
         assert "script-src" in directives
         assert "connect-src" in directives
         assert len(directives) >= 8, directives
+
+
+#: Fetch directives: the ones that decide where the page may load a resource from.
+#: ``default-src`` is the fallback for every fetch directive the policy omits. The
+#: listed ones must be checked even when absent from a policy; beyond them, every
+#: directive whose name ends in ``-src``, ``-src-elem`` or ``-src-attr`` is checked
+#: too (``style-src-elem`` overrides ``style-src``, so a fixed list could miss it).
+FETCH_DIRECTIVES = (
+    "default-src",
+    "script-src",
+    "style-src",
+    "img-src",
+    "font-src",
+    "connect-src",
+    "media-src",
+    "object-src",
+    "frame-src",
+    "child-src",
+    "worker-src",
+    "manifest-src",
+)
+_FETCH_DIRECTIVE_NAME = re.compile(r"-src(?:-elem|-attr)?$")
+
+
+def _fetch_directives_in(directives: dict[str, str]) -> list[str]:
+    return [
+        d
+        for d in directives
+        if d in FETCH_DIRECTIVES or _FETCH_DIRECTIVE_NAME.search(d)
+    ]
+
+
+#: Keywords a fetch directive may use. Nonces and hashes are absent for the reason
+#: given at ``_SCRIPT_SRC_KEYWORDS``.
+_FETCH_KEYWORDS = _SCRIPT_SRC_KEYWORDS
+#: Schemes that name content the page already holds rather than a network origin.
+#: Allowed outside ``script-src`` only; ``test_script_src_names_specific_origins_only``
+#: keeps them out of that one.
+_LOCAL_SCHEMES = frozenset({"data:", "blob:"})
+#: A network source must name a host: ``https://`` or ``wss://`` with at most a
+#: leftmost-label wildcard over two or more labels (as ``_HOST_SOURCE``), or the
+#: development server on ``localhost``.
+_NETWORK_SOURCE = re.compile(
+    r"^(?:https|wss)://(?:\*\.)?"
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
+    r"(?::\d+)?(?:/\S*)?$"
+    r"|^wss?://localhost(?::(?:\d+|\*))?$"
+)
+
+
+def _bad_fetch_sources(directive: str, sources: list[str]) -> list[str]:
+    return [
+        s
+        for s in sources
+        if s not in _FETCH_KEYWORDS
+        and not (s in _LOCAL_SCHEMES and not directive.startswith("script-src"))
+        and not _NETWORK_SOURCE.match(s)
+    ]
+
+
+def test_every_fetch_directive_names_specific_sources():
+    """No bare network scheme (``https:``, ``http:``, ``wss:``) and no ``*``.
+
+    What is checked is the shape of each source: a host is named, with at most a
+    leftmost wildcard over two or more labels. That does not make a source narrow
+    -- ``https://*.amazonaws.com`` passes and covers every S3 bucket -- so a
+    wildcard over a shared hosting domain is still a reviewer's call.
+
+    A bare scheme or ``*`` lets the page load that kind of resource from any host,
+    which is what ``img-src https:`` and ``style-src https:`` did. Written as an
+    allowlist of source shapes, so a spelling nobody enumerated (``https://*``,
+    ``*.com``, ``http:``, ``filesystem:``) fails too.
+    """
+    for mode, policy in (
+        ("CloudFront", _cloudfront_policy()),
+        ("APIGateway", _api_gateway_policy()),
+    ):
+        directives = _directives(policy)
+        present = _fetch_directives_in(directives)
+        assert len(present) >= 8, (
+            f"{mode}: expected the fetch directives, got {present}"
+        )
+        bad = {
+            name: _bad_fetch_sources(name, directives[name].split())
+            for name in present
+            if _bad_fetch_sources(name, directives[name].split())
+        }
+        assert not bad, (
+            f"{mode} CSP fetch directives carry sources that do not name a specific "
+            f"origin: {bad}. List the exact hosts (a leftmost-label wildcard is "
+            "allowed) instead of a bare scheme or '*'."
+        )
+
+
+def test_default_src_is_self():
+    """Every fetch directive the policy does not list falls back to ``default-src``.
+
+    Without it an omitted directive (``manifest-src``, a future one) is unrestricted,
+    so the narrowing above would cover only what someone remembered to write down.
+    """
+    for mode, policy in (
+        ("CloudFront", _cloudfront_policy()),
+        ("APIGateway", _api_gateway_policy()),
+    ):
+        assert _directives(policy).get("default-src") == "'self'", (
+            f"{mode} CSP must declare default-src 'self'"
+        )
+
+
+def test_frames_and_images_are_allowed_where_the_ui_needs_them():
+    """``default-src 'self'`` would otherwise blank the file viewer and page images.
+
+    The file viewer frames presigned S3 URLs and ``data:`` URLs, and every ``<img>``
+    the UI renders is a presigned S3 URL, ``data:`` or ``blob:``. The S3 hosts the
+    presigners sign are all under ``amazonaws.com`` in the commercial and GovCloud
+    partitions. Monaco's stylesheet is a ``<link>`` to the same jsDelivr path its
+    loader script comes from, and its fonts are ``data:`` URLs.
+    """
+    for mode, policy in (
+        ("CloudFront", _cloudfront_policy()),
+        ("APIGateway", _api_gateway_policy()),
+    ):
+        d = {k: v.split() for k, v in _directives(policy).items()}
+        for needed in ("'self'", "data:", "https://*.amazonaws.com"):
+            assert needed in d.get("frame-src", []), f"{mode} frame-src lacks {needed}"
+        for needed in ("'self'", "data:", "blob:", "https://*.amazonaws.com"):
+            assert needed in d.get("img-src", []), f"{mode} img-src lacks {needed}"
+        assert "https://cdn.jsdelivr.net/npm/" in d.get("style-src", [])
+        assert "data:" in d.get("font-src", [])
+
+
+def test_the_fetch_source_rule_rejects_what_it_claims_to():
+    """The shape check is only as good as what it refuses; probe it directly."""
+    for source in (
+        "https:",
+        "http:",
+        "wss:",
+        "*",
+        "https://*",
+        "https://*.com",
+        "http://x.example",
+    ):
+        assert _bad_fetch_sources("img-src", [source]) == [source], source
+    assert _bad_fetch_sources("script-src", ["data:"]) == ["data:"]
+    assert _bad_fetch_sources("script-src-elem", ["blob:"]) == ["blob:"]
+    assert _fetch_directives_in(
+        {"style-src-elem": "https:", "script-src-attr": "*", "base-uri": "'none'"}
+    ) == ["style-src-elem", "script-src-attr"]
+    parsed = _directives("default-src 'self'; STYLE-SRC-ELEM https:; img-src\thttps:")
+    assert _fetch_directives_in(parsed) == ["default-src", "style-src-elem", "img-src"]
+    assert parsed["img-src"] == "https:"
+    # A non-ASCII space is part of the name, as browsers read it: one unknown directive.
+    assert "img-src" not in _directives("img-src\u00a0https:")
+    for source in (
+        "'self'",
+        "data:",
+        "blob:",
+        "https://*.amazonaws.com",
+        "https://cdn.jsdelivr.net/npm/",
+        "wss://*.amazonaws.com",
+        "ws://localhost:*",
+    ):
+        assert _bad_fetch_sources("img-src", [source]) == [], source
+
+
+#: ``worker-src`` names exactly these sources. A dedicated worker's script must be
+#: same-origin, so ``'self'`` and ``blob:`` are the only sources that can ever name
+#: one: a host source would admit nothing the browser would start, and a bare
+#: scheme or ``*`` would read as permission it does not grant.
+_WORKER_SRC_SOURCES = frozenset({"'self'", "blob:"})
+
+
+def _bad_worker_sources(sources: list[str]) -> list[str]:
+    return [s for s in sources if s not in _WORKER_SRC_SOURCES]
+
+
+def test_worker_src_allows_the_editor_and_pdf_workers_and_nothing_else():
+    """The configuration editor's code views need ``blob:`` workers.
+
+    Monaco's AMD entry, ``min/vs/editor/editor.main.js`` from jsDelivr, defines
+    ``MonacoEnvironment.getWorker`` to wrap each language worker's jsDelivr URL in
+    ``URL.createObjectURL(new Blob(["importScripts(<url>)"]))`` and start the worker
+    from that same-origin ``blob:`` URL. With no ``worker-src`` the browser falls
+    back to ``script-src``, which carries no ``blob:``, so each worker was refused
+    and Monaco ran its JSON and YAML services on the main thread. ``'self'`` is the
+    pdf.js worker, a bundled asset (``new URL('pdfjs-dist/build/pdf.worker.mjs',
+    import.meta.url)``) that ``script-src 'self'`` admitted before this directive
+    existed and that a ``worker-src`` without ``'self'`` would refuse.
+    """
+    for mode, policy in (
+        ("CloudFront", _cloudfront_policy()),
+        ("APIGateway", _api_gateway_policy()),
+    ):
+        sources = _directives(policy).get("worker-src", "").split()
+        missing = sorted(_WORKER_SRC_SOURCES - set(sources))
+        assert not missing, (
+            f"{mode} CSP worker-src lacks {missing}; the configuration editor's "
+            "workers start from same-origin blob: URLs and pdf.js's from 'self'"
+        )
+        assert not _bad_worker_sources(sources), (
+            f"{mode} CSP worker-src carries {_bad_worker_sources(sources)}; it "
+            f"names only {sorted(_WORKER_SRC_SOURCES)} (no bare scheme, no '*')"
+        )
+
+
+def test_the_worker_source_rule_rejects_what_it_claims_to():
+    for source in (
+        "*",
+        "https:",
+        "http:",
+        "data:",
+        "blob:*",
+        "https://cdn.jsdelivr.net/npm/",
+    ):
+        assert _bad_worker_sources([source]) == [source], source
+    assert _bad_worker_sources(["'self'", "blob:"]) == []

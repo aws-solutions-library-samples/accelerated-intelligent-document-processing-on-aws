@@ -7,7 +7,7 @@ import GenAIIDPTopNavigation from '../genai-idp-top-navigation/GenAIIDPTopNaviga
 import useNotifications from '../../hooks/use-notifications';
 import { mapNotificationsToFlashbar } from '../common/notification-flashbar';
 import useAppContext from '../../contexts/app';
-import { appLayoutLabels } from '../common/labels';
+import { useAppLayoutLabels } from '../common/labels';
 import ToolsPanel from './tools-panel';
 
 interface AgentChatPageLayoutProps {
@@ -16,6 +16,7 @@ interface AgentChatPageLayoutProps {
 
 const AgentChatPageLayout = ({ children }: AgentChatPageLayoutProps): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
   const notifications = useNotifications();
   const [toolsOpen, setToolsOpen] = useState(true);
 

@@ -34,6 +34,7 @@ from .batch import (
 from .chat import ChatResponse
 from .config import (
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -76,7 +77,9 @@ from .evaluation import (
     FieldComparison,
     UseAsBaselineResult,
 )
+from .fit_check import FitCheckResult
 from .manifest import ManifestDocument, ManifestResult, ManifestValidationResult
+from .mcp import McpCredential, McpCredentialIssued
 from .publish import PublishResult, TemplateTransformResult
 from .search import SearchCitation, SearchDocumentReference, SearchResult
 from .stack import (
@@ -107,6 +110,11 @@ from .tenancy import (
     TenantVerifyCheck,
     TenantVerifyOutcome,
     TenantVerifyResult,
+)
+from .terraform import (
+    TerraformMigrationPlanResult,
+    TerraformMigrationResource,
+    TerraformMigrationStepResult,
 )
 from .testing import (
     DocumentsAbortedResult,
@@ -173,6 +181,7 @@ __all__ = [
     "ConfigListResult",
     "ConfigRevisionInfo",
     "ConfigRevisionListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     # Discovery models
@@ -205,6 +214,7 @@ __all__ = [
     "FieldComparison",
     "EvaluationMetrics",
     "UseAsBaselineResult",
+    "FitCheckResult",
     "DeleteResult",
     # Publish models
     "PublishResult",
@@ -225,9 +235,14 @@ __all__ = [
     "TenantPlanItem",
     "TenantAccessPoint",
     "TenantPolicyDeployResult",
+    "TerraformMigrationPlanResult",
+    "TerraformMigrationResource",
+    "TerraformMigrationStepResult",
     "TenantPolicyResult",
     "TenantVerifyCheck",
     "TenantVerifyOutcome",
     "TenantUserGrant",
+    "McpCredential",
+    "McpCredentialIssued",
     "TenantVerifyResult",
 ]

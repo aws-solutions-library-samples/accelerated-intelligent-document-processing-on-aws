@@ -197,7 +197,12 @@ def test_an_ordinary_run_takes_the_existing_path(index_module, stubs, handler_mo
     stubs.tracker.load_context.assert_not_called()
     stubs.tracker.after_completion.assert_not_called()
     assert mocks.order.update_document_completion.call_args == call(
-        "claim.pdf", "SUCCEEDED", {"document": {"status": "HITL_IN_PROGRESS"}}, None
+        "claim.pdf",
+        "SUCCEEDED",
+        {"document": {"status": "HITL_IN_PROGRESS"}},
+        None,
+        execution_arn=EXEC_ARN,
+        input_data={"document": {"document_id": "claim.pdf"}},
     )
     # The run is recorded as an ordinary run, with the stable stopDate timestamp.
     assert mocks.order.record_document_run.call_args == call(
@@ -351,6 +356,7 @@ def test_a_finalize_run_reports_its_own_usage_with_the_review_payload(
     )
     reporting = MagicMock(metering={"phase2": 1}, sections=[])
     reporting.rule_validation_result = None
+    reporting.workflow_execution_arn = None
     reporting.to_dict.return_value = {"id": "claim.pdf", "usage": "finalize-only"}
     stubs.models.Document.load_document.return_value = processed
     stubs.tracker.apply_overrides.return_value = (tracked, reporting)

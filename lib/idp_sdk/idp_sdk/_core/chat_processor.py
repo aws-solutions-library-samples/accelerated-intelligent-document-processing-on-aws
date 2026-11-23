@@ -17,12 +17,16 @@ from typing import TYPE_CHECKING, Optional
 
 import boto3
 
+from idp_sdk._core.region import resolve_region
 from idp_sdk._core.stack_info import StackInfo
 
 if TYPE_CHECKING:
     from idp_sdk.models.chat import ChatResponse
 
 logger = logging.getLogger(__name__)
+
+#: Owner of the conversation memory the SDK's local chat writes and reads.
+SDK_MEMORY_OWNER = "sdk-local"
 
 
 class ChatProcessor:
@@ -60,7 +64,9 @@ class ChatProcessor:
 
         reporting_bucket = outputs.get("S3ReportingBucketName", "")
         reporting_db = outputs.get("ReportingDatabase", "")
-        resolved_region = self.region or boto3.Session().region_name or "us-east-1"
+        # The Region the stack was just found in (the client `info` used), so the
+        # agents' clients reach the same stack rather than a hard-coded Region's.
+        resolved_region = resolve_region(self.region)
 
         env = {
             "AWS_STACK_NAME": self.stack_name,
@@ -114,6 +120,11 @@ class ChatProcessor:
             session_id=self._session_id,
             config=config,
             session=session,
+            # Memory is stored per user and session. This runs with the
+            # operator's own AWS credentials rather than as a signed-in web user,
+            # so its conversations get an owner of their own, which no Cognito
+            # sub (a UUID) can equal.
+            user_id=SDK_MEMORY_OWNER,
         )
 
     def send_message(

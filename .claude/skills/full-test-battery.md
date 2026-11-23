@@ -52,6 +52,19 @@ failure in this repo turns out to be.
      'python3 publish.py <bucket-basename> idp us-west-2 --clean-build'
    ```
 
+## The CI gate set in one command: `make premerge`
+
+Before a merge, `make premerge` runs exactly the gates both CIs run — the
+`SHARED_GATES` list in `scripts/tests/test_ci_gate_parity.py`, read by
+`scripts/premerge.py` rather than copied — and reports every failure at the end
+rather than stopping at the first. It includes what a hand-picked run tends to miss:
+`make srt-scan`, `make test-packages-cicd` (which holds `benchmarks/tests`), the
+coverage reports and their ratchet, `dep_audit.py` and `make terraform-check`. It
+needs network access and Node, and it checks this working tree rather than the merge
+result, so merge the base in first. `make premerge PREMERGE_ARGS=--list` prints the
+plan without running it (#2115). The per-suite commands below are for isolating a
+failure.
+
 ## The battery (mirrors `Makefile` `test:` + lint/typecheck)
 
 Run from repo root with the venv active. `make test` runs it all in one go; the
@@ -65,8 +78,8 @@ make typecheck     # basedpyright
 ```
 
 `make typecheck` fails with `make: basedpyright: No such file or directory` if the
-tool is absent — it is not in the `[test]` extra. `pip install basedpyright` (CI
-installs it via `npm install -g basedpyright`).
+tool is absent — it is not in the `[test]` extra. `make setup-node` installs it with
+`npm install -g basedpyright`, the command both CIs run.
 
 **Errors are the gate, and `develop` is at zero, so any error is yours.** That is the
 durable half and it needs no comparison: a single error is a regression. The eleven
@@ -160,16 +173,17 @@ The check that actually distinguishes them is the **summary line**:
 So: read the totals, and treat a run that printed no summary line as not having run.
 Budget for the **range** rather than one sample: `scripts/tests/` has been measured
 between **5.8 and 11.6 minutes** on this machine (347 s on a quiet one, 696 s loaded),
-and `test-packages-cicd` at about 12. A 600-second timeout is therefore too small for
+and `test-packages-cicd` at about 5 on 4 CPUs (305 s on 2026-11-12, since it stopped
+running the suites a coverage tree measures). A 600-second timeout is therefore too small for
 either whenever anything else is running, which on a shared machine is most of the
 time.
 
-**`make test-packages-cicd` already runs `pytest scripts/tests/`** as one of its
-closing steps. Running both repeats the whole of that suite, and — more misleading than
-the cost — two passes of one suite read as independent evidence when they are a single
-measurement. If you want a readable failure list, run `scripts/tests/` on its own with
-`-q --tb=no -rf`; if you want the gate signal, it is already inside
-`test-packages-cicd`. Do not run the two concurrently over one worktree either: two
+**`make test-packages-cicd` does not run `scripts/tests/`**, nor `idp_sdk`, `idp_cli`,
+`idp_feature_sdk`, `main-stack-extensions`, the seller service or the pii-anonymizer
+hook and feature API. In CI those run once, under coverage, in `make coverage-all-cicd`,
+and the recipe leaves them out so they are not run twice. Locally, run them through
+`python3 scripts/coverage_all.py --only <tree>` for the gate signal with coverage, or
+`pytest scripts/tests/ -q --tb=no -rf` for a readable failure list. Do not run the two concurrently over one worktree either: two
 pytest processes sharing a rootdir contend on its cache, which produces failures
 belonging to neither run. (`-p no:cacheprovider` removes that particular contention;
 the duplication argument stands regardless.)
@@ -186,7 +200,7 @@ Two invocation corrections for the CI-equivalent gates:
   [#1152](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1152).
 - **Do not reach for `PYTHONPATH` to make `make typecheck` resolve first-party
   imports, and do not conclude from that that the tool ignores the environment.**
-  `pyrightconfig.json`'s `extraPaths` names the five first-party roots, so resolution
+  `pyrightconfig.json`'s `extraPaths` names every first-party root, so resolution
   is a property of the configuration rather than of the invocation. Measured on the
   current tree the two agree exactly — same error count, same warning count, same exit
   status — both with `PYTHONPATH` exported and under `env -u PYTHONPATH`. The point is

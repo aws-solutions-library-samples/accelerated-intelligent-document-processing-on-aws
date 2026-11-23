@@ -65,8 +65,23 @@ class BatchStatus(BaseModel):
     failed: int = Field(description="Number of failed documents")
     in_progress: int = Field(description="Number of documents in progress")
     queued: int = Field(description="Number of queued documents")
+    #: Documents whose processing has stopped to wait for a human reviewer
+    #: (`HITL_IN_PROGRESS`). Neither completed nor failed; they move on once a
+    #: reviewer completes or rejects them in a review queue.
+    awaiting_review: int = Field(
+        default=0, description="Number of documents awaiting human review"
+    )
     success_rate: float = Field(description="Completion success rate (0-1)")
-    all_complete: bool = Field(description="Whether all documents are complete")
+    #: True once no document is queued or running. A document awaiting review
+    #: counts as settled, because nothing more happens to it without a person, so
+    #: a loop polling on this ends; read `awaiting_review` to tell a batch that
+    #: finished from one that is waiting on reviewers.
+    all_complete: bool = Field(
+        description=(
+            "Whether processing has finished: no document is queued or running "
+            "(documents awaiting human review count as finished)"
+        )
+    )
     elapsed_seconds: Optional[float] = Field(
         default=None, description="Total elapsed time"
     )

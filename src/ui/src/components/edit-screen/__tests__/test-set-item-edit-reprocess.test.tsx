@@ -13,6 +13,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
@@ -31,6 +32,8 @@ let editorProps: Record<string, unknown> | null = null;
 let boardProps: Record<string, unknown> | null = null;
 /** Overrides of the document the adapter returns (authored ground truth has no review copy). */
 const docOver: Record<string, unknown> = {};
+/** The adapter's error from its last read; null when that read succeeded. */
+let adapterLoadError: string | null = null;
 
 vi.mock('../test-set-item-edit-adapter', () => ({
   NOT_ASSIGNED_MESSAGE: 'not assigned',
@@ -53,7 +56,7 @@ vi.mock('../test-set-item-edit-adapter', () => ({
     },
     draft: adapterDraft,
     loading: false,
-    loadError: null,
+    loadError: adapterLoadError,
     reload: vi.fn(),
     openDraft: (...a: unknown[]) => openDraft(...a),
     saveDraft: (...a: unknown[]) => saveDraft(...a),
@@ -108,7 +111,8 @@ vi.mock('../../../hooks/use-test-doc-pages', () => ({
 }));
 vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: null }) }));
 vi.mock('../../../hooks/use-configuration-versions', () => ({ default: () => ({ versions: [] }) }));
-vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
+const graphql = vi.fn();
+vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (...a: unknown[]) => graphql(...a) }) }));
 /** The breadcrumbs the page gives its layout. */
 let layoutTrail: { text: string; href: string }[] | null = null;
 vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
@@ -149,11 +153,19 @@ import TestSetItemEdit from '../TestSetItemEdit';
 import { barButtonLabels, menuItems, menuNames } from './edit-bar';
 import { chooseRegroup, regroupItem } from './regroup-stand-in';
 
+/** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderScreen = (path = '/') =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 const button = (text: string) =>
@@ -178,6 +190,8 @@ beforeEach(() => {
   layoutTrail = null;
   controller.isDirty.mockReset().mockReturnValue(true);
   controller.save.mockReset().mockResolvedValue(true);
+  graphql.mockReset();
+  adapterLoadError = null;
 });
 
 describe('the primary action on a Test Studio document', () => {
@@ -404,5 +418,55 @@ describe('the primary action on a Test Studio document', () => {
     expect(regroupItem()).toMatchObject({ disabled: false });
     chooseRegroup();
     expect(boardProps).toMatchObject({ presentation: 'modal' });
+  });
+
+  /** Save a grouping from Edit Page Grouping, leaving the page's refs as they were. */
+  const saveGroupingWithoutReread = async () => {
+    // Refs the page holds until it re-reads them: one array, not a new one per render.
+    docOver.sections = [
+      { sectionId: '1', baselineKey: 'b1', documentClass: 'Invoice', pageIndices: [0] },
+      { sectionId: '2', baselineKey: 'b2', documentClass: 'Invoice', pageIndices: [1] },
+    ];
+    graphql.mockResolvedValue({
+      data: {
+        updateTestSetDocumentSections: {
+          sections: [
+            { sectionId: '1', documentClass: 'Invoice', pageIndices: [0] },
+            { sectionId: '2', documentClass: 'W2', pageIndices: [1] },
+          ],
+        },
+      },
+    });
+    const view = renderScreen();
+    chooseRegroup();
+    const onSave = boardProps!.onSave as (sections: unknown[]) => Promise<void>;
+    await act(async () => {
+      await onSave([
+        { sectionId: '1', documentClass: 'Invoice', pageIds: [1] },
+        { sectionId: '2', documentClass: 'W2', pageIds: [2] },
+      ]);
+    });
+    return view;
+  };
+
+  it('disables Edit Page Grouping, saying why, until the grouping it just saved is re-read (#1895)', async () => {
+    await saveGroupingWithoutReread();
+    await waitFor(() => expect(regroupItem()).toMatchObject({ disabled: true, disabledReason: 'Loading the saved grouping…' }));
+  });
+
+  it('says the saved grouping could not be re-read, and how to load it, when the re-read fails (#1895)', async () => {
+    const view = await saveGroupingWithoutReread();
+    adapterLoadError = 'Could not load the document.';
+    view.rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(regroupItem()).toMatchObject({
+        disabled: true,
+        disabledReason: 'The saved grouping could not be re-read. Choose Refresh to load it.',
+      }),
+    );
   });
 });

@@ -11,6 +11,9 @@ model.tar.gz
 # the lock when the holder exits, so a leftover file needs no cleanup. Kept OUT of
 # src/ui deliberately — `ui-lint` caches on a checksum of that directory.
 .ui-deps.lock
+# ESLint's cache for `npm run i18n:lint` (the UI string-debt counting run, issue
+# #1770). Kept out of src/ui for the same reason as the lock file above.
+.ui-i18n-eslintcache
 
 # Build artifacts - backup files from publish.py
 *.pre-build-backup
@@ -53,7 +56,7 @@ package-lock.json
 # `npm ci`, which requires a committed lock file)
 !feature-platform/*/feature-ui/package-lock.json
 # Allow the MR UX test's toolchain lock file: scripts/ux_runner/install.sh runs
-# `npm ci` from it, and dep-audit reads it (NODE_LOCKFILES)
+# `npm ci` from it, and dep-audit reads every tracked package-lock.json
 !scripts/ux_runner/package-lock.json
 
 # Jupyter
@@ -70,6 +73,7 @@ docs-site/src/content/docs/idp-fundamentals/
 docs-site/src/content/images
 docs-site/public/images
 docs-site/public/analyst-reports
+docs-site/public/idp-in-action.html
 
 # Type checking
 pyrightconfig.temp.json
@@ -211,3 +215,8 @@ pipeline_execution_id.txt
 codebuild_logs.txt
 deployment_summary.txt
 ci_run_options.json
+
+# Working directories `idp-cli deploy --terraform` creates by default
+# (./idp-terraform/<stack-name>). They hold terraform.tfstate, which records
+# account ids, ARNs and sensitive values, and the parameters file.
+idp-terraform/

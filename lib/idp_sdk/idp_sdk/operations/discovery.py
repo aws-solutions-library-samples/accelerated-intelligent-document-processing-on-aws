@@ -5,7 +5,6 @@
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -343,6 +342,11 @@ class DiscoveryOperation:
             from idp_common import bedrock
             from idp_common.config.merge_utils import load_system_defaults
             from idp_common.prompt_comments import strip_prompt_comments_in_config
+            from idp_common.regional_models import (
+                NOVA_PRO_MODEL_ID,
+                regional_default,
+                regional_shipped_model,
+            )
 
             # Shipped defaults may document prompts in {# ... #} comments; this
             # path sends them without the runtime config reader, so strip here.
@@ -352,8 +356,18 @@ class DiscoveryOperation:
             discovery_cfg = defaults.get("discovery", {})
             auto_cfg = discovery_cfg.get("auto_split", {})
 
-            # Caller override wins over system default
-            model_id = model_id or auto_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+            region = self._require_region(self._client)
+
+            # Caller override wins over system default. The system default and
+            # the last resort both go through the Region translation: this path
+            # never runs the deploy-time swap, and a us. profile is not callable
+            # from an EU or Canada Region.
+            shipped_model_id = auto_cfg.get("model_id")
+            model_id = model_id or (
+                regional_shipped_model(shipped_model_id, region)
+                if shipped_model_id
+                else regional_default(NOVA_PRO_MODEL_ID, region)
+            )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
             # block built below (text + image input only), and would silently drop
@@ -400,7 +414,6 @@ class DiscoveryOperation:
                 {"text": user_prompt},
             ]
 
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
             bedrock_client = bedrock.BedrockClient(region=region)
 
             response = bedrock_client.invoke_model(
@@ -545,6 +558,11 @@ class DiscoveryOperation:
             from idp_common import bedrock, image
             from idp_common.config.merge_utils import load_system_defaults
             from idp_common.prompt_comments import strip_prompt_comments_in_config
+            from idp_common.regional_models import (
+                NOVA_PRO_MODEL_ID,
+                regional_default,
+                regional_shipped_model,
+            )
 
             # If a page range is specified and the file is a PDF, extract only those pages
             file_extension = doc_path.suffix.lower().lstrip(".")
@@ -569,8 +587,18 @@ class DiscoveryOperation:
                 else discovery_cfg.get("without_ground_truth", {})
             )
 
-            # Caller override wins over system default
-            model_id = model_id or mode_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+            region = self._require_region(self._client)
+
+            # Caller override wins over system default. The system default and
+            # the last resort both go through the Region translation: this path
+            # never runs the deploy-time swap, and a us. profile is not callable
+            # from an EU or Canada Region.
+            shipped_model_id = mode_cfg.get("model_id")
+            model_id = model_id or (
+                regional_shipped_model(shipped_model_id, region)
+                if shipped_model_id
+                else regional_default(NOVA_PRO_MODEL_ID, region)
+            )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
             # block built below (text + image input only), and would silently drop
@@ -628,7 +656,6 @@ class DiscoveryOperation:
                 content = [image.prepare_bedrock_image_attachment(file_bytes)]
 
             # Call Bedrock with retry/validation loop
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
             bedrock_client = bedrock.BedrockClient(region=region)
 
             validation_feedback = ""
@@ -804,9 +831,20 @@ class DiscoveryOperation:
                 "Install them with: make setup (or: pip install -e 'lib/idp_common_pkg[multi_document_discovery]')",
             )
 
-        resolved_region = (
-            region or self._client._region or os.environ.get("AWS_REGION", "us-west-2")
-        )
+        # One Region for the Bedrock calls and for the stack the schemas are saved
+        # into. A per-call `region` that differs from the client's gets a client
+        # of its own, so the stack is looked up where the models are called. A
+        # Region resolved from `AWS_REGION` alone needs no such client: the
+        # configuration bridge hands it to the lookup.
+        client = self._client
+        try:
+            resolved_region = self._require_region_of(region or client._region)
+        except IDPConfigurationError as e:
+            return MultiDocDiscoveryResult(status="FAILED", error=str(e))
+        if region and region != client._region:
+            from idp_sdk.client import IDPClient
+
+            client = IDPClient(stack_name=client._stack_name, region=resolved_region)
 
         # Build config overrides
         config: Dict[str, Any] = {}
@@ -817,7 +855,7 @@ class DiscoveryOperation:
 
         if save_to_config and resolved_stack:
             # ClassesDiscovery saves into the profile, so it needs the bucket too.
-            self._configure_config_env(resolved_stack)
+            client.config._configure_config_env(resolved_stack)
             save_version = config_version
 
         try:
@@ -858,13 +896,26 @@ class DiscoveryOperation:
             else:
                 status = "SUCCESS"
 
+            noise_keys = [
+                str(k) for k in getattr(raw_result, "noise_document_keys", [])
+            ]
             result = MultiDocDiscoveryResult(
                 status=status,
                 discovered_classes=discovered_classes,
                 reflection_report=raw_result.reflection_report,
                 total_documents=raw_result.total_documents,
                 total_clusters=raw_result.num_clusters,
-                noise_documents=raw_result.num_failed_embeddings,
+                # Noise and failed embeddings are different populations: a noise
+                # document was embedded and clustered into a cluster too small to
+                # keep, a failed one never reached clustering. The getattr
+                # defaults keep an idp_common that predates the noise fields
+                # from reporting embedding failures as noise.
+                noise_documents=len(noise_keys),
+                noise_document_keys=noise_keys,
+                failed_embeddings=raw_result.num_failed_embeddings,
+                failed_embedding_keys=[
+                    str(k) for k in getattr(raw_result, "failed_embedding_keys", [])
+                ],
                 config_version=save_version,
             )
 
@@ -963,6 +1014,28 @@ class DiscoveryOperation:
             failed=failed,
             results=results,
         )
+
+    @staticmethod
+    def _require_region(client) -> str:
+        """The Region `client`'s calls go to, or a configuration error."""
+        return DiscoveryOperation._require_region_of(client._region)
+
+    @staticmethod
+    def _require_region_of(region: Optional[str]) -> str:
+        """`idp_sdk.resolve_region`, or a configuration error naming the fix.
+
+        Never a hard-coded Region. The answer is passed to every client built
+        from it, which matters when it came from `AWS_REGION`.
+        """
+        from idp_sdk._core.region import resolve_region
+
+        region = resolve_region(region)
+        if not region:
+            raise IDPConfigurationError(
+                "Region could not be determined. Pass a region, or set "
+                "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
+            )
+        return region
 
     def _configure_config_env(self, stack_name: str) -> str:
         """

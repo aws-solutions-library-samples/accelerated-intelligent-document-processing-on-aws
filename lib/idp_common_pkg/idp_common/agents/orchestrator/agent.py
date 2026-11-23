@@ -37,11 +37,17 @@ def create_orchestrator_agent(
         config: Configuration dictionary
         session: Boto3 session for AWS operations
         agent_ids: List of agent IDs to include as tools in the orchestrator
-        **kwargs: Additional arguments
+        **kwargs: Additional arguments. ``session_gate``, when given, is an
+            ``idp_common.chat_session_agents.SessionAgentGate`` for this turn: a
+            data agent's tool reports its result to it before handing the result
+            on, and an opt-in agent's tool asks it before running. It is not
+            forwarded to the sub-agents.
 
     Returns:
         strands.Agent: Configured orchestrator agent instance
     """
+
+    session_gate = kwargs.pop("session_gate", None)
 
     # Create tool functions for each specialized agent
     tools = []
@@ -57,6 +63,16 @@ def create_orchestrator_agent(
             async def tool_func(query: str) -> AsyncIterator:
                 """Route query to specialized agent with streaming."""
                 import asyncio
+
+                if session_gate is not None and not session_gate.allows(aid):
+                    # A data agent already returned a result in this session, so
+                    # the conversation is not handed to an agent that sends its
+                    # query outside the deployment.
+                    from ...chat_session_agents import UNAVAILABLE_MESSAGE
+
+                    logger.info(f"Sub-agent {aid} not available in this session")
+                    yield UNAVAILABLE_MESSAGE
+                    return
 
                 try:
                     from ..factory import agent_factory
@@ -167,11 +183,24 @@ def create_orchestrator_agent(
                                         # Not JSON or doesn't have responseType - continue normally
                                         pass
 
+                                    if session_gate is not None:
+                                        # Flags the session before the result
+                                        # reaches the orchestrator (and memory). A
+                                        # failure to record raises, so the result
+                                        # is withheld rather than handed on
+                                        # unrecorded.
+                                        session_gate.note_data_result(aid)
                                     logger.info(
                                         f"Sub-agent {aid} completed, yielding final result"
                                     )
                                     yield cleaned_response
                                     break
+                            else:
+                                # The stream ran out without a result event, so
+                                # the last event yielded above becomes the tool
+                                # result. It still counts as a result.
+                                if session_gate is not None:
+                                    session_gate.note_data_result(aid)
                         except asyncio.TimeoutError:
                             error_msg = f"Sub-agent {aid} timed out after {timeout_seconds} seconds"
                             logger.error(error_msg)
@@ -323,7 +352,7 @@ Example:
 
 # Scope (you are the "Agent Companion Chat")
 - You handle general Q&A about the user's documents, analytics, errors, and the codebase. Do NOT describe schema authoring, config-version creation, or synthetic-data generation as your own capabilities.
-- If the user wants to SET UP or CONFIGURE the system - create/bootstrap a configuration, author a document schema from a description or example - tell them briefly that this is handled by the separate "Quick Start" assistant, which they can open with the "Quick Start" button at the top of the left navigation. Do not attempt to author schemas or create config versions yourself.
+- If the user wants to SET UP or CONFIGURE the system - create/bootstrap a configuration, author a document schema from a description or example - tell them briefly that this is handled by the separate "Quick Start" assistant, which an Admin opens with the "Quick Start" button at the top of the left navigation; a user who does not see that button can ask an Admin to set it up. Do not attempt to author schemas or create config versions yourself.
 
 # Key Rules
 - For text responses: Be conversational and helpful - return natural language, NOT JSON

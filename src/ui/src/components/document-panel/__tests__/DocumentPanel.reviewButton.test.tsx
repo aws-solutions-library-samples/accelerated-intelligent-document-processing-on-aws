@@ -9,9 +9,10 @@
  */
 
 import React from 'react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { render } from '@testing-library/react';
+
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -69,7 +70,7 @@ describe('DocumentPanel Edit button on a queued document', () => {
     ['an Annotator who is also a Viewer', { ...ROLE, isAnnotator: true, isViewer: true, canWorkReviewQueues: true }],
   ])('opens the queue item for %s, labelled Edit, at the document’s edit page', (_who, role) => {
     state.role = role;
-    render(<DocumentPanel item={QUEUED as never} />);
+    renderWithIntl(<DocumentPanel item={QUEUED as never} />);
     const button = edit()!;
     expect(button).toBeDefined();
     expect(button.getElement().getAttribute('href')).toBe(documentEditHref(QUEUED.objectKey, { from: 'document' }));
@@ -78,7 +79,7 @@ describe('DocumentPanel Edit button on a queued document', () => {
 
   it('does not offer the legacy Start Review on a queued document', () => {
     state.role = { ...ROLE, isAdmin: true, canWorkReviewQueues: true };
-    render(<DocumentPanel item={{ ...QUEUED, objectStatus: 'COMPLETED' } as never} />);
+    renderWithIntl(<DocumentPanel item={{ ...QUEUED, objectStatus: 'COMPLETED' } as never} />);
     expect(barButtonLabels()).not.toContain('Start Review');
     expect(barButtonLabels()).not.toContain('Review');
   });

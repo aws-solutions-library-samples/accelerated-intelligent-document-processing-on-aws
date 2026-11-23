@@ -4,18 +4,24 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
+| **Document Version** | 3.1 |
+| **Last Updated** | 2026-11-17 |
 | **Applies to release** | v0.6.3 |
 | **Classification** | Internal |
 | **Processing Mode** | Pipeline (`use_bda: false`) |
 
-> **v3.0 update.** Confidence and bounding-box geometry are now **outputs of
-> extraction** (`confidence.mode: integrated`), not a separate Assessment stage —
-> the standalone Assessment step auto-skips, and granular assessment is retired.
-> OCR may be backed by Textract **or** BDA-as-OCR (`ocr.backend: bda`). Models
-> may be Anthropic, Nova, **or OpenAI GPT-5.x** via `bedrock-mantle` — see the
-> new **PM.T08**.
+> Confidence and bounding-box geometry are configured as **outputs of
+> extraction** under `extraction.confidence`: `mode: separate` (the system
+> default) runs the Assessment step after extraction, `mode: integrated` produces
+> confidence inside the extraction call and the Assessment step auto-skips, and
+> `mode: off` disables it. Under `separate`, confidence may come from a
+> customer-deployed **decision model** instead of an LLM
+> (`confidence.method: decision_model`), and split-then-classify section
+> classification may use one too (`section_classification.method:
+> decision_model`) — see [Lambda Hooks](../feature-threats/lambda-hooks.md),
+> HOOK.T08–HOOK.T10. OCR may be backed by Textract **or** BDA-as-OCR
+> (`ocr.backend: bda`). Models may be Anthropic, Nova, **or OpenAI GPT-5.x** via
+> `bedrock-mantle` — see **PM.T08**.
 
 ## 1. Overview
 
@@ -49,9 +55,9 @@ flowchart TD
 | Step | Lambda | AWS Service | Input | Output |
 |------|--------|-------------|-------|--------|
 | **OCR** | OCR Lambda | Amazon Textract (`TABLES`+`LAYOUT` by default) **or** Bedrock Data Automation standard output | S3 document URI | Text, layout, tables, word-level confidence + geometry |
-| **Classification** | Classification Lambda | Bedrock (Claude/Nova) or `bedrock-mantle` (GPT-5.x) | OCR text + class definitions | Document type + confidence |
+| **Classification** | Classification Lambda | Bedrock (Claude/Nova) or `bedrock-mantle` (GPT-5.x); for split-then-classify sections, optionally a `GENAIIDP-` decision model Lambda | OCR text and/or page images + class definitions | Document type + confidence |
 | **Extraction** | Extraction Lambda | Bedrock (Claude/Nova) or `bedrock-mantle` (GPT-5.x) | OCR text + extraction schema | Structured JSON + **per-field confidence + bounding boxes** |
-| **Assessment** *(conditional)* | Assessment Lambda | Bedrock (Claude/Nova) | Extracted data | Per-field confidence — **only** under `confidence.mode: separate` |
+| **Assessment** *(conditional)* | Assessment Lambda | Bedrock (Claude/Nova), or a `GENAIIDP-` decision model Lambda under `confidence.method: decision_model` | Extracted data | Per-field confidence — **only** under `confidence.mode: separate` |
 
 > **Sharded extraction.** Advanced (agentic) extraction shards large documents
 > across a Step Functions **Distributed Map**; each shard persists idempotently
@@ -65,7 +71,8 @@ flowchart TD
 
 Each step is independently configurable via the YAML configuration:
 - **Model selection**: Different models per step, including **cross-vendor** choices (Anthropic / Nova / OpenAI GPT-5.x) — see PM.T08
-- **Custom prompts**: Full control over system and user prompts
+- **Custom prompts**: Full control over system and user prompts. `{# ... #}` comments in a prompt template are kept where the configuration is stored and edited and are removed when the runtime loads its configuration (`idp_common/prompt_comments.py`), before any value is substituted, so comment text never reaches a model and document text containing `{#` is never altered
+- **Decision models**: section classification and extraction confidence can each be answered by a customer-deployed `GENAIIDP-` Lambda over the System One contract instead of an LLM — see HOOK.T08–HOOK.T10
 - **Extraction schemas**: JSON Schema-based field definitions with types, descriptions, validation rules
 - **Classification definitions**: Document type names, descriptions, few-shot examples
 - **Confidence & geometry**: `confidence.mode` (`integrated`/`separate`/`off`), `geometry.mode` (`ocr_only` default, `llm`, `llm_grounded`), thresholds and per-field alerts
@@ -86,7 +93,9 @@ Each step is independently configurable via the YAML configuration:
 | **Likelihood** | High |
 | **Severity** | High |
 | **Affected Components** | Classification Lambda, Extraction Lambda, Assessment Lambda |
-| **Mitigations** | Input sanitization, prompt engineering with guardrails, output validation, Bedrock Guardrails configuration, assessment step as verification layer |
+| **Mitigations** | The default prompt templates place document content inside delimiting tags, and prompt comments are removed from the template before document text is substituted, so a document cannot use `{# ... #}` to remove prompt text. Model output is parsed against the extraction schema (PM.T03). An optional Bedrock Guardrail (`BedrockGuardrailId` / `BedrockGuardrailVersion`, passed as `GUARDRAIL_ID_AND_VERSION`) is applied to the model calls of the Extraction function (including agentic extraction), the Advanced-extraction shard runtime, Summarization, rule validation, Chat with Document, discovery and Z3 rule translation. Confidence assessment, when `confidence.mode` is `separate` or `integrated`, gives a second per-field signal that drives thresholds and human review. |
+| **Residual risk** | The guardrail is not applied to the Classification, OCR or Assessment functions, each excluded with its own recorded reason in `GUARDRAIL_ENV_EXEMPT` (`scripts/tests/test_model_call_guardrail.py`), and it is not sent to OpenAI GPT-5.x models on the `bedrock-mantle` Responses route, which logs a warning instead. Prompt injection against an LLM cannot be fully prevented by prompt structure; human review of low-confidence values is the backstop. |
+| **Evidence** | `scripts/tests/test_model_call_guardrail.py`; `lib/idp_common_pkg/tests/unit/bedrock/test_guardrail_routes.py::test_agentic_extraction_applies_the_guardrail`; `lib/idp_common_pkg/tests/unit/bedrock/test_guardrail_routes.py::test_the_responses_route_says_when_a_configured_guardrail_is_not_sent`; `lib/idp_common_pkg/tests/unit/test_prompt_comments.py::TestFormatPrompt::test_comments_are_removed_before_substitution`; UNVERIFIED: prompt delimiting and the effectiveness of the guardrail against injection are not tested |
 
 ### PM.T02: OCR Manipulation / Adversarial Documents
 
@@ -101,6 +110,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Medium |
 | **Affected Components** | OCR Lambda, Amazon Textract |
 | **Mitigations** | Document format validation, image quality checks, confidence score thresholds, multi-pass OCR comparison |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T03: Model Output Manipulation
 
@@ -115,6 +125,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | High |
 | **Affected Components** | Classification Lambda, Extraction Lambda, Assessment Lambda |
 | **Mitigations** | Output schema validation (JSON Schema), confidence thresholds, evaluation against ground truth, human review for high-value documents |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T04: Cross-Step Data Poisoning
 
@@ -129,6 +140,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | High |
 | **Affected Components** | S3 intermediate outputs, all pipeline Lambdas |
 | **Mitigations** | S3 versioning, server-side encryption, IAM role separation per Lambda, Step Functions state validation |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T05: Textract Service Dependency
 
@@ -143,6 +155,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Medium |
 | **Affected Components** | OCR Lambda, Amazon Textract |
 | **Mitigations** | Retry logic with exponential backoff, SQS dead letter queue, CloudWatch alarms on Textract errors, capacity planning with service quotas |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T06: Configuration Tampering
 
@@ -157,6 +170,8 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Critical |
 | **Affected Components** | Configuration S3 bucket, DynamoDB config table, configuration resolver Lambdas (REST API) |
 | **Mitigations** | RBAC (only Admin/Author can modify config), configuration versioning, JSON Schema validation, audit logging, configuration change alerts |
+| **Residual risk** | A `{# ... #}` span in a prompt is documentation and is not sent, so text placed in a comment by an Author does not reach the model while still appearing in the stored configuration; Prompt Preview shows both the sent and the as-written prompt. On upgrade to a release with prompt comments, text between an existing `{#` and a later `#}` in a stored prompt stops being sent without any edit to the configuration. |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/test_prompt_comments.py`; UNVERIFIED: RBAC on configuration writes, versioning, audit logging and change alerts are not cited to a test here |
 
 ### PM.T07: Few-Shot Example Poisoning
 
@@ -171,6 +186,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Medium |
 | **Affected Components** | Few-shot examples S3 storage, Classification Lambda, Extraction Lambda |
 | **Mitigations** | RBAC on example management (Admin/Author only), example validation, evaluation framework to detect accuracy degradation |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T08: Document Content Sent to a Non-Anthropic Model Family (OpenAI via `bedrock-mantle`)
 
@@ -184,8 +200,9 @@ Each step is independently configurable via the YAML configuration:
 | **Likelihood** | Medium (a normal config action) |
 | **Severity** | Medium |
 | **Affected Components** | `idp_common/bedrock/openai_responses.py`, model config enums, config UI model dropdowns, pricing/limits tables |
-| **Mitigations** | All traffic stays **within Amazon Bedrock in the customer's own account** — this is a Bedrock-served model, not a call out to OpenAI's own API, so it does not leave the AWS trust boundary (TB4) and is covered by the same TLS/IAM controls and no-training posture. Model selection requires the **Admin/Author** group and is config-versioned and audit-logged, so a change is attributable and reversible (PM.T06 controls apply). Bedrock model access must be explicitly requested/enabled per model in the account, giving a second account-level gate outside the application. Region availability is enforced by Bedrock itself — an unavailable model fails loudly rather than silently rerouting. GovCloud deployments **cannot** select GPT-5.6 at all. Agentic extraction, Discovery, and Policy Discovery reject these models at `config-validate` and at runtime. |
+| **Mitigations** | All traffic stays **within Amazon Bedrock in the customer's own account** — this is a Bedrock-served model, not a call out to OpenAI's own API, so it does not leave the AWS trust boundary (TB4) and is covered by the same TLS/IAM controls and no-training posture. Model selection requires the **Admin/Author** group and is config-versioned and audit-logged, so a change is attributable and reversible (PM.T06 controls apply). Bedrock model access must be explicitly requested/enabled per model in the account, giving a second account-level gate outside the application. Region availability is enforced by Bedrock itself — an unavailable model fails loudly rather than silently rerouting. GovCloud deployments **cannot** select GPT-5.6 at all. Agentic extraction, Discovery, and Policy Discovery reject these models at `config-validate` and at runtime, and `idp-cli config-validate` and `config-upload` check every model ID in a configuration against `config_library/pricing.yaml`. A configured Bedrock Guardrail is not sent on the `bedrock-mantle` Responses route, and a warning is logged when one is configured (PM.T01). |
 | **Residual risk / recommendation** | The application does not implement an allow-list restricting *which* Bedrock models a deployment may select — any model in the enum is choosable by an Author. Deployments with vendor constraints should (1) restrict model access at the **Bedrock account level** (the effective control), and (2) treat the model fields in a config version as security-relevant in change review. Consider a stack parameter constraining the selectable model set for regulated deployments. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T09: Weaponized Document Exploits a File Parser on the Processing Path
 
@@ -201,6 +218,7 @@ Each step is independently configurable via the YAML configuration:
 | **Affected Components** | OCR, Classification, Extraction, Assessment and Discovery Lambdas, `BatchPreProcessor`, the PII Anonymizer hook, `idp_common` image and PDF utilities |
 | **Mitigations** | **Optional ingest gate** on GuardDuty Malware Protection for S3 (`MalwareScanning` = `GATE_ONLY` or `CREATE_PLAN`, default `DISABLED`): the queue sender records an upload as `MALWARE_SCANNING` and does not enqueue it until GuardDuty's verdict arrives through EventBridge; `THREATS_FOUND` becomes `QUARANTINED` and every other verdict, including an unknown one, becomes `MALWARE_SCAN_FAILED` unless both the configuration and the `AllowUnscannableDocuments` stack ceiling admit unscannable files. Neither refused status starts a workflow, and reprocess is refused for all three gate statuses in the resolver and the SDK, failing closed when the status cannot be read. Alarms cover a detection, a run of unscannable refusals, an undeliverable verdict, a verdict not applied, and documents held with no verdict for an hour. Independently of the gate: dependencies are pinned and `make dep-audit` gates HIGH-and-above advisories in both CI systems; each Lambda has its own execution role; and Lambda memory and timeout limits bound a decoding run. |
 | **Residual risk / recommendation** | The gate is **off by default**, and with it on the scan is signature, YARA and ML based with no behavioural analysis, so a novel exploit is reported clean. It is asynchronous: the object sits in the Input bucket, presignable, between upload and verdict. The plan protects the **Input** bucket only, so a `.zip` in the Staging bucket is opened by the batch pre-processor unscanned — its extracted members do pass the gate when written to the Input bucket, but the archive decoder itself is outside it. `make dep-audit` does not read the six `feature-platform/*/feature-ui` lockfiles. Enabling the gate is the recommendation for any deployment that accepts documents from outside its own organisation. |
+| **Evidence** | `make dep-audit`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ## 4. Pipeline Mode Security Controls Summary
 
@@ -211,7 +229,8 @@ Each step is independently configurable via the YAML configuration:
 | **Dependency audit** | Pinned dependencies; `make dep-audit` gates HIGH+ advisories in both CI systems | PM.T09 |
 | **Output validation** | JSON Schema validation of model outputs; off-schema field filtering | PM.T03, PM.T04 |
 | **Prompt engineering** | Guardrails in system prompts, input/output tags | PM.T01 |
-| **Bedrock Guardrails** | Optional content filtering and topic denial | PM.T01, PM.T03 |
+| **Bedrock Guardrails** | Optional content filtering and topic denial on extraction, shard runtime, summarization, rule validation, chat, discovery and rule translation; not on classification, OCR, assessment or GPT-5.x | PM.T01, PM.T03 |
+| **Prompt comment removal** | `{# ... #}` removed from templates at configuration load, before substitution | PM.T01, PM.T06 |
 | **Encryption** | S3 SSE, TLS in transit | PM.T04 |
 | **IAM least privilege** | Separate execution roles per Lambda | PM.T04, PM.T06 |
 | **RBAC** | Cognito groups controlling config access | PM.T06, PM.T07, PM.T08 |

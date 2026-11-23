@@ -6,7 +6,10 @@
 import logging
 import os
 from typing import Any, Dict, Optional
-from .base import IDPTool
+
+from idp_common import mcp_access
+
+from .base import NO_CALLER, IDPTool, config_version_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,7 @@ class BatchReprocessTool(IDPTool):
         document_ids: Optional[str] = None,
         batch_id: Optional[str] = None,
         region: Optional[str] = None,
+        caller: Any = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Execute batch reprocessing using IDPClient public API"""
@@ -45,6 +49,8 @@ class BatchReprocessTool(IDPTool):
         logger.info(f"Updated: {TOOL_UPDATED}")
         logger.info(f"Parameters: step={step}, document_ids={document_ids}, batch_id={batch_id}, region={region}")
 
+        if caller is None:
+            return dict(NO_CALLER)
         from idp_sdk.client import IDPClient
 
         try:
@@ -67,6 +73,23 @@ class BatchReprocessTool(IDPTool):
             else:
                 logger.info(f"Will resolve document IDs from batch: {batch_id}")
 
+            requested_batch_id = batch_id
+            if caller is not None and caller.scope is not None:
+                # Every document must be in the caller's scope, and one outside it
+                # refuses the whole request. A batch is expanded to its documents
+                # first and those exact documents are what is re-run, so the set
+                # checked is the set processed.
+                if doc_id_list is None:
+                    doc_id_list = list(client.batch.get_document_ids(batch_id=batch_id))
+                    batch_id = None
+                if not doc_id_list:
+                    raise PermissionError(
+                        "Unauthorized: you are not permitted to act on that document."
+                    )
+                mcp_access.require_document_keys_in_scope(
+                    caller, doc_id_list, config_version_of=config_version_lookup()
+                )
+
             # Perform reprocessing via public SDK API
             # batch.reprocess() handles batch_id -> document_id resolution internally
             logger.info(f"Reprocessing documents from step: {step}")
@@ -80,7 +103,7 @@ class BatchReprocessTool(IDPTool):
             logger.info(f"Batch reprocessing completed: queued={result.documents_queued}, failed={result.documents_failed}")
             return {
                 "success": True,
-                "batch_id": batch_id or "rerun",
+                "batch_id": requested_batch_id or "rerun",
                 "documents_queued": result.documents_queued,
                 "documents_failed": result.documents_failed,
                 "step": step,
@@ -91,6 +114,9 @@ class BatchReprocessTool(IDPTool):
                 "message": f"Successfully queued {result.documents_queued} documents for {step} reprocessing"
             }
 
+        except PermissionError as e:
+            logger.warning(f"Batch reprocess refused: {e}")
+            return {"success": False, "error": str(e), "step": step}
         except Exception as e:
             logger.error(f"Batch reprocess failed: {e}", exc_info=True)
             return {

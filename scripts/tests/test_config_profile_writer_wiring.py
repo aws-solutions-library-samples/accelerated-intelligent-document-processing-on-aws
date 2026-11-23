@@ -58,8 +58,10 @@ KNOWN_WRITERS = frozenset(
             "feature-platform/main-stack-extensions/template.yaml",
             "ApplyFeatureConfigPresetFunction",
         ),
-        # These three reach the Quick Start agent, whose create_config_version
-        # tool saves a profile, only through the agent registry.
+        # These three create agents from the registry that carries the Quick
+        # Start agent, whose create_config_version tool saves a profile. The
+        # agent processor refuses that agent at runtime, which the derivation
+        # cannot see, so it is still derived as a writer and keeps the grant.
         ("template.yaml", "AgentChatProcessorFunction"),
         ("template.yaml", "ChatStreamProcessorFunction"),
         ("template.yaml", "AgentProcessorFunction"),

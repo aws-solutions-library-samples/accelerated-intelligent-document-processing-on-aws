@@ -24,6 +24,8 @@ Example:
 """
 
 from ._core import terraform_stack as _terraform_stack
+from ._core.ids import generate_timestamped_id
+from ._core.region import resolve_region
 from ._core.terraform_deploy import (
     default_pointer_url as default_terraform_pointer_url,
 )
@@ -65,6 +67,7 @@ from .models import (
     ChatResponse,
     # Config models
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -102,11 +105,14 @@ from .models import (
     FailureAnalysis,
     FailureCause,
     FieldComparison,
+    FitCheckResult,
     # Manifest models
     LoadTestResult,
     ManifestDocument,
     ManifestResult,
     ManifestValidationResult,
+    McpCredential,
+    McpCredentialIssued,
     MultiDocDiscoveryResult,
     # Stack models
     OrphanedResourceCleanupResult,
@@ -144,19 +150,24 @@ from .models import (
     TenantVerifyCheck,
     TenantVerifyOutcome,
     TenantVerifyResult,
+    TerraformMigrationPlanResult,
+    TerraformMigrationResource,
+    TerraformMigrationStepResult,
     TestComparisonResult,
     TestRunResult,
     UseAsBaselineResult,
     classify_document_state,
 )
 
-__version__ = "0.6.14"
+__version__ = "0.6.15"
 
 from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
 
 __all__ = [
     # Client
     "IDPClient",
+    "resolve_region",
+    "generate_timestamped_id",
     # Exceptions
     "IDPError",
     "IDPConfigurationError",
@@ -223,6 +234,7 @@ __all__ = [
     "FieldComparison",
     "DeleteResult",
     "UseAsBaselineResult",
+    "FitCheckResult",
     # Assessment models
     "AssessmentConfidenceResult",
     "AssessmentFieldConfidence",
@@ -242,6 +254,7 @@ __all__ = [
     "ConfigActivateResult",
     "ConfigVersionInfo",
     "ConfigListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     "ConfigRevisionInfo",
@@ -274,10 +287,15 @@ __all__ = [
     "TenantPlanItem",
     "TenantAccessPoint",
     "TenantPolicyDeployResult",
+    "TerraformMigrationPlanResult",
+    "TerraformMigrationResource",
+    "TerraformMigrationStepResult",
     "TenantPolicyResult",
     "TenantVerifyCheck",
     "TenantVerifyOutcome",
     "TenantUserGrant",
+    "McpCredential",
+    "McpCredentialIssued",
     "TenantVerifyResult",
 ]
 

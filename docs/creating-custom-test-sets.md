@@ -67,8 +67,8 @@ see [How much review is enough?](./test-studio.md#how-much-review-is-enough).
 
 ### How much data
 
-Your overall accuracy score firms up quickly, within roughly the first hundred documents.
-The accuracy of an individual *field* does not, because a field appearing once per
+Your overall accuracy score firms up much faster than the accuracy of any single field,
+because every field of every document contributes to it. A field appearing once per
 document gives you one observation per document — so a badly failing field can hide inside
 a healthy-looking overall score. Fields that repeat within a document (invoice line items)
 need fewer documents; fields appearing once per document drive the requirement.
@@ -263,7 +263,7 @@ This establishes your baseline — it should show near-perfect accuracy since th
 
 Create and test alternative configurations to find the best cost/accuracy balance:
 
-1. Create a new configuration profile with a cheaper model (e.g., Nova Lite)
+1. Create a new configuration profile with a cheaper model. Expect the comparison to show losses: on the v0.6.14 benchmark Amazon Nova Lite and Nova Pro matched the default extraction model only on one-page forms and returned about half the rows of longer lists, with mean recall 0.4980 and 0.5035 ([config-guidance §5.1](./benchmarking/config-guidance.md#51-extraction-model--the-full-grid))
 2. Run a test execution against the same test set using the new configuration
 3. Use the **comparison view** to analyze the results side-by-side
 
@@ -291,10 +291,10 @@ You don't have to create your entire test set in one go. As you process and revi
 3. Either select your existing test set and choose **Actions** → **Add documents** → **From files in a bucket**, or open the set and use its own **Add documents** menu
 4. Select the **Input Bucket** and enter a file pattern matching your new documents (`*` within a folder, `**` across folders, e.g. `invoices/**/*.pdf`)
 5. From the table, the file pattern is pre-filled from the original test set — adjust if needed
-6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date/time) to easily find recently reviewed documents
-7. Click **Check Files** to preview matches, then **Add Documents**
+6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date and time, read as UTC) to easily find recently reviewed documents
+7. Click **Check Files** to see how many files will be added, then **Add Documents**. The count leaves out a document already in the set and a `.zip`, and says how many of each it left out
 
-Files without matching baseline data are automatically excluded, so you can use a broad pattern — only documents you've reviewed and saved as evaluation baselines will be added. The test set's file count is updated automatically.
+Files without matching baseline data are added **unlabeled** rather than skipped, so narrow the pattern (or the **Modified after** filter) to the documents you have reviewed if you want the set to stay fully labeled: one unlabeled document makes the whole set read as unlabeled until it is draft-labeled. A document already in the set is skipped, so its labels in the set are kept; to take a newer baseline for it, remove it from the set and add it again. A `.zip` the pattern matches is left out. The test set's file count is updated automatically.
 
 You do not have to start with documents at all: **Create test set** → **Start empty** creates a set with nothing in it, ready to be grown this way. To prune a set, open it, tick the documents and choose **Remove**.
 

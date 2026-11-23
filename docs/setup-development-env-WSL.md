@@ -2,6 +2,9 @@
 title: "Development Environment Setup Guide on Windows using WSL"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Development Environment Setup Guide on Windows using WSL
 
 ## Introduction  
@@ -92,7 +95,7 @@ make setup-venv
 source .venv/bin/activate
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies, and the Python tools the lint and test targets use. The type checker, `basedpyright`, is installed separately with `npm install -g basedpyright`. It installs every first-party package from `lib/` in one pass, at the versions the dependency lock records, and then checks that none of them came from the package index. See [Installing First-Party Packages Safely](dependency-confusion.md) for why that matters.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies, and the Python tools the lint and test targets use. When Node.js 22.12 or later is on `PATH`, it also installs the web UI and docs-site npm dependencies and the `basedpyright` type checker; without Node it prints a warning and finishes. `make setup-node` installs the Node side on its own and fails on any error. It installs every first-party package from `lib/` in one pass, at the versions the dependency lock records, and then checks that none of them came from the package index. See [Installing First-Party Packages Safely](dependency-confusion.md) for why that matters.
 
 ### 4.3 Test Build Process
 

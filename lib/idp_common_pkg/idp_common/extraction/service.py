@@ -38,6 +38,11 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_INSTANCE_ARRAY,
     X_AWS_IDP_SOURCE_PAGE_TYPES,
 )
+from idp_common.decision_model import function_name
+from idp_common.document_image_placeholder import (
+    DocumentImagePlaceholderError,
+    check_document_image_placeholder,
+)
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -211,6 +216,17 @@ class ExtractionResult(BaseModel):
     ``extraction_multi_instance_suspected``."""
 
 
+_ESCALATION_FAILED_PREFIX = "escalation call failed: "
+
+ESCALATION_METERING_CONTEXT = "ExtractionEscalation"
+"""Metering context of every validation-escalation model call, in both extraction
+modes, so a cost report shows escalation on one row. Simple mode used
+``Extraction-Escalation`` before this constant existed, so reporting rows stored
+by earlier releases carry that spelling. A reader that has to group escalation
+must accept both; the shipped readers match the ``Extraction`` prefix instead.
+"""
+
+
 def _escalation_failure_reason(exc: BaseException) -> str:
     """One bounded line for ``escalation_decision`` when the escalation call raised.
 
@@ -223,7 +239,7 @@ def _escalation_failure_reason(exc: BaseException) -> str:
     """
     lines = (str(exc) or "").strip().splitlines()
     text = lines[0] if lines else ""
-    return f"escalation call failed: {type(exc).__name__}: {text[:160]}"
+    return f"{_ESCALATION_FAILED_PREFIX}{type(exc).__name__}: {text[:160]}"
 
 
 class ExtractionService:
@@ -277,6 +293,12 @@ class ExtractionService:
         # Per-page OCR text in section order, populated per section. Used to
         # shard the input by page range for concurrent agentic extraction.
         self._page_texts: list[str] = []
+        # The page ids _load_document_images loaded an image for, and each one's
+        # OCR text, in that order: what the confidence pass pairs image i with.
+        # ``_page_texts`` keeps a "" for a section page the document lacks, which
+        # has no image, so it cannot be paired with the images directly.
+        self._image_page_ids: list[str] = []
+        self._image_page_texts: list[str] = []
         # Optional checkpoint callback for incremental saves during agentic extraction.
         # When set, called after each successful extraction_tool or apply_json_patches
         # invocation with the current extraction dict, enabling resume on Lambda timeout.
@@ -530,6 +552,11 @@ class ExtractionService:
         if "<<CACHEPOINT>>" in prompt_template:
             self._pending_cache_marker_seen = True
 
+        # A repeated {DOCUMENT_IMAGE} is refused, as the confidence pass refuses
+        # it. Checked on the whole template, before the few-shot split renders
+        # each side separately.
+        check_document_image_placeholder(prompt_template, "extraction task prompt")
+
         # Handle FEW_SHOT_EXAMPLES placeholder first
         if "{FEW_SHOT_EXAMPLES}" in prompt_template:
             parts = prompt_template.split("{FEW_SHOT_EXAMPLES}")
@@ -574,29 +601,27 @@ class ExtractionService:
 
         # Handle DOCUMENT_IMAGE placeholder
         if "{DOCUMENT_IMAGE}" in prompt_template:
+            # The caller checked the whole template: at most one placeholder.
             parts = prompt_template.split("{DOCUMENT_IMAGE}")
-            if len(parts) == 2:
-                # Add text before image
-                before_text = self._prepare_prompt_from_template(
-                    parts[0], self._substitutions, required_placeholders=[]
-                )
-                if before_text.strip():
-                    content.append({"text": before_text})
+            # Add text before image
+            before_text = self._prepare_prompt_from_template(
+                parts[0], self._substitutions, required_placeholders=[]
+            )
+            if before_text.strip():
+                content.append({"text": before_text})
 
-                # Add images
-                if image_content:
-                    content.extend(self._prepare_image_attachments(image_content))
+            # Add images
+            if image_content:
+                content.extend(self._prepare_image_attachments(image_content))
 
-                # Add text after image
-                after_text = self._prepare_prompt_from_template(
-                    parts[1], self._substitutions, required_placeholders=[]
-                )
-                if after_text.strip():
-                    content.append({"text": after_text})
+            # Add text after image
+            after_text = self._prepare_prompt_from_template(
+                parts[1], self._substitutions, required_placeholders=[]
+            )
+            if after_text.strip():
+                content.append({"text": after_text})
 
-                return content
-            else:
-                logger.warning("Invalid DOCUMENT_IMAGE placeholder usage")
+            return content
 
         # No image placeholder, just text
         task_prompt = self._prepare_prompt_from_template(
@@ -720,7 +745,10 @@ class ExtractionService:
                         "page_start": shard.start,
                         "page_end": shard.end,
                         "total_pages": num_pages,
-                        # Raw (un-rendered) shard text + images, kept so an
+                        # Raw (un-rendered) shard text + images. The text is also what the
+                        # shard's parse_table parses (default_shard_runner passes it as
+                        # table_source_text), so changing it changes the tool's input.
+                        # The images and text are kept so an
                         # in-shard assessment pass (integrated-assessment feature)
                         # can reuse AssessmentService.assess_results over the SAME
                         # pages without re-reading S3. Always page images here (not
@@ -732,6 +760,12 @@ class ExtractionService:
                         "assess_page_images": self._cap_agent_images(
                             self._slice_images(saved_images, shard.start, shard.end)
                         ),
+                        # The text of each page in assess_page_images, sliced the
+                        # same way from a list built over the same page ids, for a
+                        # decision model, which pairs each image with its text.
+                        "assess_page_texts": self._image_page_texts[
+                            shard.start : shard.end
+                        ],
                         # Integrated mode: tell the shard agent to emit per-field
                         # confidence/bbox inline (one inference, no second pass).
                         "emit_field_assessment": self._integrated_assessment_enabled(),
@@ -791,16 +825,16 @@ class ExtractionService:
 
     # Scope note for SHARDED agents ONLY (passed via `scope_note=` below). The
     # block itself is written for an agent holding the whole section, and two of
-    # its sentences read wrong from inside a shard:
+    # its sentences read differently from inside a shard:
     #
-    #  * "extract ONLY text between markers for your pages" — a shard's text is
-    #    ALREADY only its pages, and every shard after the first is prefixed with
-    #    a `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
+    #  * "extract ONLY your pages' values" — a shard's text is ALREADY only its
+    #    pages, and every shard after the first is prefixed with a
+    #    `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
     #    OUTSIDE the `--- PAGE N ---` markers on purpose (`_build_shard_payloads`)
-    #    because it carries the table's column-header row. An agent obeying that
-    #    sentence literally drops the header, the deterministic parse then fails
-    #    on text that starts mid-table, and the agent falls back to emitting rows
-    #    itself — a COMPLETENESS risk, not only a cost one.
+    #    because it carries the table's column-header row. parse_table parses
+    #    the shard's text as built, header block included (`default_shard_runner`
+    #    hands it to the tool), so the note says so rather than leaving the agent
+    #    to wonder whether that block is in scope.
     #  * the table/row totals are section-wide (`_preflight_table_parse` parses
     #    the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system
     #    prompt tells the agent to verify row_count against the document and
@@ -811,12 +845,10 @@ class ExtractionService:
     #    it with the totals unaided.
     _SHARD_SCOPE_NOTE = (
         "YOUR SCOPE (sharded run — this overrides the marker rule above): the "
-        "text you were given ALREADY contains only your assigned pages, so pass "
-        "ALL of it to parse_table, including any leading "
-        "'--- DOCUMENT HEADER (page 1, for context only) ---' block. That header "
-        "carries the table's column headers and deliberately sits outside the "
-        "'--- PAGE N ---' markers; dropping it makes parse_table fail on text "
-        "that starts mid-table.\n"
+        "text you were given ALREADY contains only your assigned pages, and "
+        "parse_table parses exactly that text, including any leading "
+        "'--- DOCUMENT HEADER (page 1, for context only) ---' block that "
+        "carries the table's column headers. Call it with no table_text.\n"
         "The table and row totals above are for the WHOLE section, not for your "
         "pages: parse_table on your pages will legitimately return fewer rows, "
         "and that is complete for your scope."
@@ -860,10 +892,14 @@ class ExtractionService:
 
         ``scope_note`` is an optional paragraph inserted directly after the
         page-marker rule, so it can qualify it. The sharded call sites pass
-        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for what the block gets
-        wrong when read from inside a shard); the single-agent path passes
-        nothing, which keeps its instruction byte-identical to the text the
-        advanced-extraction study measured.
+        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for how the block reads
+        from inside a shard); the single-agent path passes
+        nothing. The block's wording is pinned by a unit test
+        (``test_block_is_byte_identical_to_the_pinned_text``), so a change to the
+        instruction every table-parsing agent reads is deliberate. It is not the
+        text the advanced-extraction study measured: that run told the agent to
+        pass its pages' text to ``parse_table``, and the tool now parses the
+        section text itself.
         """
         if (preflight_parse_result or {}).get("status") != "success":
             return custom_instruction
@@ -874,6 +910,16 @@ class ExtractionService:
         columns = preflight_parse_result.get("columns", [])
         table_count = preflight_parse_result.get("table_count", 0)
         scope_paragraph = f"{scope_note}\n\n" if scope_note else ""
+        # Only when several tables were found, so a single-table section's
+        # instruction is unchanged. map_table_to_schema maps every table parsed,
+        # and the agent can no longer scope that by passing a slice of the text.
+        choose_tables = (
+            "   Several tables were found: its result lists each one (index, "
+            "columns, row_count). If only some belong in the array field, pass "
+            "table_indices to name them.\n"
+            if table_count > 1
+            else ""
+        )
 
         guidance = (
             f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
@@ -881,14 +927,16 @@ class ExtractionService:
             f"Table columns: {columns}\n\n"
             f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
             f"markers between pages. When you are assigned a page range, "
-            f"extract ONLY text between markers for your pages before "
-            f"calling parse_table.\n\n"
-            # Empty unless a caller passes scope_note, so the single-agent
-            # path's text is unchanged (pinned byte-for-byte by a unit test).
+            f"extract ONLY your pages' values.\n\n"
+            # Empty unless a caller passes scope_note, so the single-agent path
+            # gets the block unqualified; the wording is pinned byte-for-byte by
+            # a unit test.
             f"{scope_paragraph}"
             f"EFFICIENT EXTRACTION WORKFLOW:\n"
             f"1. Extract scalar fields from your pages' text\n"
-            f"2. Call parse_table with your pages' text\n"
+            f"2. Call parse_table with no table_text: it parses the document "
+            f"text you were given itself\n"
+            f"{choose_tables}"
             f"3. Call map_table_to_schema with column_mapping + static_fields\n"
             f"   (merged rows are auto-split — no manual handling needed)\n"
             f"4. Call finalize_table_extraction with table_array_field + "
@@ -1370,6 +1418,8 @@ class ExtractionService:
         self._wire_class_schema = {}
         self._instance_probe_requested = False
         self._page_images = []
+        self._image_page_ids = []
+        self._image_page_texts = []
         self._image_uris = []
         self._pending_image_fit_metadata = None
         self._pending_cache_marker_seen = False
@@ -1785,6 +1835,7 @@ class ExtractionService:
         max_dimension = image.max_dimension_for_image_count(effective_image_count)
 
         page_images = []
+        loaded_page_ids: list[str] = []
         for page_id in sorted_page_ids:
             if page_id not in document.pages:
                 continue
@@ -1807,10 +1858,12 @@ class ExtractionService:
                     {"page_id": page_id, **fit.to_dict()}
                 )
             page_images.append(image_content)
+            loaded_page_ids.append(page_id)
 
         t1 = time.time()
         logger.info(f"Time taken to read images: {t1 - t0:.2f} seconds")
 
+        self._image_page_ids = loaded_page_ids
         return page_images
 
     def _initialize_extraction_context(
@@ -2057,6 +2110,97 @@ class ExtractionService:
         )
         return document
 
+    def _handle_content_filtered(
+        self,
+        document: Document,
+        section: Any,
+        section_info: SectionInfo,
+        section_id: str,
+        t0: float,
+        error: BaseException,
+    ) -> Document:
+        """Fail one section whose model reply was withheld by a content filter.
+
+        A content-filter block is a verdict on THIS section's content (the
+        agentic path has already regenerated the reply and been refused; the
+        Simple path's client does not retry it), and the other sections'
+        content is unaffected. Raising here failed
+        the ProcessSections Map, and with it the whole document, although every
+        other section extracted normally (#2038).
+
+        So the section is completed the way ``_handle_empty_schema`` completes a
+        section whose class is not configured: an empty result is written with
+        ``metadata.content_filtered`` set, and the section carries an
+        error-severity ``extraction_failed`` issue naming the reason. The section
+        then has no data rather than wrong data, the issue is what the Sections
+        panel renders as Failed, and the rest of the document completes.
+        ``document.errors`` is deliberately not appended to: the collate step fails
+        the whole document on any entry there, which is the outcome this replaces.
+        """
+        from idp_common.extraction.failure import (
+            EXTRACTION_FAILED_CODE,
+            EXTRACTION_STAGE,
+        )
+        from idp_common.models import ProcessingIssue
+        from idp_common.utils.bedrock_utils import content_block_wording
+
+        class_label = section_info.class_label
+        blocker, remedy = content_block_wording(error, "extraction model")
+        issue = ProcessingIssue(
+            stage=EXTRACTION_STAGE,
+            severity="error",
+            code=EXTRACTION_FAILED_CODE,
+            message=(
+                f"No fields were extracted from this section: {blocker} "
+                "the model's reply. "
+                "The rest of the document was processed normally."
+            ),
+            root_cause=(
+                f"{type(error).__name__}: {error}. The block applies to this "
+                f"section's content (class '{class_label}', pages "
+                f"{section_info.start_page}-{section_info.end_page}). Review the "
+                f"pages, or {remedy}."
+            ),
+            section_id=section_id,
+        )
+        logger.error(
+            "Content filter blocked extraction for section %s (class %s); "
+            "recording %s on the section and continuing with the rest of the "
+            "document: %s",
+            section_id,
+            class_label,
+            issue.code,
+            error,
+        )
+        # Replace only this stage's issues, as _save_results and
+        # _handle_empty_schema do: the result they described has been replaced by
+        # the empty one below, and other stages' issues must survive.
+        section.processing_issues = [
+            pi
+            for pi in (section.processing_issues or [])
+            if getattr(pi, "stage", None) != EXTRACTION_STAGE
+        ] + [issue]
+
+        output = {
+            "document_class": {"type": class_label},
+            "split_document": {"page_indices": section_info.page_indices},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": False,
+                "content_filtered": True,
+                "extraction_time_seconds": time.time() - t0,
+                "processing_issues": [pi.to_dict() for pi in section.processing_issues],
+            },
+        }
+        s3.write_content(
+            output,
+            section_info.output_bucket,
+            section_info.output_key,
+            content_type="application/json",
+        )
+        section.extraction_result_uri = section_info.output_uri
+        return document
+
     def _build_extraction_content(
         self,
         document: Document,
@@ -2173,6 +2317,10 @@ class ExtractionService:
             else:
                 try:
                     content = self._build_prompt_content(prompt_template, page_images)
+                except DocumentImagePlaceholderError:
+                    # The configured prompt is wrong for every document; sending
+                    # the default prompt instead would hide that.
+                    raise
                 except ValueError as e:
                     logger.warning(
                         f"Error formatting prompt template: {str(e)}. Using default prompt."
@@ -3018,8 +3166,11 @@ class ExtractionService:
 This document contains a large table with {row_count}+ rows detected by OCR analysis.
 You MUST use the parse_table tool for complete and accurate extraction:
 
-1. IMMEDIATELY call parse_table with the full document text or table section
+1. IMMEDIATELY call parse_table with NO table_text: it already holds the document
+   text and parses every page of it. Do not copy the document into the call.
 2. DO NOT attempt manual row-by-row LLM extraction for large tables
+   (if the section holds several tables, pass table_indices to map only the ones
+   the schema field is for)
 3. Verify parse_table returned ALL expected rows (check row_count in response)
 4. If parse_table returns fewer rows than expected, investigate warnings and ensure all
    table fragments are parsed (tables may be split across pages)
@@ -3043,8 +3194,9 @@ This is not optional - use the tool immediately for any tabular data.
 This document contains tabular data with {row_count}+ rows detected.
 You MUST use the parse_table tool for accurate and complete extraction:
 
-1. Call parse_table with the document text containing the table
+1. Call parse_table with NO table_text: it already holds the document text
 2. The tool handles OCR artifacts (empty lines, page breaks) automatically
+   (if several tables are found, pass table_indices to map only the right ones)
 3. Verify the row_count matches your expectation
 4. Review any warnings about table fragmentation
 5. Map the parsed columns to the required schema fields
@@ -4963,6 +5115,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "values are stored as extracted and the document's status is "
                     "unchanged."
                 )
+            elif escalated and str(
+                validation.get("escalation_decision") or ""
+            ).startswith(_ESCALATION_FAILED_PREFIX):
+                # Escalation raised: in the model call (an escalation model the
+                # agentic path cannot call, say), or while reading its response.
+                # Either way no escalated value was kept. Saying it "did not
+                # resolve it" reported that as a model whose answer was judged,
+                # with the reason only in section metadata.
+                consequence = (
+                    f" Escalation to "
+                    f"{validation.get('escalation_model') or 'the escalation model'}"
+                    f" failed ({validation.get('escalation_decision')}), so"
+                    " nothing from it was kept; the values are stored as extracted."
+                )
             elif escalated:
                 consequence = (
                     " Re-extraction with the escalation model did not resolve it;"
@@ -4991,6 +5157,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         "error_count": error_count,
                         "fail_action": fail_action,
                         "escalated": escalated,
+                        "escalation_decision": validation.get("escalation_decision"),
                         # The first few concrete messages, so the issue is
                         # actionable without opening the section result JSON.
                         "errors": (validation.get("errors") or [])[:5],
@@ -5129,6 +5296,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             batch_count = split.get("batch_count")
             concurrent = split.get("concurrent_batches")
             c_status = "ok"
+            # Who scores the separate pass. With method decision_model that is
+            # the decision model, one request per page; the confidence LLM is
+            # never called, so naming it would report a model that scored nothing.
+            if conf_cfg.method == "decision_model":
+                conf_model = function_name(conf_cfg.decision_model.endpoint or "")
+                conf_name = f"decision model {conf_model}".strip()
+                scoring_detail = (
+                    f"{conf_cfg.decision_model.input}, one request per page"
+                )
+            else:
+                conf_model = conf_cfg.model
+                conf_name = conf_cfg.model or "model"
+                scoring_detail = "1 pass"
             if conf_mode == "integrated" and self._integrated_downgrade_reason:
                 # Configured integrated, ran separately (list-bearing class).
                 # Report what HAPPENED, not what was configured; the full reason
@@ -5146,12 +5326,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 c_detail = "integrated (inline with extraction)"
                 fan = 0
             elif batch_count and batch_count > 1:
-                c_detail = f"{conf_cfg.model or 'model'} · {batch_count} batches"
+                c_detail = f"{conf_name} · {batch_count} batches"
                 if concurrent and concurrent > 1:
                     c_detail += f" · {concurrent}× concurrent"
                 fan = concurrent if (concurrent and concurrent > 1) else 0
             else:
-                c_detail = f"{conf_cfg.model or 'model'} · 1 pass"
+                c_detail = f"{conf_name} · {scoring_detail}"
                 fan = 0
             stages.append(
                 {
@@ -5160,7 +5340,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "detail": c_detail,
                     "status": c_status,
                     "fanout": fan,
-                    "model": conf_cfg.model,
+                    "model": conf_model,
                 }
             )
 
@@ -5885,6 +6065,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         retry_content = [*content, {"text": corrective}]
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a call that was made: a response that then fails to parse was still
+        # billed.
+        metering: dict[str, Any] = {}
         try:
             response = bedrock.invoke_model(
                 model_id=escalation_model,
@@ -5894,10 +6078,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 top_k=self.config.extraction.top_k,
                 top_p=self.config.extraction.top_p,
                 max_tokens=None,
-                context="Extraction-Escalation",
+                context=ESCALATION_METERING_CONTEXT,
                 model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
+            metering = response.get("metering", {}) or {}
+            # A withheld reply is not a correction, however well it parses; the
+            # handler below keeps the original extraction, as for any failure.
+            from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+            raise_if_output_withheld(response)
             text = bedrock.extract_text_from_response(dict(response))
             corrected = json.loads(extract_json_from_text(text))
             corrected, ok, _count, _rec = self._normalize_list_result(
@@ -5911,7 +6101,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5931,7 +6121,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5967,7 +6157,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     decision,
                 )
@@ -5980,10 +6170,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 len(report.errors),
                 len(new_report.errors),
             )
-            return merged, new_report, response.get("metering", {}), True, decision
+            return merged, new_report, metering, True, decision
         except Exception as e:  # noqa: BLE001 - escalation is best-effort
             logger.warning("Simple-mode escalation failed: %s", e)
-            return extracted_fields, report, {}, False, _escalation_failure_reason(e)
+            return (
+                extracted_fields,
+                report,
+                metering,
+                False,
+                _escalation_failure_reason(e),
+            )
 
     def _validate_and_maybe_escalate(
         self,
@@ -6147,6 +6343,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             + full_report.agent_feedback()
         )
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a re-extraction that completed before a later step raised.
+        metering: dict[str, Any] = {}
         try:
             if scope == "field-subset":
                 # Nullable leaves for the same reason as the primary transport model
@@ -6187,10 +6386,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=None,  # validated against the full schema below
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
                 metering = esc_response.get("metering", {}) or {}
                 metering.pop("_table_parsing_stats", None)
@@ -6213,10 +6415,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=self._build_schema_validator(),
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
                 metering = esc_response.get("metering", {}) or {}
                 metering.pop("_table_parsing_stats", None)
@@ -6295,11 +6500,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extra={"error": str(e)},
                 exc_info=True,
             )
+            # A re-extraction that raised carries the usage of the agent turns it
+            # completed on the exception (#1923). Empty when the raise came after
+            # ``structured_output`` returned, whose metering is already bound above.
+            metering = utils.merge_metering_data(metering, utils.failure_metering(e))
             return (
                 extracted_fields,
                 structured_data,
                 full_report,
-                {},
+                metering,
                 scope,
                 False,
                 _escalation_failure_reason(e),
@@ -6443,8 +6652,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         if use_agentic and is_openai_responses_model(model_id):
             raise ValueError(
                 f"OpenAI Responses model '{model_id}' is not compatible with agentic "
-                "extraction (extraction.agentic.enabled=true). Set agentic.enabled=false "
-                "or choose a non-OpenAI model. (This is also enforced by "
+                "extraction (extraction.mode: advanced). Set extraction.mode to "
+                "'simple' or choose a model outside the OpenAI GPT-5.x Responses "
+                "family; OpenAI GPT-6 Astra is served through Converse and supports "
+                "agentic extraction. (This is also enforced by "
                 "'idp-cli config-validate'.)"
             )
 
@@ -6765,6 +6976,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     custom_instruction=custom_instruction,
                     schema_validator=schema_validator,
                     emit_field_assessment=self._integrated_assessment_enabled(),
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
 
             extracted_fields = structured_data.model_dump(mode="json")
@@ -6915,6 +7129,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 tool_config=tool_config,
                 tool_choice=tool_choice,
             )
+            # A reply the content filter or a guardrail withheld is a 200, not an
+            # answer: raised as a block so the section fails as it does for a
+            # blocked ValidationException (_handle_content_filtered).
+            from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+            raise_if_output_withheld(response_with_metering)
 
             # A model can accept a toolConfig and still answer in prose. That is a
             # normal outcome (stopReason end_turn rather than tool_use), so an
@@ -8338,11 +8558,27 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # cause stays the sentence a reader can act on.
             raise
         except Exception as e:
+            # Usage of the model calls the section made before it failed, carried on
+            # the exception because a raise returns nothing (#1923). Merged before
+            # any branch below re-raises under another class.
+            failed_run_metering = utils.failure_metering(e)
+            if failed_run_metering:
+                document.metering = utils.merge_metering_data(
+                    document.metering, failed_run_metering
+                )
             from idp_common.utils.bedrock_utils import (
+                is_content_filter_block,
                 is_image_request_rejection,
                 is_input_token_overflow,
             )
 
+            if is_content_filter_block(e):
+                # Fails this section only and returns, so the other sections and
+                # the document complete (#2038). Ahead of the two matchers below
+                # so neither can absorb it; its wording matches neither today.
+                return self._handle_content_filtered(
+                    document, section, section_info, section_id, t0, e
+                )
             if is_image_request_rejection(e):
                 # Checked FIRST so the image case can never be absorbed by the
                 # overflow branch as Bedrock's wording evolves: the two families
@@ -8428,6 +8664,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         page_images = self._load_document_images(
             document, section_info.sorted_page_ids, page_texts=self._page_texts
         )
+        # The text of each page an image was just loaded for, from the same ids.
+        self._image_page_texts = [
+            page_id_to_text.get(pid, "") for pid in self._image_page_ids
+        ]
 
         # Initialize extraction context
         class_schema, attribute_descriptions = self._initialize_extraction_context(
@@ -8630,6 +8870,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         extraction_results: dict[str, Any],
         document_text: str,
         page_images: list[bytes],
+        page_texts: list[str] | None = None,
     ) -> dict[str, Any]:
         """Assess one scope, batching large list fields across multiple inferences.
 
@@ -8652,6 +8893,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             extraction_results=extraction_results,
             document_text=document_text,
             page_images=page_images,
+            page_texts=page_texts,
             batch_size=confidence_cfg.list_batch_size,
             confidence_model_id=confidence_cfg.model,
             geometry_mode=self.config.extraction.geometry.mode,
@@ -8710,6 +8952,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return None
             document_text = payload.get("assess_document_text", "") or ""
             page_images = payload.get("assess_page_images", []) or []
+            page_texts = payload.get("assess_page_texts")
 
             # assess_results does Bedrock I/O; run it off the event loop so the
             # concurrent shard scheduler is not blocked.
@@ -8726,6 +8969,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     extraction_results=extraction_results,
                     document_text=document_text,
                     page_images=page_images,
+                    page_texts=page_texts,
                 )
                 shard_assessment = result.get("assessment") or {}
                 if ground_in_shard:
@@ -8863,6 +9107,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extraction_results=extracted_fields,
                 document_text=self._document_text,
                 page_images=self._page_images,
+                page_texts=self._image_page_texts,
             )
             metering["_merged_assessment"] = batched["assessment"]
             metering["_merged_assessment_alerts"] = batched["alerts"]

@@ -40,6 +40,8 @@ Key capabilities:
 - **Track** which profile (and revision) was used for each processed document and test run
 - **Select** a specific profile when uploading documents, running tests, or using the CLI (`--config-profile`, with `--config-revision` to pin a revision)
 
+A pinned revision is filled from the current `default` profile exactly as the profile itself is: every setting the revision holds is used as saved (an empty one included), and a setting it lacks, such as one added by a later release, takes `default`'s value. The stored revision is not changed. See [Selecting a revision for processing or testing](configuration-profiles.md#selecting-a-revision-for-processing-or-testing).
+
 #### Managed Configuration Profiles
 
 The stack automatically deploys **managed configuration profiles** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:
@@ -168,7 +170,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape` |
+| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape`; its default prompts are files under `prompts/classification/` ([Default prompts](./classification.md#default-prompts)) |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
@@ -449,11 +451,19 @@ summarization:
 - No LLM API calls or S3 operations are performed
 - Document processing continues to completion
 
+**When a summary cannot be produced:** if Bedrock refuses the prompt as too long
+for the summarization model's input window, or Bedrock's content filter withholds
+the model's reply, the document still completes, with its extraction results intact.
+The affected summary (one section's, or the whole document's when it has no
+sections) is replaced by a *Summary Unavailable* note saying which of the two
+happened; the other sections are summarized normally. Any other summarization model
+error fails the document.
+
 **Note:** Prior to v0.4.0, this feature was controlled by the `IsSummarizationEnabled` CloudFormation parameter. The configuration-based approach provides runtime control without requiring stack redeployment.
 
 ## Confidence (Assessment) Configuration
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
@@ -518,8 +528,11 @@ extraction:
 > `list_batch_size` is the one knob. Any leftover `granular.*` keys still validate
 > but are ignored — no config edit required.
 
-**For large documents**, prefer **Advanced (agentic) extraction** — it shards both
-extraction and confidence assessment and yields the best-calibrated confidence.
+**For sections that can hold more than about 400 list rows**, prefer **Advanced
+(agentic) extraction** — it shards both extraction and confidence assessment, and on
+the v0.6.14 benchmark it returned every row where Simple mode returned part of an
+800-row list on 8 of 13 runs at the shipped default
+([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)).
 
 ### Classification confidence (`classification.combined.llm.confidence.*`)
 
@@ -622,6 +635,26 @@ How the settings apply:
 For how platform components post messages, see the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
+## Bulk Skip All Reviews Limit
+
+[Bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents) runs at
+once for up to `hitl.bulk_skip_sync_limit` documents, and as a background job (Home ›
+Jobs) above it. It is shown in the configuration editor as **Bulk skip synchronous
+limit** in the **Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  bulk_skip_sync_limit: 50  # 1-100: documents a bulk Skip All Reviews runs at once
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.bulk_skip_sync_limit` | 50 | 1–100 | Documents a bulk Skip All Reviews request handles immediately. A stored value outside the range is clamped to it, never rejected, and no value can raise the immediate path above 100. |
+
+Like the Inbox settings, it is read from the **active** configuration profile, cached
+for about 60 seconds, applies whether or not `hitl.enabled` is set, and falls back to
+the default if the configuration cannot be read.
+
 ## Stack Parameters
 
 Key parameters that can be configured during CloudFormation deployment:
@@ -637,6 +670,7 @@ Key parameters that can be configured during CloudFormation deployment:
 - `BDACallbackTimeoutSeconds`: How long the BDA step waits for its asynchronous completion callback before failing (default: 7200 s); keep it below `WorkflowExecutionTimeoutSeconds`
 - `QueueStalledAgeThresholdSeconds`: How long the oldest queued document may wait *with no queue progress at all* before `DocumentQueueStalledAlarm` fires (default: 1800 s). Not a backlog limit — see [Monitoring](./monitoring.md#documentqueuestalledalarm--why-it-is-not-a-queue-depth-alarm)
 - `LogLevel`: Set logging level (DEBUG, INFO, WARN, ERROR; default: `WARN`). `WARN` is the default because `INFO` and `DEBUG` can emit sensitive values — document contents, PII and S3 presigned URLs — into CloudWatch. At `INFO` or `DEBUG`, access logging is also enabled on the web UI's REST API stage (request metadata only — no request/response bodies), capturing requests that fail before reaching a Lambda (e.g. authorizer 401/403s, WAF blocks); at the `WARN` default that access log is **not** configured, so raise `LogLevel` to `INFO` if you need that audit trail
+- `ManageApiGatewayAccountSettings`: Whether this deployment sets the Region's API Gateway CloudWatch logging role, which REST API access logging at `LogLevel` `INFO` or `DEBUG` requires (default: `true`). It is one setting per account and Region, so let one deployment per Region manage it and set `false` on the others. See [Monitoring](./monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role)
 - `WAFAllowedIPv4Ranges`: IP restrictions for web UI access (default: allow all)
 - `CloudFrontPriceClass`: Set CloudFront price class for UI distribution (CloudFront hosting only)
 - `CloudFrontAllowedGeos`: Optional geographic restrictions for UI access (CloudFront hosting only)
@@ -645,7 +679,7 @@ Key parameters that can be configured during CloudFormation deployment:
 
 ### Integration and Tracing Parameters
 - `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
-- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
+- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: false). See [mcp-server.md](mcp-server.md) for details.
 - `EnableECRImageScanning`: Enable automatic vulnerability scanning for the pattern stack's Lambda container images in ECR (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
 ### Processing Parameters
@@ -792,6 +826,8 @@ The solution implements sophisticated concurrency control and throttling managem
 - **Circuit Breaker**: Temporary halt on repeated failures
 - **Rate Limiting**: Configurable request rate controls
 
+Calls through the `idp_common` Bedrock client (Converse and embeddings) and agentic extraction's model calls retry an HTTP 500, 502, 503 or 504 whatever error code it carries, including a reply that names no error at all, which botocore reports with the bare status (`"500"`) as its code. A 429 reply that names no error type (code `"429"`) is retried too, as throttling. The Z3 rule translator keeps its own retry list and does not. See the [Bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md#resilience-features).
+
 The solution tracks metrics for throttling events and successful retries, viewable in the CloudWatch dashboard.
 
 ### Step Functions Retry Configuration
@@ -799,15 +835,32 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. Eight task states additionally list `TransientError` — the five
-extraction and assessment states (in-process extraction, shard plan, shard, shard
-merge, assessment) and the three rule-validation states (policy classification,
-per-section rule validation, orchestration). That is the one name their handlers
-re-raise a transient cause under when it arrives as an ordinary Python exception (a
-botocore read or connect timeout, a dropped connection, a Strands wrapper around
-one). The classification lives in
+availability codes. The OCR, classification, extraction, assessment, rule-validation,
+summarization and evaluation task states additionally list `TransientError`: OCR,
+classification, in-process extraction, shard plan, shard, shard merge, assessment,
+policy classification, per-section rule validation, orchestration, summarization
+and evaluation (`EvaluationStep`). That is the one name their handlers re-raise a transient cause
+under when it arrives as an ordinary Python exception (a botocore read or connect
+timeout, a dropped connection, a Strands wrapper around one). This includes a failure
+the service records instead of raising: an OCR page whose Textract or Bedrock call
+failed transiently, and a summarization section whose model call did, now fail
+their step with `TransientError` and are retried, where before the document failed
+with no retry. In `EvaluationStep` it is an LLM-judge call that failed transiently
+(a throttle that outlasted the Bedrock client's retries, a bare HTTP 5xx, a read
+timeout): the comparator raises it instead of scoring the field 0.0, and the step is
+retried without a failed evaluation being recorded first. A deterministic judge
+error still scores its field 0.0. The same holds for the step's S3 reads: a
+throttled, 5xx or timed-out read of the document, the baseline or a section's
+extraction result is retried, where before it scored the section's fields as
+misses or failed the evaluation with no retry, and a missing object keeps its
+existing outcome. If the retries run out, the step's Catch records
+the evaluation as failed and the document continues. `RecordEvaluationFailure` does
+not list `TransientError`, because it makes no model call and never raises. Whether
+a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
-code first (a `ValidationException` is deterministic whatever its message says),
+code first (a `ValidationException` is deterministic whatever its message says,
+and a bare HTTP 500, 502, 503, 504 or 429 in place of a code is transient),
+takes a decision-model failure's own `retry_later` verdict as final,
 and looks through only explicit `raise ... from` wrappers, so a wrapper cannot
 hide a transient root and a swallowed transient error cannot lend its transience
 to an unrelated failure raised after it.
@@ -1206,7 +1259,7 @@ classification:
       temperature: "0.0"
       top_p: "0.0"
       top_k: "5"
-      max_tokens: ""               # empty uses the model's maximum
+      max_tokens: "10000"          # output cap; empty uses the model's maximum
       reasoning_effort: medium     # reasoning-capable models only; ignored by Nova
       model_lambda_hook_arn: ""    # used when model is 'LambdaHook'
       modality: {text: "", images: ""}
@@ -1240,6 +1293,7 @@ classification:
   document_shape:                  # applies under both strategies
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
+    pageOrder: scan                # or printed_page_numbers; see classification.md#page-order
 ```
 
 Four notes on reading that:
@@ -1268,8 +1322,12 @@ Four notes on reading that:
   carries only `task_prompt_topk` and `task_prompt_verbalized`, because it is one
   call per section that always returns one class, so the per-segment `_packet`
   variants would never be read.
-- **`fallback_class` is not validated against your class list.** It accepts any
-  string; the built-in value is `unclassified`. Pointing it at one of your own
+- **`fallback_class` should be `unclassified` or one of your classes.** The
+  built-in value is `unclassified`. Any other string is stored as written, and a
+  page given it has no extraction schema, so nothing is extracted from it;
+  `idp-cli config-validate` warns when the fallback names no configured class
+  (comparing names exactly, and suggesting the nearest class name), without
+  failing validation, so the configuration still uploads. Pointing it at one of your own
   classes is supported and means extraction then runs that class's schema over a
   document whose class could not actually be decided — which may be what you
   want, or may not.
@@ -1280,7 +1338,9 @@ and accuracy figures behind each — see
 [Classification](./classification.md#choosing-granularity-modality-and-strategy).
 The authoritative list of every key with its shipped default and an inline
 rationale is
-`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`;
+for the prompts it holds a reference to each prompt's own file, listed under
+[Default prompts](./classification.md#default-prompts).
 
 ## Section Splitting
 
@@ -1359,7 +1419,7 @@ same setting would give different answers for different documents in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page's **Preview prompts** button opens a prompt preview that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
 ## A `%` in a prompt is literal text
 
@@ -1428,7 +1488,7 @@ ask for, the placeholders it can use, and where `<<CACHEPOINT>>` goes.
 
 ### Bedrock Prompt Caching
 
-The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. It applies to the classification, extraction, assessment and summarization calls.
+The solution supports Bedrock prompt caching of the static portion of a prompt, which can lower its cost. It applies to the classification, extraction, assessment and summarization calls.
 
 #### How It Works
 
@@ -1447,7 +1507,7 @@ extraction:
     {DOCUMENT_TEXT}
 ```
 
-Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. This can significantly reduce token costs and improve response times.
+Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. On Claude models a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum (below) is never cached, and a prefix written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)). No benchmark in this repository has measured caching's effect on response time.
 
 #### Best Practices
 
@@ -1457,9 +1517,9 @@ Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across
 
 #### Benefits
 
-- **Cost Savings**: Cached tokens cost significantly less than regular input tokens
-- **Performance**: Reduced processing time for cached content
-- **Token Efficiency**: Particularly beneficial for long system prompts or few-shot examples
+- **Cost**: A cache read is billed at 0.1× the input price on most Claude models, 0.05× on Claude Sonnet 5.5 and Opus 5.5, and 0.25× on Nova (per-model rates are in `config_library/pricing.yaml`). A cache write is billed at 1.25× on Claude models and at no charge on Nova, so on Claude a prefix that is written and not read again within five minutes costs more than no caching ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once))
+- **Share of the bill**: Only the prefix is discounted. On the `ocr-benchmark` corpus the prefix was about 1,000–2,900 of roughly 7,800 input tokens per document, so the discount applies to that fraction of the input rather than to the whole bill ([prompt caching study §6](./benchmarking/studies/prompt-caching.md#6-end-to-end-effect-on-cost))
+- **Where it matters most**: long system prompts or few-shot examples, where the prefix is a large share of each request
 
 #### Minimum cacheable prefix — per model, and not monotonic
 
@@ -1873,12 +1933,12 @@ Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model,
 extraction:
   model: us.amazon.nova-pro-v1:0          # fast/cheap primary extractor
   validation:
-    enabled: true                          # on by default since v0.7
+    enabled: true                          # on by default since config format 0.7
     fail_action: escalate                  # default is 'warn' (free); escalate costs money
     escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
 ```
 
-> **Moved in v0.7.** This block was `extraction.agentic.validation`. It now lives at
+> **Moved in config format 0.7.** This block was `extraction.agentic.validation`. It now lives at
 > `extraction.validation` because Simple extraction runs the same validate-and-retry
 > path, so the setting is no longer agentic-only. Stored configurations are migrated
 > automatically on read — no action is required.

@@ -13,12 +13,17 @@ from jsonschema import Draft202012Validator
 from idp_common import bedrock, image
 from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
-from idp_common.config.class_names import is_valid_class_name, sanitize_class_name
+from idp_common.config.class_names import (
+    is_valid_class_name,
+    sanitize_class_name,
+    with_uri_safe_schema_ids,
+)
 from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
 from idp_common.config.revisions import RevisionNotRecordedError
 from idp_common.config.schema_constants import X_AWS_IDP_MULTI_INSTANCE
+from idp_common.discovery.discovered_text import clean_schema_text
 from idp_common.utils.s3util import S3Util
 
 logger = logging.getLogger(__name__)
@@ -600,6 +605,11 @@ class ClassesDiscovery:
         # rather than degrading. Prompt instructions are guidance; this is the
         # guarantee.
         synthesized = self._normalize_class_id(new_class)
+        # Descriptions and examples are model-written and reach the UI and every
+        # later classification and extraction prompt for this profile, so they are
+        # kept to plain text here, on the one write path both discovery flows share.
+        # Only the discovered class is cleaned; existing, authored classes are not.
+        clean_schema_text(new_class)
 
         # Get class identifier for the new class
         new_class_id = new_class.get("$id") or new_class.get("x-aws-idp-document-type")
@@ -753,8 +763,11 @@ class ClassesDiscovery:
                 if field not in schema:
                     return False, f"Missing required field: {field}"
 
-            # Validate it's a proper JSON Schema
-            Draft202012Validator.check_schema(schema)
+            # Validate it's a proper JSON Schema. The class id is its display
+            # name and may contain spaces, which the metaschema's
+            # uri-reference format rejects wherever that checker is installed,
+            # so the check reads a copy with the ids percent-encoded.
+            Draft202012Validator.check_schema(with_uri_safe_schema_ids(schema))
 
             # Check our AWS IDP specific requirements
             if "x-aws-idp-document-type" not in schema:

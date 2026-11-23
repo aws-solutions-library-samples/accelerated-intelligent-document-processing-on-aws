@@ -1002,3 +1002,25 @@ def test_every_other_gap_is_still_referenced_by_an_operation():
         if isinstance(g, dict) and g.get("assigned_by"):
             continue
         assert gid in referenced, f"{gid} is declared but nothing references it"
+
+
+# --- S9 reads the agent-chat group list exactly -------------------------------
+# S9 compares a Function URL route's declared groups with its handler's in both
+# directions only when the handler holds exactly one group-list constant; with two,
+# it falls back to a containment check that misses a widened list. Quick Start's
+# narrower rule is therefore named outside that pattern (``_QUICK_START_ROLES``).
+
+_REPO_ROOT = _SDLC_DIR.parents[1]
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "src/lambda/agent_chat_processor/index.py",
+        "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py",
+        "nested/api-resolvers/src/lambda/agent_chat_resolver/index.py",
+    ],
+)
+def test_s9_reads_the_agent_chat_group_list_exactly(module):
+    text = (_REPO_ROOT / module).read_text(encoding="utf-8")
+    assert scanner.enforced_group_names(text) == {"Admin", "Author", "Viewer"}

@@ -8,98 +8,42 @@
  * Why: the backend deliberately emits rich markdown containing a small set
  * of HTML constructs (`<details>/<summary>`, custom `<documentid>` anchors,
  * `<br>`, styled `<p>` for whitespace preservation, tables). Some of that
- * markdown embeds user-document-derived content (OCR text, KB snippets,
- * LLM answers) which could carry attacker-controlled HTML — for example,
- * a malicious PDF containing `<img src=x onerror=…>` in its OCR output.
+ * markdown embeds document-derived content (OCR text, KB snippets, model
+ * answers), and that content can itself contain HTML. Pairing `rehype-raw`
+ * with `rehype-sanitize` keeps the backend's HTML working while removing
+ * event handlers, `<script>`, `<iframe>`, `javascript:` URLs and every other
+ * element or attribute the schema does not list.
  *
- * Rendering that content with just `rehype-raw` was exploitable as stored
- * XSS. Pairing `rehype-raw` with `rehype-sanitize` keeps the legitimate
- * HTML working while stripping event handlers, `<script>`, `<iframe>`,
- * `javascript:` URLs, and other active-content vectors.
- *
- * The schema is an extension of `rehype-sanitize`'s `defaultSchema`:
- *   - Allow `<details>` and `<summary>` (used by KB query "Context")
- *   - Allow the custom `<documentid>` tag (mapped to a React component
- *     via the `components` prop at call sites)
- *   - Allow a narrow `style` attribute on `<p>` so backend-emitted
- *     `style="white-space: pre-line"` continues to work. (We intend to
- *     migrate this to a CSS class in a follow-up so CSP can eventually
- *     drop 'unsafe-inline' from style-src.)
- *   - Allow `href` URL schemes restricted to http/https/mailto plus
- *     relative URLs (anchor references used for bounding-box overlays
- *     and navigation to document pages).
+ * The schema, and the rule for which URLs rendered markdown may load, live in
+ * `safe-markdown-policy.ts`. In short: images load only from this page's own
+ * origin, `data:`/`blob:` URLs and this deployment's own S3 buckets (any other
+ * image is shown as a link carrying its URL); `<style>` is removed with its
+ * contents; and `style` attributes are limited to layout and typography
+ * declarations that cannot reference a URL.
  */
 
-import React from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import React, { useContext, useMemo } from 'react';
+import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import type { PluggableList } from 'unified';
+import { SettingsContext } from '../../contexts/settings';
+import { bucketsFromSettings, isAllowedImageUrl, rehypeRestrictImages, safeSchema, type ResourceOrigins } from './safe-markdown-policy';
 
 /**
- * Allow-list schema. We start from `defaultSchema` (which already covers
- * common markdown-to-HTML elements safely) and extend it in a minimal
- * targeted way. We do NOT allow event handlers (on*) — rehype-sanitize
- * strips those by default and we inherit that.
+ * Applied by react-markdown to every URL-bearing property after the rehype
+ * plugins have run. An image source is kept only if the policy allows it (the
+ * rewrite plugin has normally already turned a refused image into a link, so
+ * this is the second of two checks); every other URL property goes through
+ * react-markdown's default protocol filter.
  */
-const safeSchema = {
-  ...defaultSchema,
-  // Retain the default URL scheme allow-list, adding `mailto`.
-  protocols: {
-    ...defaultSchema.protocols,
-    href: ['http', 'https', 'mailto'],
-    src: ['http', 'https', 'data'], // `data:` only for images inlined by the backend
-    cite: ['http', 'https'],
-  },
-  // Allow the small set of tags the backend uses beyond defaults.
-  tagNames: [
-    ...(defaultSchema.tagNames ?? []),
-    'details',
-    'summary',
-    // Custom tag emitted by query_knowledgebase_resolver; mapped to a
-    // CustomLink React component in DocumentsQueryLayout.tsx via the
-    // `components` prop.
-    'documentid',
-    // Custom tag emitted by the Quick Start agent to reference a bundled sample
-    // document; mapped to a click-to-open component via the `components` prop.
-    'sampledoc',
-    // Table structure tags used by rule validation summary
-    'colgroup',
-    'col',
-    'style',
-  ],
-  // Extend per-tag attribute allow-lists. defaultSchema already permits
-  // a safe set for most tags. We add:
-  //   - style on <p> for `white-space: pre-line` use (temporary)
-  //   - href on <documentid> so CustomLink can read it
-  //   - className wherever we expect syntax-highlighted code
-  attributes: {
-    ...defaultSchema.attributes,
-    p: [...(defaultSchema.attributes?.p ?? []), ['style', /^white-space:\s*pre-line;?$/i]],
-    documentid: ['href', 'title', 'className'],
-    sampledoc: ['s3key', 'title', 'className'],
-    code: [...(defaultSchema.attributes?.code ?? []), 'className'],
-    span: [...(defaultSchema.attributes?.span ?? []), 'className', 'style'],
-    div: [...(defaultSchema.attributes?.div ?? []), 'className'],
-    a: [...(defaultSchema.attributes?.a ?? []), 'target', 'rel'],
-    img: [...(defaultSchema.attributes?.img ?? []), 'alt', 'width', 'height'],
-    // Table elements: allow style for rule validation summary layout
-    table: [...(defaultSchema.attributes?.table ?? []), 'style'],
-    th: [...(defaultSchema.attributes?.th ?? []), 'style'],
-    td: [...(defaultSchema.attributes?.td ?? []), 'style'],
-    col: [...(defaultSchema.attributes?.col ?? []), 'style'],
-    colgroup: defaultSchema.attributes?.['*'] ?? [],
-    // details/summary have no attributes of interest beyond the tag itself.
-    details: [...(defaultSchema.attributes?.['*'] ?? []), 'open'],
-    summary: defaultSchema.attributes?.['*'] ?? [],
-  },
-  // Allow class names starting with `hljs-`, `language-`, or `md-` (used
-  // in our custom evaluation reports). defaultSchema permits `className`
-  // on many elements but restricts allowed class tokens; here we keep
-  // its default behavior and rely on the per-element attribute list
-  // above to include `className`.
-} as const;
+const makeUrlTransform =
+  (origins: ResourceOrigins): UrlTransform =>
+  (url, key, node) => {
+    if (key === 'src') return node.tagName === 'img' && isAllowedImageUrl(url, origins) ? url : undefined;
+    return defaultUrlTransform(url);
+  };
 
 export interface SafeMarkdownProps {
   children: string;
@@ -118,6 +62,12 @@ export interface SafeMarkdownProps {
    */
   extraRehypePlugins?: PluggableList;
   className?: string;
+  /**
+   * Parse raw HTML embedded in the markdown (sanitized against the schema).
+   * Default true. Pass false for text that has no reason to carry HTML, so any
+   * HTML in it is dropped rather than rendered.
+   */
+  rawHtml?: boolean;
 }
 
 /**
@@ -133,14 +83,25 @@ const SafeMarkdown: React.FC<SafeMarkdownProps> = ({
   extraRemarkPlugins = [],
   extraRehypePlugins = [],
   className,
+  rawHtml = true,
 }) => {
   const content = children ?? '';
+  // Read without the throwing hook: SafeMarkdown is also handed to feature
+  // bundles, and outside the provider the answer is simply "no buckets".
+  const settings = useContext(SettingsContext)?.settings;
+  const origins = useMemo<ResourceOrigins>(
+    () => ({ pageOrigin: window.location.origin, buckets: bucketsFromSettings(settings) }),
+    [settings],
+  );
+  const urlTransform = useMemo(() => makeUrlTransform(origins), [origins]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, ...extraRemarkPlugins]}
       // IMPORTANT: rehype-raw MUST run before rehype-sanitize so the raw
-      // HTML nodes are materialized as HAST elements before we sanitize.
-      rehypePlugins={[rehypeRaw, [rehypeSanitize, safeSchema], ...extraRehypePlugins]}
+      // HTML nodes are materialized as HAST elements before we sanitize. The
+      // image rewrite runs last so nothing added after sanitizing escapes it.
+      rehypePlugins={[...(rawHtml ? [rehypeRaw] : []), [rehypeSanitize, safeSchema], ...extraRehypePlugins, rehypeRestrictImages(origins)]}
+      urlTransform={urlTransform}
       components={components}
       {...(className ? ({ className } as Record<string, unknown>) : {})}
     >

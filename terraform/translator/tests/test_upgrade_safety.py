@@ -6,14 +6,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from idp_tf import completeness, moved, safety, translate
-from idp_tf.awscc_schema import AwsccSchema
+from idp_tf import completeness, create_only, moved, safety, translate
+from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
 from idp_tf.cli import VENDORED_SCHEMA, main, render_tree, tree_checks, tree_resources
+from idp_tf.hcl import norm
 from idp_tf.translate import Translator
 
 REPO = Path(__file__).resolve().parents[3]
@@ -193,6 +195,65 @@ def test_a_value_that_is_not_create_only_is_no_edge(schema):
     assert [e for e in safety.custom_output_edges(tr)] == []
 
 
+# ------------------------------------- B2: types Cloud Control cannot update
+def eic_fragment(**props) -> dict:
+    """An EventInvokeConfig the way the templates write one: OnFailure set,
+    OnSuccess unset, which Lambda reads back as an empty object (#2183)."""
+    return {
+        "Resources": {
+            "Fn": FN,
+            "Dlq": {"Type": "AWS::SQS::Queue", "Properties": {}},
+            "Eic": {
+                "Type": "AWS::Lambda::EventInvokeConfig",
+                "Properties": {
+                    "FunctionName": {"Ref": "Fn"},
+                    "Qualifier": "$LATEST",
+                    "MaximumRetryAttempts": 2,
+                    "DestinationConfig": {
+                        "OnFailure": {"Destination": {"Fn::GetAtt": ["Dlq", "Arn"]}}
+                    },
+                    **props,
+                },
+            },
+        }
+    }
+
+
+def _lifecycle(block: str) -> str:
+    return block[block.index("lifecycle {") :]
+
+
+def test_an_event_invoke_config_is_replaced_rather_than_updated(schema):
+    tr = translated(eic_fragment(), schema)
+    main_tf = tr.emitted["Eic"]
+    head, resource = main_tf.split('resource "awscc_lambda_event_invoke_config"')
+    life = _lifecycle(resource)
+    # Every settable property is ignored by the update and drives a replacement
+    # through the key, so awscc never sends Cloud Control an update.
+    assert "ignore_changes = [maximum_retry_attempts, destination_config]" in life
+    assert "replace_triggered_by = [terraform_data.eic_settings_key]" in life
+    assert 'resource "terraform_data" "eic_settings_key"' in head
+    assert "maximum_retry_attempts = 2" in head
+    assert "destination_config" in head and "awscc_sqs_queue.dlq.arn" in head
+    # The create-only properties replace the resource anyway; they stay out
+    # of both lists so their own diff still reads as one.
+    assert "function_name" not in life and "qualifier" not in life
+    assert "function_name" not in head and "qualifier" not in head
+
+
+def test_a_conditional_event_invoke_config_keys_on_its_own_instance(schema):
+    t = eic_fragment()
+    t["Conditions"] = {"On": {"Fn::Equals": ["a", "a"]}}
+    t["Resources"]["Eic"]["Condition"] = "On"
+    main_tf = translated(t, schema).emitted["Eic"]
+    head, resource = main_tf.split('resource "awscc_lambda_event_invoke_config"')
+    assert "count = " in head and "count = " in resource
+    assert (
+        "replace_triggered_by = [terraform_data.eic_settings_key[count.index]]"
+        in _lifecycle(resource)
+    )
+
+
 # ------------------------------------------------------- whole standard template
 @pytest.fixture(scope="module")
 def standard(tmp_path_factory) -> Path:
@@ -230,7 +291,8 @@ def test_every_stateful_edge_in_the_standard_template_is_handled(standard):
     # stack's output that is a custom resource's.
     assert any("PATTERNSTACK:BDAOCRProject" in e["sources"] for e in edges)
     text = (standard / "modules" / "documentkb" / "main.tf").read_text()
-    assert "ignore_changes = [knowledge_base_id]" in text
+    # The written module is laid out by `terraform fmt`'s rules: `=` may be padded.
+    assert re.search(r"^\s*ignore_changes\s+= \[knowledge_base_id\]$", text, re.M)
 
 
 def test_no_declaration_is_stale_for_the_standard_template(standard):
@@ -664,3 +726,229 @@ def test_a_hand_mapper_force_new_path_counts_as_create_only(schema, monkeypatch)
 
     monkeypatch.setattr(aws_mappers_storage.DynamoDbTableMapper, "force_new", ())
     assert safety.custom_output_edges(translated(t, schema)) == []
+
+
+def _pool_and_user() -> dict:
+    return {
+        "Resources": {
+            "Pool": {
+                "Type": "AWS::Cognito::UserPool",
+                "Properties": {
+                    "UserPoolName": "p",
+                    "UsernameConfiguration": {"CaseSensitive": False},
+                },
+            },
+            "Admin": {
+                "Type": "AWS::Cognito::UserPoolUser",
+                "Properties": {
+                    "UserPoolId": {"Ref": "Pool"},
+                    "Username": "a@example.com",
+                    "UserAttributes": [{"Name": "email", "Value": "a@example.com"}],
+                    "DesiredDeliveryMediums": ["EMAIL"],
+                },
+            },
+        }
+    }
+
+
+def test_a_user_pool_keeps_the_username_configuration_it_was_created_with(schema):
+    # Cognito cannot change UsernameConfiguration after creation, so the only
+    # thing a difference can do is replace the pool and delete every user in it.
+    # A pool adopted with `import` (created case sensitive) must not be replaced.
+    tr = translated(_pool_and_user(), schema)
+    pool = tr.emitted["Pool"]
+    assert "case_sensitive = false" in pool
+    assert "ignore_changes = [username_configuration]" in pool
+    assert completeness.check(tr)[0] == []
+
+
+def test_a_pool_user_is_never_rewritten_after_creation(schema):
+    # Every UserPoolUser property is create-only under CloudFormation. Cognito
+    # adds attributes the template does not name (email_verified, sub); treating
+    # them as drift would strip them from an adopted user.
+    tr = translated(_pool_and_user(), schema)
+    user = tr.emitted["Admin"]
+    assert (
+        "ignore_changes = [attributes, desired_delivery_mediums, message_action]"
+        in user
+    )
+    assert completeness.check(tr)[0] == []
+
+
+def _all_mappers() -> dict:
+    from idp_tf.aws_mappers import MAPPERS
+    from idp_tf.aws_mappers_storage import STORAGE_MAPPERS
+
+    return {**MAPPERS, **STORAGE_MAPPERS}
+
+
+#: Every mapper that ignores a difference in an argument the template sets. Each
+#: member is registered, with its own reason, in scripts/tests/gate_exemptions.json
+#: under ``terraform/translator/idp_tf/aws_mappers.py::ignore_changes``.
+PINNED_IGNORE_CHANGES = {
+    "AWS::Cognito::UserPool": ("username_configuration",),
+    "AWS::Cognito::UserPoolUser": (
+        "attributes",
+        "desired_delivery_mediums",
+        "message_action",
+    ),
+}
+
+
+def test_the_mappers_that_ignore_changes_are_pinned():
+    """A hand mapper's ``ignore_changes`` stops Terraform acting on a property,
+    so each one is a deliberate difference from CloudFormation and is registered
+    in ``scripts/tests/gate_exemptions.json``. The set is pinned here: adding one
+    fails this test until it is audited and the pinned set updated with it. Every
+    mapper is read, not only SpecMapper instances, and
+    ``test_every_ignore_changes_the_translator_emits_is_declared`` is what makes
+    a lifecycle block written inline in a mapper's emit fail too."""
+    found = {
+        cfn_type: tuple(getattr(mapper, "ignore_changes", ()))
+        for cfn_type, mapper in _all_mappers().items()
+        if getattr(mapper, "ignore_changes", ())
+    }
+    assert found == PINNED_IGNORE_CHANGES
+
+
+RESOURCE_HEADER = re.compile(r'^resource "([^"]+)" "[^"]+" \{$', re.M)
+IGNORE_CHANGES = re.compile(r"ignore_changes\s+= \[([^\]]*)\]")
+
+
+def _emitted_ignore_changes(root: Path) -> dict[str, set[str]]:
+    """Every argument named in an ``ignore_changes`` under ``root``, by the
+    resource type of the block it sits in."""
+    found: dict[str, set[str]] = {}
+    for path in sorted(root.rglob("*.tf")):
+        text = path.read_text()
+        heads = list(RESOURCE_HEADER.finditer(text))
+        assert (
+            len(IGNORE_CHANGES.findall(text[: heads[0].start()] if heads else text))
+            == 0
+        ), path
+        for i, head in enumerate(heads):
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+            for m in IGNORE_CHANGES.finditer(text, head.end(), end):
+                names = {a.strip() for a in m.group(1).split(",") if a.strip()}
+                found.setdefault(head.group(1), set()).update(names)
+    return found
+
+
+def _translate_owned_ignores(schema: AwsccSchema) -> dict[str, set[str]]:
+    """The arguments translate.py's own tables ignore, by awscc type. They are
+    accounted for there (each entry carries its reason, and a stale one fails the
+    translation), so they are excluded from the mapper pin, not counted twice."""
+    owned: dict[str, set[str]] = {}
+    for (cfn_type, _), (attrs, _) in translate.LIFECYCLE_OVERRIDES.items():
+        owned.setdefault(awscc_type_name(cfn_type), set()).update(attrs)
+    for cfn_type, _, prop in translate.STABLE_CUSTOM_OUTPUTS:
+        found = schema.hint(cfn_type).attr(prop)
+        assert found is not None, (cfn_type, prop)
+        owned.setdefault(awscc_type_name(cfn_type), set()).add(found[0])
+    # Tags the registry makes create-only are set at creation and kept
+    # (translate.tags_are_create_only), for every type the vendored schemas cover.
+    for cfn_type in create_only._load():
+        if not schema.has(cfn_type):
+            continue
+        tag = schema.tag_attribute(cfn_type)
+        if tag and translate.tags_are_create_only(cfn_type, tag[0]):
+            owned.setdefault(awscc_type_name(cfn_type), set()).add(tag[0])
+    return owned
+
+
+@pytest.fixture(scope="module")
+def standard_tree(tmp_path_factory) -> Path:
+    out = tmp_path_factory.mktemp("std") / "m"
+    args = [str(REPO / "template.yaml"), "--offline", "--out", str(out)]
+    args += ["--label-template", str(REPO / "template.yaml"), "--version", "0.0.0"]
+    assert main(args) == 0
+    return out
+
+
+#: The argument kept when the translator, not the template, chose a resource's
+#: name (GENERATED_NAME_LIFECYCLE and GENERATED_NAME_ROLE_LIFECYCLE). The template
+#: sets nothing there, so no difference it declares is ignored; renaming would
+#: replace the resource, which test_offline_templates and test_translate cover.
+GENERATED_NAME_KEPT = {
+    "aws_dynamodb_table": {"name"},
+    "aws_iam_role": {"name", "name_prefix"},
+    "aws_s3_bucket": {"bucket_prefix"},
+    # translate.GENERATED_NAMES: an unnamed AWS::IAM::ManagedPolicy.
+    "awscc_iam_managed_policy": {"managed_policy_name"},
+}
+
+
+def test_every_ignore_changes_the_translator_emits_is_declared(standard_tree, schema):
+    """Scan the generated HCL of the standard template, so an ``ignore_changes``
+    a mapper writes inline, without declaring it, fails here rather than
+    escaping the pin above. Three sources account for every one: a mapper's
+    ``ignore_changes`` (pinned above and registered), a name the translator
+    generated (``GENERATED_NAME_KEPT``), and translate.py's ``LIFECYCLE_OVERRIDES``
+    and ``STABLE_CUSTOM_OUTPUTS``, which carry their own reasons and staleness
+    check and so are kept out of the mapper pin rather than counted twice."""
+    mappers = _all_mappers()
+    expected: dict[str, set[str]] = {k: set(v) for k, v in GENERATED_NAME_KEPT.items()}
+    for cfn_type, attrs in PINNED_IGNORE_CHANGES.items():
+        expected.setdefault(mappers[cfn_type].tf_type, set()).update(attrs)
+    owned = _translate_owned_ignores(schema)
+    assert not set(owned) & set(expected), "a type would be counted twice"
+    expected.update(owned)
+    emitted = _emitted_ignore_changes(standard_tree)
+    # translate.UPDATED_BY_REPLACEMENT ignores whichever settable properties
+    # the template sets, so it is bounded by the type's settable attributes
+    # rather than pinned to a list, and must reach the HCL at least once.
+    for cfn_type in translate.UPDATED_BY_REPLACEMENT:
+        tf_type = awscc_type_name(cfn_type)
+        assert tf_type not in expected, "a type would be counted twice"
+        fixed = {norm(p[0]) for p in create_only.paths(cfn_type)}
+        hint = schema.hint(cfn_type)
+        settable = {
+            tf_name
+            for key, (tf_name, _) in hint.attrs.items()
+            if key not in fixed and key not in hint.computed_only
+        }
+        got = emitted.pop(tf_type, set())
+        assert got and got <= settable, (cfn_type, got, settable)
+    assert emitted == expected
+
+
+def test_the_key_check_feeds_no_create_only_property(standard):
+    """#2016: every supplied-key reference reads CustomerManagedKmsKeyCheck.KeyArn,
+    which the handler echoes from its KeyArn property, so Terraform renders the
+    variable and no create-only property waits on the invocation's result. Were
+    the echo not followed here, every queue, function and repository that takes
+    the key would be reported as replaced on any change to the check."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    edges = meta["customOutputEdges"]
+    assert edges, "no custom-output edges at all; the check reads nothing"
+    assert not [e for e in edges if "CustomerManagedKmsKeyCheck" in e["sources"]]
+
+
+def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard):
+    """#2011: `idp-cli delete --terraform` leaves `retainedAddresses` in place, so
+    the key that encrypts the retained buckets must be listed with them; the
+    alias is destroyed, so a new deployment of the same name can create its own."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    retained = set(meta["retainedAddresses"])
+    key = "awscc_kms_key.customer_managed_encryption_key"
+    assert key in retained
+    assert key in meta["statefulAddresses"]
+    main = (standard / "main.tf").read_text()
+    encrypted = {
+        label
+        for label, body in re.findall(
+            r'^resource "aws_s3_bucket_server_side_encryption_configuration" '
+            r'"(\w+)" \{\n(.*?)^\}',
+            main,
+            re.M | re.S,
+        )
+        # One instance since CustomerManagedKmsKeyArn can supply the key (#2016).
+        if f"{key}." in body or f"{key}[*]." in body
+    }
+    kept = {
+        a.split(".", 1)[1]
+        for a in retained
+        if a.startswith("aws_s3_bucket_server_side_encryption_configuration.")
+    }
+    assert encrypted & kept, "no retained bucket is encrypted with the key"
+    assert not any("kms_alias" in a for a in retained)

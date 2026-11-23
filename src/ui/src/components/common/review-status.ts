@@ -131,6 +131,19 @@ export const SKIP_ALL_REASONS: readonly string[] = [
   'Other (see note)',
 ];
 
+/**
+ * Why a finished production document is sent to a review queue by hand (Send to
+ * review). The server accepts only these: `SEND_TO_REVIEW_REASONS` in
+ * `lib/idp_common_pkg/idp_common/review_queues/statuses.py`, asserted equal by
+ * `review-status.skipAllReasons.test.ts`.
+ */
+export const SEND_TO_REVIEW_REASONS: readonly string[] = [
+  'Spot check',
+  'Suspected extraction error',
+  'Customer or downstream query',
+  'Other (see note)',
+];
+
 /** The reason (and note) recorded with a document's latest Skip All Reviews, if any. */
 export const lastSkipAllReason = (history: unknown): { reason: string; note?: string } | null => {
   const entries = (Array.isArray(history) ? history : []) as Array<Record<string, unknown> | null>;

@@ -2,6 +2,9 @@
 title: "Test Studio"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Studio
 
 The Test Studio provides a comprehensive interface for managing test sets, running tests, and analyzing results directly from the web UI.
@@ -60,6 +63,8 @@ The accelerator automatically deploys **four benchmark datasets** from HuggingFa
 4. **Fake-W2-Tax-Forms**: 2,000 synthetic US W-2 tax form images with 45-field ground truth
 
 All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration profile** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles) for details.
+
+Each dataset's test set id is fixed: `realkie-fcc-verified`, `ocr-benchmark`, `docsplit` and `fake-w2`. A stack create or update refreshes the stack's own set under that id, but if you created a set with one of those ids yourself, the deployment leaves your set and its folder untouched and does not deploy that dataset; the stack still updates, and the custom resource's response reports `ID_IN_USE`. To get the dataset, delete your set; the deployer runs again only on a stack update that changes it, such as an upgrade to a release with a changed deployer, and deploys the dataset then.
 
 ---
 
@@ -147,7 +152,7 @@ Use with: `config_library/unified/ocr-benchmark/config.yaml`
 
 ### Common Features
 
-Both datasets share these deployment characteristics:
+The pre-deployed datasets share these deployment characteristics:
 
 - **Fully Automatic**: Complete deployment during stack creation with zero user effort
 - **Version Control**: Dataset version pinned in CloudFormation, updateable via parameter
@@ -331,9 +336,8 @@ Use with: `config_library/unified/fake-w2/config.yaml`
 
 ---
 
-### Common Features
+### Choosing a dataset
 
-All datasets share these deployment characteristics:
 **OmniAI-OCR-Benchmark** is ideal for:
 - Testing classification across diverse document types
 - Evaluating extraction on complex nested schemas
@@ -347,21 +351,20 @@ All datasets share these deployment characteristics:
 
 ---
 
-### Common Features
-
-All datasets share these deployment characteristics:
-
 ### Backend Components
+
+The UI reaches every backend operation below through the REST API, as
+`POST /op/<operation>` on the API Gateway dispatcher, not through GraphQL.
 
 #### TestSetResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
-- **Purpose**: Handles GraphQL operations for test set management
+- **Purpose**: Handles the test set management operations
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
 #### TestSetFileCopier Lambda
 - **Location**: `src/lambda/test_set_file_copier/index.py`
 - **Purpose**: Copies files from source buckets to the test set bucket
-- **Features**: Pattern-based file matching, baseline validation, automatic baseline filtering for Input Bucket sources, time-based file filtering, file count recount, supports both create and append modes
+- **Features**: Pattern-based file matching, baseline validation, Input Bucket documents without a baseline added unlabeled, documents already in the set skipped, time-based file filtering, file count recount, supports both create and append modes
 
 #### TestSetZipExtractor Lambda
 - **Location**: `src/lambda/test_set_zip_extractor/index.py`
@@ -380,11 +383,11 @@ All datasets share these deployment characteristics:
 
 #### TestResultsResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
-- **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
+- **Purpose**: Handles the test results and comparison operations, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
   - Comparison logic and metrics aggregation
-  - Dual event handling (GraphQL + SQS)
+  - Dual event handling (API operations from the dispatcher, and SQS messages)
   - Asynchronous cache update processing
   - Progress-aware status updates
 
@@ -396,8 +399,8 @@ All datasets share these deployment characteristics:
   - 15-minute visibility timeout for long-running calculations
   - Automatic retry handling
 
-### GraphQL Schema
-- **Location**: `nested/api-resolvers/src/api/schema.graphql`
+### API Operations
+- **Contract**: `nested/api-resolvers/src/api/schema.graphql`. No GraphQL service evaluates it; it is the typed contract the UI's types and the dispatcher's argument validation are generated from (see [architecture.md](./architecture.md))
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
@@ -439,7 +442,7 @@ Test Studio has two subsystems: **test-set management** (creating, updating,
 and validating the folder of documents you run against) and **test-run
 management** (starting a run, tracking it, and aggregating its metrics).
 Each has an **online** path (the user is in the UI and the UI drives every
-transition through GraphQL) and an **offline** path (something happens
+transition through the REST API) and an **offline** path (something happens
 outside the UI — a direct S3 edit, or a CLI command — and the workflow has
 to catch up later).
 
@@ -621,18 +624,34 @@ documents and is immediately usable as a destination for any of the sources unde
 Every source shares three optional fields:
 
 - **Name** — letters, numbers, spaces, hyphens and underscores (max 50). Becomes
-  the test set id.
+  the test set id, lowercased with spaces replaced by hyphens, so `My Set` and
+  `my-set` are the same id. Uploading, starting from bucket files and starting
+  empty all refuse a name whose id is already taken rather than replacing that
+  set; to grow an existing set, use
+  [Adding Documents](#adding-documents-to-existing-test-sets).
 - **Description** — max 500 characters.
 - **Document classification type** — metadata describing the mix of documents:
   *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
   (packets that split into several sections).
 
 The **From files already in a bucket** step adds a **Modified after** filter —
-a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
+a preset (last hour, 24 hours, 7 days, …) or a custom date and time, read as UTC, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
-files** button that reports the match count before you commit. When reading from
-the input bucket, documents with no ground truth in the evaluation baseline bucket
-are skipped rather than failing, so a broad pattern is safe. Patterns match the full
+files** button that reports the match count before you commit. Changing the
+bucket, the pattern or the time filter clears that count, and a check still
+running when you change one of them is discarded rather than shown. When reading from
+the input bucket, a matching document with no ground truth in the evaluation baseline
+bucket is added **unlabeled**, as it is from every other source: its input is copied
+and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
+A broad pattern therefore brings in every file it matches, labeled or not, and
+one unlabeled document makes the whole set read as `unlabeled` until it is
+draft-labeled. A pattern re-applied when adding documents leaves every document
+already in the set as it is, labeled or not, so labels drafted or reviewed in the set
+are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
+From either bucket a `.zip` the pattern matches is left out, because a `.zip`
+written into a set's folder is read as a test-set upload; a pattern that matches
+only `.zip` files fails with that reason. Every other matching file is copied.
+Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed
 as it exists in the bucket; everything after it is matched regardless of case.
@@ -644,6 +663,30 @@ Once a set exists, select it and use **Actions** to browse its documents, annota
 its ground truth, add more documents, edit its details, or delete it. Opening the
 set — by clicking its name, or **Actions** → **Browse documents** — is where you
 generate draft labels, annotate, prune documents and publish a version.
+
+#### Deleting test sets
+
+Deleting a set removes every file under its folder and then its record. A set that
+a job is still writing — status `QUEUED`, `COPYING`, `UPDATING` (adding documents,
+or a pre-deployed dataset being refreshed) or `GENERATING` — cannot be deleted
+until that job finishes; the delete is refused with the set's status, and any
+other selected sets are still deleted. A set whose job died is moved to `FAILED`
+after a while (two hours for a copy, twelve for a generation) and can then be
+deleted. A set left in one of those statuses by an older release, which recorded
+no time for the status and so is never moved to `FAILED`, can be deleted
+directly.
+
+While its files are being removed a set shows `DELETING`. If some files cannot be
+removed, the set is kept, marked `FAILED` with the reason, and the delete reports
+an error; delete it again to finish. The record is kept on purpose: a folder with
+no record is picked up as a [direct upload](#creating-test-sets) and would come
+back as a new set.
+
+When only some of the selected sets go, the Test Sets list reloads at once, so the
+deleted ones disappear, and the error reads **Deleted N of M test sets** followed
+by the reason for each set that was refused or could not be finished. If the
+list cannot be reloaded either, the error says that some sets may not have been
+deleted; refresh the page to see which.
 
 ### Browsing Test Set Documents and Ground Truth
 
@@ -722,17 +765,17 @@ The same **Add documents** menu is available in two places: on the Test Sets tab
 
 - **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
 - **From a zip upload**: Upload a zip file containing new documents and, optionally, their baselines. A zip with only `input/` adds unlabeled documents; a set that was fully labeled then shows as unlabeled until those documents are draft-labeled or reviewed
-- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why.
+- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why. Admins can also open this dialog from the Document List: select documents there and choose **Add to test set**, then pick the set (see [Adding documents to a test set](web-ui.md#adding-documents-to-a-test-set)).
 - **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
 
 
 On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
 
 **Key behaviors:**
-- **Automatic baseline filtering** (Input Bucket pattern import only): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. Documents added **From processed documents** are never excluded for this reason; they arrive unlabeled instead. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
-- **Idempotent**: Adding a document that already exists overwrites it. File counts are always recounted from S3 for accuracy.
+- **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
+- **Existing documents are kept**: Adding from a bucket or from processed documents skips a document already in the set, so labels drafted or reviewed in the set are never overwritten by the copy in the bucket. A zip upload still writes over the input and baseline files it contains. To take a newer copy of a document's ground truth from the evaluation baseline bucket, remove the document from the set and add it again. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
-- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
+- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff, read as UTC; a date or time that is not real is refused beside the field. **Add Documents** copies against the cutoff **Check Files** counted with, so a file counted under a window such as "Last 24 hours" is not left out because it aged out of the window before you pressed **Add Documents**. This makes it easy to pick up recently reviewed documents without crafting complex patterns. It picks up documents new to the set only: a document already in the set keeps its copy even if its ground truth was reviewed again since.
 
 ### File Structure Requirements
 ```
@@ -756,7 +799,7 @@ my-test-set/
   A *partially* labeled set (baselines for some documents but not others) is
   still a validation error, since that indicates an incomplete upload rather
   than a deliberate label-later workflow.
-- When using Input Bucket as source, files without baselines are automatically excluded (not treated as an error)
+- When using Input Bucket as source, files without baselines are added unlabeled (not treated as an error), so the set can be partially labeled; it reads as `unlabeled` until those documents are draft-labeled
 - Status: COMPLETED (valid), FAILED (validation errors), QUEUED/COPYING (creating), UPDATING (adding documents)
 - These rules apply to a zip upload exactly as they do to folders found in the bucket: the
   zip extractor accepts an archive with no `baseline/` folder as an unlabeled set and still
@@ -991,9 +1034,14 @@ above; **Process Changes** flips the label to *Reviewed*.
 **Saved changes are drafts until Process Changes.** A draft is stored under
 `<set>/drafts/` in the TestSetBucket, outside `baseline/`, so it is not part of a
 published version or a test run, and the label, the queue's progress and the
-confidence curve are unchanged until it is applied. Drafts survive **Re-extract**,
-**Clear draft labels** and **Reset labels**, move with their sections on **Edit Page
-Class**, and are deleted with the document when it is removed from the set. Once enough of the set is
+confidence curve are unchanged until it is applied. **Re-extract** deletes the draft
+of each section whose fields it writes back, because the draft's edits were made over
+the fields it replaces: those edits are lost, and the section opens with the
+re-extracted values. A section the re-extract does not write — another section of the
+packet, or authored ground truth, whose values it keeps — keeps its draft. Drafts
+survive **Generate draft labels**, **Clear draft labels** and **Reset labels**, move
+with their sections on **Edit Page Class**, and are deleted with the document when it
+is removed from the set. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
 **A field you edit stops carrying the model's confidence.** The score describes
@@ -1326,7 +1374,21 @@ section says **Fields still reflect the previous class** and offers **Re-extract
 which re-runs that document and waits for the new labels before returning, so you
 are never left looking at fields from the previous class. On a document with one
 section it re-extracts the whole document; on a document with several it re-extracts
-only the section you are looking at (see below).
+only the section you are looking at (see below). The note names the class the fields
+were extracted under, so a section changed twice before it is re-extracted (Invoice to
+W2, then to Payslip) still says Invoice, and a section changed back to that class shows
+no note. The note stays with its section when a later save moves pages and renumbers
+the sections, and when a different section is re-extracted. It also survives a page
+reload: the save records the class the fields were extracted under on the section's
+ground truth (`extractedAsClass` in its `result.json`, and in its draft if it has one),
+and the editor reads it when it opens the section. Re-extracting the section, or a
+**Generate draft labels** run that rewrites it, removes it from the section and from its
+draft once the new fields are written; a re-extract deletes that section's draft
+instead, so the section opens with the re-extracted values. For a section of
+authored ground truth, whose values a re-extract keeps, the record goes when the
+re-extract corrects the class. Saving or confirming the section's labels keeps it, because the
+values are still the ones extracted under the earlier class. A class change saved
+by a release that predates this is not recorded, so its note does not survive a reload.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
@@ -1456,6 +1518,15 @@ A few rules the board enforces, all for the same reason — a packet split is a
   delete it.
 - A page the split had dropped entirely **can** be added. That is precisely the defect
   a reviewer is here to fix, so it is allowed in.
+- A section you add starts with no field values, even when you deleted another section
+  in the same edit: the board never gives an added section the number of a section the
+  document already had, because a save keeps each section's fields under the number it
+  is sent with.
+- After a save, **Edit Page Grouping** is unavailable, with the reason *Loading the saved
+  grouping…*, until the editor has re-read the saved sections. The save renumbers them,
+  so a grouping opened from the sections shown before the re-read would name the wrong
+  ones. If the re-read fails, the reason says so instead; choose **Refresh** to load
+  the saved grouping.
 
 Sections are renumbered so their ids follow page order. Several consumers take a
 section's group index from its position in a list, and nothing otherwise guarantees
@@ -1860,7 +1931,7 @@ class is corrected — see
 
 ### Field-Level Metrics
 
-Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
+Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns:
 
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)
@@ -1886,7 +1957,7 @@ happened to get, and the point estimate alone cannot distinguish 100% measured o
 observations from 100% measured on 300. The two justify completely different decisions.
 
 This matters more per field than it does overall. A run's overall accuracy firms up
-quickly — within roughly the first hundred documents — because every document contributes
+much faster than any single field's, because every field of every document contributes
 to it. A field that appears once per document gains one observation per document, so a
 badly-broken field can sit inside a healthy-looking overall score until the set is large
 enough to expose it. At a measured 90% accuracy:
@@ -2017,15 +2088,43 @@ When a model extracts a field with 90% confidence, ideally 90% of such predictio
 - **Poor AUROC (0.62), Any ECE**: Confidence scores don't correlate with correctness — unreliable even if calibrated
 - **ECARB@30 = 89% (3.0x)**: **The business metric** - If you can only manually review 30% of extracted data, sorting by confidence (lowest first) lets you catch 89% of errors with 3x better efficiency than random sampling. This answers the practical question: "How much value does confidence-guided review provide?"
 
+**Empty Predictions:**
+
+AUROC, ECE and Brier above are computed over the fields the extractor returned a value
+for. A field it returned as empty (no value, a blank string, or an empty list) is left out
+of them, which hides one important failure: a confidence scorer that gives a **missed**
+field a high score. Such a field is exactly the one a reviewer most needs to see, and the
+headline AUROC cannot show the problem because it never sees the field.
+
+Test results therefore report empty predictions in two extra rows of the breakdown table,
+next to the existing figures rather than folded into them, so the meaning of the existing
+AUROC does not change between runs:
+
+| Row | What it shows |
+|-----|---------------|
+| **Confidence: AUROC incl. Empty Values** | AUROC over every scored field with the empty predictions included. Compare it with the AUROC row: a large drop means the scorer ranks missed fields wrongly. |
+| **Confidence: Empty Predictions** | How many fields came back empty, how many of those were wrong (the ground truth had a value), and the AUROC over the empty fields alone. Below 0.5 means missed fields score higher than correctly empty ones. |
+
+A run evaluated before this measurement existed has no such rows. If some of a run's
+documents were evaluated before it existed and some after, the value says how many older
+sections could not be scored, because their empty fields' confidences were never kept.
+The figures are stored under `confidenceMetrics.empty_values` in the test run's results.
+
 **How Calibration Metrics Are Computed:**
 
 1. **Document Evaluation**: For each document, the evaluation service:
    - Flattens confidence scores from extraction results (unwraps wrapper keys like `Item_N`, `Record_N`)
    - Patches Stickler's comparison results with `field_path` for matching
-   - Stores `stickler_comparison_result` with confidences in `results.json`
+   - Stores `stickler_comparison_result` with confidences in `results.json`, including the
+     confidence of each empty prediction under `empty_prediction_confidences`
 
 2. **Test Aggregation**: When viewing test results, the aggregation function:
-   - Loads all `stickler_comparison_result` records for the test run
+   - Loads all `stickler_comparison_result` records for the test run, and processes them in
+     document-key order, so aggregating the same results again gives the same metrics. Where
+     several values of one field have the same confidence and the review budget covers only
+     some of them, ECARB@30 counts the ones from documents earlier in that order as reviewed.
+     In the overall figure, tied values of different fields are ordered by field first, in
+     the order the fields first appear
    - Computes calibration metrics (AUROC, ECE, Brier) via `aggregate_from_comparisons` and a `BulkStructuredModelEvaluator` with the confidence metrics installed as bulk-level accumulators
    - Also runs `BulkStructuredModelEvaluator` with `ErrorCaptureAtBudgetMetric` to compute ECAB (Error Capture at Budget)
    - Aggregates path-based keys (e.g., `LineItems[0].Rate`) to pattern-based keys (`LineItems.Rate`)

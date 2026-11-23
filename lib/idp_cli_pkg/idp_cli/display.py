@@ -36,7 +36,7 @@ def create_progress_bar(status_data: Dict) -> Progress:
         Progress object with task
     """
     total = status_data["total"]
-    completed = len(status_data["completed"]) + len(status_data["failed"])
+    completed = _settled_count(status_data)
 
     progress = Progress(
         TextColumn("[bold blue]{task.description}"),
@@ -51,6 +51,31 @@ def create_progress_bar(status_data: Dict) -> Progress:
     return progress
 
 
+#: Where a reviewer works a document the monitor reports as awaiting review.
+REVIEW_LOCATION_HINT = (
+    "Work them in the web UI's review queues "
+    "(Home › Queues, or Review Studio › Review Management for an Admin)."
+)
+
+
+def _awaiting_review(status_data: Dict) -> list:
+    """Documents whose processing stopped to wait for a human reviewer.
+
+    Read with `.get`, because `status_data` has producers that predate the
+    bucket and do not set the key.
+    """
+    return status_data.get("awaiting_review") or []
+
+
+def _settled_count(status_data: Dict) -> int:
+    """Documents nothing more happens to without a person: finished, or in review."""
+    return (
+        len(status_data["completed"])
+        + len(status_data["failed"])
+        + len(_awaiting_review(status_data))
+    )
+
+
 def create_status_table(status_data: Dict) -> Table:
     """
     Create status summary table
@@ -62,7 +87,7 @@ def create_status_table(status_data: Dict) -> Table:
         Rich Table object
     """
     table = Table(title="Status Summary", show_header=True, header_style="bold cyan")
-    table.add_column("Status", style="cyan", width=15)
+    table.add_column("Status", style="cyan", width=18)
     table.add_column("Count", justify="right", width=10)
     table.add_column("Percentage", justify="right", width=12)
 
@@ -71,6 +96,7 @@ def create_status_table(status_data: Dict) -> Table:
     running = len(status_data["running"])
     queued = len(status_data["queued"])
     failed = len(status_data["failed"])
+    awaiting_review = len(_awaiting_review(status_data))
 
     if total == 0:
         return table
@@ -83,6 +109,12 @@ def create_status_table(status_data: Dict) -> Table:
     )
     table.add_row("⏸ Queued", str(queued), f"{queued / total * 100:.1f}%")
     table.add_row("✗ Failed", str(failed), f"{failed / total * 100:.1f}%", style="red")
+    table.add_row(
+        "◐ Awaiting Review",
+        str(awaiting_review),
+        f"{awaiting_review / total * 100:.1f}%",
+        style="magenta",
+    )
 
     return table
 
@@ -194,6 +226,7 @@ def create_statistics_panel(stats: Dict) -> Panel:
 [red]Failed:[/red] {stats["failed"]}
 [yellow]Running:[/yellow] {stats["running"]}
 Queued: {stats["queued"]}
+[magenta]Awaiting Review:[/magenta] {stats.get("awaiting_review", 0)}
 
 [bold]Completion:[/bold] {stats["completion_percentage"]:.1f}%
 [bold]Success Rate:[/bold] {stats["success_rate"]:.1f}%
@@ -218,6 +251,10 @@ def display_status_table(status_data: Dict):
         console.print(create_failures_table(status_data))
         console.print()
 
+    awaiting = _awaiting_review(status_data)
+    if awaiting:
+        _print_awaiting_review(awaiting)
+
 
 def show_final_summary(status_data: Dict, stats: Dict, elapsed_time: float):
     """
@@ -228,8 +265,15 @@ def show_final_summary(status_data: Dict, stats: Dict, elapsed_time: float):
         stats: Statistics dictionary
         elapsed_time: Total elapsed time in seconds
     """
+    awaiting = _awaiting_review(status_data)
     console.print()
-    console.rule("[bold green]Batch Processing Complete", style="green")
+    if awaiting:
+        console.rule(
+            "[bold magenta]Batch Processing Finished — Awaiting Human Review",
+            style="magenta",
+        )
+    else:
+        console.rule("[bold green]Batch Processing Complete", style="green")
     console.print()
 
     # Summary table
@@ -242,6 +286,11 @@ def show_final_summary(status_data: Dict, stats: Dict, elapsed_time: float):
         "Completed Successfully", str(stats["completed"]), style="green"
     )
     summary_table.add_row("Failed", str(stats["failed"]), style="red")
+    summary_table.add_row(
+        "Awaiting Review",
+        str(stats.get("awaiting_review", len(awaiting))),
+        style="magenta",
+    )
     summary_table.add_row("Success Rate", f"{stats['success_rate']:.1f}%")
     summary_table.add_row("Average Duration", f"{stats['avg_duration_seconds']:.1f}s")
     summary_table.add_row("Total Time", f"{elapsed_time:.1f}s")
@@ -257,6 +306,20 @@ def show_final_summary(status_data: Dict, stats: Dict, elapsed_time: float):
             error = doc.get("error", "Unknown error")
             console.print(f"  • {doc_id}: {error}", style="red")
         console.print()
+
+    if awaiting:
+        _print_awaiting_review(awaiting)
+
+
+def _print_awaiting_review(awaiting: list) -> None:
+    """Say how many documents wait for a reviewer, which ones, and where to work them."""
+    console.print(
+        f"[bold magenta]{len(awaiting)} document(s) awaiting human review.[/bold magenta] "
+        f"{REVIEW_LOCATION_HINT}"
+    )
+    for doc in awaiting:
+        console.print(f"  • {doc.get('document_id', 'unknown')}", style="magenta")
+    console.print()
 
 
 def show_batch_submission_summary(results: Dict):
@@ -347,7 +410,7 @@ def create_live_display(
 
     # Progress bar
     total = stats["total"]
-    completed = len(status_data["completed"]) + len(status_data["failed"])
+    completed = _settled_count(status_data)
     progress_text = f"Overall Progress: {completed}/{total} ({stats['completion_percentage']:.1f}%) • Elapsed: {elapsed_time:.0f}s"
     layout.add_row(Panel(progress_text, border_style="green"))
 
@@ -368,14 +431,20 @@ def create_live_display(
     return layout
 
 
-#: The four progress buckets of a `status_data` dict, in the order a
-#: single-document verdict reads them. Same four names as
-#: `idp_sdk.models.DocumentBucket`, and the same precedence `derive_exit_code`
-#: uses: a completed document outranks a failed one, and either outranks work
-#: still in flight. Spelled here rather than imported because this module depends
+#: The progress buckets of a `status_data` dict, in the order a single-document
+#: verdict reads them. Same names as `idp_sdk.models.DocumentBucket`, and the same
+#: precedence `derive_exit_code` uses: a completed document outranks a failed one,
+#: either outranks one waiting for a reviewer, and all three outrank work still in
+#: flight. Spelled here rather than imported because this module depends
 #: on nothing but `rich` and the dict `cli.py` hands it; `test_display_module.py`
 #: asserts the two spellings and the two precedences agree.
-_BUCKETS_IN_PRECEDENCE_ORDER = ("completed", "failed", "running", "queued")
+_BUCKETS_IN_PRECEDENCE_ORDER = (
+    "completed",
+    "failed",
+    "awaiting_review",
+    "running",
+    "queued",
+)
 
 
 def _single_document(status_data: Dict) -> tuple[Dict | None, str | None]:
@@ -435,7 +504,9 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
             elif bucket == "failed":
                 result["error"] = doc.get("error", "Unknown error")
                 result["failed_step"] = doc.get("failed_step", "Unknown")
-            elif bucket == "running":
+            elif bucket in ("running", "awaiting_review"):
+                # A held document read as running before it had its own bucket,
+                # so it keeps the key a script may already read.
                 result["current_step"] = doc.get("current_step", doc.get("status"))
 
             # One authority for the code, shared with the table output, so
@@ -480,6 +551,7 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
         "failed": stats["failed"],
         "running": stats["running"],
         "queued": stats["queued"],
+        "awaiting_review": stats.get("awaiting_review", 0),
         "completion_percentage": stats["completion_percentage"],
         "success_rate": stats["success_rate"],
         "avg_duration_seconds": stats["avg_duration_seconds"],
@@ -499,7 +571,14 @@ def derive_exit_code(status_data: Dict, stats: Dict) -> int:
     """The exit code a status result implies. Derives; prints nothing.
 
     0 every document completed, 1 at least one failed, 2 the outcome is not
-    established (still running, or nothing was found).
+    established (still running, waiting for a human reviewer, or nothing was
+    found).
+
+    A batch that has settled with documents awaiting review answers 2, not 0:
+    its processing has finished, which is what ends `--monitor` and `--wait`, but
+    "every document completed" is not yet true, and a pipeline reading the exit
+    status must not take the review outcome for granted. A failure still answers
+    1, since that outcome is established whatever the reviewers decide.
 
     Split out of `show_final_status_summary` so that a caller can have the code
     without the "FINAL STATUS:" line. `_monitor_progress` is that caller: it needs
@@ -528,7 +607,11 @@ def derive_exit_code(status_data: Dict, stats: Dict) -> int:
         return 2
 
     if stats["all_complete"]:
-        return 1 if stats["failed"] > 0 else 0
+        if stats["failed"] > 0:
+            return 1
+        if stats.get("awaiting_review", 0) > 0:
+            return 2
+        return 0
     return 2
 
 
@@ -575,9 +658,14 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
         return exit_code
 
     # For batch
+    awaiting_review = stats.get("awaiting_review", 0)
     if stats["all_complete"]:
         if stats["failed"] > 0:
             status = f"COMPLETED WITH FAILURES ({stats['failed']} failed)"
+            if awaiting_review > 0:
+                status += f", {awaiting_review} awaiting review"
+        elif awaiting_review > 0:
+            status = f"AWAITING REVIEW ({awaiting_review} awaiting review)"
         else:
             status = "ALL COMPLETED"
     else:

@@ -12,6 +12,14 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.config import Config
 import idp_common.s3_targets as s3_targets
+from idp_common.api_adapter import ResourceAccessDenied
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -35,6 +43,152 @@ sqs_client = boto3.client('sqs')
 dynamodb = boto3.resource('dynamodb')
 
 sfn_client = boto3.client('stepfunctions')
+
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: dict = {}
+_USER_SCOPE_CACHE_TTL = 60  # seconds
+
+
+def _caller_config_scope(event):
+    """The caller's ``allowedConfigVersions``, or None when unrestricted.
+
+    Admins are unrestricted and never looked up, as in every other resolver that
+    applies this rule. For everyone else the shared lookup fails CLOSED: a scope
+    that cannot be evaluated is refused, never read as "unrestricted".
+    """
+    if _caller_in_groups(event, ("Admin",)):
+        return None
+    claims = (event.get("identity") or {}).get("claims") or {}
+    try:
+        return resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            caller_sub=caller_sub_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=dynamodb,
+            cache=_user_scope_cache,
+            cache_ttl=_USER_SCOPE_CACHE_TTL,
+        )
+    except ScopeLookupError as e:
+        logger.error(f"Denying discovery request: configuration scope could not be resolved: {e}")
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+
+
+def _assert_profile_in_scope(event, version, missing_means_active=False):
+    """Refuse a configuration profile outside the caller's allowedConfigVersions.
+
+    Every discovery operation reads the named profile's settings and most of them
+    write the discovered schema back into it, so the rule is the one
+    ``updateConfiguration`` and ``setActiveVersion`` apply: a scoped caller may name
+    only a profile their scope admits, and an empty or missing name is refused for
+    a scoped caller because it cannot be shown to be in scope.
+
+    ``missing_means_active`` is for the one read-only operation that accepts no
+    version and then reads the active profile: the check is then made on the
+    profile that is actually read.
+    """
+    allowed = _caller_config_scope(event)
+    if allowed is None:
+        return
+    if not version and missing_means_active:
+        version = _active_version()
+    if not scope_allows(allowed, version):
+        logger.warning("Refusing discovery request: configuration profile is outside the caller's scope")
+        raise ResourceAccessDenied(
+            f"Unauthorized: configuration profile '{version}' is not in your allowed scope"
+        )
+
+
+def _assert_source_in_scope(event, bucket, prefix, is_zip_upload):
+    """Refuse a scoped caller a multi-document source outside their scope.
+
+    ``startMultiDocDiscovery`` reads every document under ``s3Bucket``/``s3Prefix``
+    and saves a schema, example values included, into a profile the caller can
+    read, so the documents it reads are held to the caller's scope as well as the
+    profile it saves into. For a caller with a configuration scope:
+
+    * the discovery bucket (including an uploaded zip) is allowed: it is the
+      shared Admin/Author discovery workspace — every user's discovery uploads and
+      the documents extracted from multi-document zips — and nothing in it records
+      a profile or an uploader, so there is nothing to check it against (see the
+      Known Limitations in docs/rbac.md);
+    * an Input-bucket prefix is allowed only when a configuration prefix mapping
+      covers the whole prefix (the prefix lies inside a ``prefix``-kind mapping),
+      the mapping's profile is in scope, the mapping lets no document's own
+      metadata pick another profile (``metadataPrecedence`` other than
+      ``metadata``), and no more specific mapping under the prefix names a profile
+      outside scope;
+    * anything else — the Test Set bucket, an unmapped Input prefix, any other
+      bucket — is refused, because nothing maps it to a profile or test set the
+      caller holds. A mapping table that cannot be read refuses too.
+
+    Admins and unscoped callers are not affected.
+    """
+    allowed = _caller_config_scope(event)
+    if allowed is None:
+        return
+    discovery_bucket = os.environ.get("DISCOVERY_BUCKET", "")
+    if is_zip_upload or not bucket or bucket == discovery_bucket:
+        return
+    refusal = ResourceAccessDenied(
+        "Unauthorized: that document source is outside your allowed configuration scope"
+    )
+    input_bucket = os.environ.get("SCOPED_SOURCE_INPUT_BUCKET", "")
+    if not input_bucket or bucket != input_bucket or not prefix:
+        logger.warning("Refusing multi-document discovery: source bucket is not mapped to the caller's scope")
+        raise refusal
+
+    from idp_common.config.prefix_mappings import (
+        MATCH_PREFIX,
+        PRECEDENCE_METADATA,
+        PrefixMappingStore,
+        canonical_key,
+        find_match,
+    )
+
+    try:
+        table = dynamodb.Table(os.environ["CONFIGURATION_TABLE_NAME"])
+        mappings = PrefixMappingStore(table).list()
+    except Exception as e:  # noqa: BLE001 — an unreadable mapping cannot admit
+        logger.error(f"Refusing multi-document discovery: prefix mappings unreadable: {e}")
+        raise refusal from e
+
+    wanted = canonical_key(prefix)
+    governing = find_match(prefix, mappings)
+    if (
+        governing is None
+        or governing["matchKind"] != MATCH_PREFIX
+        or governing["metadataPrecedence"] == PRECEDENCE_METADATA
+        or not scope_allows(allowed, governing["configProfile"])
+    ):
+        logger.warning("Refusing multi-document discovery: the source prefix is not mapped into the caller's scope")
+        raise refusal
+    for entry in mappings:
+        if not entry.get("enabled") or not entry.get("configProfile"):
+            continue
+        if not canonical_key(entry["prefix"]).startswith(wanted):
+            continue
+        if entry.get("metadataPrecedence") == PRECEDENCE_METADATA or not scope_allows(
+            allowed, entry["configProfile"]
+        ):
+            logger.warning("Refusing multi-document discovery: a mapping under the source prefix is outside the caller's scope")
+            raise refusal
+
+
+def _assert_replace_allowed(version):
+    """Refuse ``saveMode: replace`` against the profile documents are processed under.
+
+    Replace clears the profile's discovered schema before discovery runs, so on the
+    active profile every document arriving during the run would be classified
+    against an empty class list. Augment is unaffected, and replace on any other
+    profile is unaffected.
+    """
+    if version == _active_version():
+        raise ValueError(
+            f"'Replace' cannot be used on the active configuration profile '{version}'. "
+            "Use 'Augment', or run discovery into another profile and activate it afterwards."
+        )
 
 
 def _clear_version_schema(version, discovery_type='classes'):
@@ -143,6 +297,11 @@ def handle_auto_detect_sections(event, context):
     if not document_key or not bucket:
         raise ValueError("documentKey and bucket are required")
 
+    # The profile's discovery settings (model, prompt) are read for this call. With
+    # no version the active profile is read, which is a profile name too, so the
+    # check runs on what is actually read.
+    _assert_profile_in_scope(event, version, missing_means_active=True)
+
     # A read rather than a write, so the bucket allow-list applies and the write-once
     # key rule does not.
     s3_targets.assert_bucket_allowed(bucket, ALLOWED_BUCKETS, logger=logger)
@@ -171,6 +330,12 @@ def handle_auto_detect_sections(event, context):
         raise
 
 
+def _active_version():
+    from idp_common.config.configuration_manager import ConfigurationManager
+
+    return ConfigurationManager().resolve_active_version(raise_errors=True)
+
+
 def handle_upload_discovery_document(event, context):
     """
     Generates a presigned POST URL for S3 uploads and manages discovery job tracking.
@@ -190,9 +355,22 @@ def handle_upload_discovery_document(event, context):
         # saveMode: 'replace' clears the version's discovered schema up front so
         # discovery rebuilds it; 'augment' (default) keeps existing classes.
         save_mode = arguments.get('saveMode') or 'augment'
+        policy_group = _policy_group_argument(arguments, discovery_type, save_mode, page_ranges)
+        group_mode, superseded_rules = _policy_group_change_arguments(arguments, policy_group)
 
         if not file_name:
             raise ValueError("fileName is required")
+
+        # A discovery job writes its result into this profile, so it has to be
+        # named: falling back to whichever profile is active would write into a
+        # profile the caller never chose. The presign-only call (skipJobCreation)
+        # creates no job and writes nothing.
+        if not skip_job_creation and not version:
+            raise ValueError(
+                "version is required: name the configuration profile to save the discovered schema to"
+            )
+        if version or not skip_job_creation:
+            _assert_profile_in_scope(event, version)
 
         # The 'default' config version is read-only — discovery must target a
         # user-created version so the built-in defaults are never overwritten.
@@ -200,6 +378,14 @@ def handle_upload_discovery_document(event, context):
             raise ValueError(
                 "The 'default' configuration version is read-only. Create a new version to save the discovered schema."
             )
+
+        if save_mode == 'replace' and not skip_job_creation:
+            _assert_replace_allowed(version)
+
+        # After the scope check, so the group's rule names are revealed (in a
+        # refusal) only to a caller who may read the profile anyway.
+        if not skip_job_creation:
+            _assert_policy_group_change_possible(version, policy_group, group_mode, superseded_rules)
 
         # Get bucket from arguments
         bucket_name = arguments.get('bucket')
@@ -240,7 +426,10 @@ def handle_upload_discovery_document(event, context):
                     create_discovery_job(job_id, object_key, gt_object_key, version, page_range=page_range, class_name_hint=page_label)
             else:
                 job_id = str(uuid.uuid4())
-                create_discovery_job(job_id, object_key, gt_object_key, version, discovery_type=discovery_type)
+                create_discovery_job(
+                    job_id, object_key, gt_object_key, version, discovery_type=discovery_type,
+                    policy_group=policy_group, policy_group_mode=group_mode, superseded_rules=superseded_rules,
+                )
         else:
             logger.info("skipJobCreation=True — returning presigned URL only, no jobs created")
 
@@ -250,6 +439,88 @@ def handle_upload_discovery_document(event, context):
     except Exception as e:
         logger.error(f"Error generating presigned URL: {str(e)}")
         raise
+
+
+def _policy_group_argument(arguments, discovery_type, save_mode='augment', page_ranges=None):
+    """The request's ``policyGroup``, validated, or None when it names none.
+
+    A group means something only to Policy Discovery (uploads naming one append
+    their rules to one policy class), so one sent with a classes discovery is
+    refused rather than ignored. It is refused with ``saveMode: replace`` too:
+    Replace clears every policy class in the profile before the job runs, so it
+    would empty the group the upload is meant to add to — the opposite of what a
+    group promises. And it is refused with ``pageRanges``, which this resolver
+    turns into classes-discovery jobs that would drop the group. The name rule is
+    ``normalize_policy_group``'s, shared with the discovery job that saves the
+    rules. Raises ValueError (HTTP 400).
+    """
+    raw = arguments.get('policyGroup')
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    # Imported only for a request that names a group: the module pulls in the
+    # whole discovery package, which no other upload needs.
+    from idp_common.discovery.rules_discovery import normalize_policy_group
+
+    policy_group = normalize_policy_group(raw)
+    if policy_group and discovery_type != 'rules':
+        raise ValueError("policyGroup applies only to Policy Discovery (discoveryType 'rules')")
+    if policy_group and save_mode == 'replace':
+        raise ValueError(
+            "policyGroup cannot be combined with saveMode 'replace': Replace removes every "
+            "policy class in the profile, including the group's, before discovery runs"
+        )
+    if policy_group and page_ranges:
+        raise ValueError("policyGroup cannot be combined with pageRanges")
+    return policy_group
+
+
+def _policy_group_change_arguments(arguments, policy_group):
+    """The request's ``policyGroupMode`` and ``supersededRules``, validated.
+
+    Returns ``(mode, superseded_rules)``: ``append`` and ``[]`` when the request
+    names neither. ``replace`` (the upload's rules become the group's whole
+    ruleset) and ``supersede`` (the named rules are removed and the upload's
+    added) need a ``policyGroup``; ``supersededRules`` belongs to ``supersede``
+    only. The rule is ``normalize_policy_group_change``'s, shared with the job
+    that saves the rules. Raises ValueError (HTTP 400).
+    """
+    mode = arguments.get('policyGroupMode')
+    superseded = arguments.get('supersededRules')
+    if not mode and not superseded:
+        return 'append', []
+    from idp_common.discovery.rules_discovery import normalize_policy_group_change
+
+    return normalize_policy_group_change(policy_group, mode, superseded)
+
+
+def _assert_policy_group_change_possible(version, policy_group, mode, superseded_rules):
+    """Refuse a replace or supersede the profile's group cannot satisfy (HTTP 400).
+
+    The group must exist in the profile, and every superseded rule must be one
+    of its rules now: a supersession that matches nothing would leave the user
+    believing a contradiction was resolved when it was not. The discovery job
+    checks again under its save lease, since the group can change before it
+    runs; this check is what turns the common case into an immediate refusal
+    instead of a failed job minutes later.
+    """
+    if mode == 'append' or not policy_group:
+        return
+    from idp_common.config.configuration_manager import ConfigurationManager
+    from idp_common.discovery.rules_discovery import (
+        PolicyGroupChangeRefused,
+        check_policy_group_change,
+    )
+
+    existing = ConfigurationManager().get_raw_configuration("Config", version=version) or {}
+    policy_classes = existing.get('policy_classes') or []
+    if not isinstance(policy_classes, list):
+        policy_classes = []
+    try:
+        check_policy_group_change(policy_classes, policy_group, mode, superseded_rules, version)
+    except PolicyGroupChangeRefused as e:
+        # The dispatcher maps a resolver error to a status by its class NAME, and
+        # only a plain ValueError (or KeyError) is a 400; the subclass would be a 500.
+        raise ValueError(str(e)) from None
 
 
 def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, prefix):
@@ -290,7 +561,8 @@ def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, p
     return object_key, presigned_post
 
 
-def create_discovery_job(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None):
+def create_discovery_job(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None,
+                         policy_group_mode='append', superseded_rules=None):
     """
     Create a new discovery job entry in DynamoDB.
     
@@ -301,6 +573,9 @@ def create_discovery_job(job_id, document_key, ground_truth_key, version, discov
         version (str): Configuration version to use
         discovery_type (str): Type of discovery - "classes" or "rules"
         page_range (str, optional): Page range string (e.g., "1-3") for multi-section discovery
+        policy_group (str, optional): Validated policy group for a rules job
+        policy_group_mode (str): ``append``, ``replace`` or ``supersede``
+        superseded_rules (list, optional): Rule names a ``supersede`` removes
     """
     try:
         table_name = os.environ.get('DISCOVERY_TRACKING_TABLE')
@@ -343,17 +618,26 @@ def create_discovery_job(job_id, document_key, ground_truth_key, version, discov
             item['discoveryType'] = discovery_type
             if discovery_type == 'rules':
                 item['jobType'] = 'rules'
+
+        if policy_group:
+            item['policyGroup'] = policy_group
+            if policy_group_mode and policy_group_mode != 'append':
+                item['policyGroupMode'] = policy_group_mode
+            if superseded_rules:
+                item['supersededRules'] = list(superseded_rules)
         
         table.put_item(Item=item)
         logger.info(f"Created discovery job: {job_id}" + (f" (pages {page_range})" if page_range else ""))
         
-        send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type=discovery_type, page_range=page_range, class_name_hint=class_name_hint)
+        send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type=discovery_type, page_range=page_range, class_name_hint=class_name_hint, policy_group=policy_group,
+                               policy_group_mode=policy_group_mode, superseded_rules=superseded_rules)
         
     except Exception as e:
         logger.error(f"Error creating discovery job: {str(e)}")
         # Don't fail the upload if job tracking fails
 
-def send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None):
+def send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None,
+                           policy_group_mode='append', superseded_rules=None):
     """
     Send a message to the discovery processing queue.
     
@@ -386,6 +670,13 @@ def send_discovery_message(job_id, document_key, ground_truth_key, version, disc
 
         if class_name_hint:
             message['classNameHint'] = class_name_hint
+
+        if policy_group:
+            message['policyGroup'] = policy_group
+            if policy_group_mode and policy_group_mode != 'append':
+                message['policyGroupMode'] = policy_group_mode
+            if superseded_rules:
+                message['supersededRules'] = list(superseded_rules)
         
         sqs_client.send_message(
             QueueUrl=queue_url,
@@ -419,6 +710,8 @@ def handle_start_multi_doc_discovery(event, context):
     if not config_version:
         raise ValueError("configVersion is required")
 
+    _assert_profile_in_scope(event, config_version)
+
     # The 'default' config version is read-only — discovery must target a
     # user-created version so the built-in defaults are never overwritten.
     if config_version == 'default':
@@ -429,10 +722,13 @@ def handle_start_multi_doc_discovery(event, context):
     if not s3_bucket and not zip_file_name:
         raise ValueError("Either s3Bucket/s3Prefix or zipFileName is required")
 
+    _assert_source_in_scope(event, s3_bucket, s3_prefix, bool(zip_file_name))
+
     # Replace mode: clear the version's classes before the Step Functions
     # pipeline runs, so the Save step (which merges each discovered class via
     # ClassesDiscovery._merge_and_save_class) rebuilds the list from scratch.
     if save_mode == 'replace':
+        _assert_replace_allowed(config_version)
         _clear_version_schema(config_version, discovery_type='classes')
 
     job_id = str(uuid.uuid4())
@@ -448,8 +744,17 @@ def handle_start_multi_doc_discovery(event, context):
     # point at a location where nothing was uploaded and the Prepare step
     # would 404.
     if is_zip_upload:
-        if not prefix:
-            prefix = multi_doc_zip_key(zip_file_name)
+        # The zip's key is derived from its name, never taken from the caller: the
+        # Prepare step deletes the zip once it is extracted, so a caller-chosen key
+        # would name another upload for deletion. A caller passing back the
+        # objectKey uploadMultiDocDiscoveryZip returned passes the same key.
+        expected = multi_doc_zip_key(zip_file_name)
+        if prefix and prefix != expected:
+            raise ValueError(
+                "s3Prefix must be omitted for a zip upload, or be the objectKey "
+                "uploadMultiDocDiscoveryZip returned for this zipFileName"
+            )
+        prefix = expected
         bucket = os.environ.get('DISCOVERY_BUCKET', '')
 
     logger.info(
@@ -560,6 +865,8 @@ def handle_upload_multi_doc_discovery_zip(event, context):
         raise ValueError("File must be a .zip file")
     if not config_version:
         raise ValueError("configVersion is required")
+
+    _assert_profile_in_scope(event, config_version)
 
     bucket = os.environ.get('DISCOVERY_BUCKET', '')
     object_key = multi_doc_zip_key(file_name)

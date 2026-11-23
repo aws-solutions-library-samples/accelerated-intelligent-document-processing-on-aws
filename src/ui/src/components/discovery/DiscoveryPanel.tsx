@@ -37,6 +37,7 @@ import { uploadDiscoveryDocument, listDiscoveryJobs, deleteDiscoveryJob, autoDet
 import { parseMultiInstanceHint } from './multiInstanceHint';
 import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import { isReplaceOnActive, REPLACE_ON_ACTIVE_MESSAGE } from './replaceGuard';
 import { getJsonValidationError } from '../common/utilities';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
@@ -46,6 +47,12 @@ import { SUPPORTED_DISCOVERY_EXTENSIONS } from '../common/constants';
 import PdfPageSelector from './PdfPageSelector';
 import type { PageRange } from './PdfPageSelector';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
+import { useFormatters } from '../../i18n/format';
+import { useIntl } from 'react-intl';
+import { isGroupWithReplace, normalizePolicyGroup, policyGroupMessages, policyGroupProblem, uploadGroupVariables } from './policyGroup';
+import PolicyGroupField from './PolicyGroupField';
+import PolicyGroupChangeField from './PolicyGroupChangeField';
+import usePolicyGroupChange from '../../hooks/use-policy-group-change';
 
 const client = generateClient();
 
@@ -114,6 +121,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
   const { versions, loading: versionsLoading, getVersionOptions, fetchVersions } = useConfigurationVersions();
+  const { formatDateTime, formatFixed } = useFormatters();
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [groundTruthFile, setGroundTruthFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -127,6 +135,14 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   // Save mode: 'augment' (default) adds to the profile's existing schema;
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
   const [saveMode, setSaveMode] = useState<'augment' | 'replace'>('augment');
+  const replaceOnActive = isReplaceOnActive(saveMode, selectedVersion?.value, versions);
+  // Policy Discovery only: uploads naming the same group append to one policy class.
+  const [policyGroup, setPolicyGroup] = useState('');
+  const policyGroupError = discoveryType === 'rules' ? policyGroupProblem(policyGroup) : null;
+  const groupWithReplace = discoveryType === 'rules' && isGroupWithReplace(policyGroup, saveMode);
+  // How the upload changes an existing group: add, replace its rules, or supersede chosen rules.
+  const groupChange = usePolicyGroupChange({ enabled: discoveryType === 'rules', version: selectedVersion?.value, policyGroup });
+  const intl = useIntl();
   const [showCreateVersionModal, setShowCreateVersionModal] = useState(false);
   const [, setTick] = useState(0); // Force re-render for elapsed time
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -395,6 +411,13 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       setError('The "default" configuration profile is read-only. Create a new profile to save the discovered schema.');
       return;
     }
+    if (replaceOnActive) {
+      setError(REPLACE_ON_ACTIVE_MESSAGE);
+      return;
+    }
+    if (policyGroupError || groupWithReplace || groupChange.problem) {
+      return;
+    }
 
     setIsUploading(true);
     setUploadStatus([]);
@@ -436,6 +459,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
           pageLabels: pageLabelStrings,
           discoveryType,
           saveMode,
+          ...uploadGroupVariables(discoveryType, policyGroup, groupChange.variables),
         },
       });
 
@@ -451,7 +475,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       }
 
       // Phase 2: Upload document to S3
-      const fileSizeMB = (documentFile.size / (1024 * 1024)).toFixed(1);
+      const fileSizeMB = formatFixed(documentFile.size / (1024 * 1024), 1);
       setUploadPhase(`Uploading document to S3 (${fileSizeMB} MB)...`);
 
       await uploadFileToS3(documentFile, docPresignedUrl, docObjectKey, 'document', newUploadStatus);
@@ -471,6 +495,10 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       setUploadPhase('Refreshing jobs list...');
       await loadDiscoveryJobs();
       setUploadPhase('');
+      // A replace or supersede is one decision about one upload; the next upload starts from Add.
+      groupChange.setMode('append');
+      groupChange.setSupersededRules([]);
+      groupChange.refresh();
     } catch (err) {
       console.error('Error in overall upload process:', err);
       setError(`Upload process failed: ${(err as Error).message}`);
@@ -715,8 +743,11 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       cell: (item: DiscoveryJob) => {
         if (!item.createdAt) return '—';
         try {
-          return new Date(item.createdAt).toLocaleString(undefined, {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          return formatDateTime(new Date(item.createdAt), {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
           });
         } catch {
           return item.createdAt;
@@ -836,12 +867,28 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
             />
           </FormField>
 
-          {saveMode === 'replace' && selectedVersion && (
+          {replaceOnActive && <Alert type="error">{REPLACE_ON_ACTIVE_MESSAGE}</Alert>}
+          {saveMode === 'replace' && selectedVersion && !replaceOnActive && (
             <Alert type="warning">
               Replace mode removes all existing document classes in profile <strong>{selectedVersion.value}</strong>{' '}
               <strong>immediately, before discovery runs</strong>, then saves the newly discovered schema. If discovery fails, the profile is
               left with no classes. This cannot be undone — consider creating a new profile instead.
             </Alert>
+          )}
+
+          {discoveryType === 'rules' && <PolicyGroupField value={policyGroup} onChange={setPolicyGroup} disabled={isUploading} />}
+          {groupWithReplace && <Alert type="error">{intl.formatMessage(policyGroupMessages.replaceWithGroup)}</Alert>}
+          {discoveryType === 'rules' && normalizePolicyGroup(policyGroup) && !policyGroupError && !groupWithReplace && (
+            <PolicyGroupChangeField
+              lookup={groupChange.lookup}
+              loading={groupChange.loading}
+              loadError={groupChange.loadError}
+              mode={groupChange.mode}
+              onModeChange={groupChange.setMode}
+              supersededRules={groupChange.supersededRules}
+              onSupersededRulesChange={groupChange.setSupersededRules}
+              disabled={isUploading}
+            />
           )}
 
           <ColumnLayout columns={2}>
@@ -1001,7 +1048,15 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
               onClick={uploadFiles}
               loading={isUploading}
               disabled={
-                !documentFile || !selectedVersion || selectedVersion.value === 'default' || isUploading || isValidatingJson
+                !documentFile ||
+                !selectedVersion ||
+                selectedVersion.value === 'default' ||
+                replaceOnActive ||
+                !!policyGroupError ||
+                groupWithReplace ||
+                !!groupChange.problem ||
+                isUploading ||
+                isValidatingJson
               }
             >
               {pageRanges.length > 0

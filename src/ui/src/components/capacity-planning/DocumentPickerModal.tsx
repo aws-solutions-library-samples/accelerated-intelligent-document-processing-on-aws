@@ -15,6 +15,8 @@ import {
   Badge,
 } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
+import { formatNumber, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 interface DocumentItem {
   ObjectKey: string;
@@ -68,7 +70,7 @@ const TIME_PERIOD_DROPDOWN_ITEMS = Object.keys(TIME_PERIOD_DROPDOWN_CONFIG).map(
   ...TIME_PERIOD_DROPDOWN_CONFIG[k],
 }));
 
-const COLUMN_DEFINITIONS = (configuration: Record<string, unknown> | null | undefined) => [
+const COLUMN_DEFINITIONS = (configuration: Record<string, unknown> | null | undefined, locale: Locale) => [
   {
     id: 'ObjectKey',
     header: 'Document ID',
@@ -120,27 +122,27 @@ const COLUMN_DEFINITIONS = (configuration: Record<string, unknown> | null | unde
       <Box fontSize="body-s">
         {(configuration as { ocr?: { backend?: string } } | null)?.ocr?.backend === 'bedrock' && item.metering?.ocrTokens != null && (
           <span style={{ marginRight: '8px' }}>
-            <strong>OCR:</strong> {Number(item.metering.ocrTokens).toLocaleString()}
+            <strong>OCR:</strong> {formatNumber(Number(item.metering.ocrTokens), locale)}
           </span>
         )}
         {item.metering?.classificationTokens != null && (
           <span style={{ marginRight: '8px' }}>
-            <strong>Classification:</strong> {Number(item.metering.classificationTokens).toLocaleString()}
+            <strong>Classification:</strong> {formatNumber(Number(item.metering.classificationTokens), locale)}
           </span>
         )}
         {item.metering?.extractionTokens != null && (
           <span style={{ marginRight: '8px' }}>
-            <strong>Extraction:</strong> {Number(item.metering.extractionTokens).toLocaleString()}
+            <strong>Extraction:</strong> {formatNumber(Number(item.metering.extractionTokens), locale)}
           </span>
         )}
         {item.metering?.assessmentTokens != null && (
           <span style={{ marginRight: '8px' }}>
-            <strong>Assessment:</strong> {Number(item.metering.assessmentTokens).toLocaleString()}
+            <strong>Assessment:</strong> {formatNumber(Number(item.metering.assessmentTokens), locale)}
           </span>
         )}
         {item.metering?.summarizationTokens != null && Number(item.metering?.summarizationTokens) > 0 && (
           <span style={{ marginRight: '8px' }}>
-            <strong>Summarization:</strong> {Number(item.metering.summarizationTokens).toLocaleString()}
+            <strong>Summarization:</strong> {formatNumber(Number(item.metering.summarizationTokens), locale)}
           </span>
         )}
       </Box>
@@ -172,6 +174,7 @@ const DocumentPickerModal = ({
   onRefresh = null,
   samplingNote = null,
 }: DocumentPickerModalProps) => {
+  const { locale } = useFormatters();
   const [preferences, _setPreferences] = useState({
     pageSize: 10,
     wrapLines: false,
@@ -298,7 +301,7 @@ const DocumentPickerModal = ({
           {...collectionProps}
           onSelectionChange={handleSelectionChange}
           selectedItems={selectedDocuments}
-          columnDefinitions={COLUMN_DEFINITIONS(configuration)}
+          columnDefinitions={COLUMN_DEFINITIONS(configuration, locale)}
           items={items}
           loading={loading || false}
           loadingText="Loading documents"

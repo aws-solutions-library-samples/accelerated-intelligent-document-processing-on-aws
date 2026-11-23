@@ -57,7 +57,7 @@ created when you enable the Bedrock circuit breaker); two CloudWatch dashboards;
 X-Ray tracing on the document-processing Lambda functions and both state machines, which
 `EnableXRayTracing` turns off in one place if you do not want it; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
-encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 33 TLS-only
+encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 35 TLS-only
 resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
 Cognito authentication with a REST API authorizer; concurrency admission control; and
 per-invocation token and cost metering written to a queryable ledger.
@@ -112,7 +112,7 @@ twenty-three are unconditional. They fall into nine groups:
 | `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
 | `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyDecrementFailedAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means either the same terminal execution or the same queued message was processed twice; a hand-back whose counter write *raised* rather than being refused, which both callers log and continue past by design and which therefore leaks a slot with nothing else moving; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
 | `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the first of several alarms here that watch a *successful* outcome — the row below and the agent-transcript row are the others — and the reason it has to exist: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
-| `PrefixMappingLookupFailedAlarm`, `PrefixMappingUnresolvableAlarm`, `PrefixMappingRejectedAlarm` | A config prefix mapping — which assigns a Configuration Profile to everything arriving under an S3 prefix — either could not be read, names a Configuration Profile that no longer exists, or is persistently refusing documents. The first two watch a successful outcome, like the row above: the documents succeed, so nothing else on this list moves, while the extraction reflects a configuration nobody chose. Resolution deliberately fails open rather than halting ingest for the whole deployment, which is precisely why the metric needs an alarm. ⚠️ A mapping's *pinned revision* going missing is **not** among the conditions detected: the ingest-time existence check is on the profile only, and such a document fails downstream when the configuration is loaded instead. The third alarm is the feature working unless it is sustained, so it alarms on volume rather than on the first occurrence |
+| `PrefixMappingLookupFailedAlarm`, `PrefixMappingUnresolvableAlarm`, `PrefixMappingRejectedAlarm` | A config prefix mapping — which assigns a Configuration Profile to everything arriving under an S3 prefix — either could not be read, names a Configuration Profile that does not exist, or is persistently refusing documents. The first watches a successful outcome, like the row above: the documents succeed, so nothing else on this list moves, while no mapping was applied to them (each carries a warning processing issue saying so). The second fires on the first document refused because its mapping's profile is missing. Resolution deliberately fails open rather than halting ingest for the whole deployment, which is precisely why the metric needs an alarm. ⚠️ A mapping's *pinned revision* going missing is **not** among the conditions detected: the ingest-time existence check is on the profile only, and such a document fails downstream when the configuration is loaded instead. The third alarm is the feature working unless it is sustained, so it alarms on volume rather than on the first occurrence |
 | `AgentTranscriptMessageDroppedAlarm`, `AgentTranscriptDrainIncompleteAlarm` | Ten or more agent conversation messages, in fifteen minutes, either dropped from the stored transcript or left behind by the bounded drain at an agent's close. Like the row above, both watch an outcome the agent itself reports as success — the user gets their answer and the workflow completes; what is at risk is an entry in the transcript the analytics UI replays. They are two alarms because they license different conclusions: a dropped message is gone (contention beyond what the bounded retry absorbs, or reads that keep failing), whereas an unfinished drain leaves a write that was never cancelled and often commits when the execution environment is next thawed |
 | the seven `<stack>-malware-*` alarms | Amazon GuardDuty found malware; a run of documents could not be scanned; a verdict was undeliverable; verdicts arrived and were not applied; a refused `/Jobs` file could not be recorded as terminal, which leaves its batch reporting `IN_PROGRESS` with that metric as the only signal; or — the one the others are blind to — documents are held with **no** verdict applied at all, meaning ingest has stopped. All conditional on `MalwareScanning`, so absent from a default deployment. The detection and job-finalize alarms fire on a single event, because one infected upload is an incident rather than a rate and one unrecorded refusal is one permanently stalled batch; the rest have thresholds or long windows, because a password-protected file and a re-uploaded filename are ordinary occurrences and only a sustained pattern is a signal. See [malware-scanning.md](./malware-scanning.md) |
 | `TestRunSweepUnclassifiedStatusAlarm` | A Test Studio document carries an `EvaluationStatus` that the run-status derivation in `idp_common.testrun_status` does not classify. An unclassified value counts as still-evaluating, so every run holding such a document is held short of a terminal status indefinitely — the failure that reached users twice in one release cycle, each time found by a report rather than by the stack. `Sum` of `TestRunsUnrecognisedEvalStatus` over an hour, above zero. `TreatMissingData: notBreaching`, the opposite choice from `DataMartRollupAbsenceAlarm` below: there the absence of data points *is* the outage, whereas the sweep publishes a sample every five minutes and a stack with no test runs legitimately reports zero |
@@ -218,7 +218,7 @@ Protection verdict, before any execution starts; it is `DISABLED` by default, an
 its detection is signature, YARA and ML based with no behavioural analysis. See
 [malware-scanning.md](./malware-scanning.md).
 
-**Data protection in transit.** 33 resource policies deny requests where
+**Data protection in transit.** 35 resource policies deny requests where
 `aws:SecureTransport` is false, and there is no exception: in `template.yaml`, all
 thirteen S3 bucket policies and all seventeen SQS queue policies carry the deny, plus one
 further queue policy in `patterns/unified/template.yaml` and two in the optional
@@ -260,7 +260,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-168 operations. 158 of them require Cognito group membership and 2
+181 operations. 171 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 27 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -348,9 +348,9 @@ can supply one at deploy time. `scripts/tests/test_iam_privilege_escalation.py` 
 runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
-here. Counting across the eleven templates that make up the solution and its optional
-extensions, 131 IAM policy statements are written against `Resource: "*"` — 55 in
-`template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
+here. Counting across the twelve templates that make up the solution and its optional
+extensions, 132 IAM policy statements are written against `Resource: "*"` — 54 in
+`template.yaml`, 39 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
 API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 29
@@ -459,22 +459,22 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 356 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 378 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more
 resources in the parent.
 
-**Durable state.** All thirteen S3 buckets have versioning enabled. Twelve of the fourteen
+**Durable state.** All thirteen S3 buckets have versioning enabled. Fourteen of the sixteen
 DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
-fourteen are twelve in `template.yaml`, one in `patterns/unified/template.yaml` and one in
+sixteen are fourteen in `template.yaml`, one in `patterns/unified/template.yaml` and one in
 `nested/api-resolvers/template.yaml`. Both exceptions are deliberate and both hold
 ephemeral state: `ConcurrencyTable` holds a single admission counter that is reconciled
 from the true running-execution count rather than restored, and
-`ChatDocumentSessionsTable` holds per-session chat-ownership records under a short TTL, so
-losing it only forces users to start a new chat session. Counting the optional
-`feature-platform/` extensions raises the total to twenty-one tables; all seven extension
-tables have point-in-time recovery enabled.
+`ChatDocumentSessionsTable` holds the document-chat ownership records written before
+`ChatSessionOwnersTable` existed, under a short TTL, and is no longer written. Counting the
+optional `feature-platform/` extensions raises the total to twenty-three tables; all seven
+extension tables have point-in-time recovery enabled.
 
 ### Review checklist
 
@@ -496,7 +496,7 @@ constitute one, because nothing in the stack replicates data across regions.
 
 - **Durable, versioned storage**: all S3 buckets have versioning enabled, so objects
   survive accidental overwrite or deletion and prior versions can be recovered.
-- **Point-in-Time Recovery**: twelve of the fourteen DynamoDB tables a default deployment
+- **Point-in-Time Recovery**: fourteen of the sixteen DynamoDB tables a default deployment
   creates can be restored to any second within the retention window. The two without it are
   `ConcurrencyTable`, whose admission counter is reconciled from the true
   running-execution count rather than restored, and `ChatDocumentSessionsTable`, whose

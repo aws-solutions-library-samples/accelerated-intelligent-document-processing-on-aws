@@ -72,8 +72,17 @@ def main():
             f"(Failed: {status.failed}, In Progress: {status.in_progress})"
         )
 
+        # `all_complete` means nothing is queued or running. A document held for
+        # human review counts as settled, so check `awaiting_review` before
+        # treating the batch as finished.
         if status.all_complete:
-            print(f"\nBatch complete! Success rate: {status.success_rate:.1%}")
+            if status.awaiting_review:
+                print(
+                    f"\nProcessing finished; {status.awaiting_review} document(s) "
+                    "await human review in the web UI's review queues"
+                )
+            else:
+                print(f"\nBatch complete! Success rate: {status.success_rate:.1%}")
             break
 
         time.sleep(10)  # Poll every 10 seconds

@@ -53,6 +53,8 @@ def test_generated_module_carries_the_parameter_map_and_retained_list(
     meta = json.loads((out / "idp-terraform.json").read_text())
     assert meta["parameters"]["AdminEmail"]["variable"] == "admin_email"
     assert meta["parameters"]["AdminEmail"]["required"] is True
+    # idp-cli passes --tags only to a module that names its tags input.
+    assert meta["tagsVariable"] == "tags"
     assert any(a.startswith("aws_s3_bucket.") for a in meta["retainedAddresses"])
     versions = (out / "versions.tf").read_text()
     assert "AWSCC_VERSION" not in versions
@@ -77,7 +79,7 @@ def test_every_directory_reader_is_in_the_standard_template():
 # ------------------------------------------------------------------ helpers
 RESOURCE_BLOCK = re.compile(r'^(resource|data) "([a-z0-9_]+)" "([a-z0-9_]+)" \{', re.M)
 MODULE_BLOCK = re.compile(r'^module "([a-z0-9_]+)" \{', re.M)
-DEPENDS_ON = re.compile(r"^\s*depends_on = \[(.*?)\]", re.M | re.S)
+DEPENDS_ON = re.compile(r"^\s*depends_on\s+= \[(.*?)\]", re.M | re.S)
 
 
 def _translate(out: Path, variant: str | None = None) -> Path:
@@ -213,16 +215,23 @@ def _load_gate():
 
 
 # ------------------------------------------------------------------ IAM roles
+def _attr(body: str, name: str, value: str) -> bool:
+    """Whether ``body`` sets ``name = value`` on a line of its own. The written
+    module is laid out by ``terraform fmt``'s rules, so the ``=`` may be padded
+    to align with its neighbours."""
+    return re.search(rf"^\s*{name}\s+= {re.escape(value)}$", body, re.M) is not None
+
+
 ROLE_BLOCK = re.compile(
     r'^resource "aws_iam_role" "([a-z0-9_]+)" \{\n(.*?)\n\}\n', re.M | re.S
 )
 DEFAULT_NAME = re.compile(
-    r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
+    r'^\s*name\s+= "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
     r'\$\{substr\(md5\("(?P=pair)(?P<region>-\$\{local\.pseudo\.region\})?"\), 0, 8\)\}"$',
     re.M,
 )
 NESTED_STACK_NAME = re.compile(
-    r'module "([a-z0-9_]+)" \{.*?\n\s*stack_name = "([^"]+)"', re.S
+    r'module "([a-z0-9_]+)" \{.*?\n\s*stack_name\s+= "([^"]+)"', re.S
 )
 
 
@@ -244,7 +253,7 @@ def _module_stack_names(root: Path, stack: str) -> dict[Path, str]:
 
 
 RETAINED_NAME = re.compile(
-    r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
+    r'^\s*name\s+= "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
     r'\$\{substr\(md5\("(?P=pair)-\$\{local\.pseudo\.region\}"\), 0, 8\)\}-'
     r'\$\{time_static\.[a-z0-9_]+(?:\[0\])?\.unix\}"$',
     re.M,
@@ -267,7 +276,7 @@ def _evaluate_name(body: str, stack: str) -> str | None:
         hashed = f"{pair}-{REGION}" if m["region"] else pair
         digest = hashlib.md5(hashed.encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
         return f"{pair[: int(m['n'])]}-{digest}"
-    m = re.search(r'^\s*name = "([^"$]*\$\{var\.stack_name\}[^"]*)"$', body, re.M)
+    m = re.search(r'^\s*name\s+= "([^"$]*\$\{var\.stack_name\}[^"]*)"$', body, re.M)
     if m and "${" not in m[1].replace("${var.stack_name}", ""):
         return m[1].replace("${var.stack_name}", stack)
     return None
@@ -301,20 +310,76 @@ def test_every_role_is_named_after_the_stack_and_takes_the_boundary(standard_mod
                 problems.append(f"{where}: {name} is also {names[name]}")
             names[name] = where
             if not re.search(
-                r"^\s*permissions_boundary = .*var\.permissions_boundary_arn",
+                r"^\s*permissions_boundary\s+= .*var\.permissions_boundary_arn",
                 body,
                 re.M,
             ):
                 problems.append(f"{where}: no permissions_boundary")
-            if "create_before_destroy = true" not in body:
+            if not _attr(body, "create_before_destroy", "true"):
                 problems.append(f"{where}: a rename would delete before creating")
             generated = "md5(" in body or "time_static." in body
-            if generated and "ignore_changes = [name, name_prefix]" not in body:
+            if generated and not _attr(body, "ignore_changes", "[name, name_prefix]"):
                 # A generated name is kept for the role's life: replacing a role
                 # replaces the custom resources' dependants (see aws_mappers).
                 problems.append(f"{where}: a generated name could be changed")
     assert names, "no aws_iam_role found"
     assert not problems, problems[:20]
+
+
+def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
+    standard_module,
+):
+    """The bridge mirrors the template: its log group is encrypted with the key
+    the template's log groups use, and its bucket's access logs go to the
+    template's logging bucket. Nested templates have no logging bucket, so
+    theirs arrive from the root through the translator's own variables, and
+    the root's key needs its DependsOn on the stack-name check left out, or the
+    bridge waits for a custom resource it has to run itself (a cycle that
+    `terraform validate` reports)."""
+    bridges = sorted(standard_module.rglob("bridge.tf"))
+    assert len(bridges) > 1, bridges
+    # The deployment key: the supplied CustomerManagedKmsKeyArn, else the key
+    # the stack creates (#2016).
+    root_key = (
+        "(local.c_use_supplied_kms_key ? var.customer_managed_kms_key_arn : "
+        "one(awscc_kms_key.customer_managed_encryption_key[*].arn))"
+    )
+    for bridge in bridges:
+        text = bridge.read_text()
+        where = bridge.relative_to(standard_module)
+        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
+        assert kms, f"{where}: the bridge log group is not encrypted"
+        target = re.search(r"^\s*target_bucket\s*=\s*(\S+)$", text, re.M)
+        assert target, f"{where}: the bridge bucket has no access logging"
+        # The bridge bucket takes the same key as the bridge log group.
+        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
+        assert bucket_key, f"{where}: the bridge bucket is not encrypted with a key"
+        assert bucket_key.group(1) == kms.group(1), where
+        if bridge.parent == standard_module:
+            assert kms.group(1) == root_key
+            assert target.group(1) == "aws_s3_bucket.logging_bucket.id"
+        else:
+            assert kms.group(1).startswith("var."), (where, kms.group(1))
+            assert target.group(1) == "var.cfn_bridge_access_log_bucket"
+    main_tf = (standard_module / "main.tf").read_text()
+    # The resource directory is in the bridge bucket, so a function that reads
+    # it must be able to decrypt it.
+    readers = re.findall(
+        r'resource "aws_iam_role_policy" "\w+_tf_directory" \{(.*?)\n\}\n',
+        main_tf,
+        re.S,
+    )
+    assert readers
+    for body in readers:
+        assert '"kms:Decrypt"' in body and root_key in body, body
+    for name in ("cfn_bridge_kms_key_arn", "cfn_bridge_access_log_bucket"):
+        assert re.search(rf"^\s*{name}\s+= (?!null)", main_tf, re.M), name
+    key = re.search(
+        r'resource "awscc_kms_key" "customer_managed_encryption_key" \{(.*?)\n\}\n',
+        main_tf,
+        re.S,
+    )
+    assert key and "is_stackname_length_ok" not in key.group(1)
 
 
 def test_translation_is_deterministic(standard_module, tmp_path):
@@ -352,7 +417,7 @@ def test_a_retained_role_keeps_its_name_and_cannot_collide_on_redeploy(
         bodies = dict(ROLE_BLOCK.findall(_module_text(module)))
         body = bodies[label]
         assert RETAINED_NAME.search(body), (address, body)
-        assert "ignore_changes = [name, name_prefix]" in body, address
+        assert _attr(body, "ignore_changes", "[name, name_prefix]"), address
 
 
 def test_a_permission_granted_to_a_role_survives_the_role_being_replaced(
@@ -370,8 +435,8 @@ def test_a_permission_granted_to_a_role_survives_the_role_being_replaced(
             r'^resource "aws_lambda_permission" "(\w+)" \{\n(.*?)^\}', text, re.M | re.S
         ):
             body = m.group(2)
-            if re.search(r"^\s*principal = aws_iam_role\.", body, re.M) and re.search(
-                r"^\s*statement_id = ", body, re.M
+            if re.search(r"^\s*principal\s+= aws_iam_role\.", body, re.M) and re.search(
+                r"^\s*statement_id\s+= ", body, re.M
             ):
                 problems.append(f"{module.name}: {m.group(1)}")
     assert not problems, problems[:20]
@@ -444,7 +509,7 @@ def test_only_account_wide_names_carry_the_region(standard_module):
             r'^resource "(\w+)" "(\w+)" \{\n(.*?)^\}', text, re.M | re.S
         ):
             kind, label, body = m.groups()
-            for line in re.findall(r"^\s*name = .*md5\(.*$", body, re.M):
+            for line in re.findall(r"^\s*name\s+= .*md5\(.*$", body, re.M):
                 regional = "local.pseudo.region" in line
                 if kind == "aws_iam_role":
                     roles += 1
@@ -453,3 +518,245 @@ def test_only_account_wide_names_carry_the_region(standard_module):
                     others.append(f"{module.name}:{kind}.{label}")
     assert roles, "no generated role names found"
     assert not others, others[:10]
+
+
+# ------------------------------------------------------------- template Rules
+def _template_rules() -> tuple[dict, dict]:
+    from idp_tf.cli import load_template
+
+    t = load_template(REPO / "template.yaml")
+    return t["Parameters"], t["Rules"]
+
+
+def test_every_template_rule_becomes_a_plan_time_refusal(standard_module):
+    """Each of template.yaml's Rules is one terraform_data whose preconditions
+    carry its assertions' descriptions, one each, in order."""
+    from idp_tf import hcl
+
+    _, rules = _template_rules()
+    assert rules
+    text = (standard_module / "rules.tf").read_text()
+    blocks = re.findall(
+        r'^resource "terraform_data" "(cfn_rule_\w+)" \{\n(.*?)\n\}\n',
+        text,
+        re.M | re.S,
+    )
+    assert [name for name, _ in blocks] == ["cfn_rule_" + hcl.snake(r) for r in rules]
+    for (_, body), spec in zip(blocks, rules.values(), strict=True):
+        messages = re.findall(r"error_message = (.*)", body)
+        assert messages == [
+            hcl.string(a["AssertDescription"]) for a in spec["Assertions"]
+        ]
+
+
+def test_the_nested_vpc_condition_input_is_known_at_plan(standard_module):
+    """DeployInVPCRequiresParams refuses an empty VpcId when DeployInVPC holds,
+    so the stacks whose conditions only ask whether VpcId is empty are given a
+    known stand-in and a VPC created in the same apply can be planned."""
+    main_tf = (standard_module / "main.tf").read_text()
+    for name in ("patternstack", "multidocdiscoverystack"):
+        start = main_tf.index(f'module "{name}" {{')
+        block = main_tf[start : main_tf.index("\n}\n", start)]
+        assert _attr(block, "vpc_id__cond", '(local.c_deploy_in_vpc ? "present" : "")')
+        assert _attr(block, "vpc_id", '(local.c_deploy_in_vpc ? var.vpc_id : "")')
+
+
+def _rule_cases(params: dict, rules: dict) -> list[tuple[str, dict, set]]:
+    """(label, parameter values, descriptions CloudFormation would refuse with)
+    for the defaults, every rule active and satisfied, and each assertion
+    violated with the rest of its rule satisfied. The refusals come from
+    CloudFormation's semantics evaluated here, not from the translator."""
+
+    def value(env, node):
+        if isinstance(node, str):
+            return node
+        return env.get(node["Ref"], str(params[node["Ref"]].get("Default", "")))
+
+    def holds(env, node):
+        ((fn, arg),) = node.items()
+        if fn == "Fn::Equals":
+            return value(env, arg[0]) == value(env, arg[1])
+        assert fn == "Fn::Not", f"extend this evaluator for {fn}"
+        return not holds(env, arg[0])
+
+    def assign(node, env, want=True):
+        ((fn, arg),) = node.items()
+        if fn == "Fn::Not":
+            return assign(arg[0], env, not want)
+        ref, lit = (arg[0], arg[1]) if isinstance(arg[1], str) else (arg[1], arg[0])
+        p = ref["Ref"]
+        allowed = params[p].get("AllowedValues")
+        if want:
+            env[p] = lit
+        else:
+            env[p] = next(a for a in allowed if a != lit) if allowed else f"x-{p}"
+
+    def refused(env):
+        return {
+            a["AssertDescription"]
+            for spec in rules.values()
+            if "RuleCondition" not in spec or holds(env, spec["RuleCondition"])
+            for a in spec["Assertions"]
+            if not holds(env, a["Assert"])
+        }
+
+    valid: dict = {}
+    for spec in rules.values():
+        if "RuleCondition" in spec:
+            assign(spec["RuleCondition"], valid)
+        for a in spec["Assertions"]:
+            assign(a["Assert"], valid)
+    cases = [("defaults", {}), ("every rule active and satisfied", dict(valid))]
+    for name, spec in rules.items():
+        for i, a in enumerate(spec["Assertions"]):
+            env = dict(valid)
+            assign(a["Assert"], env, want=False)
+            cases.append((f"{name}[{i}]", env))
+    return [(label, env, refused(env)) for label, env in cases]
+
+
+def test_each_rule_refuses_its_combination_at_plan_when_terraform_is_cached(
+    standard_module, tmp_path
+):
+    """Plans the generated root variables and rules with each case of
+    ``_rule_cases`` and compares the refusals with CloudFormation's. Skipped
+    without the binary cache ``make terraform-check`` leaves."""
+    from idp_tf.translate import variable_name
+
+    cached = _cached_terraform()
+    if cached is None:
+        pytest.skip(
+            "no cached terraform binary and providers; run `make terraform-check`"
+        )
+    exe, _ = cached
+    for name in ("variables.tf", "rules.tf"):
+        (tmp_path / name).write_text((standard_module / name).read_text())
+    env = {**os.environ, "TF_IN_AUTOMATION": "1", "CHECKPOINT_DISABLE": "1"}
+    env.pop("TF_CLI_ARGS", None)
+    subprocess.run(  # nosec B603 - fixed argv, no shell
+        [str(exe), "init", "-backend=false", "-input=false", "-no-color"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=True,
+    )
+    params, rules = _template_rules()
+    cases = _rule_cases(params, rules)
+    assert sum(1 for _, _, want in cases if want) == sum(
+        len(s["Assertions"]) for s in rules.values()
+    )
+    wrong = []
+    for label, values, want in cases:
+        argv = [str(exe), "plan", "-input=false", "-no-color", "-json"]
+        values = {"AdminEmail": "a@example.com", **values}
+        argv += ["-var", "stack_name=idp"]
+        for p, v in values.items():
+            argv += ["-var", f"{variable_name(p)}={v}"]
+        run = subprocess.run(  # nosec B603 - fixed argv, no shell
+            argv, cwd=tmp_path, env=env, capture_output=True, text=True, check=False
+        )
+        got, other = set(), []
+        for line in run.stdout.splitlines():
+            msg = json.loads(line)
+            diag = msg.get("diagnostic", {})
+            if msg.get("type") != "diagnostic" or diag["severity"] != "error":
+                continue
+            if diag["summary"] == "Resource precondition failed":
+                got.add(diag["detail"])
+            else:
+                other.append(diag["summary"])
+        if got != want or other or (run.returncode == 0) != (not want):
+            wrong.append((label, run.returncode, sorted(got), sorted(want), other))
+    assert not wrong, wrong
+
+
+@pytest.mark.parametrize("variant", [v for t, v in TEMPLATE_VARIANTS])
+def test_only_the_stage_destination_drops_the_log_group_arn_suffix(variant, tmp_path):
+    """#2006: in every published variant, an API Gateway stage's access-log
+    destination names the log group's ARN as the provider reads it back, without
+    CloudFormation's ``:*``, and every other use of a log group's ARN keeps the
+    suffix (an IAM statement on a log group's streams needs it)."""
+    root = _translate(tmp_path / "m", variant)
+    arn_use = re.compile(r"aws_cloudwatch_log_group\.[a-z0-9_]+(\[\*\])?\.arn")
+    bare, suffixed = [], 0
+    for module in _modules(root):
+        for line in _module_text(module).splitlines():
+            if not arn_use.search(line):
+                continue
+            if re.search(r"\.arn\)?\}:\*", line):
+                suffixed += 1
+            else:
+                bare.append(line.strip())
+    stages = [
+        line.strip()
+        for module in _modules(root)
+        for block in re.split(r"\n(?=resource )", _module_text(module))
+        if block.startswith('resource "awscc_apigateway_stage"')
+        for line in block.splitlines()
+        if "destination_arn" in line
+    ]
+    assert all(not s.endswith(':*"') for s in stages), stages
+    assert bare == [s for s in stages if arn_use.search(s)], bare
+    assert suffixed > 0
+
+
+# ------------------------------------- security headers round trip (#1997)
+def _security_header_members() -> list[str]:
+    """Every member of ``security_headers_config`` in the vendored awscc schema."""
+    schema = json.loads((REPO / "terraform/translator/schemas/awscc.json").read_text())
+    (provider,) = [
+        v
+        for v in schema["provider_schemas"].values()
+        if "awscc_cloudfront_response_headers_policy" in v["resource_schemas"]
+    ]
+    config = provider["resource_schemas"]["awscc_cloudfront_response_headers_policy"][
+        "block"
+    ]["attributes"]["response_headers_policy_config"]["nested_type"]["attributes"]
+    return sorted(config["security_headers_config"]["nested_type"]["attributes"])
+
+
+def _braced(text: str, opener: str) -> str:
+    """The ``{...}`` object that ``opener`` (ending in ``{``) starts in ``text``."""
+    # The written module pads `=` to align with its neighbours (terraform fmt).
+    found = re.search(re.escape(opener).replace(r"\ =", r"\s+="), text)
+    assert found, f"{opener!r} not found"
+    start = found.end() - 1
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        depth += {"{": 1, "}": -1}.get(ch, 0)
+        if depth == 0:
+            return text[start : i + 1]
+    raise AssertionError(f"unbalanced object after {opener!r}")
+
+
+@pytest.mark.parametrize("variant", [v for t, v in TEMPLATE_VARIANTS])
+def test_every_security_header_the_policy_can_carry_is_set(variant, tmp_path):
+    """#1997: awscc stores a ``security_headers_config`` member the
+    configuration leaves unset as an empty object, and sends it back on every
+    in-place update; Cloud Control then refuses the update because the empty
+    object lacks its required keys (measured for ``xss_protection``). So the
+    first change to the policy after a deployment failed ``terraform apply``.
+    Setting every member keeps an empty object out of state. A member a newer
+    awscc schema adds fails here until the template sets it."""
+    members = _security_header_members()
+    assert "xss_protection" in members, members
+    blocks = [
+        block
+        for module in _modules(_translate(tmp_path / "m", variant))
+        for block in re.split(r"\n(?=resource |data |module )", _module_text(module))
+        if block.startswith('resource "awscc_cloudfront_response_headers_policy"')
+    ]
+    # Only the standard variant serves the UI through CloudFront (headless has
+    # no UI, govcloud serves it through API Gateway).
+    assert len(blocks) == (1 if variant is None else 0), len(blocks)
+    for block in blocks:
+        config = _braced(block, "security_headers_config = {")
+        unset = [m for m in members if not re.search(rf"^\s*{m}\s+= \{{", config, re.M)]
+        assert not unset, unset
+        # The header the template documents: X-XSS-Protection: 0.
+        xss = _braced(config, "xss_protection = {")
+        lines = xss[1:-1].strip().splitlines()
+        assert sorted(re.sub(r"\s+=", " =", ln.strip()) for ln in lines) == [
+            "override = true",
+            "protection = false",
+        ], xss

@@ -33,6 +33,7 @@ extend-exclude = [
 # >>> GENERATED scope — edit scripts/lint_debt.json, then --write
     "**/*.ipynb",
     "feature-platform/pii-anonymizer/hook/vendor",
+    "solution-profile/schema/v1/validate_profile.py",
 # <<< GENERATED scope
 ]
 
@@ -114,7 +115,6 @@ exclude = [
     "nested/api-resolvers/src/lambda/process_changes_resolver/index.py",
     "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py",
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py",
-    "nested/api-resolvers/src/lambda/test_set_resolver/index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
     "nested/bedrockkb/src/s3_vectors_manager/handler.py",
     "patterns/unified/src/assessment_function/assessment_validator.py",
@@ -217,7 +217,6 @@ known-first-party = ["idp_common", "idp_cli", "idp_sdk", "idp_feature_sdk", "idp
 # `make check-lint-debt`: a file that is already formatted must be delisted.
 exclude = [
 # >>> GENERATED format-debt — edit scripts/lint_debt.json, then --write
-    "lib/idp_common_pkg/idp_common/bedrock/client.py",
     "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
     "lib/idp_common_pkg/idp_common/config/constants.py",
     "lib/idp_common_pkg/idp_common/image/__init__.py",
@@ -239,8 +238,6 @@ exclude = [
     "nested/api-resolvers/src/lambda/http_api_dispatcher/ddb_direct.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests/test_surface_filter.py",
-    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py",
-    "nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_documents_range_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/reprocess_document_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
@@ -278,7 +275,6 @@ exclude = [
     "scripts/generate_govcloud_template.py",
     "scripts/generate_standard_classes.py",
     "scripts/sdlc/integration_test_deployment.py",
-    "scripts/sdlc/scan_api_rbac.py",
     "scripts/sdlc/tests/test_api_security_cases.py",
     "scripts/sdlc/tests/test_codebuild_failure_trail.py",
     "scripts/sdlc/tests/test_credential_refresh.py",
@@ -287,7 +283,6 @@ exclude = [
     "scripts/sdlc/tests/test_resolver_layer_coverage.py",
     "scripts/sdlc/tests/test_retired_services_not_documented.py",
     "scripts/sdlc/tests/test_scan_api_rbac_function_urls.py",
-    "scripts/sdlc/tests/test_stale_stack_reaper.py",
     "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
     "scripts/sdlc/validate_buildspec.py",
     "scripts/sdlc/validate_service_role_permissions.py",
@@ -329,7 +324,6 @@ exclude = [
     "src/lambda/calculate_capacity/test_validation.py",
     "src/lambda/calculate_capacity/validation.py",
     "src/lambda/calculate_capacity_resolver/index.py",
-    "src/lambda/chat_stream_processor/sse.py",
     "src/lambda/chat_stream_processor/tests/test_stream_processor.py",
     "src/lambda/chat_stream_processor/tests/test_vendored_in_sync.py",
     "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py",
@@ -375,7 +369,6 @@ exclude = [
     "src/lambda/user_management/test_scan_pagination.py",
     "src/lambda/user_sync/index.py",
     "src/lambda/w2_dataset_deployer/index.py",
-    "src/lambda/workflow_tracker/conftest.py",
     "src/lambda/workflow_tracker/test_decrement_floor_and_idempotency.py",
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py",
 # <<< GENERATED format-debt

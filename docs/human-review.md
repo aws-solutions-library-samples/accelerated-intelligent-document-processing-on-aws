@@ -2,10 +2,10 @@
 title: "Human-in-the-Loop (HITL) Review"
 ---
 
-# Human-in-the-Loop (HITL) Review
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Human-in-the-Loop (HITL) Review
 
 ## Table of Contents
 
@@ -20,6 +20,8 @@ SPDX-License-Identifier: MIT-0
 - [Document Editor](#document-editor)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
+- [Skip All Reviews for many documents](#skip-all-reviews-for-many-documents)
+- [Send to review](#send-to-review)
 - [When the Default queue is off](#when-the-default-queue-is-off)
 
 ## Overview
@@ -169,9 +171,16 @@ A document is held for review when all of these are true:
   the class schema marks `required` has no extracted value, while
   `hitl.route_missing_required_fields` is on (the default). Any other field with no
   extracted value raises no confidence alert, so it does not hold a document; see
-  [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields)
+  [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields);
+  or a section's extraction failed without failing the document (for example,
+  Amazon Bedrock's content filter withheld the model's reply), leaving the section
+  with no extracted data. Its review reason reads **Extraction failed**, and its
+  details name the section and what failed; see
+  [Where a failed section shows up](extraction-and-confidence.md#where-a-failed-section-shows-up)
 
-Each alert becomes a **review reason** on the item. A document with no alerts isn't
+Each alert, and each failed section, becomes a **review reason** on the item. In
+legacy HITL mode (the Default queue disabled, or no review table) a failed section
+is marked pending review the same way a section with a confidence alert is. A document with no alerts isn't
 queued, and documents processed by a Test Studio run are never held in a Production
 queue.
 
@@ -313,7 +322,10 @@ field highlights (see [extraction-and-confidence.md](extraction-and-confidence.m
 1. Open **Configuration** in the Web UI.
 2. Find the **Human-in-the-Loop (HITL) Review (Optional)** section.
 3. Set **Confidence threshold** (0.0–1.0, the `hitl.confidence_threshold` key):
-   - `0.8` = 80% confidence threshold (recommended starting point)
+   - `0.8` = 80% confidence threshold. With the default confidence model (Amazon
+     Nova Lite) a threshold in this range rarely triggers review: on the v0.6.14
+     benchmark grid it scored 0 of 119,937 confidence leaves below 0.9, including
+     on values that were wrong. See [Threshold Optimization](#threshold-optimization)
    - A confidence that is NaN or infinite is not a usable score and is read as 0.0, so
      it triggers review too
 4. Choose **Save**.
@@ -422,7 +434,17 @@ When evaluation data is available, turn on **Show Evaluation**:
 
 ### Threshold Optimization
 
-- **Start conservative**: begin with higher thresholds (0.8–0.9) and adjust based on accuracy needs
+- **Choose the confidence model and the threshold together**: the default confidence
+  model (Amazon Nova Lite) is well calibrated but does not rank wrong values below
+  right ones, so with the defaults review rarely triggers — on the v0.6.14 benchmark
+  grid it scored 0 of 119,937 confidence leaves below 0.9, and 0 of 6,664 on the one
+  configuration whose extraction got about 0.5% of values wrong. Claude Sonnet 5 as
+  the confidence model scored about 638 leaves below 0.9 over the same grid, and 173
+  of 6,668 on that configuration, for $160.70 against $90.33 for the whole grid
+  ([config-guidance §5.4](./benchmarking/config-guidance.md#54-confidence-model),
+  [confidence calibration study](./benchmarking/studies/confidence-calibration.md)).
+  No measurement here supports a particular threshold: check how many known-wrong
+  values fall below a candidate threshold on a labelled sample of your own documents
 - **Use per-field thresholds**: set `x-aws-idp-confidence-threshold` on the fields that
   matter most, rather than lowering the profile-wide threshold
 - **Iterative refinement**: use review corrections to improve extraction prompts
@@ -474,12 +496,110 @@ reason and note) and completed it, with timestamps. It is shown in the edit page
 **Reports › History › Review Activity**, and the document records **Review Owner** and
 **Review Completed By**.
 
+For a document reviewed outside the queues, Review Activity lists each section a
+Reviewer completed (**Section review completed**, with the section) and each **Skip All
+Reviews** (**Skipped (Skip All Reviews)**), with who did it, when, the reason and note,
+the bulk job it ran in, and whether the document was resubmitted for downstream
+processing.
+
+## Skip All Reviews for many documents
+
+**Skip All Reviews** finishes a review without anyone checking it. Besides the one
+document on its page, it can close many pending production reviews at once, for
+example after a confidence threshold was tuned, for a load or UAT batch whose reviews
+are noise, or for a configuration profile being retired. Admins and Reviewers can use
+it; a Reviewer only for documents in their configuration scope.
+
+Two ways to choose the documents:
+
+- **Selected documents.** In the Document List, select rows and choose **Review ›
+  Skip All Reviews (N selected)**; on a production queue's page, select items and
+  choose **More actions › Skip All Reviews (N)**.
+- **By configuration profile.** Choose **Skip All Reviews by profile…** (Document List
+  Review menu, or a queue's **More actions** menu), then a profile and a submitted-date range in UTC of
+  at most 365 days. A Reviewer can choose only a profile in their scope.
+
+What is skipped, for every role:
+
+- A production review-queue item that is waiting or claimed finishes with its machine
+  results (no edits applied), recorded as **Skipped (Skip All Reviews)** in its review
+  history. A Reviewer can skip waiting items and their own claims, never another
+  reviewer's claim; an Admin can skip any, and the claimant is told.
+- A review outside a review queue that is pending is marked **Review Skipped**, as on
+  the document page. A Reviewer cannot skip one another reviewer has started.
+- Nothing else: finished reviews, documents with no review, documents still processing
+  and Test Studio documents are left alone and listed with the reason.
+
+A reason is required (the same list as on the document page) with an optional note;
+both are recorded with each skip in the document's review history, with the job it
+ran in. **Resubmit for downstream processing** (ticked by default, also on the
+document page) re-runs Summarization and Evaluation on the unedited results and fires
+the post-processing hook for a review outside a queue; untick it to only mark the
+review skipped. A queue item always finishes through its own finishing run.
+
+Before anything changes, the dialog counts what would happen to each document. A
+request of up to `hitl.bulk_skip_sync_limit` documents (50 by default, see
+[Configuration](configuration.md)) runs at once and shows its results. A larger one
+runs as a background job, one at a time per stack and paced so it does not hold up
+new documents; a job handles up to 10,000 documents. Every run is listed under **Home ›
+Jobs** with its status, counts and per-document results, which can be filtered and
+exported to Excel; the Inbox tells you when a background job finishes. A Reviewer sees
+their own jobs, an Admin every job. Results are kept for 30 days, or for the stack's
+data retention if that is shorter.
+
+The Jobs table works like the Inbox: find a job by its ID, type, status, requester,
+profile or reason, page through the list, and use the settings (gear) to choose the
+page size and columns. **Job ID**, **Type**, **Requested by**, **Created**, **Finished**
+and **Action** are shown at first; **Status**, **Mode**, **Profile**, **Processed /
+Total** and **Skipped** can be added. Each row's actions menu (**⋮**) offers:
+
+- **Cancel**, for a queued or running job. After you confirm, the job finishes the page
+  of up to 25 documents it is working on, then stops and shows **Cancelled**. Documents
+  it skipped stay skipped and the rest keep their pending reviews; the requester gets
+  an Inbox message.
+- **Delete**, for a finished job (Succeeded, Failed or Cancelled). After you confirm,
+  the job and its results leave Home › Jobs. Skipped documents stay skipped. Cancel an
+  active job first.
+
+A Reviewer can cancel and delete their own jobs; an Admin can cancel and delete any job.
+
+Per-document results: **Skipped**, **Not permitted** (outside your scope, or no such
+document), **Not pending**, **Already finished**, **Held by another reviewer**, **Test
+Studio excluded**, **Not finished processing**, **Resubmit failed** (the review was
+skipped; its downstream run could not be queued), **Failed** and **Not attempted** (an
+immediate run reached its time limit first). A skipped queue item whose finishing run
+could not be started at once shows **Finishing run will be retried** and is retried
+automatically; the retry is recorded in its review history.
+
+By-profile selection uses each document's recorded profile; very old documents that
+carry only the earlier `ConfigurationVersion` attribute are not found this way and can
+be skipped by selecting them.
+
+## Send to review
+
+**Send to review** puts a finished production document into the Default review queue
+by hand, for a spot check or a second look after a customer query. Choose **More
+Actions › Send to review** on the document's page, or select documents in the Document
+List and choose **Review › Send to review (N selected)**. Admins and Reviewers can send
+documents in their configuration scope.
+
+A reason is required (**Spot check**, **Suspected extraction error**, **Customer or
+downstream query**, **Other (see note)**) with an optional note. Reviewers see it on the
+item as **Sent to review**. From then on the item is worked like any other: completing it
+reprocesses the document with the reviewer's edits.
+
+A document can be sent when it has finished processing, is not already in a review, and
+is not a Test Studio document. The Default queue must be enabled; the profile's own
+`hitl.enabled` setting does not matter. With the Default queue off, Send to review is
+shown disabled with the reason.
+
 ## When the Default queue is off
 
 The Default queue is enabled on a new stack. If an Admin turns it off while HITL stays
 enabled in a profile, documents that raise confidence alerts are not queued: they wait
 as **Review Pending** and are reviewed on their document page instead, with **Start
-Review** and **Process Changes** (or **More Actions › Skip All Reviews**). That page is
+Review** and **Process Changes** (or **More Actions › Skip All Reviews**; many at once
+with [bulk Skip All Reviews](#skip-all-reviews-for-many-documents)). That page is
 reached only by an Admin, or a Reviewer who also holds Author or Viewer; a Reviewer or
 Annotator whose only work is review has no navigation to it. Keep the Default queue
 enabled whenever review-only users do the reviewing. Turning it off stops new documents

@@ -4,6 +4,7 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { FormField, Select, SelectProps, StatusIndicator } from '@cloudscape-design/components';
 import useConfigProfileRevisions from '../../hooks/use-config-profile-revisions';
+import { useFormatters } from '../../i18n/format';
 
 interface ConfigRevisionSelectorProps {
   /** Configuration Profile whose revisions are offered. */
@@ -36,6 +37,7 @@ const ConfigRevisionSelector = ({
   disabled = false,
 }: ConfigRevisionSelectorProps): React.JSX.Element | null => {
   const { revisions, profileMatchesPublished, loading, error, loadRevisions } = useConfigProfileRevisions();
+  const { formatDateTime } = useFormatters();
 
   useEffect(() => {
     if (profileName) loadRevisions(profileName);
@@ -80,10 +82,10 @@ const ConfigRevisionSelector = ({
       .map((r) => ({
         value: String(r.revision),
         label: `r${r.revision}`,
-        description: [r.label, r.notes, r.createdAt ? new Date(r.createdAt).toLocaleString() : null].filter(Boolean).join(' — '),
+        description: [r.label, r.notes, r.createdAt ? formatDateTime(new Date(r.createdAt)) : null].filter(Boolean).join(' — '),
       }));
     return [current, ...older];
-  }, [revisions, profileMatchesPublished]);
+  }, [revisions, profileMatchesPublished, formatDateTime]);
 
   if (!profileName) return null;
   if (loading) return <StatusIndicator type="loading">Loading revisions…</StatusIndicator>;

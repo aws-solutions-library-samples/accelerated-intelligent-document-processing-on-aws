@@ -1,6 +1,10 @@
 ---
 title: "IDP Monitor"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP Monitor
 
 **IDP Monitor** is an AI-powered operations dashboard for your IDP Accelerator deployment. An AI Assistant answers plain-language questions about your pipeline — failures, cost, throughput, latency — by translating them into SQL against your reporting data and assembling a live dashboard view on the fly. Scheduled Agents run those same questions automatically on a cron you choose and notify you with the results. Underneath the AI layer, a library of configurable widgets shows what your document pipeline is doing right now and what it has cost you, on one screen inside the IDP web UI.

@@ -231,6 +231,24 @@ def _convert_xls_to_xlsx(source_bucket: str, source_key: str, dest_key: str) -> 
     return dest_key
 
 
+#: The detection model when the hook's args name none: Claude Haiku 4.5. A ``us.``
+#: profile cannot be invoked from an EU Region, so the Region family's own profile
+#: is used there. This hook does not depend on ``idp_common``, so the row is a copy
+#: of ``idp_common.regional_models``' for the same id, held equal to it by
+#: ``lib/idp_common_pkg/tests/unit/test_geographic_fallbacks.py``. Canada keeps the
+#: ``us.`` profile, which is callable there.
+_DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_REGIONAL_DEFAULT_MODEL_IDS = {"eu-": "eu.anthropic.claude-haiku-4-5-20251001-v1:0"}
+
+
+def _regional_default_model_id() -> str:
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or ""
+    for prefix, model_id in _REGIONAL_DEFAULT_MODEL_IDS.items():
+        if region.startswith(prefix):
+            return model_id
+    return _DEFAULT_MODEL_ID
+
+
 def _build_pii_config(args: Dict[str, str]) -> Dict[str, Any]:
     """Build the plain-dict config the vendored processors expect from the
     hook's generic key/value args (the `argsMap` the dispatcher passes). All
@@ -244,7 +262,7 @@ def _build_pii_config(args: Dict[str, str]) -> Dict[str, Any]:
     # a large output-token budget — Nova Lite's smaller cap truncates the
     # detection JSON, and the vendored detector fails loudly (by design, to never
     # silently drop PII). Haiku balances recall/cost; Nova Lite stays selectable.
-    model_id = args.get("model_id") or "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    model_id = args.get("model_id") or _regional_default_model_id()
     provider = args.get("model_provider") or (
         "amazon" if ("nova" in model_id or "titan" in model_id) else "anthropic"
     )

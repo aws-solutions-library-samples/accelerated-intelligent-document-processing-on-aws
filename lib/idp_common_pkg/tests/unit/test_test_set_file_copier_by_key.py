@@ -301,39 +301,6 @@ class TestByKeyNeverOverwritesAMember:
 
 
 @pytest.mark.unit
-class TestPatternModeIsUnchanged:
-    def test_pattern_append_still_drops_unlabeled_documents(self, monkeypatch, copier):
-        s3 = FakeS3(
-            inputs={"labeled.pdf", "fresh.pdf"},
-            baselines={"labeled.pdf": ["sections/1/result.json"]},
-        )
-        table = _wire(monkeypatch, copier, s3)
-        monkeypatch.setattr(
-            copier, "find_matching_files", lambda *a, **k: ["fresh.pdf", "labeled.pdf"]
-        )
-
-        copier.handler(
-            _event(
-                {
-                    "testSetId": "my-set",
-                    "filePattern": "*.pdf",
-                    "bucketType": "input",
-                    "trackingTable": "tracking",
-                    "mode": "append",
-                }
-            ),
-            None,
-        )
-
-        assert {c[3] for c in s3.copied if "/input/" in c[3]} == {
-            "my-set/input/labeled.pdf"
-        }
-        final = _final_update(table)
-        assert final["ExpressionAttributeValues"][":status"] == "COMPLETED"
-        assert final["ExpressionAttributeValues"][":count"] == 1
-
-
-@pytest.mark.unit
 def test_result_message_names_the_unlabeled_and_missing_counts(copier):
     assert copier._selected_documents_result(3, 0, 0) == "Added 3 files"
     assert copier._selected_documents_result(3, 2, 0) == "Added 3 files (2 unlabeled)"

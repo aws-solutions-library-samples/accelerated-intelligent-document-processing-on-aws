@@ -32,6 +32,9 @@ patch_all()
 # here so the handler (and its hermetic tests, which stub idp_common) needs no
 # review_queues import on its hot path.
 _FINALIZE_TOKEN_RE = re.compile(r"^rvw-[0-9a-f]{32}$")
+# Same pattern as idp_common.utils.execution_names.RESUBMIT_TOKEN_RE, kept local
+# for the same reason.
+_RESUBMIT_TOKEN_RE = re.compile(r"^rsb-[0-9a-f]{32}$")
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -1599,6 +1602,26 @@ def review_finalize_token_of(record: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def resubmit_token_of(record: Dict[str, Any]) -> Optional[str]:
+    """The ``ResubmitIdempotencyToken`` message attribute, when valid.
+
+    A resubmit after a skipped review (bulk Skip All Reviews) names its execution
+    from this token, so re-sending the same resubmit collapses into
+    ``ExecutionAlreadyExists``. Naming only: the run is not a review finalize run.
+    An invalid value is ignored with a WARNING (the message id names the run).
+    """
+    attribute = (record.get("messageAttributes") or {}).get(
+        "ResubmitIdempotencyToken"
+    ) or {}
+    token = attribute.get("stringValue")
+    if token is None:
+        return None
+    if isinstance(token, str) and _RESUBMIT_TOKEN_RE.match(token):
+        return token
+    logger.warning("Ignoring an invalid ResubmitIdempotencyToken message attribute")
+    return None
+
+
 def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Process a single SQS message
@@ -1614,6 +1637,8 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     message = record["body"]
     message_id = record["messageId"]
     finalize_token = review_finalize_token_of(record)
+    # A finalize token wins; a resubmit token only names the execution.
+    name_token = finalize_token or resubmit_token_of(record)
     receipt_handle = record.get("receiptHandle", "")
 
     try:
@@ -1702,7 +1727,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             try:
                 execution = start_workflow(
                     document,
-                    execution_name_for(object_key, finalize_token or message_id),
+                    execution_name_for(object_key, name_token or message_id),
                     review_finalize_token=finalize_token,
                 )
             except DocumentAbortedBeforeStart:

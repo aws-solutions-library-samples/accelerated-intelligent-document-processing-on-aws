@@ -33,6 +33,12 @@ query GetReviewItem($objectKey: String!) {
       disposedAt
       rejectReason
       version
+      sentToReview {
+        reason
+        note
+        requestedBy
+        requestedAt
+      }
     }
     queueName
     sections {

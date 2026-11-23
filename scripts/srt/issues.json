@@ -210,21 +210,6 @@
   {
     "source": "security-matrix",
     "path": "template.yaml",
-    "resourceType": "AWS::S3::Bucket",
-    "resourceName": "WebUIBucket",
-    "issue": "S3 bucket lacks lifecycle policy",
-    "fix": "Configure a lifecycle policy to manage S3 objects during their lifetime.",
-    "priority": "HIGH",
-    "check_id": "S3-008",
-    "status": "suppressed",
-    "isCustomResource": false,
-    "firstDetectedAt": "2026-04-27T18:09:25.915Z",
-    "assessmentCount": 22,
-    "suppressionReason": "Accepted: WebUIBucket holds only the current built web-app bundle, redeployed in full by CodeBuild on each update; there is no object accumulation to manage, and an expiry lifecycle rule could delete live UI assets."
-  },
-  {
-    "source": "security-matrix",
-    "path": "template.yaml",
     "resourceType": "AWS::DynamoDB::Table",
     "resourceName": "TrackingTable",
     "issue": "DynamoDB data plane events are not captured by CloudTrail logging",
@@ -536,6 +521,36 @@
     "firstDetectedAt": "2026-07-07T03:02:04.767Z",
     "assessmentCount": 4,
     "suppressionReason": "Accepted: CloudTrail DynamoDB data-plane logging is an account-level control (trail + log bucket) owned by the deploying customer; the solution template cannot assume or create account-wide trails."
+  },
+  {
+    "source": "security-matrix",
+    "path": "template.yaml",
+    "resourceType": "AWS::DynamoDB::Table",
+    "resourceName": "ChatSessionOwnersTable",
+    "issue": "DynamoDB data plane events are not captured by CloudTrail logging",
+    "fix": "Enable CloudTrail logging for DynamoDB data plane events for this table. Create a CloudTrail Trail if none exists. Add this table's ARN to an EventSelector with DataResources type 'AWS::DynamoDB::Table' — append to existing values array if one exists, otherwise create a new EventSelector. For CDK: use the L1 escape hatch (trail.node.defaultChild as CfnTrail).eventSelectors as DataResourceType.DYNAMODB_TABLE does not exist.\n\nIMPORTANT - S3 Bucket Logging Requirements:\nIf creating a new S3 bucket for CloudTrail logs:\n1. First check if the template already has an S3 bucket configured as a logging destination (look for buckets referenced in other buckets' LoggingConfiguration.DestinationBucketName)\n2. If a logging bucket exists, configure the new CloudTrail bucket's LoggingConfiguration to use it with LoggingPrefix 'cloudtrail-logs/'\n3. If no logging bucket exists, create a dedicated server access logging bucket first, then configure the CloudTrail bucket to log to it with LoggingPrefix 'cloudtrail-logs/'",
+    "priority": "HIGH",
+    "check_id": "DDB-002",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "firstDetectedAt": "2026-11-12T00:00:00.000Z",
+    "assessmentCount": 1,
+    "suppressionReason": "Accepted: CloudTrail DynamoDB data-plane logging is an account-level control (trail + log bucket) owned by the deploying customer; the solution template cannot assume or create account-wide trails. ChatSessionOwnersTable maps a chat session id to the user who opened it and carries the same PITR and customer-managed KMS encryption as ChatSessionsTable."
+  },
+  {
+    "source": "security-matrix",
+    "path": "template.yaml",
+    "resourceType": "AWS::DynamoDB::Table",
+    "resourceName": "McpCredentialsTable",
+    "issue": "DynamoDB data plane events are not captured by CloudTrail logging",
+    "fix": "Enable CloudTrail logging for DynamoDB data plane events for this table. Create a CloudTrail Trail if none exists. Add this table's ARN to an EventSelector with DataResources type 'AWS::DynamoDB::Table' — append to existing values array if one exists, otherwise create a new EventSelector. For CDK: use the L1 escape hatch (trail.node.defaultChild as CfnTrail).eventSelectors as DataResourceType.DYNAMODB_TABLE does not exist.\n\nIMPORTANT - S3 Bucket Logging Requirements:\nIf creating a new S3 bucket for CloudTrail logs:\n1. First check if the template already has an S3 bucket configured as a logging destination (look for buckets referenced in other buckets' LoggingConfiguration.DestinationBucketName)\n2. If a logging bucket exists, configure the new CloudTrail bucket's LoggingConfiguration to use it with LoggingPrefix 'cloudtrail-logs/'\n3. If no logging bucket exists, create a dedicated server access logging bucket first, then configure the CloudTrail bucket to log to it with LoggingPrefix 'cloudtrail-logs/'",
+    "priority": "HIGH",
+    "check_id": "DDB-002",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "firstDetectedAt": "2026-11-12T00:00:00.000Z",
+    "assessmentCount": 1,
+    "suppressionReason": "Accepted: CloudTrail DynamoDB data-plane logging is an account-level control (trail + log bucket) owned by the deploying customer; the solution template cannot assume or create account-wide trails. McpCredentialsTable holds one row per MCP service credential an Admin created, exists only when the AgentCore Lambda is created, and carries the same PITR and customer-managed KMS encryption as the other tables in template.yaml."
   },
   {
     "source": "security-matrix",
@@ -901,5 +916,44 @@
     "firstDetectedAt": "2026-09-09T15:13:50.663Z",
     "assessmentCount": 1,
     "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — the OIDC endpoints are unauthenticated by design."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "Lambda function may contain sensitive data in environment variables",
+    "fix": "Use AWS Secrets Manager or SSM Parameter Store for sensitive environment variables like 'DECIDER_MAX_REQUEST_TOKENS'. Replace direct values with references like '{{resolve:secretsmanager:MySecret:SecretString:password}}' or use dynamic references with Ref or GetAtt.",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-002",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "False positive on a variable name: DECIDER_MAX_REQUEST_TOKENS is the upstream decider's request-size limit (a token count, 24576), read by its handler to refuse a request too large to finish inside the function's timeout. It holds no secret; the function's environment holds only that limit, the image long side and the published-version string."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "No X-Ray tracing configured for Lambda function",
+    "fix": "Set TracingConfig.Mode to 'Active' to enable X-Ray tracing for the Lambda function",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-004",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "Scanner limitation: DeciderFunction sets TracingConfig.Mode to !If [EnableXRayTracingCondition, Active, PassThrough], and EnableXRayTracing defaults to 'true', so tracing is Active unless the installer turns it off; its role attaches AWSXrayWriteOnlyAccess. scripts/tests/test_xray_tracing.py asserts the conditional form for every function in this template."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "Lambda function container image may not be stored in a secure repository",
+    "fix": "Store the container image 'ECRRepository.RepositoryUri:DeciderImageBuild.ImageTag' in a secure repository like Amazon ECR with vulnerability scanning enabled.",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-015",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "Scanner limitation: the ImageUri is !Sub of this stack's own ECRRepository (KMS-encrypted with the host's customer-managed key, ScanOnPush true, a repository policy limited to this function), tagged by the image-build custom resource. The scanner cannot resolve the intrinsic to see that it is Amazon ECR."
   }
 ]

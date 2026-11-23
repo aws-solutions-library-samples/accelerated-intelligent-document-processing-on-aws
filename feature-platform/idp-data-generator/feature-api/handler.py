@@ -66,9 +66,28 @@ _TRACKING_TABLE = os.environ.get("BOOTSTRAP_TRACKING_TABLE", "")
 _HOST_TRACKING_TABLE = os.environ.get("HOST_TRACKING_TABLE", "")
 _CONFIG_TABLE = os.environ.get("CONFIGURATION_TABLE_NAME", "")
 _FEATURE_VERSION = os.environ.get("FEATURE_VERSION", "")
-_SUGGEST_MODEL_ID = os.environ.get(
-    "SUGGEST_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-)
+#: The suggestion model when ``SUGGEST_MODEL_ID`` is unset or empty: Claude Haiku
+#: 4.5. ``template.yaml`` always sets it from the ``GeneratorModelId`` parameter, so
+#: in a deployed stack this runs only when that parameter is left empty; the
+#: parameter's own default is a ``us.`` model and is not translated here. A ``us.``
+#: profile cannot be invoked from an EU Region, so the Region family's own profile
+#: is used there. This function cannot import ``idp_common``, so the row is
+#: a copy of ``idp_common.regional_models``' for the same id, held equal to it by
+#: ``lib/idp_common_pkg/tests/unit/test_geographic_fallbacks.py``. Canada keeps the
+#: ``us.`` profile, which is callable there.
+_DEFAULT_SUGGEST_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_REGIONAL_SUGGEST_MODEL_IDS = {"eu-": "eu.anthropic.claude-haiku-4-5-20251001-v1:0"}
+
+
+def _regional_suggest_model_id() -> str:
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or ""
+    for prefix, model_id in _REGIONAL_SUGGEST_MODEL_IDS.items():
+        if region.startswith(prefix):
+            return model_id
+    return _DEFAULT_SUGGEST_MODEL_ID
+
+
+_SUGGEST_MODEL_ID = os.environ.get("SUGGEST_MODEL_ID") or _regional_suggest_model_id()
 
 _sqs = boto3.client("sqs")
 _dynamodb = boto3.resource("dynamodb")
@@ -143,7 +162,8 @@ def _test_set_dest(body: Dict[str, Any]) -> Dict[str, Any]:
     Either testSetId (append to an existing set) or testSetName (create a new
     one). The id is derived from the name with the host's rule so it matches the
     console (name.replace(' ', '-').lower()). Returns testSetId/testSetName/append
-    fields to merge into the SQS message.
+    fields to merge into the SQS message. Validation only: a new set's id is
+    claimed by :func:`_reserve_test_set`, once the rest of the request is valid.
     """
     existing_id = (body.get("testSetId") or "").strip()
     if existing_id:
@@ -159,31 +179,87 @@ def _test_set_dest(body: Dict[str, Any]) -> Dict[str, Any]:
             "underscores (max 50 characters)"
         )
     new_id = name.replace(" ", "-").lower()
-    if _test_set_exists(new_id):
-        raise _BadRequest(
-            f"A test set named '{name}' already exists. Choose a different name, "
-            "or add to the existing test set."
-        )
     return {"testSetId": new_id, "testSetName": name, "append": False}
 
 
-def _test_set_exists(test_set_id: str) -> bool:
-    """Backstop for the UI's collision check: is there already a host test-set
-    record with this id? Best-effort — if the lookup fails, don't block."""
+def _reserve_test_set(dest: Dict[str, Any]) -> None:
+    """Create a new set's host record, refusing an id that already has one.
+
+    The record is the claim on the id: written conditionally, so two requests for
+    the same new name, or this one and a Test Studio create, cannot both proceed —
+    the second is refused with the host resolver's own 400 rather than generating
+    into the first one's folder. A read-then-enqueue check could not do that, and
+    when its read failed it let the request through. Any failure other than the
+    refusal propagates, so the request fails instead of proceeding unchecked.
+
+    The record has the shape the processor's ``_register_test_set`` writes, whose
+    ``if_not_exists`` clauses then leave it as written, plus ``generatorJobId``:
+    the processor writes into a claimed set, or fails it, only while the record
+    still names its job, so a redelivered job cannot take over a set created under
+    the id after this one was deleted. UpdateItem rather than
+    PutItem because that is the action this function is granted on the host table.
+    """
+    if dest["append"]:
+        return
     if not _HOST_TRACKING_TABLE:
-        return False
+        raise RuntimeError("HOST_TRACKING_TABLE is not configured")
+    test_set_id = dest["testSetId"]
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
-        item = (
-            _dynamodb.Table(_HOST_TRACKING_TABLE)
-            .get_item(Key={"PK": f"testset#{test_set_id}", "SK": "metadata"})
-            .get("Item")
+        _dynamodb.Table(_HOST_TRACKING_TABLE).update_item(
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            UpdateExpression=(
+                "SET #status = :status, #statusUpdatedAt = :now, "
+                "#itemType = :itemType, #id = :id, #name = :name, "
+                "#createdAt = :now, #iet = :now, #description = :description, "
+                "#claim = :claim"
+            ),
+            ConditionExpression="attribute_not_exists(PK)",
+            ExpressionAttributeNames={
+                "#status": "status",
+                "#statusUpdatedAt": "statusUpdatedAt",
+                "#itemType": "ItemType",
+                "#id": "id",
+                "#name": "name",
+                "#createdAt": "createdAt",
+                "#iet": "InitialEventTime",
+                "#description": "description",
+                "#claim": "generatorJobId",
+            },
+            ExpressionAttributeValues={
+                ":claim": dest["jobId"],
+                ":status": "GENERATING",
+                ":now": now,
+                ":itemType": "testset",
+                ":id": test_set_id,
+                ":name": dest["testSetName"],
+                ":description": "Generated by Test Set Generator",
+            },
         )
-        return item is not None
-    except Exception:  # noqa: BLE001 — best-effort, don't block generation
-        logger.warning(
-            "Could not check test set existence for %s", test_set_id, exc_info=True
-        )
-        return False
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise _BadRequest(f"A test set with id '{test_set_id}' already exists")
+        raise
+
+
+def _enqueue_job(message: Dict[str, Any]) -> str:
+    """Claim a new destination set, then enqueue; release the claim if the send fails.
+
+    Only after every other field is validated, so a refused request claims nothing.
+    """
+    dest = {k: message[k] for k in ("jobId", "testSetId", "testSetName", "append")}
+    _reserve_test_set(dest)
+    # Tells the processor the record is this job's claim (see its CLAIM_ATTRIBUTE),
+    # as opposed to a message queued before the API claimed ids.
+    message["claimed"] = not dest["append"]
+    try:
+        return _enqueue(message)
+    except Exception:
+        if not dest["append"]:
+            _release_host_test_set(
+                dest["testSetId"], "The generation job could not be queued"
+            )
+        raise
 
 
 def _handle_generate(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -210,7 +286,7 @@ def _handle_generate(body: Dict[str, Any]) -> Dict[str, Any]:
         # into targetVersion (defaults to a bootstrap-<class> version otherwise).
         message["preauthoredSchema"] = schema
         message["targetVersion"] = body.get("configVersion")
-    return _resp(202, {"jobId": _enqueue(message)})
+    return _resp(202, {"jobId": _enqueue_job(message)})
 
 
 def _handle_generate_from_config(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -234,7 +310,7 @@ def _handle_generate_from_config(body: Dict[str, Any]) -> Dict[str, Any]:
         "fromExistingConfig": True,
         **_test_set_dest(body),
     }
-    return _resp(202, {"jobId": _enqueue(message)})
+    return _resp(202, {"jobId": _enqueue_job(message)})
 
 
 def _estimate_cost(count: int, threshold: int) -> Dict[str, Any]:

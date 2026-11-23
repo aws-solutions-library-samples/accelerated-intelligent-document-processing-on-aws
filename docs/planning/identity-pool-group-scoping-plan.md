@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Plan: put the document bytes behind a group check
 
 **Author:** design, 2026-09-21

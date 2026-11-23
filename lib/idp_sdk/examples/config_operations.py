@@ -259,6 +259,8 @@ def main():
         print(f"  Success: {result.success}")
         if result.error:
             print(f"  Error: {result.error}")
+        for warn in result.warnings:
+            print(f"  Warning: {warn}")
 
         return 0 if result.success else 1
 

@@ -36,11 +36,14 @@ export default defineConfig({
           label: "Overview",
           items: [
             { label: "Welcome", slug: "index" },
+            { label: "IDP in Action", slug: "idp-in-action" },
             {
               label: "Blogs, Customer Stories & Research",
               slug: "references",
             },
             { label: "Hands-on Workshops", slug: "workshops" },
+            { label: "Solution Profile", slug: "solution-profile" },
+            { label: "Fit Check", slug: "fit-check" },
           ],
         },
         {
@@ -225,6 +228,10 @@ export default defineConfig({
                   slug: "extensions/auto-optimizer",
                 },
                 {
+                  label: "Decision Model: Strands Decider",
+                  slug: "extensions/decision-model-decider",
+                },
+                {
                   label: "IDP Monitor",
                   slug: "extensions/idp-monitor",
                 },
@@ -251,6 +258,10 @@ export default defineConfig({
               ],
             },
             {
+              label: "Document Attributes",
+              slug: "document-attributes",
+            },
+            {
               label: "Document Versions",
               slug: "document-versions",
             },
@@ -261,6 +272,10 @@ export default defineConfig({
             {
               label: "Lambda Hook Inference",
               slug: "lambda-hook-inference",
+            },
+            {
+              label: "Decision Models",
+              slug: "decision-models",
             },
             { label: "Nova Fine-Tuning", slug: "nova-finetuning" },
             { label: "Custom Model Fine-Tuning", slug: "custom-model-finetuning" },
@@ -289,6 +304,7 @@ export default defineConfig({
           items: [
             { label: "Threat Model", slug: "threat-model" },
             { label: "Malware Scanning", slug: "malware-scanning" },
+            { label: "Customer Managed KMS Key", slug: "customer-managed-kms-key" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",

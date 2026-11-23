@@ -39,7 +39,7 @@ labels for evaluating OCR, classification, and extraction:
   `baseline/<doc>.pdf/sections/<n>/result.json` (document class + inference
   result), the standard IDP test-set layout Test Studio reads.
 - **Optional image augmentation** — scan/fax-style aging effects for
-  robustness testing (requires `seed-data>=0.0.6`).
+  robustness testing (the image installs `seed-data` with its `augment` extra).
 - **Cost estimate** — the modal shows an estimated cost/time band before you
   start a run.
 
@@ -52,9 +52,16 @@ Once installed, the generator is reachable three ways:
   configuration profile/class, with scenario, quality, and document-count
   controls. Choose a **destination**: create a new test set (a unique name is
   required — a name that already exists is rejected) or add the generated
-  documents to an existing test set. The resulting test set appears in the list
-  when the background job completes; click a test set's name to preview its
-  documents without running a test execution.
+  documents to an existing test set. A new set is created, as **Generating**, when
+  the job is submitted, so a second request for the same name, or a Test Studio
+  create under it, is refused while the job runs. If the job finishes without
+  starting generation (for example, the class is not in the chosen configuration
+  profile), the set is marked **Failed** with the reason, and can be deleted to
+  reuse the name. A job that errors is retried, so its set stays **Generating**
+  meanwhile; a retry only ever writes to the set created for it, never to a set
+  created later under the same name. The documents appear when the background job
+  completes; click a test set's name to preview its documents without running a
+  test execution.
 - **View/Edit Configuration → Document Schema** — a **Generate test set** button
   deep-links into Test Studio with the modal pre-filled for the current
   configuration profile.
@@ -92,6 +99,21 @@ A self-contained extension stack that plugs into the host contract:
   extension's tracking table.
 - **Job status** is feature-owned (a DynamoDB tracking table), surfaced through
   the FeatureApi.
+
+### What the generator's model can do
+
+The runtime installs one pinned release of `seed-data`, and the extension names
+SEED's `xhtml2pdf` PDF backend rather than taking SEED's default. With that
+backend, no tool SEED gives its models takes a URL, runs a command or calls an
+AWS API; the document generator writes HTML and reads and writes local files,
+then renders the HTML to a PDF. The extension renders that HTML with remote
+resources turned off, so an `http(s)` image, stylesheet or font the HTML
+references is left out of the PDF rather than fetched; inline `data:` resources
+still load, and local files load only from the runtime's working directory. The
+AgentCore runtime is created in `PUBLIC` network mode, and VPC network mode is not
+offered. The per-agent tool inventory,
+and the AWS services the runtime reaches, are in the extension's
+[README](../../feature-platform/idp-data-generator/README.md#what-the-generators-model-can-do).
 
 ## Tuning and troubleshooting
 

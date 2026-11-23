@@ -54,6 +54,22 @@ PLATFORM_TYPES: tuple[NotificationType, ...] = (
         description="A document assigned to you is still open after its time limit.",
         default_severity="info",
     ),
+    # Bulk Skip All Reviews jobs (idp_common.review_queues.notify.bulk_job_finished).
+    NotificationType(
+        id="review.bulk_job_finished",
+        display_name="Bulk review job finished",
+        description="A bulk Skip All Reviews job you started has finished.",
+        default_severity="info",
+    ),
+    # MCP service credentials (idp_common.mcp_credentials.sweep is the only
+    # producer): sent once to the Admin who created a credential, two weeks
+    # before it expires.
+    NotificationType(
+        id="mcp.credential_expiring",
+        display_name="MCP credential expiring",
+        description="An MCP service credential you created expires soon.",
+        default_severity="warning",
+    ),
 )
 
 _lock = threading.Lock()

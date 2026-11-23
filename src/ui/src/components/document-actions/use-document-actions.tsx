@@ -12,8 +12,9 @@
 //
 // It reads no configuration and no route itself: the page passes them in.
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Box, Button, SpaceBetween, StatusIndicator } from '@cloudscape-design/components';
+import { Alert, Box, Button, Checkbox, SpaceBetween, StatusIndicator } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import { generateClient } from '../../api/client-shim';
 import useAppContext from '../../contexts/app';
@@ -31,6 +32,9 @@ import TroubleshootModal from '../document-panel/TroubleshootModal';
 import type { EditorNotice } from '../edit-screen/EditorNotices';
 import usePageClassBoard from '../edit-screen/use-page-class-board';
 import { documentName } from '../review-queues/review-api';
+import SendToReviewModal from '../review-bulk/SendToReviewModal';
+import useReviewActionSettings from '../review-bulk/use-review-action-settings';
+import { outcomeView } from '../review-bulk/bulk-outcomes';
 import StepFunctionFlowViewer from '../step-function-flow/StepFunctionFlowViewer';
 import EstimatedCostModal from '../document-panel/EstimatedCostModal';
 import DocumentReportDialog from './DocumentReportDialog';
@@ -44,6 +48,41 @@ import type { ActionGate, DocumentActionGates } from './document-action-gates';
 
 const client = generateClient();
 const logger = new ConsoleLogger('DocumentActions');
+
+const messages = defineMessages<{
+  sendToReview: NoMessageValues;
+  resubmitLabel: NoMessageValues;
+  resubmitDescription: NoMessageValues;
+  sentToReview: { readonly name: string };
+  sendToReviewFailed: { readonly name: string; readonly outcome: string };
+}>({
+  sendToReview: {
+    id: 'documentActions.moreActions.sendToReview',
+    defaultMessage: 'Send to review',
+    description: "Item of the document page's More Actions menu that sends a finished document to a review queue.",
+  },
+  resubmitLabel: {
+    id: 'documentActions.skipAllReviews.resubmitLabel',
+    defaultMessage: 'Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)',
+    description: 'Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps.',
+  },
+  resubmitDescription: {
+    id: 'documentActions.skipAllReviews.resubmitDescription',
+    defaultMessage: 'Re-runs Summarization and Evaluation on the unedited results and fires the post-processing hook.',
+    description: 'Help text under the Resubmit checkbox in the Skip All Section Reviews dialog.',
+  },
+  sentToReview: {
+    id: 'documentActions.sendToReview.sent',
+    defaultMessage: 'Sent {name} to review.',
+    description: 'Success notification after Send to review. {name} is the document name.',
+  },
+  sendToReviewFailed: {
+    id: 'documentActions.sendToReview.failed',
+    defaultMessage: 'Could not send {name} to review: {outcome}.',
+    description:
+      'Error notification when Send to review did not send the document. {name} is the document name; {outcome} is the reason shown for the outcome, e.g. "Not permitted".',
+  },
+});
 
 export type DocumentView = 'details' | 'source';
 
@@ -116,6 +155,7 @@ const offered = (gate: ActionGate, id: string, text: string): ActionBarMenuItem[
 
 export const useDocumentActions = (input: DocumentActionsInput): DocumentActions => {
   const { item, displayed, isHistorical, mergedConfig, configLoading, view, onViewChange, refresh, onDocumentUpdate, download } = input;
+  const intl = useIntl();
   const roles = useUserRole();
   const { user, setErrorMessage, setSuccessMessage } = useAppContext();
   const [busy, setBusy] = useState<Busy>(null);
@@ -127,6 +167,9 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
   // The last Troubleshoot job per document, for this page visit: reopening shows it.
   const [troubleshootJobs, setTroubleshootJobs] = useState<Record<string, TroubleshootJob>>({});
   const [askSkipReason, setAskSkipReason] = useState(false);
+  const [skipResubmit, setSkipResubmit] = useState(true);
+  const [askSendToReview, setAskSendToReview] = useState(false);
+  const reviewSettings = useReviewActionSettings();
   const [changeDialog, setChangeDialog] = useState<'reextract' | 'reset-class' | null>(null);
   // Edit Page Text: the page it is open at; and a page whose text was saved but not reprocessed.
   const [pageTextAt, setPageTextAt] = useState<string | null>(null);
@@ -171,6 +214,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     bdaMode: isBdaModeConfig(mergedConfig),
     configLoading,
     baselineRequestInFlight,
+    defaultQueueEnabled: reviewSettings.defaultQueueEnabled,
   });
 
   const board = usePageClassBoard(useDetailPageClassBoard({ item, gates, mergedConfig, refresh }), null, null);
@@ -243,7 +287,10 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     run('skip-all', async () => {
       setAskSkipReason(false);
       try {
-        const result = await client.graphql({ query: skipAllSectionsReview, variables: { objectKey: key, reason, note } });
+        const result = await client.graphql({
+          query: skipAllSectionsReview,
+          variables: { objectKey: key, reason, note, resubmit: skipResubmit },
+        });
         const updatedData = result.data.skipAllSectionsReview;
         if (updatedData) {
           const reviewHistory = parseHITLReviewHistory(updatedData.HITLReviewHistory as string);
@@ -275,7 +322,10 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     else if (id === 'reextract' || id === 'reset-class') setChangeDialog(id);
     else if (id === 'page-text' && firstPageWithText) setPageTextAt(String(firstPageWithText.Id));
     else if (id === 'baseline') void useAsBaseline();
-    else if (id === 'skip-all') setAskSkipReason(true);
+    else if (id === 'skip-all') {
+      setSkipResubmit(true);
+      setAskSkipReason(true);
+    } else if (id === 'send-to-review') setAskSendToReview(true);
     else if (id === 'reprocess') input.onReprocess();
     else if (id === 'abort') input.onAbort();
     else if (id === 'delete') input.onDelete();
@@ -331,6 +381,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         ...offered(gates['reset-class'], 'reset-class', 'Reset Page Class'),
         ...offered(gates.baseline, 'baseline', 'Use As Evaluation Baseline'),
         ...offered(gates['skip-all'], 'skip-all', 'Skip All Reviews'),
+        ...offered(gates['send-to-review'], 'send-to-review', intl.formatMessage(messages.sendToReview)),
         ...(downloads.length > 0 ? [{ kind: 'group' as const, items: downloads }] : []),
         ...(lifecycle.length > 0 ? [{ kind: 'group' as const, items: lifecycle }] : []),
       ],
@@ -458,6 +509,15 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
           reasons={SKIP_ALL_REASONS}
           confirmLabel="Skip All Reviews"
           loading={busy === 'skip-all'}
+          extra={
+            <Checkbox
+              checked={skipResubmit}
+              onChange={({ detail }) => setSkipResubmit(detail.checked)}
+              description={intl.formatMessage(messages.resubmitDescription)}
+            >
+              <FormattedMessage {...messages.resubmitLabel} />
+            </Checkbox>
+          }
           onConfirm={(reason, note) => void skipAll(reason, note)}
         >
           <SpaceBetween size="s">
@@ -470,6 +530,23 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
             <Box>Are you sure you want to skip all section reviews?</Box>
           </SpaceBetween>
         </ReasonModal>
+      )}
+      {askSendToReview && (
+        <SendToReviewModal
+          objectKeys={[key]}
+          onDismiss={() => setAskSendToReview(false)}
+          onDone={(result) => {
+            setAskSendToReview(false);
+            const outcome = result.results[0]?.outcome ?? 'FAILED';
+            if (outcome === 'SENT') {
+              onDocumentUpdate((prev) => ({ ...prev, hitlStatus: 'in_review', hitlCompleted: false }));
+              setSuccessMessage(intl.formatMessage(messages.sentToReview, { name }));
+              void refresh();
+            } else {
+              setErrorMessage(intl.formatMessage(messages.sendToReviewFailed, { name, outcome: outcomeView(outcome).label }));
+            }
+          }}
+        />
       )}
     </>
   );

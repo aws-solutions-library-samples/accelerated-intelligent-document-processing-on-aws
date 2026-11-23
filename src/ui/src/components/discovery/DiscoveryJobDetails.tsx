@@ -26,8 +26,7 @@ import {
   Link,
   Spinner,
 } from '@cloudscape-design/components';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import SafeMarkdown from '../common/SafeMarkdown';
 import { useParams, useNavigate } from 'react-router-dom';
 import { generateClient } from '../../api/client-shim';
 
@@ -38,6 +37,7 @@ import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import useUserRole from '../../hooks/use-user-role';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -129,6 +129,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
   const { versions } = useConfigurationVersions();
+  const { formatDateTime } = useFormatters();
   // #765 apply-state hooks live here, above the early returns, so the hook
   // order is identical on every render.
   const [applyState, setApplyState] = useState<'idle' | 'applying' | 'applied' | 'unchanged' | 'error'>('idle');
@@ -219,6 +220,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
   const isPolicyJob =
     job.jobType === 'rules' || (typeof job.discoveredClassName === 'string' && job.discoveredClassName.startsWith('policy_rules'));
   const isTerminal = ['COMPLETED', 'FAILED', 'OPTIMIZATION_COMPLETED', 'OPTIMIZATION_FAILED'].includes(job.status);
+  const createdAt = parseUtcTimestamp(job.createdAt);
   const classes = isMultiDoc ? parseDiscoveredClasses(job.discoveredClasses) : [];
 
   const getStatusIndicator = () => {
@@ -353,13 +355,15 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
             <div>
               <Box variant="awsui-key-label">Created</Box>
               <Box>
-                {parseUtcTimestamp(job.createdAt)?.toLocaleString(undefined, {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  second: '2-digit',
-                }) ?? '—'}
+                {createdAt
+                  ? formatDateTime(createdAt, {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    })
+                  : '—'}
               </Box>
             </div>
             <div>
@@ -552,7 +556,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
       {isMultiDoc && job.reflectionReport && (
         <Container header={<Header variant="h2">Quality Review Report</Header>}>
           <div style={{ maxHeight: '600px', overflow: 'auto', padding: '16px' }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{job.reflectionReport}</ReactMarkdown>
+            <SafeMarkdown rawHtml={false}>{job.reflectionReport}</SafeMarkdown>
           </div>
         </Container>
       )}

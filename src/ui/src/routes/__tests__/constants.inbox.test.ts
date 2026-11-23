@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { INBOX_PATH, documentDetailHref, inboxHref, isInternalRoute } from '../constants';
+import { INBOX_PATH, JOBS_PATH, documentDetailHref, inboxHref, isInternalRoute, jobDetailHref, jobDetailPath } from '../constants';
 
 describe('inboxHref', () => {
   it('links to the inbox, optionally with a tab', () => {
@@ -40,5 +40,13 @@ describe('isInternalRoute', () => {
 
   it('rejects a mixed-case scheme separator', () => {
     expect(isInternalRoute('/x?u=HTTPS://y')).toBe(false);
+  });
+});
+
+describe('jobDetailPath', () => {
+  it('encodes the job id like the Python bulk_job_link (/my-work/jobs/<id>)', () => {
+    expect(JOBS_PATH).toBe('/my-work/jobs');
+    expect(jobDetailPath('brj-0123456789abcdef01234567')).toBe('/my-work/jobs/brj-0123456789abcdef01234567');
+    expect(jobDetailHref('a b')).toBe('#/my-work/jobs/a%20b');
   });
 });

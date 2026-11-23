@@ -57,7 +57,7 @@ help: ## Show this help message
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; section=""} \
 		/^##@/ { section=substr($$0, 5); next } \
-		/^[a-zA-Z_-]+:.*?## / { \
+		/^[a-zA-Z0-9_-]+:.*?## / { \
 			if (section != "" && section != last_section) { \
 				printf "\n  \033[1m%s\033[0m\n", section; \
 				last_section = section \
@@ -156,18 +156,36 @@ setup: lock-constraints ## Install all packages into current Python environment 
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
+	@# The Node side (src/ui, docs-site, basedpyright) when Node is available; a
+	@# visible warning otherwise. Deploy-only users need no Node, so this never fails
+	@# the target. `make setup-node` is the strict form.
+	@scripts/setup_node.sh auto
 
 setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
-	@PYENV_PYTHON=$$(pyenv which python 2>/dev/null); \
-	SYS_PYTHON=$$(command -v python3 2>/dev/null); \
-	BASE_PYTHON=$${PYENV_PYTHON:-$$SYS_PYTHON}; \
+	@# The first-party packages declare requires-python ">=3.12,<3.14", so the base
+	@# interpreter is the first SUPPORTED one found, not merely the first `python3`
+	@# on PATH: on a host whose `python3` is 3.9, a venv built from it fails much
+	@# later with "No matching distribution found for setuptools>=84.1.0", which
+	@# names a build dependency rather than the interpreter. An existing .venv on an
+	@# unsupported interpreter is rebuilt (--clear), because `python -m venv` on an
+	@# existing directory keeps its old interpreter.
+	@BASE_PYTHON=""; \
+	for c in "$$(pyenv which python 2>/dev/null)" "$$(command -v python3.13 2>/dev/null)" "$$(command -v python3.12 2>/dev/null)" "$$(command -v python3 2>/dev/null)"; do \
+		[ -n "$$c" ] || continue; \
+		if "$$c" -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then BASE_PYTHON="$$c"; break; fi; \
+	done; \
 	if [ -z "$$BASE_PYTHON" ]; then \
-		echo -e "$(RED)ERROR: No python3 or pyenv python found. Install Python 3.12+ first.$(NC)"; \
+		echo -e "$(RED)ERROR: no Python 3.12 or 3.13 found (checked pyenv, python3.13, python3.12, python3$$(command -v python3 >/dev/null && echo " = $$(python3 --version 2>&1)")). Install one first.$(NC)"; \
 		exit 1; \
 	fi; \
 	echo "Using base Python: $$BASE_PYTHON ($$($$BASE_PYTHON --version))"; \
-	$$BASE_PYTHON -m venv $(VENV_DIR)
+	CLEAR=""; \
+	if [ -x $(VENV_DIR)/bin/python ] && ! $(VENV_DIR)/bin/python -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then \
+		echo "Existing $(VENV_DIR) uses $$($(VENV_DIR)/bin/python --version 2>&1), which is unsupported; rebuilding it."; \
+		CLEAR="--clear"; \
+	fi; \
+	$$BASE_PYTHON -m venv $$CLEAR $(VENV_DIR)
 	@echo "Upgrading pip..."
 	$(VENV_DIR)/bin/pip install --upgrade pip
 	@echo "Installing all first-party packages (single resolution pass)..."
@@ -193,15 +211,22 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@# bare commands, and nothing here puts $(VENV_DIR)/bin on PATH. Reading the
 	@# old wording as "nothing further is needed" is how CONTRIBUTING.md came to
 	@# document a setup sequence that fails with `ruff: No such file or directory`.
+	@# The Node step runs before the activation reminder, so the reminder is the
+	@# last thing printed: printed first, it scrolled away under the npm output.
+	@# setup_node.sh exits 0 in auto mode even when the install fails.
+	@scripts/setup_node.sh auto
+	@echo ""
 	@echo -e "$(YELLOW)   'make' targets that go through \$$(PYTHON)/\$$(PIP) will use $(VENV_DIR)/bin automatically.$(NC)"
-	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 	@echo -e "$(YELLOW)   The lint gates call 'ruff' and 'cfn-lint' as bare commands, so they need$(NC)"
 	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
-	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
+	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
+
+setup-node: ## Install src/ui and docs-site npm dependencies from their lockfiles, plus basedpyright (needs Node 22.12+; fails on any error)
+	@scripts/setup_node.sh required
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links solution-profile-check validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links solution-profile-check validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -287,6 +312,18 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
 		exit 1; \
 	fi
+	@# After ui-lint, which installed src/ui/node_modules: the extraction it replays
+	@# needs them, and in CI their absence is an error rather than a skip.
+	@if ! make check-ui-i18n-catalog; then \
+		echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)"; \
+		exit 1; \
+	fi
+	@# Same node_modules, same CI rule: the string-debt ratchet counts the UI's
+	@# hardcoded user-facing strings per file and fails when a file gains one.
+	@if ! make check-ui-string-debt; then \
+		echo -e "$(RED)ERROR: UI string-debt ratchet failed: a file gained a hardcoded user-facing string (see issue #1770)$(NC)"; \
+		exit 1; \
+	fi
 
 	@# ui-build-only (vite build, NO lint/typecheck) — ui-lint above already ran
 	@# eslint + tsc, so the default `ui-build` would redundantly run them again.
@@ -331,6 +368,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@echo "Data-plane Lambda tag check"
 	@if ! make check-data-plane-tags; then \
 		echo -e "$(RED)ERROR: Data-plane Lambda tag check failed (see docs/reporting-sql-layer.md §10.3)$(NC)"; \
+		exit 1; \
+	fi
+
+	@echo "Solution profile check"
+	@if ! make solution-profile-check; then \
+		echo -e "$(RED)ERROR: the solution profile in solution-profile/ is invalid or behind the code (see docs/solution-profile.md)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -380,13 +423,17 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 #            worker count CI gives it. The job therefore costs its slowest tree
 #            rather than the sum, and which tree that is moves; measure rather than
 #            reading a figure here.
-#   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
-#            step below still requires it BY NAME, so dropping the wrong tree here
-#            turns the gate red rather than quietly narrowing it.
+#   --skip   by default leaves out the one tree an earlier CI step already measured
+#            (idp_common). The ratchet step below still requires it BY NAME, so
+#            dropping the wrong tree here turns the gate red rather than quietly
+#            narrowing it. GitHub's unit_tests also skips `scripts`, which its
+#            scripts_coverage job measures and ratchets instead; the ratchet there passes
+#            --measured-elsewhere scripts, and test_coverage_debt.py's cross-job
+#            closure test asserts the other job requires it.
 COVERAGE_CICD_JOBS ?= 4
 COVERAGE_CICD_SKIP ?= --skip idp_common
 coverage-all-cicd: ## Produce a coverage report for every tree except those an earlier step measured, trees run concurrently
-	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
+	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) --fail-on-empty $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
 
 coverage-summary: ## Print the recorded per-tree figures, without measuring anything
 	@python3 scripts/check_coverage_debt.py --summary
@@ -395,8 +442,11 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report and refuse (exit 2), red-lining
 # every lint run for a condition the lint targets themselves cause.
-# Both CI configurations invoke it immediately after the test step instead. They pass no
-# arguments and need none: with no usable report the gate refuses rather than reporting
+# Both CI configurations invoke it immediately after the test step instead. GitLab
+# passes no arguments; GitHub, which splits the coverage trees across two jobs, passes
+# --measured-elsewhere in one and reaches this bare target with --require-tree in the
+# other (see test_every_tree_is_measured_and_ratcheted_by_some_github_job). Neither
+# needs more than that: with no usable report the gate refuses rather than reporting
 # success, for every caller (#1190). CHECK_COVERAGE_DEBT_ARGS is how a caller that knows
 # which tree it just measured adds `--require-tree=<name>` and gets a failure that names
 # the tree instead of one that says only that nothing was checked.
@@ -421,6 +471,24 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@# quietly accumulate more. Regenerate with --write after fixing findings.
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build (issue #1770)
+	@# Check-only: re-extracts into a temp file and diffs; `make ui-i18n-extract` is
+	@# the writer. Off CI without src/ui/node_modules it prints a SKIP (not a pass);
+	@# in CI that is an error. It runs a node tool out of src/ui/node_modules, so it
+	@# takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_i18n_catalog.py' || \
+		(echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)" && exit 1)
+
+check-ui-string-debt: ## Ratchet the UI's hardcoded user-facing strings: fail if a file gains one, an unlisted file has any, or the baseline is stale (issue #1770)
+	@# src/ui/eslint.i18n.config.js is the counting rule (eslint-plugin-i18next, kept
+	@# out of the UI's lint script); scripts/ui_string_debt.json pins the count per
+	@# file and may only shrink — `python3 scripts/check_ui_string_debt.py --write`
+	@# re-records it after a file is converted. Off CI without src/ui/node_modules it
+	@# prints a SKIP (not a pass); in CI that is an error. It runs eslint out of
+	@# src/ui/node_modules, so it takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_string_debt.py' || \
+		(echo -e "$(RED)ERROR: UI string-debt ratchet failed (see issue #1770)$(NC)" && exit 1)
 
 check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
 	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
@@ -468,6 +536,17 @@ check-markdown-links: ## Resolve every relative Markdown link, anchor, and publi
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
 		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
+
+# The solution profile (solution-profile/, docs/solution-profile.md): the vendored
+# reference validator, then cross-checks that fail when the code gains a hook point,
+# preset, file format, selectable model or launch Region the profile does not cover.
+# The contract's release rules (reviewed_for_version == version, a changes.yaml entry
+# for it) apply automatically when VERSION is a final X.Y.Z, or with
+# SOLUTION_PROFILE_RELEASE=1. The asset is built by `solution-profile-build`
+# (under Version Management), which the release workflow runs.
+solution-profile-check: ## Validate solution-profile/ against its contract and cross-check it with the code
+	@$(PYTHON) scripts/check_solution_profile.py || \
+		(echo -e "$(RED)ERROR: solution profile check failed!$(NC)" && exit 1)
 
 # Discovered from `git ls-files` rather than listed. The previous
 # `patterns/*/buildspec.yml` glob read ONE of the four buildspec files in the tree,
@@ -517,8 +596,9 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, disc
 # the commercial account?" — yes) confirmed it while it shielded 49 fixable
 # findings. Naming the lines makes the mismatch impossible to write down.
 #
-#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
-#     trust a named role in the commercial CI account that owns this pipeline.
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — three statements
+#     (two on GitLabRole, one on GitLabReviewRole) trust a named role in the
+#     commercial CI account that owns this pipeline.
 #     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
 #     would render an ARN naming a GovCloud account that is not the one meant.
 #
@@ -747,6 +827,18 @@ terraform-check: ## Translate template.yaml to Terraform offline, then init + va
 		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
 		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
 	@$(MAKE) --no-print-directory terraform-scan-diff
+	@$(MAKE) --no-print-directory terraform-replay-releases
+
+# The current translator over the template tree of every release listed in
+# terraform/tools/replay_releases.json, each at the commit recorded there, offline:
+# a translator change that breaks the translation of a release a deployment may
+# still be on fails here rather than at that deployment's upgrade. It reads the
+# repository's own history (git archive of the recorded commits), so it needs a
+# clone holding them and no network; both CI jobs check out full history for it.
+# Add a release to the file when it is tagged.
+TERRAFORM_REPLAY_JOBS ?= 4
+terraform-replay-releases: ## Replay the current translator offline over the template tree of each release in terraform/tools/replay_releases.json; fail on any failure
+	@$(PYTHON) terraform/tools/replay_releases.py --check --jobs $(TERRAFORM_REPLAY_JOBS)
 
 # The static-scan diff: checkov over the CloudFormation templates and over the
 # Terraform generated from them, failing when the Terraform side has a finding the
@@ -766,6 +858,8 @@ terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templat
 # main and nested stacks, read through Cloud Control and diffed, with explained
 # differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
 # credentials and both deployments, so it is a release-validation tier, not a CI gate.
+# A Terraform schedule carrying IDP_TERRAFORM_PARITY=true runs the same comparison
+# against a CloudFormation twin it deploys itself (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
 	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
 	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
@@ -809,8 +903,8 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
 #
-# It needs NO environment: pyrightconfig.json's `extraPaths` puts the five
-# first-party package roots on the import path, so `idp_common` resolves whatever
+# It needs NO environment: pyrightconfig.json's `extraPaths` puts every
+# first-party package root on the import path, so `idp_common` resolves whatever
 # PYTHONPATH says. Do NOT "fix" resolution by exporting PYTHONPATH here — this
 # machine carries editable installs pointing at a sibling worktree and another
 # project (#1094), so an environment-level answer can type-check somebody else's
@@ -873,20 +967,15 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 #     make test-packages-cicd PYTEST_XDIST="-n 4"
 #     make test-cicd -C lib/idp_common_pkg PYTEST_PARALLEL="-n 4"
 #
-# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
-# target:
-#
-#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
-#     lib/idp_sdk        2663 tests, serial  441s
-#
-# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
-# near-perfectly parallel and the win is close to the core count.
+# The two suites that once dominated this target, `scripts/tests` and `lib/idp_sdk`,
+# no longer run in it: `coverage-all-cicd` is their one CI run, and its worker share
+# comes from `coverage_all.worker_share`, never from this variable.
 #
 # ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
 # spinning up N workers costs a second or two before the first test runs, which is
 # longer than most of these invocations take — a majority finish in under a second.
-# The rule is **above 20s measured in CI**, which selects the nine that carry
-# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# The rule is **above 20s measured in CI**; grep the recipe for $(PYTEST_XDIST) to
+# see which invocations carry it today. Re-derive it by TIMING, not by counting tests: the test
 # count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
 # `src/lambda/complete_section_review` takes 7x longer for 115.
 #
@@ -909,29 +998,29 @@ test-integration-all: ## Run every integration-marked suite across all roots (re
 test-list: ## List the discovered test roots (run vs quarantined) without running them
 	$(PYTHON) scripts/run_all_tests.py --list
 
-test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
-	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -m "not integration" -q -p no:cacheprovider
-	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_common_pkg test-cicd nor coverage-all-cicd runs (all green headless, no AWS)
+	@# The suites a coverage tree measures are NOT run here: `make coverage-all-cicd`
+	@# runs each of them, under coverage, in both CIs, and running them a second time
+	@# without coverage cost about 20 minutes of every pull request's longest job for
+	@# no added check. Those are the `scripts` gate suites, idp_sdk, idp_cli,
+	@# idp_feature_sdk, main-stack-extensions, seller-entitlement-service and the
+	@# pii-anonymizer hook and feature API -- every non-fan-out tree in
+	@# scripts/check_coverage_debt.py TREES. scripts/tests/test_src_lambda_tests_in_ci.py
+	@# credits those trees as run, so a suite dropped from here that no tree measures
+	@# fails there. The Lambda and resolver directories a fan-out tree measures are
+	@# still listed below: their runs are seconds each, and several are scoped
+	@# differently from the fan-out's invocation. `make test` runs every root locally.
 	@echo "Running Terraform translator and bridge tests..."
 	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
-	@# These three ran in NO CI gate until #974. `make test` picked them up via
+	@echo "Running pii-anonymizer UI deployer tests..."
+	@# These three ran in NO CI gate until #974. The feature API and hook suites are
+	@# now measured by their coverage trees (see the note at the top of this recipe). `make test` picked them up via
 	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
 	@# order-dependent failure in the feature API sat unnoticed long enough to be
 	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
-	cd feature-platform/pii-anonymizer/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
-	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
@@ -991,6 +1080,19 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# CustomerManagedKmsKeyArn check (#2016): a change on update is refused in either
+	@# direction, a supplied key is checked on create. Real botocore clients behind
+	@# Stubbers with an explicit region.
+	cd src/lambda/customer_managed_kms_key_check && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
+	@# filters) and the custom resource that attaches it to the gateway. moto for
+	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
+	cd src/lambda/mcp_identity_interceptor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/mcp_interceptor_attach && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP credential manager: Admin-only routing, the scoped-Admin rule, the sweep.
+	cd src/lambda/mcp_credential_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# Registers the stack-created MCP client as "Default (stack-created)".
+	cd src/lambda/mcp_default_credential && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -1018,6 +1120,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
 	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_worker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -1070,6 +1174,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/image-build && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
@@ -1094,14 +1200,6 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTEST_HERMETIC) patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
-	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/sdlc/tests -q -p no:cacheprovider
-	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/tests -q -p no:cacheprovider
-	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
-	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
-	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
-	$(PYTEST_HERMETIC) scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
@@ -1113,11 +1211,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, worktree reach, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
 		scripts/tests/test_check_shared_branch.py \
 		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_worktree_reach.py \
 		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
@@ -1215,6 +1314,50 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
 endif
 	$(RUN_FIRST_PARTY) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
+
+# Usage: make stacktest-load STACK_NAME=<stack-name> [REGION=<region>] [DRY_RUN=1]
+#        [LOAD_PROBE_ARGS="--docs-per-arm 8 --max-cost-usd 25 --cleanup on-pass ..."]
+# Load probe against an EXISTING stack: uploads one NEW configuration profile per
+# arm (split-then-classify, holistic packet classification, agentic extraction,
+# and decision-model confidence when --decision-model-endpoint is given), submits
+# a few dozen sample packets at once, waits with a deadline, and fails on any
+# document failed for a transient (or unreadable) cause and on any section with
+# values but no confidence score. Step retries are reported as a trend, not
+# asserted. Refuses before creating anything when the document cap or the
+# estimated-cost cap is exceeded. DRY_RUN=1 validates the plan and configurations
+# offline and touches nothing. Exit 0 = PASS, 1 = FAIL, 2 = could not run.
+# Report: ./scratch/load-probe/<run id>/report.json. Also the GitLab `load_probe`
+# job, on its own schedule only (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
+stacktest-load: ## Load probe: a few dozen packets at once against an existing stack, under a document and dollar cap (STACK_NAME=...; DRY_RUN=1 touches nothing)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-load STACK_NAME=<stack-name> [REGION=...] [DRY_RUN=1])
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/load_probe.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(DRY_RUN),--dry-run,) $(LOAD_PROBE_ARGS)
+
+# Usage: make stacktest-decision-window STACK_NAME=<host> [INSTALL=1] [UNINSTALL=1]
+#        [BUCKET_BASENAME=<artifacts bucket basename>] [REGION=<region>]
+#        make stacktest-decision-window ENDPOINT=<decider function or alias ARN>
+#        make stacktest-decision-window DRY_RUN=1
+# Decision-model window check (#2051): sends the largest request each caller
+# builds (section classification and extraction confidence, in text, both and
+# images, at the largest max_pages and the max_input_tokens cap) to a DEPLOYED
+# Strands Decider, plus calibration probes either side of its window, and fails
+# when a request is refused for its size, when a measured token count beats the
+# estimate plus PROMPT_RESERVE_TOKENS, or when the window, prompt or image cost no
+# longer matches the constants in idp_common.decision_model. With STACK_NAME the
+# endpoint is the decision-model-decider extension's DeciderEndpoint output;
+# INSTALL=1 installs the extension on that host from this checkout first (and
+# refuses if it is already there); UNINSTALL=1, with INSTALL=1, deletes the
+# extension stack this run created afterwards. Only 1, true or yes turn either on.
+# The host stack is never touched.
+# DRY_RUN=1 builds and estimates the requests offline. Opt-in, in neither CI.
+# Exit 0 = PASS, 1 = FAIL, 2 = could not run. Report:
+# ./scratch/window-check/<timestamp>/report.json.
+stacktest-decision-window: ## Decision-model window check: the callers' largest requests against a deployed decider (STACK_NAME=... [INSTALL=1] [UNINSTALL=1], or ENDPOINT=...; DRY_RUN=1 touches nothing)
+ifeq ($(DRY_RUN)$(STACK_NAME)$(ENDPOINT),)
+	$(error Set STACK_NAME=<host stack>, ENDPOINT=<decider ARN> or DRY_RUN=1. Usage: make stacktest-decision-window STACK_NAME=<host> [INSTALL=1] [UNINSTALL=1])
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/decision_model_window_check.py $(if $(DRY_RUN),--dry-run,$(if $(ENDPOINT),--endpoint $(ENDPOINT),--stack-name $(STACK_NAME))) $(if $(REGION),--region $(REGION),) $(if $(filter 1 true yes,$(INSTALL)),--install,) $(if $(filter 1 true yes,$(UNINSTALL)),--uninstall,) $(if $(BUCKET_BASENAME),--bucket-basename $(BUCKET_BASENAME),)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
@@ -1362,6 +1505,16 @@ stacktest-seller: ## Seller Entitlement Service e2e: deploy throwaway stack, pro
 	    $(if $(REGION),--region $(REGION)) \
 	    $(if $(NO_TEARDOWN),--no-teardown)
 
+# Network reach of the analytics agent's Python interpreter. Needs no IDP stack:
+# it starts a session on the AWS-managed Bedrock AgentCore Code Interpreter the
+# analytics tool uses, runs a fixed probe program in it, and compares what it
+# reaches with the posture recorded in scripts/sdlc/sandbox_network_probe.py.
+# Creates and deletes its own throwaway bucket (ab-sandbox-probe-<random>).
+# Exit 0 = matches the recorded posture, 1 = differs, 2 = could not run.
+# Manual only: no CI job runs it (see .claude/skills/run-stack-tests.md).
+stacktest-sandbox-network: ## Analytics interpreter network reach: DNS, HTTPS, S3 presigned PUT, raw TCP, credential presence (no stack; [REGION=us-west-2])
+	$(RUN_FIRST_PARTY) scripts/sdlc/sandbox_network_probe.py --region $(if $(REGION),$(REGION),us-west-2) $(if $(JSON_OUT),--json-out $(JSON_OUT),)
+
 # Release-vs-release benchmark audit (alias to benchmark-release).
 stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchmark-release)
 
@@ -1372,19 +1525,99 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 	@echo "It deploys a FROM release, update-stacks to a TO release, and watches"
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
+# In-place migration of an awslabs/genai-idp-terraform deployment onto this
+# repository's Terraform module: deploys the pinned upstream tag as OLD_NAME, seeds
+# it (documents, users, a config edit, a baseline and test set), runs every phase of
+# `idp-cli terraform migrate-from-genai-idp-terraform` with --apply onto a new
+# deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
+# passwords still sign in, then destroys both and sweeps what they retained. Measured
+# at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
+# continues a stopped or failed run from WORK_DIR. UPSTREAM_TAG=<tag> picks one of the
+# upstream releases the driver pins (default: the release a RESUME=1 run recorded,
+# else the newest; `rotate` takes this week's, as the weekly schedule does). VARIANT=mcp
+# also deploys upstream's MCP integration and runs the guide's manual procedure for it
+# before plan (VARIANT=mcp-datasets adds both test datasets). See docs/testing.md and
+# .claude/skills/release-validation.md (tier J).
+#   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
+#       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
+_TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
+	--terraform-module-url $(TERRAFORM_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(UPSTREAM_TAG),--upstream-tag $(UPSTREAM_TAG),) \
+	$(if $(VARIANT),--variant $(VARIANT),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)
+ifndef OLD_NAME
+	$(error OLD_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef NEW_NAME
+	$(error NEW_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef TERRAFORM_MODULE_URL
+	$(error TERRAFORM_MODULE_URL is not set: the module zip `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_migration_test.py $(_TFMIG_ARGS)
+
+# In-place upgrade of a Terraform deployment between two releases of the module:
+# deploys FROM_MODULE_URL as STACK_NAME, seeds it (documents, users, a config edit,
+# a baseline and a test set), runs `idp-cli deploy --terraform` again against
+# TO_MODULE_URL, and verifies that every bucket, table, user pool and key kept its
+# physical identity, that the data in them is unchanged, that both users still sign
+# in with their old passwords, and that a new document still processes. It never
+# passes --terraform-allow-replace-stateful, so a plan the deploy guard refuses
+# fails the run. The Terraform counterpart of stacktest-upgrade. Budget about two
+# and a half hours. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>;
+# RESUME=1 continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier K).
+#   make stacktest-terraform-upgrade STACK_NAME=tfup1 ADMIN_EMAIL=you@example.com \
+#       FROM_MODULE_URL=https://.../idp-terraform-<old>.zip \
+#       TO_MODULE_URL=https://.../idp-terraform-<new>.zip
+_TFUP_ARGS = --stack-name $(STACK_NAME) --admin-email $(ADMIN_EMAIL) \
+	--from-module-url $(FROM_MODULE_URL) --to-module-url $(TO_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(PARAMETERS),--parameters $(PARAMETERS),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-upgrade: ## Upgrade a live Terraform deployment from one release's module to another in place, verify nothing was lost, tear it down (STACK_NAME= ADMIN_EMAIL= FROM_MODULE_URL= TO_MODULE_URL=)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-terraform-upgrade STACK_NAME=<stack> ADMIN_EMAIL=<email> FROM_MODULE_URL=<zip url> TO_MODULE_URL=<zip url>)
+endif
+ifndef ADMIN_EMAIL
+	$(error ADMIN_EMAIL is not set: the first deploy sends it a temporary password)
+endif
+ifndef FROM_MODULE_URL
+	$(error FROM_MODULE_URL is not set: the module zip of the release to upgrade FROM)
+endif
+ifndef TO_MODULE_URL
+	$(error TO_MODULE_URL is not set: the module zip to upgrade TO, which `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_upgrade_test.py $(_TFUP_ARGS)
+
 ##@ UI Development
 
-# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
-# WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
-# those targets then runs a node tool out of that same tree. So two UI targets at
-# once in ONE checkout corrupt each other, and the loser does not report
-# contention — it reports a missing or half-deleted module from whatever package
-# the other lane was unpacking (issue #1447).
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND EVERY ONE WHOSE
+# RECIPE RUNS $(NPM_CI) WIPES IT. `npm ci` deletes node_modules before rebuilding it,
+# by design. Each of those targets then runs a node tool out of that same tree. So
+# two UI targets at once in ONE checkout corrupt each other, and the loser does not
+# report contention — it reports a missing or half-deleted module from whatever
+# package the other lane was unpacking (issue #1447). The set of targets is pinned
+# by UI_TARGETS in scripts/tests/test_ui_deps_lock.py, which fails when one joins or
+# leaves; no count is written here for that reason.
 #
-# `make lint-cicd` performs three of them itself (ui-lint, ui-build-only,
-# codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to collide. The
-# realistic composition is "lint in one lane, UI tests in another", which looks
-# like two unrelated things and is not.
+# `make lint-cicd` performs some of them itself (ui-lint, check-ui-i18n-catalog,
+# check-ui-string-debt, ui-build-only, codegen-check — pinned as
+# TARGETS_LINT_CICD_PERFORMS in the same test), so lint-cicd PLUS ANY ONE UI TARGET
+# is enough to collide. The realistic composition is "lint in one lane, UI tests in
+# another", which looks like two unrelated things and is not.
 #
 # $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
 # an exclusive lock for the whole command, so a second UI target waits instead of
@@ -1532,6 +1765,29 @@ ui-test: ## Run UI unit tests (Vitest, jsdom — no browser required)
 	@echo "Running UI unit tests..."
 	$(UI_DEPS_LOCK) '$(NPM_CI) && npx vitest run'
 
+# THE WRITER for `make check-ui-i18n-catalog`, which is check-only by design (the
+# `codegen-check` auto-update is the shape CONTRIBUTING documents as a wart).
+ui-i18n-extract: ## Re-extract the UI's English message catalog into src/ui/src/i18n/en.json (then commit it)
+	@echo "Extracting UI messages into src/ui/src/i18n/en.json..."
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run i18n:extract'
+	@echo -e "$(GREEN)✅ src/ui/src/i18n/en.json re-extracted. Commit it if it changed.$(NC)"
+
+# ADVISORY BY DESIGN (decision D17 of #1770): this target never fails, so it is
+# not a prerequisite of `lint` or `fastlint`, is not in the `lint-cicd` recipe, and
+# its name matches none of the check shapes test_ci_gate_parity.py classifies by.
+# A missing or stale translation is an English fallback on screen, not a broken
+# build; this report makes it visible without turning every English-only string
+# into a red gate. Invalid entries are enforced by `check-ui-i18n-catalog` and the
+# UI build, and only listed here. Flags go through UI_I18N_COVERAGE_ARGS, e.g.
+# `make ui-i18n-coverage UI_I18N_COVERAGE_ARGS=--json` (nothing else is printed,
+# so the output is the JSON) or `UI_I18N_COVERAGE_ARGS="--locale fr-CA"`.
+UI_I18N_COVERAGE_ARGS ?=
+ui-i18n-coverage: ## Report translation coverage for each locale catalog present in src/ui/src/i18n: missing, stale (English changed since translation) and invalid entries; advisory, never fails (issue #1770)
+	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
+	@# targets (issue #1447). Off CI without node_modules it prints a SKIP (not a
+	@# report); in CI that is an error. Exit 2 only when no report could be made.
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
+
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
 	@$(UI_DEPS_LOCK) 'npm run codegen'
@@ -1612,6 +1868,17 @@ install-git-hooks: ## Install the shared-branch pre-push guard into this checkou
 		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
 	fi
 
+# `premerge` runs exactly the gates both CIs run -- the SHARED_GATES list in
+# scripts/tests/test_ci_gate_parity.py, read by scripts/premerge.py rather than
+# copied here -- and reports every failure rather than stopping at the first. A
+# hand-picked local run missed three of them once and the merge turned develop red
+# (#2115). It checks this working tree, not the merge result CI checks, so merge
+# the base in first. `PREMERGE_ARGS=--list` prints the plan without running it.
+PREMERGE_ARGS ?=
+.PHONY: premerge
+premerge: ## Run the full CI gate set (SHARED_GATES) locally, before merging
+	@python3 scripts/premerge.py $(PREMERGE_ARGS)
+
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."
 	@git add . && \
@@ -1641,6 +1908,10 @@ endif
 		 echo -e "$(YELLOW)Valid examples: 0.5.3, 1.0.0, 0.6.0.dev1, 1.0.0a1, 1.0.0rc1, 1.0.0.post1$(NC)" && \
 		 echo -e "$(YELLOW)Invalid examples: 0.5.3.wip5, 1.0-beta, v1.0.0$(NC)" && \
 		 exit 1)
+	@# Before anything is written: the solution profile needs a contract form of the
+	@# version (X.Y.Z with an optional suffix), and a refusal after the files below
+	@# were stamped would leave the tree half-bumped.
+	@$(PYTHON) scripts/check_solution_profile.py --check-version $(V)
 	@echo "Updating version to $(V)..."
 	@echo "$(V)" > VERSION
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_cli_pkg/pyproject.toml && rm -f lib/idp_cli_pkg/pyproject.toml.bak
@@ -1664,6 +1935,9 @@ endif
 	@# version line moves; nothing is re-resolved, so no dependency pin can change
 	@# as a side effect of a version bump (#1818).
 	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('lib/idp_common_pkg/uv.lock'); t=p.read_text(); n,c=re.subn(r'(\[\[package\]\]\nname = \"idp-common\"\nversion = \")[^\"]*(\")', r'\g<1>$(V)\g<2>', t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 idp-common version line in lib/idp_common_pkg/uv.lock, replaced {c}')"
+	@# The solution profile carries the version in its contract's form
+	@# (0.6.16.dev1 -> 0.6.16-dev1); see scripts/check_solution_profile.py.
+	@$(PYTHON) scripts/check_solution_profile.py --stamp-version $(V)
 	@echo -e "$(GREEN)✅ Version updated to $(V) in:$(NC)"
 	@echo "  - VERSION"
 	@echo "  - lib/idp_cli_pkg/pyproject.toml"
@@ -1677,7 +1951,14 @@ endif
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"
 	@echo "  - lib/idp_feature_sdk/idp_feature_sdk/__init__.py"
 	@echo "  - feature-platform/seller-entitlement-service/template.yaml"
+	@echo "  - solution-profile/solution-profile.yaml"
 
+
+# The release asset for the solution profile (docs/solution-profile.md). Not a
+# gate: .github/workflows/solution-profile-release.yml builds it when a release is
+# published, and scripts/tests/test_solution_profile.py proves it byte-identical.
+solution-profile-build: ## Build the deterministic solution-profile release tarball and .sha256 into dist/ (TAG=v<x.y.z> optional)
+	@$(PYTHON) scripts/build_solution_profile.py --out-dir dist --validate $(if $(TAG),--tag $(TAG),)
 
 ##@ Documentation
 docs: docs-build ## Build and serve the documentation site locally
@@ -1780,7 +2061,7 @@ ai-mr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting t
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
 		$(if $(MR),--mr $(MR),--all-open) --dry-run $(EXTRA_ARGS)
 
-# For a laptop: gitlab.aws.dev's REST API sits behind an authenticating proxy
+# For a laptop: code.aws.dev's REST API sits behind an authenticating proxy
 # that redirects every request to federated sign-in, so a PRIVATE-TOKEN alone
 # cannot reach it from here. This form takes the MR head from git over SSH
 # instead — no token, always a dry run, and no MR description/comments/CI status.

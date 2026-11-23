@@ -132,6 +132,7 @@ class TestConversationalOrchestrator:
             session_id=session_id,
             config=config,
             session=session,
+            user_id="user-sub-1",
         )
 
         # Verify orchestrator was created
@@ -182,16 +183,46 @@ class TestConversationalOrchestrator:
             session_id=session_id,
             config=config,
             session=session,
+            user_id="user-sub-1",
         )
 
-        # Verify memory provider was created with correct parameters
+        # Verify memory provider was created with correct parameters, including
+        # the user the conversation belongs to.
         mock_memory_provider.assert_called_once_with(
             table_name="test-memory-table",
             session_id=session_id,
+            user_id="user-sub-1",
             region_name="us-west-2",
             max_message_size_kb=8.5,
             max_history_turns=20,
+            expires_after_seconds=None,  # DATA_RETENTION_DAYS is not set here
         )
+
+    @patch(
+        "idp_common.agents.utils.conversation_manager.DropAndSlideConversationManager"
+    )
+    @patch("idp_common.agents.utils.memory_provider.DynamoDBMemoryHookProvider")
+    @patch("idp_common.agents.orchestrator.agent.create_orchestrator_agent")
+    def test_no_user_means_no_memory(
+        self,
+        mock_create_orchestrator,
+        mock_memory_provider,
+        mock_conversation_manager,
+        setup_env,
+        test_agent,
+    ):
+        """With no user to key it on, the orchestrator loads and stores nothing."""
+        from idp_common.agents.factory import agent_factory
+
+        mock_create_orchestrator.return_value = MagicMock()
+        agent_factory.create_conversational_orchestrator(
+            agent_ids=["test-agent"],
+            session_id="test-session-789",
+            config={},
+            session=MagicMock(),
+        )
+        mock_memory_provider.assert_not_called()
+        assert mock_create_orchestrator.call_args.kwargs["hooks"] == []
 
     @patch(
         "idp_common.agents.utils.conversation_manager.DropAndSlideConversationManager"
@@ -437,3 +468,33 @@ def test_the_aws_environment_survives_this_modules_environment_clear():
         f"them — so a test running under this fixture can resolve real credentials "
         f"even when the runner stripped them. #1398."
     )
+
+
+@pytest.mark.unit
+class TestConversationalSingleAgentMemory:
+    """``create_conversational_agent`` keys memory the same way the orchestrator does."""
+
+    @patch("idp_common.agents.utils.memory_provider.DynamoDBMemoryHookProvider")
+    def test_memory_is_keyed_on_the_user(
+        self, mock_memory_provider, setup_env, test_agent
+    ):
+        from idp_common.agents.factory import agent_factory
+
+        agent_factory.create_conversational_agent(
+            agent_id="test-agent",
+            session_id="s-1",
+            config={},
+            session=MagicMock(),
+            user_id="user-sub-2",
+        )
+        assert mock_memory_provider.call_args.kwargs["user_id"] == "user-sub-2"
+        assert mock_memory_provider.call_args.kwargs["session_id"] == "s-1"
+
+    @patch("idp_common.agents.utils.memory_provider.DynamoDBMemoryHookProvider")
+    def test_no_user_means_no_memory(self, mock_memory_provider, setup_env, test_agent):
+        from idp_common.agents.factory import agent_factory
+
+        agent_factory.create_conversational_agent(
+            agent_id="test-agent", session_id="s-1", config={}, session=MagicMock()
+        )
+        mock_memory_provider.assert_not_called()

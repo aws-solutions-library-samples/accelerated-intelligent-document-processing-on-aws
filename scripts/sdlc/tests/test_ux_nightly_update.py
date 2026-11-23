@@ -265,6 +265,17 @@ class _FakeStackListing:
     def delete_stack(self, StackName: str) -> None:
         self.deleted.append(StackName)
 
+    def describe_stacks(self, StackName: str) -> dict:
+        # A delete_stack call only starts the delete, so a stack just deleted is
+        # still there; the sweep defers its -iam stack until it is gone.
+        if StackName in self.deleted:
+            status = "DELETE_IN_PROGRESS"
+        elif StackName in {x["StackName"] for x in self.summaries}:
+            status = "CREATE_COMPLETE"
+        else:
+            raise _gone(StackName)
+        return {"Stacks": [{"StackName": StackName, "StackStatus": status}]}
+
 
 @dataclass
 class _Installed:
@@ -361,12 +372,15 @@ def test_every_stack_the_update_reaches_is_one_the_stack_sweep_spares(cbd, monke
     monkeypatch.delenv("SOURCE_BUCKET", raising=False)
 
     assert cbd.cleanup_stale_idp_stacks() == []
-    assert sorted(listing.deleted) == old_run, (
+    # The old run's main stack is reaped; its -iam stack waits for that delete to
+    # finish (it holds the role the delete runs as), and the UX stacks are spared.
+    assert sorted(listing.deleted) == old_run[:1], (
         f"the Step 0 stack sweep deleted {listing.deleted} from a listing of "
         f"{sorted(reached)} beside an old run's {old_run}, each top-level and "
         "older than IDP_STACK_STALE_AGE_SECONDS. A stack the update reaches that "
         "the sweep deletes is gone before the next nightly update, and an old run "
-        "it leaves standing is a sweep that stopped reaping"
+        "whose main stack it leaves standing is a sweep that stopped reaping (its "
+        "-iam stack follows on a later run, once the main stack is gone)"
     )
 
 

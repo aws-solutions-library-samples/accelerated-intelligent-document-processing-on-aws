@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from . import hcl
 from .awscc_schema import ANY, Hint
-from .translate import NO_VALUE, STACK_NAME_VAR, TranslationError, is_intrinsic
+from .translate import (
+    BARE_ARN_ATTR,
+    NO_VALUE,
+    STACK_NAME_VAR,
+    TranslationError,
+    is_intrinsic,
+)
 
 if TYPE_CHECKING:
     from .translate import Plan, Translator
@@ -170,6 +176,11 @@ class SpecMapper:
     #: CloudFormation property paths the provider replaces the resource for,
     #: beyond the registry's createOnlyProperties (see idp_tf.create_only).
     force_new: tuple[str, ...] = ()
+    #: Provider arguments emitted with ``ignore_changes``, and why. Only for an
+    #: argument the service cannot change after creation, where a difference
+    #: could only ever replace the resource and lose what it holds.
+    ignore_changes: tuple[str, ...] = ()
+    ignore_reason: str = ""
 
     def getatt(self, attr: str) -> Any:
         if attr not in self.attrs:
@@ -187,6 +198,14 @@ class SpecMapper:
             if cfn_prop not in props:
                 lines.insert(0, f"{tf_attr} = {default_name(plan.logical_id, limit)}")
         head, tail = tr.meta_lines(plan, res)
+        if self.ignore_changes:
+            tail = tail + [
+                f"# {self.ignore_reason}",
+                hcl.block(
+                    "lifecycle",
+                    [f"ignore_changes = [{', '.join(self.ignore_changes)}]"],
+                ).rstrip(),
+            ]
         out = hcl.block(f'resource "{self.tf_type}" "{plan.name}"', head + lines + tail)
         return out
 
@@ -523,8 +542,10 @@ LAMBDA = LambdaMapper(
 LOG_GROUP = SpecMapper(
     tf_type="aws_cloudwatch_log_group",
     ref_attr="name",
-    # CloudFormation's Arn ends in ":*"; the provider's does not.
-    attrs={"Arn": ("arn", '"${%s}:*"')},
+    # CloudFormation's Arn ends in ":*"; the provider's does not. BARE_ARN_ATTR
+    # is the translator's own name for the provider's form, for the properties
+    # whose service stores the ARN without the suffix (see translate.py).
+    attrs={"Arn": ("arn", '"${%s}:*"'), BARE_ARN_ATTR: "arn"},
     spec={
         "LogGroupName": ("attr", "name"),
         "RetentionInDays": ("attr", "retention_in_days"),
@@ -1012,6 +1033,16 @@ COGNITO_USER_POOL = SpecMapper(
     # The registry marks none of these create-only; the provider documents each
     # as forcing a new resource, because Cognito's UpdateUserPool takes none.
     force_new=("UserPoolName", "AliasAttributes", "UsernameAttributes"),
+    # Cognito fixes UsernameConfiguration when the pool is created and
+    # UpdateUserPool cannot change it, so a difference can only replace the
+    # pool, deleting every user and password in it. A pool adopted with
+    # `import` from another deployment keeps its own value (a pool created
+    # without the setting is case sensitive) instead of being replaced.
+    ignore_changes=("username_configuration",),
+    ignore_reason=(
+        "username_configuration is fixed at pool creation; a difference "
+        "would replace the pool and delete its users"
+    ),
     attrs={
         "Arn": "arn",
         "UserPoolId": "id",
@@ -1321,9 +1352,23 @@ CLOUDFRONT_DISTRIBUTION = CloudFrontMapper(
 )
 
 
+# The web ACL's request logging. Ref is the web ACL's ARN, as is the provider's
+# id. RedactedFields and LoggingFilter are left unmapped (no template sets them),
+# so a template that adds one fails the translation instead of losing it.
+WAF_LOGGING_CONFIGURATION = SpecMapper(
+    tf_type="aws_wafv2_web_acl_logging_configuration",
+    ref_attr="id",
+    attrs={},
+    spec={
+        "ResourceArn": ("attr", "resource_arn"),
+        "LogDestinationConfigs": ("attr", "log_destination_configs"),
+    },
+)
+
 MAPPERS: dict[str, Any] = {
     "AWS::Events::Rule": EventsRuleMapper(),
     "AWS::WAFv2::WebACL": WAF_WEB_ACL,
+    "AWS::WAFv2::LoggingConfiguration": WAF_LOGGING_CONFIGURATION,
     "AWS::Cognito::UserPool": COGNITO_USER_POOL,
     "AWS::CloudFront::Distribution": CLOUDFRONT_DISTRIBUTION,
     "AWS::CloudFormation::WaitConditionHandle": NoOpMapper(),

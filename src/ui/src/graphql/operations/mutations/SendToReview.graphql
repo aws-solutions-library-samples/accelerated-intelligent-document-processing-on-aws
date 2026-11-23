@@ -1,0 +1,14 @@
+mutation SendToReview($objectKeys: [String!]!, $reason: String!, $note: String) {
+  sendToReview(objectKeys: $objectKeys, reason: $reason, note: $note) {
+    counts {
+      outcome
+      count
+    }
+    results {
+      objectKey
+      outcome
+      kind
+      detail
+    }
+  }
+}

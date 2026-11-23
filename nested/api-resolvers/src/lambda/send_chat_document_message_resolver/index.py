@@ -19,8 +19,11 @@ RBAC:
   * All authenticated Cognito users can reach the mutation (schema-level
     ``@aws_cognito_user_pools @aws_iam``).
   * On first user message, the resolver records the caller's Cognito ``sub`` as
-    the session owner in DynamoDB. Subsequent calls for the same session from a
-    different user will be rejected (prevents session hijacking).
+    the session owner in ``ChatSessionOwnersTable`` — the registry every chat
+    path shares, since Agent Chat and Chat-with-Document store messages under
+    the same session-id key. A message from a different user under that id is
+    refused, as is a first message under an id that already has stored history
+    and no owner (see ``chat_session_owner.py``).
   * The processor enforces ``allowedConfigVersions`` scope before calling
     Bedrock, resolved from the verified claims this resolver forwards as
     ``identity`` — see ``_forwarded_identity`` here and
@@ -40,6 +43,7 @@ from datetime import datetime
 
 import boto3
 from botocore.exceptions import ClientError
+from chat_session_owner import claim_chat_session, has_stored_messages
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -47,7 +51,11 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 _dynamodb = boto3.resource("dynamodb")
 _lambda = boto3.client("lambda")
 
+# Where this resolver recorded owners before ChatSessionOwnersTable existed. Read
+# only, as the earlier evidence of owning a session (see chat_session_owner.py).
 SESSIONS_TABLE = os.environ.get("CHAT_DOCUMENT_SESSIONS_TABLE", "")
+OWNERS_TABLE = os.environ.get("CHAT_SESSION_OWNERS_TABLE", "")
+MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE", "")
 PROCESSOR_FUNCTION_ARN = os.environ.get("CHAT_DOCUMENT_PROCESSOR_FUNCTION_ARN", "")
 DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "1"))
 
@@ -66,23 +74,6 @@ _PROCESSOR_METHODS = frozenset(
 
 def _now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-def _caller_sub(event: dict) -> str:
-    """Extract the Cognito sub from the AppSync identity payload.
-
-    Returns empty string when invoked via IAM (processor publish) — callers
-    should treat that as "system" and skip ownership checks.
-    """
-    identity = event.get("identity") or {}
-    if not isinstance(identity, dict):
-        return ""
-    # Cognito user pools identity
-    sub = identity.get("sub") or ""
-    if sub:
-        return str(sub)
-    # Fallback to username (older integrations)
-    return str(identity.get("username") or "")
 
 
 def _forwarded_identity(event: dict) -> dict | None:
@@ -145,34 +136,72 @@ def _forwarded_identity(event: dict) -> dict | None:
     }
 
 
-def _check_session_ownership(session_id: str, caller_sub: str) -> None:
-    """Enforce that ``caller_sub`` owns ``session_id`` (or is first user)."""
-    if not SESSIONS_TABLE or not caller_sub:
-        # No ownership table configured or system call — skip.
+class ResourceAccessDenied(PermissionError):
+    """A refusal by a per-object control rather than by the caller's group.
+
+    Declared locally because this Lambda's package does not carry ``idp_common``;
+    the canonical class is ``idp_common.api_adapter.ResourceAccessDenied``, and the
+    dispatcher recognises it by class name. Still a ``PermissionError``, so the
+    caller sees 403 ``Unauthorized``.
+    """
+
+
+def _verified_sub(event: dict) -> str:
+    """The caller's Cognito ``sub`` only — what a session's owner is recorded as."""
+    identity = event.get("identity") or {}
+    if not isinstance(identity, dict):
+        return ""
+    return str(identity.get("sub") or (identity.get("claims") or {}).get("sub") or "")
+
+
+def _earlier_document_owner(session_id: str, caller_sub: str) -> bool:
+    """Whether this resolver's earlier ownership table names the caller."""
+    if not SESSIONS_TABLE:
+        return False
+    item = _dynamodb.Table(SESSIONS_TABLE).get_item(
+        Key={"sessionId": session_id}
+    ).get("Item")
+    return bool(item) and item.get("ownerSub") == caller_sub
+
+
+def _check_session_ownership(session_id: str, event: dict) -> None:
+    """Refuse a message under a session id another user owns.
+
+    Registers the id to the caller when nobody owns it and nothing is stored
+    under it. An identity-less invocation is the IAM-gated backend path and is
+    not checked. Fails **closed**: an unconfigured table, a caller with no
+    ``sub``, or a DynamoDB error refuses the turn.
+    """
+    if event.get("identity") is None:
         return
-    table = _dynamodb.Table(SESSIONS_TABLE)
+    caller_sub = _verified_sub(event)
+    if not (OWNERS_TABLE and MESSAGES_TABLE and caller_sub):
+        logger.error("Cannot verify chat session ownership; refusing")
+        raise ResourceAccessDenied(
+            "Unauthorized: chat session ownership cannot be verified"
+        )
+    messages_table = _dynamodb.Table(MESSAGES_TABLE)
     try:
-        resp = table.get_item(Key={"sessionId": session_id})
+        owned = claim_chat_session(
+            _dynamodb.Table(OWNERS_TABLE),
+            session_id,
+            caller_sub,
+            expires_after=int(time.time()) + DATA_RETENTION_DAYS * 24 * 60 * 60,
+            allow_new=True,
+            has_stored_messages=lambda: has_stored_messages(
+                messages_table, session_id
+            ),
+            holds_earlier_record=lambda: _earlier_document_owner(
+                session_id, caller_sub
+            ),
+        )
     except ClientError as e:
-        logger.warning(
-            "Could not verify session ownership (failing open): %s", e
-        )
-        return
-    existing = resp.get("Item")
-    if existing is None:
-        # First message for this session — claim ownership.
-        ttl = int(time.time()) + DATA_RETENTION_DAYS * 24 * 60 * 60
-        table.put_item(
-            Item={
-                "sessionId": session_id,
-                "ownerSub": caller_sub,
-                "createdAt": _now_iso(),
-                "ExpiresAfter": ttl,
-            }
-        )
-        return
-    if existing.get("ownerSub") and existing["ownerSub"] != caller_sub:
-        raise Exception(
+        logger.error("Could not verify session ownership: %s", e)
+        raise ResourceAccessDenied(
+            "Unauthorized: chat session ownership cannot be verified"
+        ) from e
+    if not owned:
+        raise ResourceAccessDenied(
             "Unauthorized: this chat session belongs to another user"
         )
 
@@ -236,9 +265,8 @@ def handler(event, _context):  # noqa: ANN001
 
     ui_model_id = str(args.get("modelId") or "").strip()
 
-    # RBAC: ensure only the session creator may continue the session.
-    caller = _caller_sub(event)
-    _check_session_ownership(session_id, caller)
+    # RBAC: ensure only the session's owner may continue the session.
+    _check_session_ownership(session_id, event)
 
     # Fire-and-forget invoke of the processor.
     if not PROCESSOR_FUNCTION_ARN:

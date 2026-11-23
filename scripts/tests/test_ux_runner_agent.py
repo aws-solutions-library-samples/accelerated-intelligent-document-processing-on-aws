@@ -40,7 +40,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from ux_runner import agent, paths, processes, tool_profiles  # noqa: E402
+from ux_runner import agent, paths, processes, story_relay, tool_profiles  # noqa: E402
 
 AI_MR_REVIEW = SCRIPTS / "sdlc" / "ai_mr_review.py"
 DEVTOOLS = tool_profiles.CHROME_DEVTOOLS_SERVER
@@ -91,6 +91,8 @@ def _private_cwd(tmp_path: Path, name: str = "cwd") -> Path:
 def _servers(search_path: str = agent.DEFAULT_SEARCH_PATH) -> dict[str, Any]:
     return agent.mcp_servers(
         toolchain=paths.Toolchain(Path("/opt/ux-runner")),
+        relay=Path("/work/ux-harness/scripts/ux_runner/review_relay.py"),
+        refusal_log=Path("/run/ux/agent/guard/guard-refusals.jsonl"),
         recorder_adapter=Path("/work/ux-harness/scripts/ux_recorder_mcp.py"),
         recorder_out=Path("/run/ux/recordings"),
         python="/usr/local/bin/python3",
@@ -660,10 +662,40 @@ def test_both_mcp_servers_start_under_env_minus_i_with_nothing_inherited() -> No
 
 
 @pytest.mark.unit
-def test_the_devtools_server_attaches_to_the_harness_chrome_with_the_pinned_flags() -> (
+def test_the_devtools_server_is_the_review_relay_in_isolated_python() -> None:
+    """The model's browser server is the review relay, so every click and input
+    passes the commit guard; it runs as the recorder adapter does, and is told
+    which chrome-devtools-mcp to start, its file root and its refusal log."""
+    assert _servers()[DEVTOOLS]["args"] == [
+        "-i",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "HOME=/run/ux/agent/home",
+        "LANG=C.UTF-8",
+        "/usr/local/bin/python3",
+        "-I",
+        "-B",
+        "/work/ux-harness/scripts/ux_runner/review_relay.py",
+        "--devtools",
+        "/opt/ux-runner/node_modules/.bin/chrome-devtools-mcp",
+        "--filesystem-root",
+        "/run/ux/agent/mcp-files",
+        "--refusals",
+        "/run/ux/agent/guard/guard-refusals.jsonl",
+    ]
+
+
+@pytest.mark.unit
+def test_chrome_devtools_mcp_attaches_to_the_harness_chrome_with_the_pinned_flags() -> (
     None
 ):
-    assert _servers()[DEVTOOLS]["args"] == [
+    argv = story_relay.devtools_argv(
+        paths.Toolchain(Path("/opt/ux-runner")).devtools_mcp,
+        home=Path("/run/ux/agent/home"),
+        fs_root=Path("/run/ux/agent/mcp-files"),
+        search_path=agent.DEFAULT_SEARCH_PATH,
+    )
+    assert argv == [
+        "/usr/bin/env",
         "-i",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "HOME=/run/ux/agent/home",
@@ -703,7 +735,12 @@ def test_the_devtools_server_runs_no_page_script_and_acts_on_the_one_open_page()
     that no other argument names either option and so cannot turn it back on, and
     the release they were measured against.
     """
-    args = _servers()[DEVTOOLS]["args"]
+    args = story_relay.devtools_argv(
+        paths.Toolchain(Path("/opt/ux-runner")).devtools_mcp,
+        home=Path("/run/ux/agent/home"),
+        fs_root=Path("/run/ux/agent/mcp-files"),
+        search_path=agent.DEFAULT_SEARCH_PATH,
+    )
     naming = [
         arg
         for arg in args
@@ -773,9 +810,9 @@ def test_the_mcp_config_refuses_to_follow_a_symlink(tmp_path: Path) -> None:
 def test_run_agent_starts_nothing_in_a_working_directory_that_is_not_private_and_empty(
     tmp_path: Path,
 ) -> None:
-    """claude's working directory is a root chrome-devtools-mcp may write files
-    under (1.10.1 writes under its --filesystemRoot and every root the client
-    reports), so moving it into the harness or the artifacts must fail."""
+    """claude's working directory is every MCP server's working directory, so it
+    is held to the standard chrome-devtools-mcp's file root is, and moving it into
+    the harness or the artifacts must fail."""
     ran: list[Path] = []
 
     def runner(argv: list[str], **kwargs: Any) -> processes.Completed:
@@ -804,14 +841,19 @@ def test_run_agent_starts_nothing_in_a_working_directory_that_is_not_private_and
 
 
 @pytest.mark.unit
-def test_the_devtools_flags_say_the_working_directory_is_a_write_root() -> None:
+def test_the_devtools_flags_say_the_file_root_is_the_only_write_root() -> None:
+    """chrome-devtools-mcp writes under its --filesystemRoot and every root its
+    client reports, and its client is a relay that reports none, which
+    ``test_ux_review_relay.py`` and ``test_ux_story_relay.py`` each check against
+    what the child receives."""
     source = (SCRIPTS / "ux_runner" / "agent.py").read_text(encoding="utf-8")
     comment = source.split("DEVTOOLS_FLAGS: tuple[str, ...] = (")[0].rsplit("\n\n", 1)[
         -1
     ]
     prose = " ".join(line.lstrip("#: ") for line in comment.splitlines())
     assert "--filesystemRoot" in prose and "union" in prose, prose
-    assert "run_agent" in prose
+    assert "review_relay" in prose and "story_relay" in prose, prose
+    assert "neither reports a root" in " ".join(prose.split()), prose
 
 
 @pytest.mark.unit

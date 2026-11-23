@@ -163,5 +163,20 @@ if [ -d "$PROJECT_ROOT/docs/analyst-reports" ]; then
     echo "   ✅ Linked analyst-reports directory for public serving"
 fi
 
+# Step 4: Serve the standalone "IDP in Action" landing page at
+# <base>/idp-in-action.html. It is a self-contained HTML page, not Markdown, so
+# Starlight would not render it as content; public/ serves it verbatim. Its
+# screenshots live in images/idp-in-action/, already served through the
+# public/images link above. docs/idp-in-action.md is the sidebar page that
+# points to it.
+if [ -f "$PROJECT_ROOT/docs/idp-in-action.html" ]; then
+    echo ""
+    echo "🌐 Linking the IDP in Action page..."
+    [ -L "$SCRIPT_DIR/public/idp-in-action.html" ] && rm "$SCRIPT_DIR/public/idp-in-action.html"
+    # Path: docs-site/public/ → 2 levels up to project root
+    ln -s "../../docs/idp-in-action.html" "$SCRIPT_DIR/public/idp-in-action.html"
+    echo "   ✅ Linked idp-in-action.html for public serving"
+fi
+
 echo ""
 echo "✨ Setup complete! Run 'npm install && npm run dev' to start the dev server."

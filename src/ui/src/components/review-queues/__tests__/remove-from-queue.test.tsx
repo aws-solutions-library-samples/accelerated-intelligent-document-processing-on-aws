@@ -118,12 +118,23 @@ describe('Remove from queue', () => {
 describe('the queue page', () => {
   const source = readFileSync(resolve(__dirname, '../ReviewQueuePage.tsx'), 'utf8');
 
-  it('offers Remove from queue as a bulk action in the Admin toolbar', () => {
+  it("offers Remove from queue in the Admin toolbar's More actions menu", () => {
     const start = source.indexOf('actions={\n            isAdmin ? (');
     expect(start).toBeGreaterThan(-1);
     const adminBranch = source.slice(start, source.indexOf(') : (', start));
-    expect(adminBranch).toContain("supervisor.open('remove', removable)");
-    expect(adminBranch).toContain("counted('Remove from queue…', removable.length)");
+    expect(adminBranch).toContain('moreActions([queueGroup, skipGroup])');
+    const queueGroup = source.slice(source.indexOf('const queueGroup'), source.indexOf('const onMoreAction'));
+    expect(queueGroup).toContain('counted(intl.formatMessage(messages.removeFromQueue), removable.length)');
+    expect(source).toContain("id: 'reviewQueues.queuePage.removeFromQueue',\n    defaultMessage: 'Remove from queue…',");
+    expect(source).toContain("else if (id === 'remove') supervisor.open('remove', removable);");
+  });
+
+  it('keeps only Assign and Unassign as Admin toolbar buttons', () => {
+    const start = source.indexOf('actions={\n            isAdmin ? (');
+    const adminBranch = source.slice(start, source.indexOf(') : (', start));
+    expect(adminBranch.match(/<Button\b/g)).toHaveLength(2);
+    expect(adminBranch).toContain("counted('Assign to…', assignable.length)");
+    expect(adminBranch).toContain("counted('Unassign', unassignable.length)");
   });
 
   it('gives the row menu the Admin actions only to Admins', () => {

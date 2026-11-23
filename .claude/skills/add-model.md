@@ -121,6 +121,11 @@ Cross-check against the file map below.
       not raise, it silently binds your model to **another model's** quota code.
       The maps are an acknowledged incomplete subset of the picklists; adding the
       model you are working on does not close that class.
+      If Service Quotas lists **no** quota for the model at all, map it to `null`
+      in both maps rather than omitting it or guessing a code: Capacity Planning
+      then skips that model's steps with a "Quota not read" warning instead of
+      failing on a missing entry. The calculation still fails if every model the
+      plan calls is `null`-mapped or otherwise unreadable.
 - [ ] `nested/multi-doc-discovery/template.yaml` and other nested templates —
       IAM / enums as applicable.
 
@@ -159,6 +164,12 @@ Cross-check against the file map below.
 - [ ] `docs/README.md` — index link if a new doc was added.
 - [ ] `CHANGELOG.md` — `[Unreleased]` entry stating what IS and IS NOT supported
       (regions, caching, GovCloud, agentic/discovery).
+- [ ] `solution-profile/capabilities.yaml` — add a `model:<base id>` tag to the
+      `bedrock-model-choice` capability. `make solution-profile-check` (part of
+      `make lint`) fails on a selectable model the profile does not tag, and on a
+      tag whose model is gone. The same check covers new presets, routed file
+      extensions, hook points and launch Regions; see
+      `.claude/skills/update-solution-profile.md`.
 
 ### G. Tests
 - [ ] `tests/unit/test_bedrock_openai_responses.py` (mantle) or the relevant

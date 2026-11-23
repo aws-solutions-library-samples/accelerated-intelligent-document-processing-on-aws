@@ -2,8 +2,8 @@
 title: "Greedy Decoding and Invalid Tool-Use Sequences"
 ---
 
-<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
-<!-- SPDX-License-Identifier: MIT-0 -->
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
 
 # Greedy Decoding and Invalid Tool-Use Sequences
 

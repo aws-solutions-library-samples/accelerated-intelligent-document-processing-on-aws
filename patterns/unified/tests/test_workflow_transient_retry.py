@@ -33,9 +33,12 @@ _UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 
 # Every task whose Lambda handler re-raises TransientError: the in-process
 # extraction task, the assessment task, all THREE shard-runtime tasks (plan,
-# shard, merge share one handler, so all three must list the name), and the three
-# rule-validation tasks (#1101).
+# shard, merge share one handler, so all three must list the name), the three
+# rule-validation tasks (#1101), classification (#2034), and OCR, summarization
+# and evaluation (#2049).
 TASKS = (
+    "OCRStep",
+    "ClassificationStep",
     "ExtractionStep",
     "AssessmentStep",
     "ExtractionPlanStep",
@@ -44,6 +47,8 @@ TASKS = (
     "PolicyClassificationStep",
     "RuleValidationStep",
     "RuleValidationOrchestration",
+    "SummarizationStep",
+    "EvaluationStep",
 )
 
 # Handler sources that must surface a transient cause under the listed name, one
@@ -52,12 +57,16 @@ TASKS = (
 # re-raise is a document failure without the ASL entry.
 HANDLER_SOURCES = (
     # each wraps its WHOLE handler, so loads before the main call count too
+    "ocr_function/index.py",
+    "classification_function/index.py",
     "extraction_function/index.py",
     "extraction_function/sfn_runtime_handler.py",
     "assessment_function/index.py",
     "rule-validation-policy-classification-function/index.py",
     "rule-validation-function/index.py",
     "rule-validation-orchestration-function/index.py",
+    "summarization_function/index.py",
+    "evaluation_function/index.py",
 )
 
 
@@ -79,8 +88,7 @@ def _find_state(states: dict, name: str) -> dict:
 
 @pytest.fixture(scope="module")
 def states() -> dict:
-    raw = ASL_PATH.read_text(encoding="utf-8")
-    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub('": 1', raw))["States"]
+    return _parse_states(ASL_PATH.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("task", TASKS)
@@ -265,45 +273,22 @@ def _can_invoke_a_model(logical_id: str, blocks: dict) -> bool:
     )
 
 
-#: Bedrock-capable states that deliberately do NOT convert transient failures yet.
+#: Bedrock-capable states that deliberately do NOT convert transient failures.
 #: One entry per state, each with its own reason, because an absence is what let this
-#: go unnoticed. Both halves of a conversion have to land together for a given state
-#: (adding ``raise_if_transient`` to a handler CONVERTS a modeled ThrottlingException
-#: into TransientError, so doing that without adding the name to the state's Retry
-#: list would REMOVE retryability that exists today), and neither half is in this
-#: change.
+#: go unnoticed. Converting a state is two halves that land together: adding
+#: ``raise_if_transient`` to a handler CONVERTS a modeled ThrottlingException into
+#: TransientError, so doing that without adding the name to the state's Retry list
+#: would REMOVE retryability that exists today.
 TRANSIENT_CONVERSION_EXEMPT = {
-    "OCRStep": (
-        "Calls Bedrock only when ocr.backend is 'bedrock'; on Textract it makes no "
-        "model call at all, so the conversion changes behaviour for one backend and "
-        "not the other and wants measuring per backend before it lands. Handler "
-        "raises rather than swallowing, so a throttle is visible and diagnosed and "
-        "what is lost is the retry. Deferred in #1142."
-    ),
-    "ClassificationStep": (
-        "One model call per page on the page-level path and one per document on the "
-        "holistic one, so a throttle here costs a whole classification pass rather "
-        "than one section and the retry is worth more than on the per-section states. "
-        "Handler raises. Deferred in #1142 because the Retry entry and the handler's "
-        "raise_if_transient have to land together."
-    ),
-    "SummarizationStep": (
-        "A single model call over the whole document at the end of the pipeline, so a "
-        "throttle wastes every stage before it. Handler raises. Deferred in #1142 "
-        "because the Retry entry and the handler's raise_if_transient have to land "
-        "together."
-    ),
-    "EvaluationStep": (
-        "Reaches Bedrock through the LLM-judge comparators rather than directly, which "
-        "is why a source scan does not see it and why its conversion needs the "
-        "comparator path checked rather than just the handler. Evaluation is advisory, "
-        "so a lost retry costs a report rather than a document. Deferred in #1142."
-    ),
     "RecordEvaluationFailure": (
-        "Same Lambda as EvaluationStep but on a deliberately shorter transient tier "
-        "(5/3/2.0 against the 10/8/2.5 the others carry), because it runs on the "
-        "failure path and must not extend an already-failing execution. That shorter "
-        "ladder is the reason it is listed separately here. Deferred with it in #1142."
+        "Runs EvaluationFunction with record_failure_only, a branch that makes no "
+        "model call at all: it loads the document, stamps the evaluation status and "
+        "returns, and its own except returns the document too, so it never raises "
+        "and there is no transient cause for a TransientError entry to retry. It is "
+        "in this universe only because the function's Bedrock grant serves the "
+        "LLM-judge calls of EvaluationStep, which does convert. Its shorter 5/3/2.0 "
+        "transient tier is deliberate, because it runs on the failure path. Left "
+        "exempt by the decision recorded on #2049."
     ),
 }
 
@@ -342,9 +327,11 @@ def template_text() -> str:
     return TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
-@pytest.fixture(scope="module")
-def substitutions(template_text: str) -> dict:
-    """``DefinitionSubstitutions``: ``${Placeholder}`` -> Lambda logical id."""
+def _parse_states(raw: str) -> dict:
+    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub('": 1', raw))["States"]
+
+
+def _substitutions(template_text: str) -> dict:
     return dict(
         re.findall(
             r"^\s{8}([A-Za-z0-9]+):\s*!GetAtt\s+([A-Za-z0-9]+)\.Arn\s*$",
@@ -354,9 +341,7 @@ def substitutions(template_text: str) -> dict:
     )
 
 
-@pytest.fixture(scope="module")
-def resource_blocks(template_text: str) -> dict:
-    """Each top-level template resource's own body, by logical id."""
+def _resource_blocks(template_text: str) -> dict:
     blocks: dict[str, list[str]] = {}
     current = None
     for line in template_text.split("\n"):
@@ -369,9 +354,7 @@ def resource_blocks(template_text: str) -> dict:
     return {k: "\n".join(v) for k, v in blocks.items()}
 
 
-@pytest.fixture(scope="module")
-def task_targets(states, substitutions) -> dict:
-    """Every task state -> the Lambda logical id it invokes."""
+def _task_targets(states: dict, substitutions: dict) -> dict:
     targets = {}
     for name, defn in _walk(states):
         if defn.get("Type") != "Task":
@@ -385,14 +368,59 @@ def task_targets(states, substitutions) -> dict:
     return targets
 
 
-@pytest.fixture(scope="module")
-def bedrock_capable_states(task_targets, resource_blocks) -> dict:
-    """Task state -> logical id, for every state permitted to invoke a model."""
+def _bedrock_capable(task_targets: dict, resource_blocks: dict) -> dict:
     return {
         name: logical_id
         for name, logical_id in task_targets.items()
         if _can_invoke_a_model(logical_id, resource_blocks)
     }
+
+
+def _retries_transient_error(state: dict) -> bool:
+    return "TransientError" in {
+        n for r in (state.get("Retry") or []) for n in r["ErrorEquals"]
+    }
+
+
+def converting_model_states() -> dict:
+    """Task state -> Lambda logical id, for every state permitted to invoke a model
+    that retries ``TransientError``: the universe whose handlers must surface a
+    transient model failure under that name. Derived exactly as the closure below
+    derives it, for ``test_transient_fault_matrix.py``, which drives each handler."""
+    states = _parse_states(ASL_PATH.read_text(encoding="utf-8"))
+    text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    capable = _bedrock_capable(
+        _task_targets(states, _substitutions(text)), _resource_blocks(text)
+    )
+    return {
+        name: logical_id
+        for name, logical_id in capable.items()
+        if _retries_transient_error(_find_state(states, name.split("/")[-1]))
+    }
+
+
+@pytest.fixture(scope="module")
+def substitutions(template_text: str) -> dict:
+    """``DefinitionSubstitutions``: ``${Placeholder}`` -> Lambda logical id."""
+    return _substitutions(template_text)
+
+
+@pytest.fixture(scope="module")
+def resource_blocks(template_text: str) -> dict:
+    """Each top-level template resource's own body, by logical id."""
+    return _resource_blocks(template_text)
+
+
+@pytest.fixture(scope="module")
+def task_targets(states, substitutions) -> dict:
+    """Every task state -> the Lambda logical id it invokes."""
+    return _task_targets(states, substitutions)
+
+
+@pytest.fixture(scope="module")
+def bedrock_capable_states(task_targets, resource_blocks) -> dict:
+    """Task state -> logical id, for every state permitted to invoke a model."""
+    return _bedrock_capable(task_targets, resource_blocks)
 
 
 def test_every_task_state_resolves_to_a_lambda(states, substitutions, resource_blocks):
@@ -548,6 +576,29 @@ def test_no_exemption_is_dead(bedrock_capable_states, states):
     )
 
 
+def test_the_registry_entry_describes_only_the_states_still_exempt():
+    """``gate_exemptions.json`` summarises this constant's members in prose, and
+    nothing tied the two: ClassificationStep converted (#2034) and left the dict,
+    while the entry kept naming it and its reason. Every member must be named there,
+    and no state that now converts."""
+    registry = json.loads(
+        (ASL_PATH.parents[3] / "scripts/tests/gate_exemptions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entry = registry["exemptions"][
+        "patterns/unified/tests/test_workflow_transient_retry.py"
+        "::TRANSIENT_CONVERSION_EXEMPT"
+    ]
+    prose = f"{entry['turnsOff']} {entry['reason']}"
+    missing = [name for name in TRANSIENT_CONVERSION_EXEMPT if name not in prose]
+    assert not missing, f"the registry entry does not describe {missing}"
+    converting = [name for name in TASKS if re.search(rf"\b{name}\b", prose)]
+    assert not converting, (
+        f"the registry entry still describes {converting}, which now convert"
+    )
+
+
 def test_every_exemption_carries_a_reason():
     """A reason per member, not one attached to the set wearing per-member clothing.
 
@@ -557,7 +608,7 @@ def test_every_exemption_carries_a_reason():
     """
     for name, reason in TRANSIENT_CONVERSION_EXEMPT.items():
         assert len(reason) > 60, f"{name}'s reason is too short to be one: {reason!r}"
-        assert "1142" in reason, f"{name}'s reason should say where it is tracked"
+        assert "#2049" in reason, f"{name}'s reason should say where it is tracked"
     reasons = list(TRANSIENT_CONVERSION_EXEMPT.values())
     assert len(set(reasons)) == len(reasons), (
         "two members share a byte-identical reason, so it is a set-level justification "

@@ -32,6 +32,7 @@ import pytest
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("CHAT_MESSAGES_TABLE", "IDP-ChatMessagesTable")
 os.environ.setdefault("CHAT_SESSIONS_TABLE", "IDP-ChatSessionsTable")
+os.environ.setdefault("CHAT_SESSION_OWNERS_TABLE", "IDP-ChatSessionOwnersTable")
 
 pytestmark = pytest.mark.unit
 
@@ -48,14 +49,22 @@ def _load_index():
     return module
 
 
-def _wire(module, *, session_owned_by_caller):
-    """Point the module's DynamoDB resource at two recording table doubles.
+def _wire(module, *, session_owned_by_caller, recorded_owner=None):
+    """Point the module's DynamoDB resource at recording table doubles.
 
     ``session_owned_by_caller`` decides what ChatSessionsTable answers for the
-    ownership probe, which is the single input this behaviour turns on.
+    caller's own row. ``recorded_owner`` is the sub ChatSessionOwnersTable holds
+    for the id; with none recorded, the caller's own row is the earlier evidence
+    of ownership and registers them (a session from before the owner table).
     """
     sessions = MagicMock(name="ChatSessionsTable")
     messages = MagicMock(name="ChatMessagesTable")
+    owners = MagicMock(name="ChatSessionOwnersTable")
+    owners.get_item.return_value = (
+        {"Item": {"sessionId": "s-1", "ownerSub": recorded_owner}}
+        if recorded_owner
+        else {}
+    )
 
     sessions.get_item.return_value = (
         {"Item": {"userId": "owner", "sessionId": "s-1"}}
@@ -67,6 +76,8 @@ def _wire(module, *, session_owned_by_caller):
     }
 
     def table(name):
+        if name == os.environ["CHAT_SESSION_OWNERS_TABLE"]:
+            return owners
         return messages if name == os.environ["CHAT_MESSAGES_TABLE"] else sessions
 
     module.dynamodb = MagicMock()
@@ -95,7 +106,7 @@ def test_a_session_the_caller_does_not_own_is_refused_and_nothing_is_deleted():
 
     # The ownership probe was aimed at the caller's own partition...
     sessions.get_item.assert_called_once_with(
-        Key={"userId": "someone-else", "sessionId": "s-1"}
+        Key={"userId": "someone-else", "sessionId": "s-1"}, ConsistentRead=True
     )
     # ...and the destructive half never ran. Both halves matter: a query that
     # happens before the refusal would already have read another user's keys.
@@ -111,13 +122,33 @@ def test_the_owner_deletes_their_own_session_and_its_messages():
     assert module.handler(_event("owner"), None) is True
 
     sessions.get_item.assert_called_once_with(
-        Key={"userId": "owner", "sessionId": "s-1"}
+        Key={"userId": "owner", "sessionId": "s-1"}, ConsistentRead=True
     )
     sessions.delete_item.assert_called_once_with(
         Key={"userId": "owner", "sessionId": "s-1"}
     )
     messages.query.assert_called_once()
     messages.batch_writer.assert_called_once()
+
+
+def test_the_callers_own_row_does_not_open_a_session_another_user_owns():
+    """Sending one message under any id used to create the sender's own row.
+
+    So a row is not ownership once an owner is recorded: with another user's sub
+    in ChatSessionOwnersTable the delete is refused and the row is never read.
+    """
+    module = _load_index()
+    sessions, messages = _wire(
+        module, session_owned_by_caller=True, recorded_owner="sub-owner"
+    )
+
+    with pytest.raises(PermissionError) as refused:
+        module.handler(_event("someone-else"), None)
+
+    assert type(refused.value).__name__ == "ResourceAccessDenied"
+    sessions.get_item.assert_not_called()
+    messages.query.assert_not_called()
+    messages.batch_writer.assert_not_called()
 
 
 def test_a_caller_with_no_resolvable_identity_is_refused_before_any_read():

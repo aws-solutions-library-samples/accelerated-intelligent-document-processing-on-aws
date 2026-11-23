@@ -55,7 +55,7 @@ If a GitHub MCP server is configured (e.g. for Cline), use its
 - `get_file_contents` on specific paths at `ref=refs/pull/<NN>/head` to read
   full files when the diff lacks enough context
 
-### GitLab MR (`gitlab.aws.dev/<group>/<project>/-/merge_requests/<NN>`)
+### GitLab MR (`code.aws.dev/<group>/<project>/-/merge_requests/<NN>`)
 
 Use the `glab` CLI:
 
@@ -73,9 +73,9 @@ PROJECT=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote_plus(sys.
   "<group>/<project>")
 TOKEN="${GITLAB_TOKEN:-$(yq -r .token ~/.config/glab-cli/config.yml 2>/dev/null)}"
 curl -sH "PRIVATE-TOKEN: $TOKEN" \
-  "https://gitlab.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>"
+  "https://code.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>"
 curl -sH "PRIVATE-TOKEN: $TOKEN" \
-  "https://gitlab.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>/changes"
+  "https://code.aws.dev/api/v4/projects/$PROJECT/merge_requests/<NN>/changes"
 ```
 
 ### Collect at minimum
@@ -114,6 +114,26 @@ documentation, testing, code-review).
   - Config schemas under `config_library/`
   - GraphQL schema and generated types in `src/ui/src/graphql/generated/`
   - Lambda handler event/response contracts
+- Quick Start still works? It is a new user's first experience, and it calls
+  surfaces other pages own, so it breaks with no failing test. If the PR changes
+  the agent chat route or stream, configuration profile creation or activation,
+  the discovery upload resolvers, schema authoring or the class catalog, the
+  Welcome page, side navigation or tour, the Test Set Generator extension, the
+  groups a role holds, or the stack wiring Quick Start reads (the
+  `EnableQuickStartWidget` parameter and the installed-features SSM parameter),
+  check in the diff that Quick Start still handles any contract it changes. If it
+  renames a page, navigation item or product term, check that the Quick Start
+  agent's prompt (`lib/idp_common_pkg/idp_common/agents/quick_start/agent.py`),
+  `docs/quick-start.md` and its stories in `scripts/ux_stories.toml` still match.
+  A change the diff shows Quick Start's side cannot handle (a field it reads
+  renamed or removed, a requirement it does not meet) is 🔴; a backward-compatible
+  change needs nothing; one that may break it, or a prompt, page or story that no
+  longer matches, is 🟡. Where the PR description or commit messages are available,
+  also note whether they say how the change was checked: for a change to the
+  journey or to a contract it calls, the journey on a stack (open Quick Start,
+  describe a document, approve the drafted fields, profile created and activated);
+  for any other change under the rule's paths, the offline suites. The paths are
+  in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
@@ -141,9 +161,13 @@ runtime code that looks resources up through CloudFormation.
   `scripts/refresh_create_only.py`), with a translator test. Flag an entry
   added to `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`,
   `STABLE_CUSTOM_OUTPUTS`, `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS`
-  in `translate.py`, or to `completeness.NOT_APPLICABLE`, without a written
-  reason and a test: each one is a place where Terraform deliberately differs
-  from CloudFormation.
+  in `translate.py`, to a hand mapper's `ignore_changes` (`SpecMapper` in
+  `aws_mappers.py`, or a lifecycle block a mapper class emits itself), or to
+  `completeness.NOT_APPLICABLE`, without a written reason and a test: each one
+  is a place where Terraform deliberately differs from CloudFormation. A
+  mapper's `ignore_changes` is right only for a property the service cannot
+  change after creation, or one CloudFormation never updates; anywhere else it
+  hides a real change.
 - **A property value that does not reach the Terraform.** The completeness check
   (`idp_tf/completeness.py`) fails when a value in the template appears nowhere
   in the HCL emitted for its resource, which is how a hardening setting is lost
@@ -225,6 +249,36 @@ runtime code that looks resources up through CloudFormation.
 - New Python/npm dependencies are pinned and from trusted sources
 - `cfn-nag` / `checkov` suppressions include `reason:` metadata
 - No new public S3 buckets, public SNS topics, or open security groups
+
+#### Agent capability
+
+Apply this when the change touches any of: a Strands tool or agent, a system or
+user prompt, a model call, an MCP tool or client, a markdown renderer
+(`SafeMarkdown`, `safe-markdown-policy.ts`, anything rendering model output), the web
+UI content policy, or the IAM grants of a role that runs a model. For each surface
+the change touches, answer three questions from the code, not from the PR text:
+
+1. **What can the model read?** Which tools does it hold, what do they reach with
+   whose credentials, and which data is private (documents, reporting tables,
+   another user's chat, logs, CI credentials)?
+2. **What document-derived or external text reaches it?** Document text and page
+   images, extracted values, reporting rows, log lines, discovered configuration,
+   MCP server responses, a PR's own diff. Any of these can carry instructions.
+3. **Where can its output go?** A rendered page that can request remote resources,
+   the Code Interpreter sandbox, an MCP client or server, a PR comment, a saved
+   configuration that a later model reads.
+
+When all three hold at once (untrusted text in, private data readable, an external
+channel out), something in the code must limit each external channel. A system
+prompt instruction is not such a limit.
+
+Then check that `scripts/tests/agent_capabilities.yaml` was updated to match: a new
+tool or agent has an entry, a changed tool updates its entry's `reads`, `inputs` or
+`outputs`, and a removed control is not still named. `test_agent_capabilities.py`
+fails on an unregistered surface or a missing symbol, but it checks declarations,
+not truth: an entry that understates what a model can read passes it. A manifest
+that was not updated when the capability changed is 🟡 at least; a new
+combination of all three with no control and no recorded `finding` is 🔴.
 
 #### SRT security scan (`make srt-scan`)
 
@@ -349,8 +403,8 @@ Flag these immediately when seen in any diff:
   create-only property of one with nothing said about upgrading existing
   Terraform deployments
 - A new `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`, `STABLE_CUSTOM_OUTPUTS`,
-  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, or a
-  `completeness.NOT_APPLICABLE` or `scripts/terraform_scan_baseline.json` entry,
-  without a reason and a test
+  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, a hand mapper's
+  `ignore_changes`, or a `completeness.NOT_APPLICABLE` or
+  `scripts/terraform_scan_baseline.json` entry, without a reason and a test
 - Runtime code that walks the stack through CloudFormation APIs or the
   `aws:cloudformation:stack-name` tag without the Terraform resource-directory path

@@ -150,3 +150,68 @@ class TestStandardLibraryOnly:
             check=True,
         )
         assert out.stdout.strip() == "False False"
+
+
+@pytest.mark.unit
+class TestSharedPredicates:
+    """The one definition of "review finished" and "legacy review pending"."""
+
+    @pytest.mark.parametrize(
+        "value,finished",
+        [
+            *((s.value, s in LEGACY_DONE) for s in LegacyHitlStatus),
+            (ReviewStatus.IN_REVIEW.value, False),
+            (ReviewStatus.COMPLETE.value, True),
+            (ReviewStatus.REJECTED.value, True),
+            ("COMPLETED", True),
+            ("N/A", False),
+            (None, False),
+            ("", False),
+        ],
+    )
+    def test_is_review_finished(self, value, finished):
+        assert statuses.is_review_finished(value) is finished
+
+    def test_finished_statuses_are_exactly_the_finished_values(self):
+        assert set(statuses.FINISHED_HITL_STATUSES) == {
+            *(s.value for s in LEGACY_DONE),
+            ReviewStatus.COMPLETE.value,
+            ReviewStatus.REJECTED.value,
+            "COMPLETED",
+        }
+
+    @pytest.mark.parametrize(
+        "row,pending",
+        [
+            ({"HITLTriggered": True}, True),
+            ({"HITLStatus": LegacyHitlStatus.REVIEW_PENDING.value}, True),
+            ({"HITLStatus": LegacyHitlStatus.REVIEW_IN_PROGRESS.value}, True),
+            ({"HITLStatus": LegacyHitlStatus.REVIEW_SKIPPED.value}, False),
+            (
+                {
+                    "HITLStatus": LegacyHitlStatus.PENDING_REVIEW.value,
+                    "HITLCompleted": True,
+                },
+                False,
+            ),
+            ({"HITLStatus": ReviewStatus.IN_REVIEW.value}, False),
+            ({"HITLStatus": "N/A"}, False),
+            ({}, False),
+        ],
+    )
+    def test_is_legacy_review_pending(self, row, pending):
+        assert statuses.is_legacy_review_pending(row) is pending
+
+    def test_pending_filter_placeholders_are_all_used(self):
+        expression, names, values = statuses.pending_filter_expression()
+        for name in names:
+            assert name in expression
+        for value in values:
+            assert value in expression
+        assert ":pf_profile" in expression
+        assert all(v.startswith(":pf_") for v in values)
+
+    def test_queue_managed_message_is_re_exported(self):
+        from idp_common.review_queues import section_writes
+
+        assert section_writes.QUEUE_MANAGED_MESSAGE is statuses.QUEUE_MANAGED_MESSAGE

@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.4 |
-| **Last Updated** | 2026-11-09 |
-| **Applies to release** | v0.6.14 |
+| **Document Version** | 3.5 |
+| **Last Updated** | 2026-11-17 |
+| **Applies to release** | v0.6.16 |
 | **Classification** | Internal |
 
 > **v3.0 update.** All UI flows were rewritten: AppSync GraphQL + subscriptions
@@ -16,12 +16,15 @@
 > for the preprocessing/PII hook, the Feature Platform UI bundle, and the
 > Jobs API.
 
-> **Re-derived for v0.6.13** from `template.yaml`, the nested stacks,
+> **Sources.** The flows below are taken from `template.yaml`, the nested stacks,
 > `patterns/unified/statemachine/workflow.asl.json`, the queue sender and queue
-> processor, the chat stream processor and the review-queue modules. The flows
-> below include the optional malware gate at ingest (§2.1), both human-review
-> paths and the finalize execution (§2.4), the Inbox (§2.6) and the review status
-> object as an outbound interface (§2.6). In-flight fixes are cited by issue
+> processor, the chat stream processor, the review-queue and bulk-review modules,
+> the MCP interceptor and handler, `idp_common.decision_model` and the Terraform
+> deployment code in `lib/idp_sdk`. They include the optional malware gate at
+> ingest (§2.1), decision models (§2.2), both human-review paths, bulk review and
+> the finalize execution (§2.4), the Inbox and the review status object as an
+> outbound interface (§2.6), the MCP server (§4.4) and the Terraform deployment
+> route (§5.3). In-flight fixes are cited by issue
 > number and marked **pending**; nothing marked pending is a control today.
 
 ## 1. Overview
@@ -136,6 +139,7 @@ sequenceDiagram
     participant Extract as Extraction Lambda
     participant Bedrock as Bedrock (Anthropic/Nova)
     participant Mantle as Bedrock Mantle (OpenAI GPT-5.x)
+    participant Decider as Decision model Lambda (GENAIIDP-*, TB6)
     participant S3 as S3 Output Bucket
 
     SFN->>OCR: Invoke with document reference
@@ -144,8 +148,13 @@ sequenceDiagram
     OCR->>S3: Store OCR output + pageData.json
 
     SFN->>Class: Invoke with OCR text
-    Class->>Bedrock: Prompt with document text + class definitions
-    Bedrock-->>Class: Classification result
+    alt section_classification.method: decision_model (split-then-classify)
+        Class->>Decider: lambda:InvokeFunction GENAIIDP-* (page images + class descriptions, one choice question per section)
+        Decider-->>Class: Probability per class
+    else LLM
+        Class->>Bedrock: Prompt with document text + class definitions
+        Bedrock-->>Class: Classification result
+    end
     Class->>S3: Store classification output
 
     SFN->>Extract: Invoke with OCR text + classification
@@ -157,6 +166,10 @@ sequenceDiagram
         Bedrock-->>Extract: Structured data + per-field confidence (integrated)
     end
     Extract->>Extract: Ground geometry against pageData.json (ocr_only)
+    opt extraction.confidence.method: decision_model (mode: separate)
+        Extract->>Decider: One request per page: page image + a yes/no question per extracted value
+        Decider-->>Extract: Probabilities (a value's confidence is its highest across pages)
+    end
     Extract->>S3: Store extraction output + explainability_info
 ```
 
@@ -169,8 +182,22 @@ sequenceDiagram
 
 **Sensitive data exposure**: Full document text is sent to Textract and to the configured model endpoint. Where the configured model is an OpenAI GPT-5.x variant, that text goes to the `bedrock-mantle` OpenAI Responses API — a **different model family within TB4** than the Anthropic/Nova default. Deployments with data-residency or model-vendor constraints must account for this (see PM.T08). Extracted PII/sensitive data flows through Lambda memory and is written to S3.
 
+**Decision models.** When a configuration selects a decision model, page images
+(by default; at most `max_pages` per section) and the configuration's class
+descriptions or extraction questions go to a Lambda function the customer deploys,
+named `GENAIIDP-*`, and its answer becomes the section's class or a value's
+confidence. `idp_common.decision_model.invoker` refuses a function name without the
+prefix, and the classification, extraction (including the advanced-extraction
+shard runtime) and assessment functions hold `lambda:InvokeFunction` on
+`GENAIIDP-*` only, asserted by `scripts/tests/test_decision_model_invoke_grants.py`.
+What the function does with the images, and where it runs its model, is outside
+this stack. A refused or failed call fails the section; it is never converted into
+an LLM call, so a decision model that is down is an availability failure rather
+than a silent change of model.
+
 **Trust boundary crossings**:
 - TB3→TB4: Lambda sends document text to Textract and Bedrock (Anthropic/Nova **or** OpenAI via mantle)
+- TB3→TB6: page images to a decision model, when configured
 
 ### 2.3 BDA Mode Processing
 
@@ -252,6 +279,16 @@ sequenceDiagram
 > marks sections pending while the workflow continues, and is reviewed through
 > `claimReview`, `completeSectionReview` and `skipAllSectionsReview` under the
 > `Admin`/`Reviewer` groups; those operations refuse a document a queue manages.
+>
+> **Bulk review** (`bulk_review_resolver`, `Admin`/`Reviewer`) skips many pending
+> reviews at once, with a required reason, or sends finished production documents
+> to the Default queue (`sendToReview`). Each document is checked against the
+> caller's `allowedConfigVersions` by its own profile, and a by-profile request is
+> refused outright for a profile outside it. Large requests are paged by
+> `BulkReviewWorkerFunction` from `BulkReviewJobQueue`; with **Resubmit for
+> downstream processing** (on by default) a skipped document is sent back through
+> `DocumentQueue`, so summarization, evaluation and the post-processing hook run on
+> results no one reviewed.
 
 ### 2.5 Document Version Snapshot
 
@@ -454,12 +491,22 @@ flowchart LR
 
 **Security note**: In `APIGateway` hosting mode there is **no CloudFront**, so
 the CloudFront `ResponseHeadersPolicy` does not apply; the SPA document and
-asset responses set `X-Content-Type-Options`, `Strict-Transport-Security`,
-`X-Frame-Options`, and `Referrer-Policy` per-method instead. The two SPA GET
-routes are `AuthorizationType: NONE` (the SPA shell and hashed assets are not
-secrets; auth happens inside the app against `/op`), but the PRIVATE endpoint
-policy and the optional WAF WebACL still gate them. **No CSP is emitted in this
-mode** — see UI.T01.
+asset responses, and their 4xx/5xx error responses, set
+`Content-Security-Policy`, `X-Content-Type-Options`, `Strict-Transport-Security`,
+`X-Frame-Options`, and `Referrer-Policy` per-method instead. The two modes send
+the same content security policy (`SecurityHeadersPolicy` in `template.yaml`, the
+`WebUiSecurity` mapping in `nested/api-resolvers/template.yaml`, held equal by
+`scripts/tests/test_csp_policies_in_sync.py`) apart from `frame-ancestors`, which
+is `'self'` with CloudFront and `'none'` with API Gateway to match each mode's
+`X-Frame-Options`. The policy is `default-src 'self'` with explicit sources for
+images, frames, styles, fonts, media, workers and connections (AWS service and
+Cognito hostnames only for `connect-src`); `script-src` and `style-src` keep
+`'unsafe-inline'`, and `script-src` keeps `'unsafe-eval'` and the jsDelivr npm
+path, so the policy narrows where content loads from and sends data to rather than
+blocking injected inline script (UI.T01, UI.T07). The two SPA GET routes are
+`AuthorizationType: NONE` (the SPA shell and hashed assets are not secrets; auth
+happens inside the app against `/op`), but the PRIVATE endpoint policy and the
+optional WAF WebACL still gate them.
 
 ### 3.6 Tenant Grants (`TenantGrantSource`, v0.6.14)
 
@@ -516,11 +563,13 @@ sequenceDiagram
 
     Browser->>IdPool: Exchange Cognito JWT for temp AWS credentials
     IdPool-->>Browser: SigV4 credentials (CognitoAuthorizedRole)
-    Browser->>FURL: POST /chat/agent or /chat/document (SigV4-signed)
+    Browser->>FURL: POST /chat/agent or /chat/document (SigV4-signed, ID token in x-idp-id-token)
     FURL->>FURL: IAM authZ: lambda:InvokeFunctionUrl on caller role
-    FURL->>Proc: Invoke (RESPONSE_STREAM) + x-amzn-request-context
-    Proc->>Proc: Derive caller id from SigV4 request context (role session name)
-    Proc->>DDB: Load session memory keyed by sessionId
+    FURL->>Proc: Invoke (RESPONSE_STREAM)
+    Proc->>Proc: Verify ID token (key set, issuer, client, token_use, expiry); 401 without one
+    Proc->>Proc: Group check from verified claims (403)
+    Proc->>DDB: Claim or check session owner in ChatSessionOwnersTable (403 for another user's)
+    Proc->>DDB: Load session memory keyed on the verified sub
     Proc->>Bedrock: Invoke model with context + tools
 
     loop Tool Use
@@ -532,7 +581,7 @@ sequenceDiagram
 
     Bedrock-->>Proc: Token deltas
     Proc-->>Browser: SSE frames (text/event-stream), streamed
-    Proc->>DDB: Persist chat turn (attributed to callerSub)
+    Proc->>DDB: Persist chat turn (attributed to the verified caller)
 ```
 
 **Security-relevant characteristics of the streaming transport**:
@@ -542,15 +591,15 @@ sequenceDiagram
 | Network exposure | Public Function URL (no CloudFront/WAF/VPC in front) |
 | Authentication | SigV4 via `AuthType=AWS_IAM` — unauthenticated callers rejected by Lambda |
 | Authorization granularity | `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function, granted to the shared `CognitoAuthorizedRole` and nothing narrower — the role is common to **all five RBAC groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish Admin from Reviewer |
-| Group (RBAC) enforcement | **None on this path.** The Admin/Author/Viewer restriction on `sendAgentChatMessage` is enforced in the *resolver*, not here; this transport carries no group claim (`GAP-07`). **Issue #920** is closed without changing that |
-| Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does, because no verified per-user subject reaches this transport (CHAT.T03) |
-| Caller identity available | Weaker than the diagram suggests: the value derived from the request context is the assumed-role **session name**, and on `/chat/agent` a body-supplied `callerSub` takes precedence over it. That session name is the same for every user of the deployment, so no per-user identity exists on this transport at all. **Issue #920** (PR #954) removes the precedence problem but does not create one — establishing a verified subject is still outstanding; see CHAT.T06 |
+| Group (RBAC) enforcement | **Enforced from the verified ID token** before the stream opens: Admin/Author/Viewer on `/chat/agent` (Admin-only under tenant isolation), any assigned group on `/chat/document` |
+| Session ownership | **Enforced.** The route registers the session id to the caller's verified `sub` in `ChatSessionOwnersTable`, or answers 403 when another user owns it; the agent processor checks again and keys memory on the `sub` (CHAT.T03) |
+| Caller identity available | **Verified.** The browser sends its Cognito ID token in `x-idp-id-token`; the endpoint verifies it against the user pool's key set and answers 401 without it. Nothing identity-like is read from the request body (CHAT.T06) |
 | CORS | `AllowOrigins: "*"`, `AllowCredentials: false` (safe: SigV4 in headers, no cookies) |
-| Covered by `make api-test` | **No** — the harness drives `POST /op/{field}` only |
+| Covered by `make api-test` | Cells exist (`run_chat_session_idor_suite`) and have not yet been run against a deployment |
 | Covered by the WAF / stage throttling | **No** — the WebACL is associated with the REST API stage; Lambda concurrency is the bound here |
 
-See CHAT.T03 (streaming-path authorization gaps) and CHAT.T06 (caller-identity
-trust inconsistency) for the full analysis.
+See CHAT.T03 (streaming-path authorization) and CHAT.T06 (caller identity) for the
+full analysis.
 
 **(b) Non-streaming transport — REST resolver (fallback; GovCloud without streaming)**
 
@@ -575,7 +624,7 @@ sequenceDiagram
 - TB1→TB3: User message via the Function URL (SigV4) **or** the REST API (JWT)
 - TB3→TB4: Conversation context sent to Bedrock
 - TB3→TB5: Analytics queries to Athena
-- TB3→TB6: MCP tool calls to customer-managed agents
+- TB3→TB6: MCP tool calls to customer-managed agents, only in a conversation that enabled External MCP agents and holds no Analytics or Error Analyzer results
 
 ### 4.2 Agent Analysis Flow
 
@@ -600,7 +649,7 @@ sequenceDiagram
 
 **Security note**: Natural language → SQL translation creates SQL injection risk. AgentCore code execution is sandboxed but executes AI-generated code.
 
-### 4.3 MCP Integration Flow
+### 4.3 External MCP Agents (outbound, from chat)
 
 ```mermaid
 sequenceDiagram
@@ -617,7 +666,64 @@ sequenceDiagram
     MCPLambda-->>Agent: Tool result
 ```
 
-**Trust boundary crossings**: TB3→TB6→External. MCP agents can call external services, introducing data exfiltration and injection risks.
+**Trust boundary crossings**: TB3→TB6→External. MCP agents can call external services, introducing data exfiltration and injection risks. External MCP agents are off unless a conversation enables them ("Enable External MCP agents", or `enableExternalMcpAgents: true`), and neither opt-in agent is used once Analytics or Error Analyzer results are in the conversation, so a conversation holding query results over every document is not offered to an external tool.
+
+### 4.4 MCP Server Flow (external clients into the stack, `EnableMCP=true`)
+
+```mermaid
+sequenceDiagram
+    participant Client as MCP client (Amazon Quick, MCP Connector, ...)
+    participant Cog as Cognito User Pool
+    participant GW as AgentCore Gateway (JWT authorizer)
+    participant Int as MCP identity interceptor Lambda
+    participant Reg as McpCredentialsTable / UsersTable
+    participant SM as Secrets Manager (caller-signing key)
+    participant H as MCP handler Lambda
+    participant Data as Tracking table / S3 / reporting
+
+    Client->>Cog: Authorization code (user) or client_credentials (service credential)
+    Cog-->>Client: Access token
+    Client->>GW: tools/list or tools/call (+ Bearer access token)
+    GW->>GW: Validate token; client id must be on the allow-list
+    GW->>Int: Request interception (headers passed)
+    Int->>Reg: User: AdminGetUser + allowedConfigVersions; service: registry row (role, profiles, write tools, expiry)
+    Int->>Int: authorize_tool; drop any client-sent _caller
+    Int->>SM: Signing key (cached per container)
+    Int-->>GW: Arguments + HMAC-signed _caller bound to the gateway request id
+    GW->>H: Invoke tool
+    H->>H: verify_caller (refuse without a valid block); authorize_tool again
+    H->>Data: Read or start work within the caller's scope
+    H-->>GW: Result (+ provenance field naming document-derived text)
+    GW->>Int: Response interception (tools/list filtered to callable tools)
+    Int-->>Client: Response
+```
+
+**Security-relevant characteristics**:
+- MCP tools act as the principal behind the token, with that principal's role and
+  configuration scope: `process`/`reprocess` Admin or Author, `status`/`get_results`
+  Admin, Author, Reviewer or Viewer, `search` Admin, Author or Viewer and only for an
+  unscoped caller (the reporting tables cannot be filtered per row). Annotator
+  reaches no tool. `process` from an S3 location reads with the handler's own role,
+  so it is limited to unscoped callers.
+- Service credentials are created, narrowed, rotated with overlap and revoked by an
+  Admin on the MCP Configuration page (`mcp_credential_manager`, Admin-only
+  operations); each has its own Cognito app client, its secret is shown once and
+  stored in Secrets Manager, and the gateway's allowed-client list follows the
+  registry. A daily schedule revokes expired credentials; switching MCP off,
+  deleting the stack or downgrading revokes every one.
+- The stack-created client (`MCPConnectorClient`) appears as "Default
+  (stack-created)" and starts disabled under `TenantIsolationMode=Strict` or an
+  external `TenantGrantSource`. Both stack-created clients' IDs and secrets are
+  read from Secrets Manager (`MCPConnectorClientSecretArn`, `MCPClientSecretArn`),
+  not from stack outputs.
+- Results carrying document text carry a `provenance` field; it informs the
+  client's model and constrains nothing in this stack (MCP.T03).
+- Not behind the WAF, and not reached by the REST dispatcher; `make api-test`
+  drives it through `scripts/api_rbac_mcp.py` on a stack where MCP is enabled.
+
+**Trust boundary crossings**: TB1→TB2 (token to the gateway), TB2→TB3
+(interceptor and handler), TB3→TB1 (document results to an external client and
+its model). See MCP.T01–T06.
 
 ## 5. SDK/CLI Data Flow
 
@@ -696,7 +802,8 @@ sequenceDiagram
 **Trust boundary crossings**: TB6→TB1. This is the sharpest boundary crossing
 added since v2.0: the feature's JavaScript executes **in the host SPA's origin**,
 inside the authenticated user's session, with a host-provided API client. It is
-**not** sandboxed (no iframe, no CSP isolation — and the CloudFront CSP permits
+**not** sandboxed (no iframe, no CSP isolation — the content security policy of
+both hosting modes admits same-origin script and permits
 `unsafe-inline`/`unsafe-eval`). Installing a feature grants it the effective
 privilege of every user who loads the UI. Install is Admin-gated and the
 ui-deployer's S3 write is prefix-scoped, but there is **no integrity check**
@@ -707,6 +814,61 @@ to the bytes the browser executes later. The controls that do apply are the
 bucket's write permissions and the install-time decision to trust the feature.
 
 See [FEAT.T01–T04](../feature-threats/feature-platform.md).
+
+### 5.3 Terraform Deployment Flow (experimental)
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator (idp-cli deploy --terraform, or own root config)
+    participant Art as S3 artifact bucket (templates + module zip + sha256 + pointer)
+    participant Dir as Working directory (main.tf, tfvars, state)
+    participant TF as terraform / tofu
+    participant AWS as AWS APIs (aws + awscc providers, Cloud Control)
+    participant Bridge as Custom-resource bridge Lambda + bucket
+    participant Label as Label stack (CloudFormation)
+    participant SDK as idp-cli / SDK (later calls)
+
+    Op->>Art: Read pointer + module zip (idp-cli checks sha256 against the pointer)
+    Op->>Dir: Write main.tf, terraform.tfvars, idp-cli-parameters.json (owner-only)
+    Op->>TF: init (downloads the module again) + plan
+    TF-->>Op: Plan
+    Op->>Op: Refuse delete/replace of a stateful or retained resource unless --terraform-allow-replace-stateful
+    Op->>TF: apply (deploying credentials, or --terraform-assume-role-arn)
+    TF->>AWS: Create roles (PermissionsBoundaryArn), key, buckets, functions ...
+    TF->>Bridge: Run each custom-resource handler as CloudFormation would
+    TF->>Label: Create/update read-only label stack + resource directory object
+    TF->>Dir: Write state (every setting and resource attribute, incl. client secrets)
+    SDK->>Label: DescribeStacks / ListStackResources
+    Note over SDK,Label: The SDK's hook answers resource lookups from the resource directory object
+```
+
+**Security-relevant characteristics**:
+- The state, and the `idp-cli` working directory around it, holds every setting
+  and every resource attribute, including the Cognito app client secrets and the
+  MCP client secrets' `SecretString`, in clear. Without a configured backend it
+  stays on the operator's disk, and losing it loses Terraform's only record of the
+  deployment.
+- There is no CloudFormation service role and no rollback: calls are made with the
+  credentials Terraform runs with, and a failed apply leaves what it created.
+- The module checksum check in `idp-cli` covers the bytes `idp-cli` reads, against
+  a pointer in the same bucket; `terraform init` fetches the module again without a
+  check unless the module source is a local directory the operator verified.
+- `idp-cli` and the SDK resolve a Terraform deployment's resources through the
+  resource directory object, so its integrity rests on write access to the bridge
+  bucket.
+- Feature-platform extensions still install as their own CloudFormation stacks.
+
+**Migration from `genai-idp-terraform`.** `idp-cli terraform
+migrate-from-genai-idp-terraform` reads the old deployment's state, disables its
+upload rule (`freeze`), waits for in-flight documents, and has the new deployment
+import the old buckets, tables, KMS key and Cognito user pool, applying only the
+plan it checked. Data, users, passwords and group memberships carry over; the
+module's key policy replaces the adopted key's. Each phase is a dry run until
+`--apply` and prints how to back out.
+
+**Trust boundary crossings**: TB7→TB3 (the deploying principal creates every
+runtime control), TB7→TB1 (state and working files on the operator's machine or
+backend), TB3→TB1 (resource directory read by `idp-cli`/SDK).
 
 ## 6. Reporting & Analytics Data Flow
 
@@ -764,6 +926,12 @@ sequenceDiagram
     Hook-->>SFN: Results in expected format
 ```
 
+`LambdaHook` inference and decision models (§2.2) share one control: the pipeline
+functions may invoke only functions named `GENAIIDP-*`. Anything deployed in the
+account under that prefix is therefore invocable with document content by those
+functions, and who may create such a function is an account-level decision outside
+this stack.
+
 ### 8.2 Post-Processing Hook
 
 ```mermaid
@@ -802,9 +970,10 @@ sequenceDiagram
 | LLM prompts (Anthropic/Nova) | TB3 | TB4 | High (document text + PII) | TLS, IAM roles, no training opt-out |
 | **LLM prompts (OpenAI GPT-5.x via mantle)** | TB3 | TB4 | High (document text + PII) | TLS, IAM roles; **different model family — verify vendor/residency constraints** (PM.T08) |
 | **UI API operations** | TB1 | TB3 | High | JWT authn at gateway; default-deny group floor at the dispatcher; scope, ownership and queue-eligibility checks in resolver Lambdas; input-shape validation; optional WAF |
-| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03); #920 closed without a verified per-user subject; not covered by the WAF or by `make api-test`. Under `Strict` or an external `TenantGrantSource` the UI does not use it and it refuses every turn |
+| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium | SigV4 on a public Function URL plus a verified Cognito ID token; group checks, session ownership and document-chat scope enforced from it (CHAT.T03, CHAT.T06); not covered by the WAF. Under `Strict` or an external `TenantGrantSource` the UI does not use it |
 | **Malware verdict** (optional) | GuardDuty | TB3 | Low (verdict only) | EventBridge rule filtered to the Input bucket; unknown verdicts refuse unless both the config and the stack ceiling allow unscannable files (PM.T09) |
 | **Review-queue work** | TB1 | TB3 | High (production document data, reviewer edits) | Group floor (`Admin` + `Annotator`; supervision `Admin`); per-item eligibility and profile scope, fail closed, with listings filtered by each item's own profile (HITL.T01); holder-only conditional writes (HITL.T02) |
+| **Bulk review** | TB1 | TB3 | High (finishes reviews no one checked) | `Admin`/`Reviewer`; per-document profile scope, by-profile requests refused outside it; required reason and dry run; Reviewers see and cancel only their own jobs |
 | **Review finalize** | TB3 | TB3 | High | Server-built `DocumentQueue` message; token-named execution; hooks before the review point run twice (HOOK.T04) |
 | **Inbox** | TB3 | TB1 | Low-Medium (queue, profile, file and user names) | Partition from verified claims; no posting operation; in-app links only; sanitized rendering; group-addressed announcements reach whole groups (HITL.T03) |
 | **Review status object and Output-bucket events** | TB3 | TB3 (account bus) | Medium (reviewer email, reject note; object keys on the bus) | `status.json` readable through the scope-checked object reads; every Output-bucket event reaches the default bus with no in-stack consumer (HITL.T03) |
@@ -812,11 +981,15 @@ sequenceDiagram
 | **Jobs API submission** | TB1 | TB3 | High | Separate Cognito pool, OAuth scopes, PRIVATE endpoint + VPCe resource policy (JOB.T01) |
 | **Feature UI bundle** | TB6 | TB1 | High (runs as the user) | Admin-gated install, prefix-scoped S3 write; **no SRI/signature, same-origin, unsandboxed** (FEAT.T01) |
 | **Preprocessing / PII hook** | TB3 | TB6→TB4 | High (un-redacted document) | Fail-closed `onError: fail` (terminal here, as at every other hook point — HOOK.T07, closed by issue #919); re-entrancy guard; detection call still sees raw PII (PII.T01) |
-| MCP tool calls | TB3 | TB6→External | Variable (depends on tool) | IAM, customer responsibility |
+| MCP tool calls (External MCP agents in chat) | TB3 | TB6→External | Variable (depends on tool) | Off unless enabled per conversation; not offered once Analytics or Error Analyzer results are in it; IAM; the external service is the customer's responsibility |
+| **MCP server tool calls** (`EnableMCP=true`) | TB1 | TB2→TB3 | High (document results to an external client and its model) | Cognito access token from an allow-listed app client; interceptor resolves the principal's role and scope and refuses or filters tools; HMAC-signed caller block verified by the handler; per-document scope in every tool; `provenance` label on document text (MCP.T01–T06) |
+| **MCP service credentials** | TB3 | TB1 (secret shown once) | Restricted (client secrets) | Admin-only operations; a scoped Admin grants only profiles inside their own scope and one tenant; secrets in Secrets Manager under the stack CMK; expiry with a daily revocation sweep; revoked when MCP is switched off |
+| **Decision model calls** | TB3 | TB6 | High (page images, class descriptions, extraction questions) | Invoke grant limited to `GENAIIDP-*` and the same prefix checked in `idp_common.decision_model.invoker`; refusal or failure fails the section, never falls back to an LLM; what the function does with the images is the customer's responsibility |
 | Lambda hooks | TB3 | TB6 | High (full processing results) | IAM, invocation-only permissions |
 | Analytics queries | TB3 | TB5 | High (aggregated processing data) | Athena workgroup, IAM |
 | KB retrieval | TB3 | TB4→TB5 | Medium (reference doc chunks) | IAM, encryption |
 | SDK/CLI auth | TB1 | TB2 | High (credentials) | SRP protocol, short-lived tokens |
+| **Terraform deployment and state** | TB7 | TB3, and the operator's disk or backend | Restricted (state holds every setting and client secret in clear) | Deploying credentials or an assumed role; `PermissionsBoundaryArn` on every created role; owner-only working files; stateful-replacement refusal in `idp-cli`; module checksum checked by `idp-cli` only; backend protection is the operator's |
 | Configuration | TB1 | TB3 | Medium (prompts, schemas) | Auth, schema validation, config-version scope |
 | **Presigned object reads** | TB3 | TB1 | High (any document object) | Bucket allow-list, plus key scoping for the two per-user-partitioned buckets (`allowedConfigVersions` on `config_revisions/`, `allowedTestSets` on the Test Set bucket), plus document scoping on the Input/Output buckets (the owning document's `ConfigVersion` against `allowedConfigVersions`). The browser's Identity Pool role grants no S3, so there is no path around them. **No ownership axis** — the profile check narrows a scoped caller only (UI.T06) |
 | **Configuration revision bodies** | TB3 | TB1 | High (prompts, few-shot examples, every profile's history) | `config_revisions/<profile>/<nnnnnn>.json.gz` in the Configuration bucket. Read only through `getConfigProfileRevision` or `getFileContents`/`getFilePresignedUrl`, both of which match the profile against the caller's `allowedConfigVersions` and fail closed; the bucket is not on the browser's Identity Pool role, so there is no direct-S3 path |

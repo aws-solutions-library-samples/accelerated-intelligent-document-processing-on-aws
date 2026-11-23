@@ -245,7 +245,8 @@ def _text_pattern(case: str) -> str:
     start with a digit -- while letting the fragment sit at position zero. This was a
     divergence between the surfaces rather than a deliberate narrowing, and the
     ``_matches_name`` parity case below is what now pins the two together in both
-    directions. Measured over this tree: one further variable.
+    directions. The leading-position case is pinned by the synthetic per-fragment
+    probes rather than by any variable in this tree.
     """
     alternation = "|".join(NAME_VOCABULARY)
     if case == "upper":

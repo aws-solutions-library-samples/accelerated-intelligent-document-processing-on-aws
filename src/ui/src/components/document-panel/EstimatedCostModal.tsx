@@ -10,9 +10,9 @@ import { Box, Button, Modal } from '@cloudscape-design/components';
 import { REPORT_MODAL_SIZE } from '../common/ReportModal';
 import usePricing from '../../hooks/use-pricing';
 import MeteringTable from './MeteringTable';
-import type { PricingData } from './MeteringTable';
 import { calculateTotalCosts } from './metering-cost';
-import type { PricingLookup } from './pricing';
+import { toPricingLookup } from '../pricing-layout/price-format';
+import { useFormatters } from '../../i18n/format';
 
 interface EstimatedCostModalProps {
   meteringData: Record<string, Record<string, unknown>>;
@@ -20,24 +20,11 @@ interface EstimatedCostModalProps {
   onDismiss: () => void;
 }
 
-/** The pricing as a lookup by service and unit. */
-export const toPricingLookup = (pricing: unknown): PricingLookup | null => {
-  const rows = (pricing as PricingData | null)?.pricing;
-  if (!rows) return null;
-  const lookup: PricingLookup = {};
-  rows.forEach((item) => {
-    if (item.name && item.units) {
-      lookup[item.name] = {};
-      item.units.forEach((unitItem) => {
-        if (unitItem.name && unitItem.price !== undefined) lookup[item.name][unitItem.name] = Number(unitItem.price);
-      });
-    }
-  });
-  return lookup;
-};
+export { toPricingLookup };
 
 const EstimatedCostModal = ({ meteringData, pageCount, onDismiss }: EstimatedCostModalProps): React.JSX.Element => {
   const { pricing } = usePricing();
+  const { formatUsDollars } = useFormatters();
   const pricingData = useMemo(() => toPricingLookup(pricing), [pricing]);
   const { totalCost, costPerPage } = calculateTotalCosts(meteringData, pageCount ?? undefined, pricingData);
 
@@ -46,7 +33,7 @@ const EstimatedCostModal = ({ meteringData, pageCount, onDismiss }: EstimatedCos
       visible
       size={REPORT_MODAL_SIZE}
       onDismiss={onDismiss}
-      header={`Estimated Cost (per page: $${costPerPage.toFixed(4)})`}
+      header={`Estimated Cost (per page: ${formatUsDollars(costPerPage, { fractionDigits: 4 })})`}
       footer={
         <Box float="right">
           <Button variant="primary" onClick={onDismiss}>

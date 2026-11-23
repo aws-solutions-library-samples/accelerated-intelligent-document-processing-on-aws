@@ -57,6 +57,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import gate_premises
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -98,8 +99,12 @@ PATHS_EXPECTED_ABSENT: dict[str, str] = {
 }
 
 # Generated files: present after a build, absent in a fresh clone. Their presence
-# or absence says nothing, so neither direction is asserted.
-PATHS_BUILD_ARTIFACTS: dict[str, str] = {
+# or absence says nothing, so they are exempt from the "every named path exists"
+# check. What makes that safe is computed per member rather than asserted, by
+# ``test_build_artifact_exemptions_are_ignored_and_still_named``: an ignore rule
+# covers the path and git tracks nothing there, so a real file cannot land at it
+# unnoticed, and the document still names it, or the entry is stale.
+PATHS_EXEMPT_AS_BUILD_ARTIFACTS: dict[str, str] = {
     "src/ui/.checksum": "written by `make ui-lint`; gitignored, absent in a fresh clone",
 }
 
@@ -407,7 +412,7 @@ def test_documented_paths_exist() -> None:
     ``CONTRIBUTING.md`` was rewritten in the first place because it described
     directories (``patterns/pattern-1/`` and siblings) that had been removed.
     """
-    exempt = set(PATHS_EXPECTED_ABSENT) | set(PATHS_BUILD_ARTIFACTS)
+    exempt = set(PATHS_EXPECTED_ABSENT) | set(PATHS_EXEMPT_AS_BUILD_ARTIFACTS)
     missing: list[str] = []
     for candidate in sorted(_documented_paths()):
         if candidate in exempt or candidate.rstrip("/") in exempt:
@@ -416,6 +421,43 @@ def test_documented_paths_exist() -> None:
             missing.append(candidate)
     assert not missing, "CONTRIBUTING.md points at paths that do not exist:\n" + "\n".join(
         f"  - {m}" for m in missing
+    )
+
+
+@pytest.mark.unit
+def test_build_artifact_exemptions_are_ignored_and_still_named() -> None:
+    """Each build-artifact exemption is an ignored, untracked path the document names.
+
+    ``gate_premises.vcs_ignored_build_output`` is the premise, evaluated per member:
+    an ignore rule must cover the path (probed both as a directory and as the file
+    itself) and git must track nothing under it, so the
+    exemption cannot come to hide a file that ships. A member the document no longer
+    names is stale and fails too, rather than pre-exempting whatever is next written
+    at that path. The emptiness assertion is there because a loop over nothing passes.
+    """
+    assert PATHS_EXEMPT_AS_BUILD_ARTIFACTS, "no build-artifact exemptions to check"
+    documented = _documented_paths()
+    problems: list[str] = []
+    for path in sorted(PATHS_EXEMPT_AS_BUILD_ARTIFACTS):
+        holds, why = gate_premises.vcs_ignored_build_output(path)
+        if not holds:
+            problems.append(f"{path}: {why}")
+        # The predicate probes with a trailing slash because it is written for
+        # directories, so a directory-only rule (``.checksum/``) satisfies it while
+        # leaving the FILE unignored. Members here are files, so ask about the bare
+        # path as well.
+        bare = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", "--no-index", path],
+            check=False,
+        )
+        if bare.returncode != 0:
+            problems.append(f"{path}: no ignore rule covers the file itself")
+        if path not in documented:
+            problems.append(
+                f"{path}: no longer named by CONTRIBUTING.md, so the exemption is stale"
+            )
+    assert not problems, "build-artifact exemptions that no longer hold:\n" + "\n".join(
+        f"  - {m}" for m in problems
     )
 
 
@@ -506,38 +548,29 @@ def test_prerequisite_floors_match_their_sources() -> None:
 
 
 @pytest.mark.unit
-def test_ruff_exclusion_figures_match_the_baseline() -> None:
-    """The document's two exclusion counts, read from the baseline that sets them.
+def test_ruff_exclusion_lists_are_described_by_their_source() -> None:
+    """The document names where the two exclusion-list sizes come from.
 
-    These are exact counts on purpose, which an earlier version of this check
-    could not afford: the figures then were "how many tracked .py files does ruff
-    skip", which every commit adding a .py file changed, so pinning them would
-    have red-lined unrelated branches. They are now the sizes of two named lists
-    in ``scripts/lint_debt.json``, and those change only when somebody runs
-    ``check_lint_debt.py --write`` — a deliberate act, by whoever is also in a
-    position to update this sentence.
+    It used to quote both sizes and the finding total, pinned here by presence.
+    Those figures move whenever anybody pays a file off with
+    ``check_lint_debt.py --write``, and a correct paydown on one branch then
+    red-lined every branch built on it, for a sentence nobody acts on. The sizes
+    are scenery next to the fact that the lists are per-file and shrink, so the
+    page names the baseline instead, and ``test_documented_counts.py`` guards
+    against a figure being written back in.
     """
     baseline = json.loads(
         (REPO_ROOT / "scripts" / "lint_debt.json").read_text(encoding="utf-8")
     )
-    lint_files = len(baseline["lintDebt"])
-    lint_findings = sum(sum(c.values()) for c in baseline["lintDebt"].values())
-    format_files = len(baseline["formatDebt"])
-
-    assert lint_files and format_files, (
+    assert baseline["lintDebt"] and baseline["formatDebt"], (
         "scripts/lint_debt.json records no debt at all. If that is genuine, the "
         "paragraph in CONTRIBUTING.md about excluded files should go rather than "
-        "quote zeroes."
+        "describe empty lists."
     )
-    for label, value in (
-        ("[lint] exclude file count", lint_files),
-        ("pre-existing lint findings", lint_findings),
-        ("[format] exclude file count", format_files),
-    ):
-        assert str(value) in DOC, (
-            f"CONTRIBUTING.md no longer quotes the {label} ({value}). "
-            "scripts/lint_debt.json is the source of truth; update the paragraph "
-            "under 'Before every commit' to match it."
+    for key in ("lintDebt", "formatDebt"):
+        assert f"`{key}`" in DOC, (
+            f"CONTRIBUTING.md no longer names the `{key}` entries of "
+            "scripts/lint_debt.json as the source of the exclusion-list sizes."
         )
 
 

@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://solution-profile.example/schema/v1/solution-profile.schema.json",
+  "title": "Solution Profile v1",
+  "description": "The root validates solution-profile.yaml. Validate each other file with the $defs entry named after it: capabilitiesFile, extensionPointsFile, limitationsFile, discoveryQuestionsFile, sizingFile, deploymentFile, deliveryFile, changesFile. See README.md for meaning; this file holds the rules.",
+  "$ref": "#/$defs/manifest",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$"
+    },
+    "ref": {
+      "description": "<kind>:<id>, for example limitation:simple-extraction-row-limit",
+      "type": "string",
+      "pattern": "^(capability|extension|limitation|question|deployment|prerequisite|delivery):[a-z0-9][a-z0-9-]{1,63}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    },
+    "evidence": {
+      "description": "Repository-relative path (optionally #anchor) at source.commit, or an https URL.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(https://\\S+|[^/\\s][^\\s]*)$"
+      }
+    },
+    "status": {
+      "enum": ["ga", "preview", "experimental", "deprecated", "retired"]
+    },
+    "effort": {
+      "description": "S: up to 2 days, M: up to 2 weeks, L: more than 2 weeks, for a first working version.",
+      "enum": ["S", "M", "L"]
+    },
+    "level": {
+      "enum": ["low", "medium", "high"]
+    },
+    "category": {
+      "description": "The gap taxonomy, in order of preference.",
+      "enum": ["configuration", "hook", "extension", "core-enhancement", "fork", "other"]
+    },
+    "otherKind": {
+      "enum": ["aws-service", "integration", "data", "process", "security-review", "infrastructure"]
+    },
+    "stringList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "refList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ref" }
+    },
+    "itemBase": {
+      "type": "object",
+      "required": ["id", "title", "description", "evidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "status": { "$ref": "#/$defs/status" },
+        "since": { "$ref": "#/$defs/version" },
+        "tags": { "$ref": "#/$defs/stringList" }
+      }
+    },
+
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "id", "name", "version", "reviewed_for_version", "source", "summary", "problem_domains", "signals", "licence", "support", "files"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "version": { "$ref": "#/$defs/version" },
+        "reviewed_for_version": { "$ref": "#/$defs/version" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository"],
+          "properties": {
+            "repository": { "type": "string", "pattern": "^https://\\S+$" },
+            "tag": { "type": "string", "minLength": 1 },
+            "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          }
+        },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "problem_domains": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/id" } },
+        "signals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keywords"],
+          "properties": {
+            "keywords": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+            "phrases": { "$ref": "#/$defs/stringList" },
+            "anti_signals": { "$ref": "#/$defs/stringList" }
+          }
+        },
+        "licence": { "type": "string", "minLength": 1 },
+        "support": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "statement"],
+          "properties": {
+            "model": { "enum": ["community-sample", "aws-supported", "partner-supported", "customer-owned"] },
+            "statement": { "type": "string", "minLength": 1 }
+          }
+        },
+        "docs_url": { "type": "string", "pattern": "^https://\\S+$" },
+        "files": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["capabilities", "extension_points", "limitations", "discovery_questions", "deployment", "changes"],
+          "properties": {
+            "capabilities": { "type": "string" },
+            "extension_points": { "type": "string" },
+            "limitations": { "type": "string" },
+            "discovery_questions": { "type": "string" },
+            "sizing": { "type": "string" },
+            "deployment": { "type": "string" },
+            "delivery": { "type": "string" },
+            "changes": { "type": "string" }
+          }
+        },
+        "skills": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^skills/[a-z0-9][a-z0-9-]{1,63}$" }
+        }
+      }
+    },
+
+    "capabilitiesFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilities"],
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/itemBase" }],
+            "unevaluatedProperties": false,
+            "properties": {
+              "modes": { "$ref": "#/$defs/stringList" },
+              "configuration": { "$ref": "#/$defs/stringList" },
+              "related": { "$ref": "#/$defs/refList" }
+            }
+          }
+        }
+      }
+    },
+
+    "extensionPointsFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extension_points"],
+      "properties": {
+        "extension_points": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/itemBase" }],
+            "unevaluatedProperties": false,
+            "required": ["category", "when_to_use", "effort", "upgrade_risk"],
+            "properties": {
+              "category": { "$ref": "#/$defs/category" },
+              "other_kind": { "$ref": "#/$defs/otherKind" },
+              "when_to_use": { "type": "string", "minLength": 1 },
+              "constraints": { "$ref": "#/$defs/stringList" },
+              "effort": { "$ref": "#/$defs/effort" },
+              "upgrade_risk": { "$ref": "#/$defs/level" },
+              "modes": { "$ref": "#/$defs/stringList" },
+              "related": { "$ref": "#/$defs/refList" }
+            },
+            "if": { "properties": { "category": { "const": "other" } } },
+            "then": { "required": ["other_kind"] },
+            "else": { "not": { "required": ["other_kind"] } }
+          }
+        }
+      }
+    },
+
+    "limitationsFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limitations"],
+      "properties": {
+        "limitations": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/itemBase" }],
+            "unevaluatedProperties": false,
+            "required": ["impact"],
+            "properties": {
+              "impact": { "$ref": "#/$defs/level" },
+              "detect_with": { "$ref": "#/$defs/refList" },
+              "mitigations": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    { "$ref": "#/$defs/ref" },
+                    { "const": "none" }
+                  ]
+                }
+              },
+              "modes": { "$ref": "#/$defs/stringList" }
+            }
+          }
+        }
+      }
+    },
+
+    "discoveryQuestionsFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["questions"],
+      "properties": {
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "topic", "text", "intent", "answer_type", "priority", "phase", "tests"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "topic": { "type": "string", "minLength": 1, "maxLength": 60 },
+              "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "intent": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "answer_type": { "enum": ["text", "number", "boolean", "enum", "list", "range"] },
+              "unit": { "type": "string" },
+              "options": { "$ref": "#/$defs/stringList" },
+              "priority": { "enum": ["must", "should", "could"] },
+              "phase": { "enum": ["pre-contract", "discovery", "build"] },
+              "tests": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/ref" } },
+              "implications": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["when", "then"],
+                  "properties": {
+                    "when": { "type": "string", "minLength": 1 },
+                    "then": { "type": "string", "minLength": 1 },
+                    "refs": { "$ref": "#/$defs/refList" }
+                  }
+                }
+              },
+              "follow_ups": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+              "status": { "$ref": "#/$defs/status" },
+              "tags": { "$ref": "#/$defs/stringList" }
+            },
+            "if": { "properties": { "answer_type": { "const": "enum" } } },
+            "then": { "required": ["options"], "properties": { "options": { "minItems": 2 } } }
+          }
+        }
+      }
+    },
+
+    "sizingFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputs"],
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title", "used_for"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "title": { "type": "string", "minLength": 1 },
+              "unit": { "type": "string" },
+              "question": { "$ref": "#/$defs/ref" },
+              "used_for": { "type": "array", "minItems": 1, "items": { "enum": ["cost", "quotas", "latency", "throughput", "storage", "staffing", "configuration"] } }
+            }
+          }
+        },
+        "estimators": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title", "evidence"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "title": { "type": "string", "minLength": 1 },
+              "evidence": { "$ref": "#/$defs/evidence" }
+            }
+          }
+        }
+      }
+    },
+
+    "deploymentFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["options"],
+      "properties": {
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/itemBase" }],
+            "unevaluatedProperties": false,
+            "properties": {
+              "regions": { "$ref": "#/$defs/stringList" },
+              "partitions": { "type": "array", "items": { "enum": ["aws", "aws-us-gov", "aws-cn"] } },
+              "time_to_deploy": { "type": "string" }
+            }
+          }
+        },
+        "prerequisites": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/itemBase" }],
+            "unevaluatedProperties": false,
+            "properties": {
+              "applies_to": { "$ref": "#/$defs/refList" }
+            }
+          }
+        }
+      }
+    },
+
+    "deliveryFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "day_one": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "title": { "type": "string", "minLength": 1 },
+              "evidence": { "$ref": "#/$defs/evidence" }
+            }
+          }
+        },
+        "walking_skeleton": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["description", "steps"],
+          "properties": {
+            "description": { "type": "string", "minLength": 1 },
+            "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/id" } }
+          }
+        },
+        "typical_work": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title", "category", "effort"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "title": { "type": "string", "minLength": 1 },
+              "category": { "$ref": "#/$defs/category" },
+              "other_kind": { "$ref": "#/$defs/otherKind" },
+              "effort": { "$ref": "#/$defs/effort" },
+              "depends_on": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+              "prerequisites": { "$ref": "#/$defs/stringList" },
+              "refs": { "$ref": "#/$defs/refList" },
+              "evidence": { "$ref": "#/$defs/evidence" }
+            }
+          }
+        }
+      }
+    },
+
+    "changesFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releases"],
+      "properties": {
+        "releases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["version", "summary"],
+            "properties": {
+              "version": { "$ref": "#/$defs/version" },
+              "date": { "type": "string", "format": "date" },
+              "summary": { "type": "string", "minLength": 1 },
+              "action_required": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["text"],
+                  "properties": {
+                    "text": { "type": "string", "minLength": 1 },
+                    "affects": { "$ref": "#/$defs/refList" }
+                  }
+                }
+              },
+              "affects": { "$ref": "#/$defs/refList" },
+              "evidence": { "$ref": "#/$defs/evidence" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

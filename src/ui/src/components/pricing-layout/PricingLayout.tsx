@@ -1,7 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import {
   Container,
   Header,
@@ -24,6 +25,72 @@ import Editor from '@monaco-editor/react';
 import yaml from 'js-yaml';
 import usePricing from '../../hooks/use-pricing';
 import useUserRole from '../../hooks/use-user-role';
+import { defaultUnitPriceLookup, hasPricingCustomizations, pricesDiffer } from './pricing-customizations';
+import { findInvalidPrices, parsePrice } from './price-format';
+
+const messages = defineMessages<{
+  invalidPrice: NoMessageValues;
+  invalidPriceItem: { readonly apiName: string; readonly unitName: string; readonly price: string };
+  invalidPricesHeader: NoMessageValues;
+  cannotSaveInvalidPrices: { readonly count: number };
+  defaultUnitsAlwaysApply: NoMessageValues;
+  deleteUnit: NoMessageValues;
+  deleteDefaultUnitDisabledReason: NoMessageValues;
+  restoreDefaultPrice: NoMessageValues;
+  restoreDefaultPriceDisabledReason: NoMessageValues;
+}>({
+  invalidPrice: {
+    id: 'pricing.layout.invalidPrice',
+    defaultMessage: 'Enter a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.',
+    description: 'Inline error under a price field on the Pricing page when the value is not a valid price.',
+  },
+  invalidPriceItem: {
+    id: 'pricing.layout.invalidPriceItem',
+    defaultMessage:
+      '{apiName} / {unitName}: "{price}" is not a valid price. Use a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.',
+    description:
+      'One line in the list of invalid prices on the Pricing page. {apiName} is the service/API name, {unitName} the unit name, {price} the value as typed.',
+  },
+  invalidPricesHeader: {
+    id: 'pricing.layout.invalidPricesHeader',
+    defaultMessage: 'Invalid prices',
+    description: 'Header of the warning that lists every price on the Pricing page that cannot be saved.',
+  },
+  cannotSaveInvalidPrices: {
+    id: 'pricing.layout.cannotSaveInvalidPrices',
+    defaultMessage:
+      'Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.',
+    description: 'Error shown when Save changes is chosen on the Pricing page while some prices are invalid. {count} is how many.',
+  },
+  defaultUnitsAlwaysApply: {
+    id: 'pricing.layout.defaultUnitsAlwaysApply',
+    defaultMessage:
+      'Your saved prices are applied over the default prices, so a default unit cannot be deleted. To make a default unit cost nothing, set its price to 0. To undo a change to a default unit, choose Restore default price on its row.',
+    description:
+      'Note above the pricing tables on the Pricing page: default units cannot be deleted because saved prices are merged over the defaults per unit; explains how to zero or restore one instead.',
+  },
+  deleteUnit: {
+    id: 'pricing.layout.deleteUnit',
+    defaultMessage: 'Delete unit',
+    description: 'Accessible label of the icon button that deletes one pricing unit row on the Pricing page.',
+  },
+  deleteDefaultUnitDisabledReason: {
+    id: 'pricing.layout.deleteDefaultUnitDisabledReason',
+    defaultMessage:
+      'This unit is in the default price list, so it cannot be deleted: it would come back at its default price after you save and reload. Set its price to 0 to make it cost nothing.',
+    description: 'Tooltip on the disabled Delete unit button of a default pricing row on the Pricing page, explaining why it is disabled.',
+  },
+  restoreDefaultPrice: {
+    id: 'pricing.layout.restoreDefaultPrice',
+    defaultMessage: 'Restore default price',
+    description: 'Accessible label of the icon button that sets one default pricing unit back to its default price on the Pricing page.',
+  },
+  restoreDefaultPriceDisabledReason: {
+    id: 'pricing.layout.restoreDefaultPriceDisabledReason',
+    defaultMessage: 'This unit already has its default price.',
+    description: 'Tooltip on the disabled Restore default price button of a pricing row whose price equals the default.',
+  },
+});
 
 interface PricingUnit {
   name: string;
@@ -53,6 +120,7 @@ interface PricingTableItem {
 const PricingLayout = (): React.JSX.Element => {
   const { pricing, defaultPricing, loading, refreshing, error, updatePricing, fetchPricing, restoreDefaultPricing } = usePricing();
   const { isAdmin } = useUserRole();
+  const intl = useIntl();
 
   const [formValues, setFormValues] = useState<PricingFormValues>({ pricing: [] });
   const [jsonContent, setJsonContent] = useState('');
@@ -132,33 +200,15 @@ const PricingLayout = (): React.JSX.Element => {
     }
   }, [pricing]);
 
-  // Check if any pricing values are customized
-  const hasCustomizations = (): boolean => {
-    if (!defaultPricing || !formValues || !(defaultPricing as PricingFormValues).pricing || !formValues.pricing) return false;
+  // The shipped default price of a unit, or undefined for a custom unit
+  // (see pricing-customizations.ts)
+  const defaultPriceOf = useMemo(() => defaultUnitPriceLookup(defaultPricing), [defaultPricing]);
 
-    // Compare pricing arrays
-    const defaultMap = new Map();
-    (defaultPricing as PricingFormValues).pricing.forEach((entry) => {
-      if (entry.name && entry.units) {
-        entry.units.forEach((unit) => {
-          defaultMap.set(`${entry.name}:${unit.name}`, unit.price);
-        });
-      }
-    });
+  // Prices the backend would refuse to save (see price-format.ts)
+  const invalidPrices = useMemo(() => findInvalidPrices(formValues), [formValues]);
 
-    for (const entry of formValues.pricing) {
-      if (entry.name && entry.units) {
-        for (const unit of entry.units) {
-          const key = `${entry.name}:${unit.name}`;
-          const defaultPrice = defaultMap.get(key);
-          if (defaultPrice === undefined || Math.abs(Number(unit.price) - Number(defaultPrice)) > 0.000001) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  };
+  // Check if the table differs from the defaults (see pricing-customizations.ts)
+  const hasCustomizations = (): boolean => hasPricingCustomizations(formValues, defaultPricing);
 
   // Handle changes in the JSON editor
   const handleJsonEditorChange = (value: string | undefined): void => {
@@ -203,6 +253,10 @@ const PricingLayout = (): React.JSX.Element => {
   const handleSave = async () => {
     if (validationErrors.length > 0) {
       setSaveError('Cannot save: Pricing contains validation errors');
+      return;
+    }
+    if (invalidPrices.length > 0) {
+      setSaveError(intl.formatMessage(messages.cannotSaveInvalidPrices, { count: invalidPrices.length }));
       return;
     }
 
@@ -288,6 +342,11 @@ const PricingLayout = (): React.JSX.Element => {
     setNewServiceName('');
     setNewServiceUnits([{ name: '', price: '' }]);
   };
+
+  // A price typed into the Add Service modal. Left empty, the row is dropped on
+  // Add rather than saved, so only a non-empty value can be invalid; it is
+  // trimmed on Add, so it is judged trimmed.
+  const newUnitPriceInvalid = (price: string): boolean => price.trim() !== '' && parsePrice(price.trim()) === null;
 
   // Helper functions for managing dynamic units in Add Service modal
   const handleAddUnit = () => {
@@ -409,19 +468,6 @@ const PricingLayout = (): React.JSX.Element => {
     }
   };
 
-  // Delete an entire API/service entry
-  const _handleDeleteService = (apiName: string): void => {
-    const newFormValues = JSON.parse(JSON.stringify(formValues));
-    newFormValues.pricing = newFormValues.pricing.filter((e: PricingEntry) => e.name !== apiName);
-    setFormValues(newFormValues);
-    setJsonContent(JSON.stringify(newFormValues, null, 2));
-    try {
-      setYamlContent(yaml.dump(newFormValues));
-    } catch (e) {
-      console.error('Error converting to YAML:', e);
-    }
-  };
-
   // Render pricing table for a service
   const renderServiceTable = (serviceEntries: PricingEntry[]): React.JSX.Element | null => {
     if (!serviceEntries || serviceEntries.length === 0) {
@@ -463,31 +509,65 @@ const PricingLayout = (): React.JSX.Element => {
           {
             id: 'price',
             header: 'Price ($)',
-            cell: (item) => (
-              <Input
-                type="text"
-                value={String(item.price)}
-                onChange={({ detail }) => updateUnitPrice(item.apiName, item.unitName, detail.value)}
-                disabled={!isAdmin}
-                readOnly={!isAdmin}
-              />
-            ),
+            cell: (item) => {
+              const invalid = parsePrice(item.price) === null;
+              return (
+                <FormField errorText={invalid ? intl.formatMessage(messages.invalidPrice) : undefined}>
+                  <Input
+                    type="text"
+                    value={String(item.price)}
+                    invalid={invalid}
+                    onChange={({ detail }) => updateUnitPrice(item.apiName, item.unitName, detail.value)}
+                    disabled={!isAdmin}
+                    readOnly={!isAdmin}
+                  />
+                </FormField>
+              );
+            },
             width: 200,
           },
           {
             id: 'actions',
             header: 'Actions',
-            cell: (item) => (
-              <SpaceBetween direction="horizontal" size="xs">
-                <Button
-                  variant="icon"
-                  iconName="remove"
-                  onClick={() => handleDeleteUnit(item.apiName, item.unitName)}
-                  disabled={!isAdmin}
-                  ariaLabel="Delete unit"
-                />
-              </SpaceBetween>
-            ),
+            cell: (item) => {
+              const defaultPrice = defaultPriceOf(item.apiName, item.unitName);
+              if (defaultPrice === undefined) {
+                return (
+                  <SpaceBetween direction="horizontal" size="xs">
+                    <Button
+                      variant="icon"
+                      iconName="remove"
+                      onClick={() => handleDeleteUnit(item.apiName, item.unitName)}
+                      disabled={!isAdmin}
+                      ariaLabel={intl.formatMessage(messages.deleteUnit)}
+                    />
+                  </SpaceBetween>
+                );
+              }
+              // A default unit: saved prices are laid over the defaults per unit,
+              // so deleting one would only last until the next save and reload.
+              // It can be overridden, and restored to its default price.
+              const atDefault = !pricesDiffer(String(item.price ?? ''), defaultPrice);
+              return (
+                <SpaceBetween direction="horizontal" size="xs">
+                  <Button
+                    variant="icon"
+                    iconName="undo"
+                    onClick={() => updateUnitPrice(item.apiName, item.unitName, defaultPrice)}
+                    disabled={!isAdmin || atDefault}
+                    disabledReason={isAdmin && atDefault ? intl.formatMessage(messages.restoreDefaultPriceDisabledReason) : undefined}
+                    ariaLabel={intl.formatMessage(messages.restoreDefaultPrice)}
+                  />
+                  <Button
+                    variant="icon"
+                    iconName="remove"
+                    disabled
+                    disabledReason={isAdmin ? intl.formatMessage(messages.deleteDefaultUnitDisabledReason) : undefined}
+                    ariaLabel={intl.formatMessage(messages.deleteUnit)}
+                  />
+                </SpaceBetween>
+              );
+            },
             width: 100,
           },
         ]}
@@ -587,7 +667,13 @@ const PricingLayout = (): React.JSX.Element => {
               >
                 Cancel
               </Button>
-              <Button variant="primary" onClick={handleAddService} disabled={!newServiceName.trim() || newServiceUnits.length === 0}>
+              <Button
+                variant="primary"
+                onClick={handleAddService}
+                disabled={
+                  !newServiceName.trim() || newServiceUnits.length === 0 || newServiceUnits.some((u) => newUnitPriceInvalid(u.price))
+                }
+              >
                 Add
               </Button>
             </SpaceBetween>
@@ -613,13 +699,16 @@ const PricingLayout = (): React.JSX.Element => {
                     placeholder="Unit name (e.g., pages, inputTokens)"
                     ariaLabel="Unit name"
                   />
-                  <Input
-                    type="text"
-                    value={unit.price}
-                    onChange={({ detail }) => handleUpdateUnit(index, 'price', detail.value)}
-                    placeholder="Price (e.g., 0.0015, 6.0E-8)"
-                    ariaLabel="Unit price"
-                  />
+                  <FormField errorText={newUnitPriceInvalid(unit.price) ? intl.formatMessage(messages.invalidPrice) : undefined}>
+                    <Input
+                      type="text"
+                      value={unit.price}
+                      invalid={newUnitPriceInvalid(unit.price)}
+                      onChange={({ detail }) => handleUpdateUnit(index, 'price', detail.value)}
+                      placeholder="Price (e.g., 0.0015, 6.0E-8)"
+                      ariaLabel="Unit price"
+                    />
+                  </FormField>
                   <Button
                     variant="icon"
                     iconName="remove"
@@ -795,9 +884,27 @@ const PricingLayout = (): React.JSX.Element => {
             </Alert>
           )}
 
+          {invalidPrices.length > 0 && (
+            <Alert type="warning" header={intl.formatMessage(messages.invalidPricesHeader)}>
+              <ul>
+                {invalidPrices.map((p, index) => (
+                  // eslint-disable-next-line react/no-array-index-key
+                  <li key={index}>
+                    {intl.formatMessage(messages.invalidPriceItem, {
+                      apiName: p.apiName,
+                      unitName: p.unitName,
+                      price: String(p.price ?? ''),
+                    })}
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          )}
+
           <Box padding="s">
             {viewMode === 'form' && (
               <SpaceBetween size="l">
+                {isAdmin && <Box color="text-body-secondary">{intl.formatMessage(messages.defaultUnitsAlwaysApply)}</Box>}
                 {services.length === 0 ? (
                   <Alert type="info" header="No pricing data configured">
                     <SpaceBetween size="s">

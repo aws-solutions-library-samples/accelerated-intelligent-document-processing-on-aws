@@ -1,6 +1,10 @@
 ---
 title: "PII Anonymization"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # PII Anonymization
 
 :::caution[Experimental]
@@ -59,7 +63,7 @@ for how it is kept in sync with upstream.
 
 | Mode | Original document | Redacted copy | When to use |
 |------|-------------------|---------------|-------------|
-| **Redact copy and stop** | **Deleted** (S3 + tracking) so it no longer appears | Processed | PII must never reach the model, and the original should not be retained |
+| **Redact copy and stop** | **Deleted** (S3, every version, + tracking) so it no longer appears | Processed | PII must never reach the model, and the original should not be retained |
 | **Redact copy and continue** | Processed normally | Processed | You need two result sets; scope each to different users |
 
 ### Formats
@@ -69,6 +73,12 @@ PDFs are **redacted PDF-in / PDF-out**: every PDF goes through the image path
 PDF with **no leaked text layer**. Images (JPG/PNG/TIFF/BMP/WEBP), TXT, and CSV
 are also supported. Office formats (DOCX/XLSX) are processed but lower-fidelity;
 audio is out of scope in v1.
+
+The input bucket is versioned, so deleting the original purges every version and
+delete marker of its key: the un-redacted upload is not kept as a noncurrent version
+until the bucket's lifecycle rule expires it. If that purge fails (for example because a
+customised role lacks `s3:DeleteObjectVersion` on the input bucket), the WorkflowTracker
+function's log records the error and the original's versions remain.
 
 ## Use cases
 

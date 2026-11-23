@@ -420,7 +420,9 @@ def test_the_per_model_quotas_are_carried_through_uncollapsed(monkeypatch):
     )
     assert quotas["bedrock_models"] == {"a": 100000, "b": 900000, "c": 400000}
     assert quotas["bedrock_models_rpm"] == {"a": 50, "b": 250, "c": 120}
-    assert set(quotas) == {"bedrock_models", "bedrock_models_rpm"}
+    # `unreadable_models` holds messages, never a number, so it is not a scalar.
+    assert set(quotas) == {"bedrock_models", "bedrock_models_rpm", "unreadable_models"}
+    assert quotas["unreadable_models"] == {}
 
 
 @pytest.mark.unit
@@ -486,6 +488,153 @@ def test_a_quota_that_cannot_be_read_names_the_model_and_the_quota_code(
     ):
         with pytest.raises(ValueError, match=rf"{failing} quota for model nova"):
             index.get_simple_quotas()
+
+
+def no_such_quota_error():
+    return ClientError(
+        {"Error": {"Code": "NoSuchResourceException", "Message": "no such quota"}},
+        "GetServiceQuota",
+    )
+
+
+def run_with_unreadable(monkeypatch, dead, model_ids=None, error=None):
+    """`get_simple_quotas` over three models, with the codes in `dead` failing."""
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_QUOTA_CODES",
+        json.dumps({"a": "L-A", "b": "L-B", "c": "L-C"}),
+    )
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_RPM_QUOTA_CODES",
+        json.dumps({"a": "L-RA", "b": "L-RB", "c": "L-RC"}),
+    )
+    monkeypatch.setattr(index.time, "sleep", lambda _s: None)
+    values = {"L-A": 1000, "L-B": 2000, "L-C": 3000, "L-RA": 1, "L-RB": 2, "L-RC": 3}
+    client = MagicMock()
+    client.list_service_quotas.return_value = {"Quotas": []}
+
+    def get_service_quota(ServiceCode, QuotaCode):  # noqa: N803 - boto3 casing
+        if QuotaCode in dead:
+            raise error or no_such_quota_error()
+        return {"Quota": {"Value": values[QuotaCode]}}
+
+    client.get_service_quota.side_effect = get_service_quota
+    boto3_stub = MagicMock()
+    boto3_stub.client.return_value = client
+    boto3_stub.Session.return_value.region_name = "us-west-2"
+    with patch.object(index, "boto3", boto3_stub):
+        return index.get_simple_quotas(model_ids), client
+
+
+def asked_codes(client):
+    return [c.kwargs["QuotaCode"] for c in client.get_service_quota.call_args_list]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("dead", "kind"), [("L-B", "TPM"), ("L-RB", "RPM")])
+def test_one_unreadable_quota_code_costs_that_model_and_not_the_calculation(
+    monkeypatch, dead, kind
+):
+    """#2024: a code Service Quotas does not hold in the Region used to raise.
+
+    The model is dropped from **both** mappings, so no step is costed against half
+    of its quotas, and the message names the quota type, the model and the code.
+    """
+    quotas, _ = run_with_unreadable(monkeypatch, {dead})
+    assert quotas["bedrock_models"] == {"a": 1000, "c": 3000}
+    assert quotas["bedrock_models_rpm"] == {"a": 1, "c": 3}
+    message = quotas["unreadable_models"]["b"]
+    assert message.startswith(index.QUOTA_NOT_READ_PREFIX)
+    assert f"{kind} quota for model b (quota code {dead})" in message
+    assert "NoSuchResourceException" in message
+
+
+@pytest.mark.unit
+def test_a_connection_failure_on_one_code_is_tolerated_the_same_way(monkeypatch):
+    from botocore.exceptions import EndpointConnectionError
+
+    quotas, _ = run_with_unreadable(
+        monkeypatch,
+        {"L-A"},
+        error=EndpointConnectionError(endpoint_url="https://example.invalid"),
+    )
+    assert set(quotas["bedrock_models"]) == {"b", "c"}
+    assert "EndpointConnectionError" in quotas["unreadable_models"]["a"]
+
+
+@pytest.mark.unit
+def test_when_no_quota_can_be_read_the_refusal_carries_every_reason(monkeypatch):
+    with pytest.raises(ValueError) as excinfo:
+        run_with_unreadable(monkeypatch, {"L-A", "L-B", "L-C"})
+    text = str(excinfo.value)
+    assert "No Bedrock model quotas were retrieved" in text
+    for model, code in (("a", "L-A"), ("b", "L-B"), ("c", "L-C")):
+        assert f"model {model} (quota code {code})" in text
+
+
+@pytest.mark.unit
+def test_only_the_models_the_plan_calls_are_looked_up(monkeypatch):
+    """A dead code for a model outside the plan is never even requested."""
+    quotas, client = run_with_unreadable(
+        monkeypatch, {"L-B", "L-RB"}, model_ids=["a", "c"]
+    )
+    assert sorted(asked_codes(client)) == ["L-A", "L-C", "L-RA", "L-RC"]
+    assert quotas["bedrock_models"] == {"a": 1000, "c": 3000}
+    assert quotas["unreadable_models"] == {}
+
+
+@pytest.mark.unit
+def test_a_one_million_context_plan_model_selects_its_base_models_codes(monkeypatch):
+    """Resolution follows `_lookup_quota`, so `a:1m` narrows to `a`'s entry."""
+    _, client = run_with_unreadable(monkeypatch, set(), model_ids=["a:1m"])
+    assert sorted(asked_codes(client)) == ["L-A", "L-RA"]
+
+
+@pytest.mark.unit
+def test_the_shipped_map_resolves_a_one_million_context_sonnet_5_to_its_base_code():
+    """`us.anthropic.claude-sonnet-5:1m` has no key of its own in `template.yaml`.
+
+    It is a default summarization model, so narrowing must land on the base
+    model's entry rather than miss and fall back to the whole map. Read from the
+    shipped template, not a fixture, so a renamed key fails here.
+    """
+    import re
+
+    template = (
+        pathlib.Path(__file__).resolve().parents[3] / "template.yaml"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"BEDROCK_MODEL_QUOTA_CODES: '(\{.*?\})'", template)
+    assert match, "BEDROCK_MODEL_QUOTA_CODES not found in template.yaml"
+    shipped = json.loads(match.group(1))
+    assert "us.anthropic.claude-sonnet-5:1m" not in shipped
+    narrowed = index._narrow_quota_codes_to_plan(
+        shipped, ["us.anthropic.claude-sonnet-5:1m"]
+    )
+    assert narrowed == {
+        "us.anthropic.claude-sonnet-5": shipped["us.anthropic.claude-sonnet-5"]
+    }
+
+
+@pytest.mark.unit
+def test_a_plan_naming_only_unmapped_models_falls_back_to_the_whole_map(monkeypatch):
+    """So the step-level builder, not this lookup, reports the missing mapping."""
+    quotas, client = run_with_unreadable(monkeypatch, set(), model_ids=["unmapped"])
+    assert sorted(asked_codes(client)) == ["L-A", "L-B", "L-C", "L-RA", "L-RB", "L-RC"]
+    assert set(quotas["bedrock_models"]) == {"a", "b", "c"}
+
+
+@pytest.mark.unit
+def test_a_model_mapped_to_null_is_reported_without_a_lookup(monkeypatch):
+    """`null` records a model AWS publishes no quota for, which Opus 4.1 is."""
+    quotas, client = run_get_simple_quotas(
+        monkeypatch,
+        {"a": "L-A", "none": None},
+        {"a": "L-RA", "none": None},
+        {"L-A": 5},
+        {"L-RA": 1},
+    )
+    assert quotas["bedrock_models"] == {"a": 5}
+    assert "no Service Quotas code is published" in quotas["unreadable_models"]["none"]
+    assert None not in asked_codes(client)
 
 
 # ==========================================================================
@@ -653,7 +802,8 @@ def test_a_missing_complexity_variable_names_all_five(monkeypatch):
 
 
 def quotas(tpm=60000, rpm=50, extra_tpm=None):
-    """The shape `get_simple_quotas` returns: per-model mappings and nothing else.
+    """The shape `get_simple_quotas` returns: per-model mappings, plus the
+    `unreadable_models` messages (empty here), and no account-wide scalar.
 
     `extra_tpm` adds further models to the TPM mapping, which is how a fixture
     makes the reduction over it observable — with one entry every reduction
@@ -664,6 +814,7 @@ def quotas(tpm=60000, rpm=50, extra_tpm=None):
     return {
         "bedrock_models": tpm_by_model,
         "bedrock_models_rpm": {"nova": rpm},
+        "unreadable_models": {},
     }
 
 
@@ -791,14 +942,16 @@ def test_the_token_limit_is_the_most_constrained_model_not_the_best_provisioned(
 def test_the_request_limit_is_also_the_most_constrained_model(monkeypatch):
     """The RPM half of the same `min` takes the binding model, and is measured.
 
-    ⚠️ "The same way" would be wrong, and the difference is the point of this
-    docstring rather than a detail: the TPM half is narrowed to the plan's step
-    models (see `test_only_the_models_the_plan_calls_constrain_its_throughput`),
-    while this one reduces over EVERY entry in the mapping —
-    `min(bedrock_quota_rpm.values())`. So a genuinely low RPM quota for a model the
-    pipeline never calls still binds the request limit, which is the defect that was
-    fixed for TPM and not for RPM. What both halves do share is taking the minimum
-    rather than a maximum, which is what the rest of this docstring is about.
+    Within this function the two halves are narrowed differently: the TPM half
+    selects the plan's step models (see
+    `test_only_the_models_the_plan_calls_constrain_its_throughput`), while this one
+    reduces over every entry of the RPM mapping it is handed —
+    `min(bedrock_quota_rpm.values())`. On the handler's path that mapping already
+    holds only the plan's models, because `get_simple_quotas` builds the RPM lookup
+    from the narrowed TPM key set; the handler-level
+    `test_a_sonnet_5_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
+    pins that. What both halves share is taking the minimum rather than a maximum,
+    which is what the rest of this docstring is about.
 
     Stated because the two halves disagreed for a long time — the token limit was
     taken from an account-wide ceiling that collapsed the per-model quotas to
@@ -856,9 +1009,11 @@ def test_a_planned_model_with_the_local_1m_suffix_finds_its_base_quota(monkeypat
     The `:1m` suffix is a local convention for a 1M context window and shares the
     base model's Service Quotas entry, so a plan naming the suffixed id must find
     the base entry. Failing to would drop the model from the reduction and silently
-    fall back to the whole account mapping, which here would report the 6,000 TPM
-    of a model the plan does not call — a plausible wrong number rather than an
-    error.
+    fall back to the whole mapping this function was given, which here would report
+    the 6,000 TPM of a model the plan does not call — a plausible wrong number
+    rather than an error. (`get_simple_quotas` narrows the same way, so on the
+    handler's path the mapping holds the base entry; see
+    `test_the_shipped_map_resolves_a_one_million_context_sonnet_5_to_its_base_code`.)
     """
     quota = quotas(tpm=600000, rpm=100000, extra_tpm={"tiny": 6000})
     result = distribution(
@@ -1113,14 +1268,18 @@ def test_the_plan_model_set_agrees_with_the_step_level_quota_builder(pattern):
                 config,
                 [
                     {
-                        f"{stage}TokensPerHour": 60000
-                        for stage in (
-                            "ocr",
-                            "classification",
-                            "extraction",
-                            "assessment",
-                            "summarization",
-                        )
+                        **{
+                            f"{stage}TokensPerHour": 60000
+                            for stage in (
+                                "ocr",
+                                "classification",
+                                "extraction",
+                                "assessment",
+                                "summarization",
+                                "evaluation",
+                            )
+                        },
+                        "evaluationComparisonsPerHour": 100,
                     }
                 ],
             )

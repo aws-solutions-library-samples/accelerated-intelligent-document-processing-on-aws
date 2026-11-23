@@ -19,8 +19,10 @@ the resolver forwards.
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,6 +105,115 @@ def test_list_agents_allows_permitted_groups(list_agents_index, group):
     assert result == [{"name": "doc-agent"}]
 
 
+# --- Quick Start's agent is reached only from its own panel -------------------
+# Quick Start runs from its own panel, offered to Admins. As a Document Analytics
+# agent it would run without the profile writes it exists for, and its read tools
+# would return every profile's schemas whatever the caller's configuration scope.
+
+_QUICK_START = "Quick-Start-Agent"
+
+
+@pytest.fixture
+def agent_request_index(monkeypatch):
+    monkeypatch.setenv("AGENT_TABLE", "agents")
+    monkeypatch.setenv("AGENT_PROCESSOR_FUNCTION", "proc")
+    with patch("boto3.resource") as resource, patch("boto3.client") as client:
+        module = _load("agent_request_handler_qs", "agent_request_handler/index.py")
+        yield module, resource.return_value.Table.return_value, client.return_value
+
+
+@pytest.fixture
+def analytics_processor():
+    stubs = {}
+    for name, attrs in {
+        "idp_common.agents.analytics": ("get_analytics_config", "parse_agent_response"),
+        "idp_common.agents.common.config": ("configure_logging",),
+        "idp_common.agents.factory": ("agent_factory",),
+    }.items():
+        stub = types.ModuleType(name)
+        for attr in attrs:
+            setattr(stub, attr, MagicMock())
+        stubs[name] = stub
+    with (
+        patch.dict(sys.modules, stubs),
+        patch("boto3.resource"),
+        patch("boto3.Session"),
+    ):
+        yield _load_from_repo(
+            "analytics_agent_processor_qs", "src/lambda/agent_processor/index.py"
+        )
+
+
+def _agent_query(group, agent_ids):
+    return {
+        "identity": {
+            "claims": {"cognito:groups": [group], "email": "u@example.com"},
+            "username": "u1",
+            "sub": "sub-u",
+        },
+        "arguments": {"query": "draft a schema for paystubs", "agentIds": agent_ids},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Admin", "Author", "Viewer"])
+def test_list_agents_never_offers_quick_starts_agent(list_agents_index, group):
+    list_agents_index.agent_factory.list_available_agents.return_value = [
+        {"agent_id": "Analytics-Agent"},
+        {"agent_id": _QUICK_START},
+    ]
+    event = {"identity": {"claims": {"cognito:groups": [group]}}, "arguments": {}}
+    assert list_agents_index.handler(event, None) == [{"agent_id": "Analytics-Agent"}]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Admin", "Author", "Viewer"])
+def test_submit_agent_query_refuses_quick_starts_agent(agent_request_index, group):
+    module, table, lam = agent_request_index
+    for agent_ids in ([_QUICK_START], ["Analytics-Agent", _QUICK_START]):
+        with pytest.raises(PermissionError, match="not as an analytics agent"):
+            module.handler(_agent_query(group, agent_ids), None)
+    table.put_item.assert_not_called()
+    lam.invoke.assert_not_called()
+
+
+@pytest.mark.unit
+def test_submit_agent_query_still_runs_the_analytics_agents(agent_request_index):
+    module, table, _ = agent_request_index
+    module.handler(_agent_query("Viewer", ["Analytics-Agent"]), None)
+    assert table.put_item.called
+
+
+@pytest.mark.unit
+def test_the_analytics_processor_refuses_quick_starts_agent(analytics_processor):
+    with pytest.raises(ValueError, match="not as an analytics agent"):
+        analytics_processor.process_agent_query("draft a schema", [_QUICK_START])
+    assert not analytics_processor.agent_factory.create_agent.called
+    assert not analytics_processor.agent_factory.create_orchestrator_agent.called
+
+
+@pytest.mark.unit
+def test_every_route_names_quick_starts_agent_by_its_registered_id(
+    list_agents_index, agent_request_index, analytics_processor
+):
+    from idp_common.chat_session_agents import QUICK_START_AGENT_ID
+
+    assert QUICK_START_AGENT_ID == _QUICK_START
+    assert list_agents_index._QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
+    assert agent_request_index[0]._QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
+    assert analytics_processor.QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
+    registry = (
+        Path(__file__).resolve().parents[2]
+        / "idp_common"
+        / "agents"
+        / "factory"
+        / "registry.py"
+    ).read_text(encoding="utf-8")
+    assert re.search(
+        rf"agent_id=[\"']{re.escape(QUICK_START_AGENT_ID)}[\"']", registry
+    ), "the agent registry no longer registers Quick Start under the id the gates match"
+
+
 @pytest.mark.unit
 def test_list_agents_allows_direct_lambda_invocation(list_agents_index):
     """No 'identity' (IAM/backend invoke) bypasses the Cognito group check."""
@@ -114,13 +225,22 @@ def test_list_agents_allows_direct_lambda_invocation(list_agents_index):
 # --- sendAgentChatMessage ---------------------------------------------------
 
 
+def _unused_session_table():
+    """A table double answering for a session id nobody has used yet."""
+    table = MagicMock()
+    table.get_item.return_value = {}
+    table.query.return_value = {"Items": []}
+    return table
+
+
 @pytest.fixture
 def agent_chat_index(monkeypatch):
     monkeypatch.setenv("CHAT_MESSAGES_TABLE", "test-messages")
     monkeypatch.setenv("CHAT_SESSIONS_TABLE", "test-sessions")
+    monkeypatch.setenv("CHAT_SESSION_OWNERS_TABLE", "test-owners")
     monkeypatch.setenv("AGENT_CHAT_PROCESSOR_FUNCTION", "")
     with patch("boto3.resource") as mock_resource, patch("boto3.client"):
-        mock_resource.return_value.Table.return_value = MagicMock()
+        mock_resource.return_value.Table.return_value = _unused_session_table()
         module = _load("agent_chat_resolver_index", "agent_chat_resolver/index.py")
         yield module
 
@@ -141,7 +261,7 @@ def test_agent_chat_rejects_reviewer(agent_chat_index):
 def test_agent_chat_allows_permitted_groups(agent_chat_index, group):
     """Admin/Author/Viewer may send Agent Chat messages (no PermissionError)."""
     event = {
-        "identity": {"claims": {"cognito:groups": [group]}},
+        "identity": {"claims": {"cognito:groups": [group]}, "sub": "sub-1"},
         "arguments": {"prompt": "hi", "sessionId": "s1"},
     }
     result = agent_chat_index.handler(event, None)
@@ -158,30 +278,37 @@ def test_agent_chat_allows_direct_lambda_invocation(agent_chat_index):
 
 
 @pytest.mark.unit
-def test_agent_chat_forwards_only_the_group_claim_to_the_processor(monkeypatch):
-    """The resolver must give the processor the groups, and nothing else.
+def test_agent_chat_forwards_only_the_group_claim_and_sub_to_the_processor(
+    monkeypatch,
+):
+    """The resolver must give the processor the groups and the sub, nothing else.
 
-    The processor needs the caller's groups to apply its own check, and it logs
-    its whole event — so the rest of the identity object (email, source IP,
-    token-derived claims) must not be forwarded.
+    The processor needs the caller's groups to apply its own check and the sub to
+    know whose session and memory the turn is. It logs its whole event — so the
+    rest of the identity object (email, source IP, token-derived claims) must not
+    be forwarded.
     """
     monkeypatch.setenv("CHAT_MESSAGES_TABLE", "test-messages")
     monkeypatch.setenv("CHAT_SESSIONS_TABLE", "test-sessions")
+    monkeypatch.setenv("CHAT_SESSION_OWNERS_TABLE", "test-owners")
     monkeypatch.setenv("AGENT_CHAT_PROCESSOR_FUNCTION", "agent-chat-processor")
     with patch("boto3.resource") as mock_resource, patch("boto3.client") as mock_client:
-        mock_resource.return_value.Table.return_value = MagicMock()
+        mock_resource.return_value.Table.return_value = _unused_session_table()
         module = _load("agent_chat_resolver_fwd", "agent_chat_resolver/index.py")
         event = {
             "identity": {
                 "claims": {"cognito:groups": ["Author"], "email": "a@example.com"},
                 "username": "author-user",
+                "sub": "sub-1",
             },
             "arguments": {"prompt": "hi", "sessionId": "s1"},
         }
         module.handler(event, None)
 
     payload = json.loads(mock_client.return_value.invoke.call_args.kwargs["Payload"])
-    assert payload["identity"] == {"claims": {"cognito:groups": ["Author"]}}
+    assert payload["identity"] == {
+        "claims": {"cognito:groups": ["Author"], "sub": "sub-1"}
+    }
     assert "email" not in json.dumps(payload["identity"])
 
 
@@ -326,10 +453,9 @@ def test_processor_accepts_a_single_group_claim_string(
 def test_processor_allows_identity_less_invocation(agent_chat_processor, monkeypatch):
     """An invocation carrying no groups at all is gated by IAM, not by group.
 
-    That covers the backend `lambda:InvokeFunction` path and the streaming
-    Function URL, whose transport forwards no Cognito group claim (GAP-07 in
-    scripts/api_rbac_expectations.yaml). Denying them here would take chat
-    streaming offline for every user rather than restricting it to a group.
+    That is the backend `lambda:InvokeFunction` path. Both web UI paths forward
+    the caller's verified groups (the streaming Function URL from the ID token it
+    verifies), so they are group-checked rather than reaching this branch.
     """
     monkeypatch.setattr(
         agent_chat_processor,
@@ -345,3 +471,126 @@ def test_processor_and_resolver_agree_on_the_group_list(agent_chat_processor):
     """One policy, enforced in two places — they must not drift apart."""
     resolver = _load("agent_chat_resolver_groups", "agent_chat_resolver/index.py")
     assert agent_chat_processor._AGENT_CHAT_GROUPS == resolver._AGENT_CHAT_GROUPS
+
+
+# --- Quick Start (method=quick_start) is Admin only --------------------------
+# Quick Start creates a configuration profile and activates it, and the
+# configuration API lets only an Admin create a profile.
+
+
+def _quick_start_event(group):
+    return {
+        "identity": {
+            "username": "u@example.com",
+            "sub": "sub-1",
+            "claims": {"cognito:groups": [group]},
+        },
+        "arguments": {"prompt": "paystubs", "sessionId": "s1", "method": "quick_start"},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Author", "Viewer"])
+def test_resolver_refuses_quick_start_to_a_non_admin(agent_chat_index, group):
+    with pytest.raises(PermissionError, match="Quick Start requires the Admin group"):
+        agent_chat_index.handler(_quick_start_event(group), None)
+
+
+@pytest.mark.unit
+def test_resolver_allows_quick_start_to_an_admin(agent_chat_index):
+    result = agent_chat_index.handler(_quick_start_event("Admin"), None)
+    assert result["sessionId"] == "s1"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Author", "Viewer"])
+def test_resolver_still_allows_ordinary_agent_chat_to_non_admins(
+    agent_chat_index, group
+):
+    event = _quick_start_event(group)
+    event["arguments"]["method"] = "chat"
+    assert agent_chat_index.handler(event, None)["sessionId"] == "s1"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("identity", [True, False], ids=["signed-in", "backend"])
+def test_resolver_refuses_quick_start_when_the_stack_turns_it_off(
+    agent_chat_index, monkeypatch, identity
+):
+    monkeypatch.setenv("QUICK_START_ENABLED", "false")
+    event = _quick_start_event("Admin")
+    if not identity:
+        del event["identity"]
+    with pytest.raises(PermissionError, match="Quick Start is turned off"):
+        agent_chat_index.handler(event, None)
+
+
+@pytest.mark.unit
+def test_resolver_keeps_agent_chat_when_quick_start_is_off(
+    agent_chat_index, monkeypatch
+):
+    monkeypatch.setenv("QUICK_START_ENABLED", "false")
+    event = _quick_start_event("Viewer")
+    event["arguments"]["method"] = "chat"
+    assert agent_chat_index.handler(event, None)["sessionId"] == "s1"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Author", "Viewer"])
+def test_processor_refuses_quick_start_to_a_non_admin_before_any_work(
+    agent_chat_processor, monkeypatch, group
+):
+    monkeypatch.setattr(
+        agent_chat_processor,
+        "get_cached_boto3_session",
+        MagicMock(side_effect=_ReachedAgentWork),
+    )
+    event = {
+        "identity": {"claims": {"cognito:groups": [group]}},
+        "sessionId": "s1",
+        "prompt": "paystubs",
+        "method": "quick_start",
+        "callerSub": "u@example.com",
+    }
+    with pytest.raises(PermissionError, match="Quick Start requires the Admin group"):
+        agent_chat_processor.handler(event, None)
+    assert not agent_chat_processor.get_cached_boto3_session.called
+
+
+@pytest.mark.unit
+def test_processor_allows_quick_start_to_an_admin(agent_chat_processor, monkeypatch):
+    monkeypatch.setattr(
+        agent_chat_processor,
+        "get_cached_boto3_session",
+        MagicMock(side_effect=_ReachedAgentWork("reached the agent work")),
+    )
+    event = {
+        "identity": {"claims": {"cognito:groups": ["Admin"]}},
+        "sessionId": "s1",
+        "prompt": "paystubs",
+        "method": "quick_start",
+        "callerSub": "u@example.com",
+    }
+    assert agent_chat_processor.handler(event, None)["body"] == "reached the agent work"
+
+
+@pytest.mark.unit
+def test_processor_and_resolver_agree_on_quick_starts_groups(agent_chat_processor):
+    resolver = _load("agent_chat_resolver_qs_groups", "agent_chat_resolver/index.py")
+    assert agent_chat_processor._QUICK_START_ROLES == resolver._QUICK_START_ROLES
+    assert agent_chat_processor._QUICK_START_ROLES == ("Admin",)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["true", "TRUE", " false ", "False", "", None])
+def test_processor_and_resolver_read_the_quick_start_flag_alike(
+    agent_chat_processor, monkeypatch, value
+):
+    resolver = _load("agent_chat_resolver_qs_flag", "agent_chat_resolver/index.py")
+    if value is None:
+        monkeypatch.delenv("QUICK_START_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("QUICK_START_ENABLED", value)
+    assert (
+        agent_chat_processor._quick_start_enabled() == resolver._quick_start_enabled()
+    )

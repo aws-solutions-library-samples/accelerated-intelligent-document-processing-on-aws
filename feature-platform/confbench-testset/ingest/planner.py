@@ -27,6 +27,7 @@ from typing import Any, Dict, List
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 # HuggingFace cache must live in Lambda's only writable directory.
 os.environ.setdefault("HF_HOME", "/tmp/huggingface")  # nosec B108 - Lambda sandbox
@@ -82,6 +83,12 @@ def plan_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     job_id = event["jobId"]
     test_set_id = event["testSetId"]
     selected: List[str] = list(event["variants"])
+
+    # Claim the host test-set record first, before any file is written: the id is
+    # fixed, so a user can already have a set by that name in Test Studio, and
+    # this ingest must stop rather than replace that set's record and add files to
+    # its folder. Raising sends the job to MarkFailed.
+    _register_test_set(test_set_id, "IN_PROGRESS", file_count=None)
 
     os.makedirs(_CACHE_DIR, exist_ok=True)
     logger.info("Downloading ConfBench parquet metadata from %s", HF_REPO_ID)
@@ -152,10 +159,6 @@ def plan_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         },
     )
 
-    # Mark the host test-set record IN_PROGRESS so Test Studio shows the set
-    # arriving rather than nothing at all.
-    _register_test_set(test_set_id, "IN_PROGRESS", file_count=None)
-
     return {
         "jobId": job_id,
         "testSetId": test_set_id,
@@ -175,6 +178,15 @@ def plan_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Host test-set registration
 # ---------------------------------------------------------------------------
+#: The ``source`` this extension stamps on its host test-set record. A record with
+#: any other source is a set somebody else created under the same id.
+DATASET_SOURCE = f"huggingface:{HF_REPO_ID}"
+
+
+class TestSetIdInUse(RuntimeError):
+    """The host already has a test set with this id that ConfBench did not create."""
+
+
 def _register_test_set(
     test_set_id: str,
     status: str,
@@ -186,6 +198,12 @@ def _register_test_set(
     Test Studio lists ItemType='testset' rows. if_not_exists on the descriptive
     fields means a re-ingest (e.g. adding variants to an existing set) updates
     status and counts while preserving anything an admin edited.
+
+    Conditional on the record being absent or ConfBench's own, as the host's
+    dataset deployers do: Test Studio creates sets with
+    ``attribute_not_exists(PK)``, so a record either side wrote first is kept.
+    Raises ``TestSetIdInUse`` for someone else's record; any other failure is
+    logged and swallowed, as before.
     """
     now = _now()
     names = {
@@ -210,7 +228,7 @@ def _register_test_set(
             "confidence calibration and OCR robustness evaluation. Deployed by "
             "the Test Set - ConfBench extension."
         ),
-        ":source": f"huggingface:{HF_REPO_ID}",
+        ":source": DATASET_SOURCE,
     }
     sets = [
         "#status = :status",
@@ -242,10 +260,21 @@ def _register_test_set(
         _ddb.Table(HOST_TRACKING_TABLE).update_item(
             Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
             UpdateExpression="SET " + ", ".join(sets),
+            ConditionExpression="attribute_not_exists(PK) OR #source = :source",
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
         logger.info("Registered test set %s as %s", test_set_id, status)
+    except ClientError as exc:
+        if (
+            exc.response.get("Error", {}).get("Code")
+            == "ConditionalCheckFailedException"
+        ):
+            raise TestSetIdInUse(
+                f"Test set '{test_set_id}' already exists in Test Studio and was not "
+                "created by ConfBench; it was left unchanged"
+            ) from None
+        logger.warning("Could not register test set %s: %s", test_set_id, exc)
     except Exception as exc:  # noqa: BLE001 - never fail a job on bookkeeping
         logger.warning("Could not register test set %s: %s", test_set_id, exc)
 
@@ -344,7 +373,12 @@ def finalize_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     # with a recorded failure count (matching the accelerator's other test-set
     # deployers, which degrade gracefully rather than block).
     status = "COMPLETED" if actual > 0 else "FAILED"
-    _register_test_set(test_set_id, status, file_count=actual)
+    try:
+        _register_test_set(test_set_id, status, file_count=actual)
+    except TestSetIdInUse as exc:
+        # Somebody else took the id after the plan claimed it (the ConfBench set
+        # was deleted in Test Studio and a new one created): theirs stays.
+        logger.warning("%s", exc)
 
     _ddb.Table(JOB_TABLE).update_item(
         Key={"jobId": job_id},
@@ -406,6 +440,10 @@ def fail_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not mark job %s failed: %s", job_id, exc)
     if test_set_id:
-        _register_test_set(test_set_id, "FAILED", file_count=None)
+        try:
+            _register_test_set(test_set_id, "FAILED", file_count=None)
+        except TestSetIdInUse as exc:
+            # The plan was refused for this reason; the other set stays as it is.
+            logger.warning("%s", exc)
     logger.error("job=%s failed: %s", job_id, error)
     return {"jobId": job_id, "status": "FAILED", "error": error}

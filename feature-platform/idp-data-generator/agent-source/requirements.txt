@@ -1,6 +1,7 @@
 # Extra AgentCore-image deps installed on top of the seed-data (SEED generator)
-# package. The Dockerfile installs seed-data first (which brings strands,
-# weasyprint, augraphy, opencv, reportlab, etc. via its own deps), then these:
+# package. The Dockerfile installs seed-data[augment] first (which brings
+# strands, weasyprint, reportlab, xhtml2pdf, and augraphy/opencv through the
+# augment extra), then these:
 #   - idp_common[synthesis]: the accelerator's synthesis adapter glue
 #     (idp_common.synthesis.engine drives seed_data.Generator; plus bootstrap,
 #     schema_bridge, packet_io). The [synthesis] extra is
@@ -17,5 +18,5 @@
 bedrock-agentcore>=1.0.0
 uvicorn>=0.30.0
 aws-requests-auth>=0.4.3
-requests>=2.32.0
+requests>=2.33.0
 jsonschema>=4.0.0

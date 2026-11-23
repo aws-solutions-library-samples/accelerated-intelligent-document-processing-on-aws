@@ -162,15 +162,32 @@ returned, the document succeeds, and the missing confidence is recorded as an
 error-severity `assessment_failed_confidence_unavailable` issue on the section.
 Because that section has no confidence values, HITL confidence routing and the UI
 threshold signals do not apply to it — the processing issue is the signal. Find it in
-the **Status** column of the Sections panel; this one is written to the section
-record only, not into the section's `result.json`, so it does not appear in the
-Processing Report tab. Transient
+the **Status** column of the Sections panel and in the section's Processing Report
+tab, whose Confidence stage then reads *no confidence scores*. Writing it into the
+report is best effort; if that write fails, the Status column still has it. A reply Amazon
+Bedrock's content filter withheld degrades the section the same way, and the issue's
+message says so; so does a reply Bedrock ended with the stop reason
+`content_filtered` or `guardrail_intervened` instead of raising an error. Transient
 failures (throttling, read timeouts) are unaffected and still retry. To get
 confidence back, reduce the confidence request's size: `geometry.mode: ocr_only`,
 a lower `extraction.confidence.list_batch_size`, or Advanced (agentic) extraction,
 which shards the confidence pass. Automatically re-batching an oversized confidence
 input so the pass succeeds rather than degrades remains open as part of
 [#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901).
+
+**The same issue with a decision model.** With `extraction.confidence.method:
+decision_model`, `assessment_failed_confidence_unavailable` records a call the
+decision model refused or could not answer. A refusal is not retried, and the
+issue's root cause names the refused pages. The decision model reads one page per
+request in every input mode, and a page's text is cut to fit
+`extraction.confidence.decision_model.max_input_tokens` (text past the cut is never
+read). A refusal for length means that estimate fell short on that page: lower
+`max_input_tokens`, or set `input` to `images`. A root cause that begins **Not sent**
+means the opposite: the question and image filled the limit and left no room for
+the page's text, so raise `max_input_tokens` or shorten the field descriptions. A
+root cause from `DecisionModelUnavailable` means the call did not complete: check
+the function ARN, the invoke permission and the function's logs. See
+[Decision models](./decision-models.md#text-longer-than-the-window).
 
 **`assessment_skipped_confidence_unavailable` on a section.** The sibling of the
 issue above, and it means something different: the confidence model was never
@@ -183,7 +200,7 @@ confidence model and its context window are not the place to look. The issue's
 `root_cause` names what was missing and which stage to check: **Extraction** for a
 missing or empty result, **Classification** for a section with no pages or with
 pages the document does not contain, and **configuration** for a section whose
-class the configuration no longer defines. Like the
+class the configuration no longer defines. Unlike the
 issue above it is written to the section record only, so look in the **Status**
 column of the Sections panel rather than the Processing Report tab.
 
@@ -229,29 +246,36 @@ outright and reported as unscored instead.
 **`classification_failed`, `classification_page_no_content` or
 `classification_invalid_class_fallback` on a section.** Classification could not
 produce a usable class for one or more of the section's pages, so those pages have
-no extraction schema and nothing was extracted from them. The codes and their
+no extraction schema and nothing was extracted from them. Under
+`sectionSplitting: disabled`, or when the document's name matched a class's name
+regex, such a page is usually given its section's class and extracted with the
+section instead, and the issue's message then names that class. The codes and their
 remedies are tabulated in
 [Classification](./classification.md#pages-classification-could-not-classify).
-Briefly: `classification_failed` is an error worth investigating, but ⚠️ **a stack
-deployed from this repository does not produce it.** Every call site that raises it
-sits in the classification service's SageMaker path, which runs only when a library
-caller constructs `ClassificationService` with `backend="sagemaker"` and an
-endpoint name. The deployed solution creates no inference endpoint and leaves the
-backend at its `bedrock` default, so on a standard deployment this code is
-unreachable and the equivalent Bedrock failure propagates and fails the document
-instead. If you do see it, you are running the SageMaker backend against an
-endpoint you host yourself, and the remedy is about that endpoint — check its
-health, the model access and the quota, alongside the ClassificationFunction log
-group. `classification_page_no_content` is a
+Briefly: `classification_failed` is an error worth investigating. On a stack
+deployed from this repository it comes from three cases, and its root cause says
+which: a page's text or image could not be read, or a page artifact is missing (the
+document also fails); a split-then-classify section classification call failed (the
+document also fails); or Amazon Bedrock's content filter withheld the
+classification model's reply for a page or a split-then-classify section, in which
+case that page or section is `unclassified` and the rest of the document completes.
+Any other Bedrock failure on the page-level path propagates and fails the document
+instead. Otherwise it comes from the classification service's SageMaker path, which
+runs only when a library caller constructs `ClassificationService` with
+`backend="sagemaker"` and an endpoint name against an endpoint you host yourself;
+the remedy is then about that endpoint — check its health, the model access and the
+quota, alongside the ClassificationFunction log group. `classification_page_no_content` is a
 warning meaning the page had **neither** usable OCR text **nor** a loadable page
 image; a blank page normally still has an image, so this points at missing page
 artifacts rather than at an empty page, and the OCR step is the place to look.
 `classification_invalid_class_fallback` is a warning meaning the model's prediction
 was outside the configured vocabulary and was coerced to `fallback_class` —
 that is where a page the classifier cannot place ends up, so it is the one of the
-three you are most likely to see. These are recorded only at combined page
-granularity; packet granularity and split-then-classify still re-prompt and assign
-`fallback_class`, but record no issue for it.
+three you are most likely to see. All three are recorded at combined page
+granularity, and split-then-classify records `classification_failed` and
+`classification_invalid_class_fallback` for a section; packet granularity with the
+combined strategy still re-prompts and assigns `fallback_class`, but records no issue
+for it.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit

@@ -1,0 +1,37 @@
+query GetBulkReviewJob($jobId: String!, $outcome: String, $limit: Int, $nextToken: String) {
+  getBulkReviewJob(jobId: $jobId, outcome: $outcome, limit: $limit, nextToken: $nextToken) {
+    job {
+      jobId
+      jobType
+      kind
+      status
+      mode
+      profile
+      submittedFrom
+      submittedTo
+      reason
+      note
+      resubmit
+      requestedBy
+      total
+      processed
+      counts {
+        outcome
+        count
+      }
+      limitReached
+      stalled
+      error
+      createdAt
+      startedAt
+      finishedAt
+    }
+    results {
+      objectKey
+      outcome
+      kind
+      detail
+    }
+    nextToken
+  }
+}

@@ -29,6 +29,7 @@ lambda_client = boto3.client("lambda")
 AGENT_TABLE = os.environ.get("AGENT_TABLE")
 AGENT_PROCESSOR_FUNCTION = os.environ.get("AGENT_PROCESSOR_FUNCTION")
 DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
+_QUICK_START_AGENT_ID = "Quick-Start-Agent"
 
 
 def validate_user_identity(identity):
@@ -140,6 +141,15 @@ def handler(event, context):
                 "Unauthorized: this deployment runs with tenant isolation, "
                 "where agent queries (which read across every tenant's documents) "
                 "are limited to the Admin group"
+            )
+
+        if _QUICK_START_AGENT_ID in agent_ids:
+            logger.warning(
+                "Rejecting submitAgentQuery from %s: Quick Start is not an analytics agent",
+                user_id,
+            )
+            raise PermissionError(
+                "Unauthorized: Quick Start runs from its own panel, not as an analytics agent"
             )
 
         # Generate a unique job ID

@@ -165,8 +165,12 @@ docs/configs. Recipe (as run for v0.5.16 → v0.6):
   at a much lower floor.** A short (~450-token) static instruction block never
   caches on Haiku/Sonnet but does on Nova.
 - **Confidence/assessment default is Nova Lite (`us.amazon.nova-lite-v1:0`)** —
-  measured ~130× cheaper than Sonnet 5 for the assessment pass (higher rate +
-  ~2× verbose output), and it reads cache cleanly. **Nova 2 Lite is worse for
+  far cheaper than Sonnet 5 for the assessment pass (higher rate + ~2× verbose
+  output), and it reads cache cleanly. The 0.6.0 A/B that measured ~130× was priced
+  from a `pricing.yaml` that has since been corrected on both sides (#1830, #1405)
+  and its token counts were not kept, so the ratio today is an estimate of **at
+  least about 88×**, not a measurement (basis in `base-confidence.yaml` and
+  `docs/benchmarking/studies/confidence-calibration.md`). **Nova 2 Lite is worse for
   assessment** (caches far fewer image tokens, re-writes instead of reading).
   Extraction default is Sonnet 5 (a quality choice).
 - **Reasoning models (Sonnet 5, Sonnet/Opus 4.6+) emit `reasoningContent`

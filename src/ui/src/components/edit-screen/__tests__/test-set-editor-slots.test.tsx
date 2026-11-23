@@ -42,7 +42,7 @@ vi.mock('../../../hooks/use-test-doc-pages', () => ({
   }),
 }));
 vi.mock('../../../hooks/use-configuration', () => ({
-  default: () => ({ mergedConfig: { classes: [{ $id: 'Invoice' }, { $id: 'W2' }] }, loading: false, error: null }),
+  default: () => ({ mergedConfig: { classes: [{ $id: 'Invoice' }, { $id: 'W2' }, { $id: 'Payslip' }] }, loading: false, error: null }),
 }));
 vi.mock('../../../hooks/use-configuration-versions', () => ({ default: () => ({ versions: [] }) }));
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => ({ allowedConfigVersions: null, loading: false }) }));
@@ -75,13 +75,25 @@ const Harness = ({
   sections = SECTIONS,
   afterChange,
   afterChanges,
+  refsAfterChange,
+  holdRefs = false,
   mayChangeClass = true,
+  changedGate,
 }: {
   sections?: TestSetDocumentSectionRef[];
   mayChangeClass?: boolean;
   afterChange?: TestSetDocumentSectionRef[];
   /** One set of refs per change, in order, for a test that saves more than once. */
   afterChanges?: TestSetDocumentSectionRef[][];
+  /** The refs the page re-reads, computed when it re-reads them, for a simulated server. */
+  refsAfterChange?: () => TestSetDocumentSectionRef[];
+  /**
+   * The page's re-read of the refs is slow: a change does not update them until "Re-read
+   * sections" is pressed, which reads `refsAfterChange` then.
+   */
+  holdRefs?: boolean;
+  /** When it holds a promise, the page's re-read of the refs settles only when that does. */
+  changedGate?: { promise: Promise<void> | null };
 }): React.JSX.Element => {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -98,9 +110,10 @@ const Harness = ({
     openData: data,
     onChanged: () => {
       onChanged();
-      const next = afterChanges ? afterChanges[changes] : afterChange;
+      const next = refsAfterChange ? refsAfterChange() : afterChanges ? afterChanges[changes] : afterChange;
       setChanges((n) => n + 1);
-      if (next) setRefs(next);
+      if (next && !holdRefs) setRefs(next);
+      return changedGate?.promise ?? undefined;
     },
   });
   const board = usePageClassBoard(slots.board, openId, data);
@@ -111,6 +124,11 @@ const Harness = ({
         Edit Page Grouping
       </button>
       {board.dialog}
+      {holdRefs && refsAfterChange && (
+        <button type="button" onClick={() => setRefs(refsAfterChange())}>
+          Re-read sections
+        </button>
+      )}
       <SectionEditor
         objectKey="p.pdf"
         sections={slots.reviewSections}
@@ -602,6 +620,34 @@ describe('the note a finished re-extract leaves (#1728)', () => {
     expect(screen.queryByText(/^Re-extracted section 1 as/)).not.toBeInTheDocument();
   });
 
+  it("re-reads the section only after the page has re-read its refs, since the write-back deleted the section's draft (D34)", async () => {
+    const gate: { promise: Promise<void> | null } = { promise: null };
+    answer(TWO_SAVED);
+    render(<Harness afterChange={TWO_AFTER} changedGate={gate} />);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await reclassifyFirstAndSave();
+    const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
+    await waitFor(() => expect(isActionable(button)).toBe(true));
+    let release: () => void = () => {};
+    gate.promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const changes = onChanged.mock.calls.length;
+    const before = fetchCalls();
+    await userEvent.click(button);
+    await waitFor(() => expect(onChanged.mock.calls.length).toBe(changes + 1));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    // Reading it now would follow the page's stale ref to the deleted draft.
+    expect(fetchCalls()).toBe(before);
+    await act(async () => {
+      release();
+      await gate.promise;
+    });
+    await waitFor(() => expect(fetchCalls()).toBeGreaterThan(before));
+  });
+
   it('on authored ground truth, says the class was corrected and the values kept, not that it re-extracted', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: { total: '1' } });
     await reextractSectionOne();
@@ -640,5 +686,393 @@ describe('the note a finished re-extract leaves (#1728)', () => {
     await userEvent.click(await screen.findByRole('button', { name: /^Re-extract$/ }));
     const note = await screen.findByText(/^Class corrected to Invoice/);
     expect(note).toHaveTextContent('This document has authored ground truth');
+  });
+});
+
+// Each case runs against a server that records the class a section's fields were
+// extracted under (`extractedAsClass`, as the resolver does) and against one that does
+// not, where the editor works it out for itself within a visit.
+describe.each([
+  { server: 'that records the extracted-under class', records: true },
+  { server: 'that does not record it', records: false },
+])('the class a reclassified section names, across several saves (#1816), on a server $server', ({ records }) => {
+  type Stored = {
+    sectionId: string;
+    documentClass: string;
+    pageIndices: number[];
+    /** The section's field values and label source; BASELINE's when not given. */
+    fields?: Record<string, string>;
+    labelSource?: string;
+    /** The section file's `extractedAsClass`, on a server that records it. */
+    extractedAs?: string;
+  };
+
+  /**
+   * A test set's server for one document, as the resolver behaves: a save keeps each sent
+   * section's content, writes the sections in order of their lowest page index and
+   * numbers them 1..N; each section's baseline is served from what is stored under its
+   * id. The editor's class, and the board's class for the open section, come from that.
+   * A sent section's fields and label source are the stored section's under the id it was
+   * sent with, and a section sent under an id nothing is stored under is written with no
+   * fields, as a draft — which is how the resolver tells an added section from a kept one.
+   * On a server that records it, a kept section's `extractedAsClass` is the one it already
+   * had, or else its class before the save, and is dropped when the class is that one again;
+   * a re-extract of a section drops it. The returned `reload` is a page reload: a fresh
+   * editor over what the server now stores, remembering nothing of the visit.
+   */
+  const serve = (initial: Stored[], { holdRefs = false }: { holdRefs?: boolean } = {}) => {
+    let stored = initial;
+    global.fetch = vi.fn((url: string) => {
+      const sec = stored.find((s) => s.sectionId === new URL(url).searchParams.get('section'))!;
+      const body = {
+        ...BASELINE,
+        document_class: { type: sec.documentClass },
+        split_document: { page_indices: sec.pageIndices },
+        ...(sec.fields ? { inference_result: sec.fields } : {}),
+        ...(sec.labelSource ? { labelSource: sec.labelSource } : {}),
+        ...(records && sec.extractedAs ? { extractedAsClass: sec.extractedAs } : {}),
+      };
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(body)) });
+    }) as never;
+    graphql.mockImplementation((args: { query: string; variables?: { s3Uri?: string; input?: { sections: Stored[] } } }) => {
+      if (args.query === 'getFilePresignedUrl') {
+        const id = /sections\/([^/]+)\//.exec(args.variables!.s3Uri!)![1];
+        return Promise.resolve({ data: { getFilePresignedUrl: { presignedUrl: `https://example.test/signed?section=${id}` } } });
+      }
+      if (args.query === 'updateTestSetDocumentSections') {
+        const sent = [...args.variables!.input!.sections].sort((a, b) => Math.min(...a.pageIndices) - Math.min(...b.pageIndices));
+        const before = new Map(stored.map((s) => [s.sectionId, s]));
+        stored = sent.map((s, i) => {
+          const kept = before.get(s.sectionId);
+          const extractedAs = kept ? (kept.extractedAs ?? kept.documentClass) : undefined;
+          return {
+            sectionId: String(i + 1),
+            documentClass: s.documentClass,
+            pageIndices: s.pageIndices,
+            ...(kept ? { fields: kept.fields, labelSource: kept.labelSource } : { fields: {}, labelSource: 'draft-machine' }),
+            ...(extractedAs && extractedAs !== s.documentClass ? { extractedAs } : {}),
+          };
+        });
+        const written = stored.map(({ sectionId, documentClass, pageIndices, extractedAs }) => ({
+          sectionId,
+          documentClass,
+          pageIndices,
+          ...(records ? { extractedAsClass: extractedAs ?? null } : {}),
+        }));
+        return Promise.resolve({ data: { updateTestSetDocumentSections: { testSetId: 'ts1', objectKey: 'p.pdf', sections: written } } });
+      }
+      if (args.query === 'reextractTestSetDocument') {
+        const target = (args.variables as { input?: { sectionId?: string } } | undefined)?.input?.sectionId;
+        stored = stored.map((s) => (!target || s.sectionId === target ? { ...s, extractedAs: undefined } : s));
+        return Promise.resolve({ data: { reextractTestSetDocument: { jobId: 'j1', status: 'SUCCEEDED' } } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    const refs = (): TestSetDocumentSectionRef[] =>
+      stored.map(({ sectionId, documentClass, pageIndices }) => ({
+        sectionId,
+        documentClass,
+        pageIndices,
+        baselineKey: `ts1/baseline/p.pdf/sections/${sectionId}/result.json`,
+      }));
+    let view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
+    return {
+      reload: async () => {
+        view.unmount();
+        onChanged.mockReset();
+        view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
+        await settle();
+      },
+      /** Change what the server stores behind the editor's back, as another tab or release would. */
+      edit: (change: (sections: Stored[]) => Stored[]) => {
+        stored = change(stored);
+      },
+    };
+  };
+  const START: Stored[] = [
+    { sectionId: '1', documentClass: 'Invoice', pageIndices: [0, 1] },
+    { sectionId: '2', documentClass: 'W2', pageIndices: [2] },
+  ];
+
+  const settle = () =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+  /** Open the board, set each listed section's class, optionally move one page, and save. */
+  const regroup = async (classes: Record<number, string>, move?: { page: number; to: number }) => {
+    const saves = onChanged.mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
+    const selects = createWrapper(document.body).findModal()!.findContent().findAllSelects();
+    Object.entries(classes).forEach(([index, documentClass]) => {
+      act(() => selects[Number(index)].openDropdown());
+      act(() => selects[Number(index)].selectOptionByValue(documentClass));
+    });
+    if (move) {
+      await userEvent.click(screen.getByRole('button', { name: new RegExp(`^Move page ${move.page}`, 'i') }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: new RegExp(`^Section ${move.to}\\b`) }));
+    }
+    await userEvent.click(screen.getByRole('button', { name: /Save page grouping/i }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(saves + 1));
+    await settle();
+  };
+
+  /** Open section `n` (1-based) in the editor and wait for its pages to show. */
+  const openSection = async (n: number, pages: string) => {
+    const picker = createWrapper(document.body)
+      .findAllButtonDropdowns()
+      .find((d) => (d.findNativeButton().getElement().getAttribute('aria-label') ?? '').startsWith('Section:'))!;
+    act(() => picker.openDropdown());
+    act(() => picker.findItems()[n - 1].click());
+    await waitFor(() => expect(screen.getByDisplayValue(pages)).toBeInTheDocument());
+    await settle();
+  };
+
+  const note = () => screen.queryByText(/These fields were extracted as/)?.textContent ?? null;
+
+  it('names the class the fields were extracted under, not the one before the latest change', async () => {
+    serve(START);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await regroup({ 0: 'W2' });
+    await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. .*the W2 schema/));
+    await regroup({ 0: 'Payslip' });
+    await waitFor(() => expect(note()).toMatch(/the Payslip schema/));
+    // The fields were extracted as Invoice; the notice must not name W2, the class in between.
+    expect(note()).toMatch(/extracted as Invoice\. /);
+  });
+
+  it('drops the notice when the section is changed back to the class its fields came from', async () => {
+    serve(START);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await regroup({ 0: 'W2' });
+    expect(await screen.findByText('Fields still reflect the previous class')).toBeInTheDocument();
+    await regroup({ 0: 'Invoice' });
+    await waitFor(() => expect(screen.queryByText('Fields still reflect the previous class')).not.toBeInTheDocument());
+  });
+
+  it("keeps a section's notice through a later save that changes only another section", async () => {
+    serve(START);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await regroup({ 0: 'W2' });
+    expect(await screen.findByText('Fields still reflect the previous class')).toBeInTheDocument();
+    await regroup({ 1: 'Invoice' });
+    // Section 1 is still open, still W2, and its fields are still Invoice's.
+    expect(note()).toMatch(/extracted as Invoice\. /);
+  });
+
+  it('follows the section, not its first page, when a later save moves pages and renumbers it', async () => {
+    serve(START);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await regroup({ 0: 'W2' });
+    await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. /));
+    // Page 1 joins section 2, which now starts first and so becomes section 1. Its fields
+    // are the old section 2's, extracted as W2, and it is still W2: nothing to re-extract.
+    await regroup({}, { page: 1, to: 2 });
+    await openSection(1, '1, 3');
+    expect(screen.queryByText('Fields still reflect the previous class')).not.toBeInTheDocument();
+    // The old section 1, now section 2, still holds fields extracted as Invoice.
+    await openSection(2, '2');
+    expect(note()).toMatch(/extracted as Invoice\. .*the W2 schema/);
+  });
+
+  it("keeps every other section's notice when one section is re-extracted", async () => {
+    serve(START);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await regroup({ 0: 'W2', 1: 'Invoice' });
+    const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
+    await waitFor(() => expect(isActionable(button)).toBe(true));
+    await userEvent.click(button);
+    await waitFor(() => expect(reextractInputs()).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByText('Fields still reflect the previous class')).not.toBeInTheDocument());
+    await openSection(2, '3');
+    expect(note()).toMatch(/extracted as W2\. .*the Invoice schema/);
+  });
+
+  it('re-extracting a later section clears its notice and keeps the first one', async () => {
+    serve(START);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await regroup({ 0: 'W2', 1: 'Invoice' });
+    await openSection(2, '3');
+    const button = await screen.findByRole('button', { name: 'Re-extract section 2' });
+    await waitFor(() => expect(isActionable(button)).toBe(true));
+    await userEvent.click(button);
+    await waitFor(() => expect(reextractInputs()).toHaveLength(1));
+    expect(reextractInputs()[0]).toMatchObject({ sectionId: '2' });
+    await settle();
+    // After the re-extract the editor shows the first section again, so open each in turn.
+    await openSection(2, '3');
+    expect(screen.queryByText('Fields still reflect the previous class')).not.toBeInTheDocument();
+    await openSection(1, '1, 2');
+    expect(note()).toMatch(/extracted as Invoice\. .*the W2 schema/);
+  });
+
+  it("names nothing on a section the reviewer added, even when it takes another section's first page", async () => {
+    serve(START);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
+    await userEvent.click(screen.getByRole('button', { name: /Add section/ }));
+    await userEvent.click(screen.getByRole('button', { name: /^Move page 1/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Section 3\b/ }));
+    const selects = createWrapper(document.body).findModal()!.findContent().findAllSelects();
+    act(() => selects[2].openDropdown());
+    act(() => selects[2].selectOptionByValue('W2'));
+    await userEvent.click(screen.getByRole('button', { name: /Save page grouping/i }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    await settle();
+    // The added section starts first, so it is section 1 now; it has no fields to mismatch.
+    await openSection(1, '1');
+    expect(note()).toBeNull();
+  });
+
+  describe.runIf(records)('after a page reload', () => {
+    const opened = () => waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+
+    it('still names the class the fields were extracted under', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await server.reload();
+      await opened();
+      await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. .*the W2 schema/));
+    });
+
+    it('a second change after the reload still names the first class', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await server.reload();
+      await opened();
+      await regroup({ 0: 'Payslip' });
+      await waitFor(() => expect(note()).toMatch(/the Payslip schema/));
+      expect(note()).toMatch(/extracted as Invoice\. /);
+      await server.reload();
+      await opened();
+      await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. .*the Payslip schema/));
+    });
+
+    it('drops the note on a section changed back without being opened since the reload', async () => {
+      const server = serve(START);
+      await opened();
+      // Section 2 (W2) becomes Invoice, then, after a reload that never opens it, W2 again.
+      await regroup({ 1: 'Invoice' });
+      await server.reload();
+      await opened();
+      await regroup({ 1: 'W2' });
+      await openSection(2, '3');
+      expect(note()).toBeNull();
+    });
+
+    it('follows the section, not its first page, when pages moved before the reload', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      // Page 1 joins section 2, which becomes section 1; the old section 1 becomes 2.
+      await regroup({}, { page: 1, to: 2 });
+      await server.reload();
+      await waitFor(() => expect(screen.getByDisplayValue('1, 3')).toBeInTheDocument());
+      await settle();
+      expect(note()).toBeNull();
+      await openSection(2, '2');
+      expect(note()).toMatch(/extracted as Invoice\. .*the W2 schema/);
+    });
+
+    it('names nothing once the section was changed back before the reload', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await regroup({ 0: 'Invoice' });
+      await server.reload();
+      await opened();
+      expect(note()).toBeNull();
+    });
+
+    it('drops the note when the file records the class the section now has', async () => {
+      // A release that predates the record copies it through a regroup without updating
+      // it, so a section changed back there carries a record naming its own class.
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. /));
+      server.edit((sections) =>
+        sections.map((s) => (s.sectionId === '1' ? { ...s, documentClass: 'Invoice', extractedAs: 'Invoice' } : s)),
+      );
+      await openSection(2, '3');
+      await openSection(1, '1, 2');
+      expect(note()).toBeNull();
+    });
+
+    it('names nothing once the section was re-extracted before the reload', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
+      await waitFor(() => expect(isActionable(button)).toBe(true));
+      await userEvent.click(button);
+      await waitFor(() => expect(reextractInputs()).toHaveLength(1));
+      await server.reload();
+      await opened();
+      expect(note()).toBeNull();
+    });
+  });
+
+  describe('section ids across a save (#1895)', () => {
+    const WITH_FIELDS: Stored[] = [
+      { sectionId: '1', documentClass: 'Invoice', pageIndices: [0, 1], fields: { total: '10.00' }, labelSource: 'reviewed-human' },
+      { sectionId: '2', documentClass: 'W2', pageIndices: [2], fields: { wages: '500.00' }, labelSource: 'reviewed-human' },
+    ];
+
+    it("does not give a section added after deleting the last one the deleted section's fields", async () => {
+      serve(WITH_FIELDS);
+      await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
+      // Empty section 2 into section 1 and delete it, then add a section and give it page 3.
+      await userEvent.click(screen.getByRole('button', { name: /^Move page 3/i }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: /^Section 1\b/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Delete section 2/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Add section/ }));
+      await userEvent.click(screen.getByRole('button', { name: /^Move page 3/i }));
+      const targets = await screen.findAllByRole('menuitem', { name: /^Section \d+\b/ });
+      await userEvent.click(targets[targets.length - 1]);
+      const selects = createWrapper(document.body).findModal()!.findContent().findAllSelects();
+      act(() => selects[1].openDropdown());
+      act(() => selects[1].selectOptionByValue('Payslip'));
+      await userEvent.click(screen.getByRole('button', { name: /Save page grouping/i }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+      await settle();
+      // The added section is sent under an id the server has never held.
+      const sent = graphql.mock.calls.find((c) => c[0].query === 'updateTestSetDocumentSections')![0].variables.input.sections;
+      expect(sent.map((s: Stored) => s.sectionId)).not.toContain('2');
+      // Section 2 is the added one: it has no fields, and none of the deleted section's.
+      await openSection(2, '3');
+      expect(screen.queryByDisplayValue('500.00')).not.toBeInTheDocument();
+      expect(screen.getByText(/No field values for this section/i)).toBeInTheDocument();
+      expect(note()).toBeNull();
+    });
+
+    it('does not reuse the id of a section deleted earlier in the same edit', async () => {
+      serve(WITH_FIELDS);
+      await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
+      await userEvent.click(screen.getByRole('button', { name: /^Move page 3/i }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: /^Section 1\b/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Delete section 2/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Add section/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Add section/ }));
+      // Two added sections, neither named after section 2, nor after each other.
+      expect(screen.queryByRole('button', { name: /Delete section 2/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Delete section 3/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Delete section 4/i })).toBeInTheDocument();
+    });
+
+    it('does not offer Edit Page Grouping until the saved grouping has been re-read', async () => {
+      serve(WITH_FIELDS, { holdRefs: true });
+      await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+      // Page 1 joins section 2, which then starts first: the server renumbers it to 1, so
+      // the refs still on the page name the other section by that id.
+      await regroup({}, { page: 1, to: 2 });
+      expect(screen.getByRole('button', { name: 'Edit Page Grouping' })).toBeDisabled();
+      await userEvent.click(screen.getByRole('button', { name: 'Re-read sections' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Edit Page Grouping' })).toBeEnabled());
+    });
   });
 });

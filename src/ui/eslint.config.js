@@ -9,6 +9,7 @@ import importXPlugin from 'eslint-plugin-import-x';
 import jestPlugin from 'eslint-plugin-jest';
 import prettierPlugin from 'eslint-plugin-prettier';
 import prettierConfig from 'eslint-config-prettier';
+import formatjs from 'eslint-plugin-formatjs';
 
 export default tseslint.config(
   // Global ignores (replaces .eslintignore)
@@ -101,8 +102,9 @@ export default tseslint.config(
       'react/no-array-index-key': 'warn',
       'react-hooks/exhaustive-deps': 'off',
 
-      // Import rules
-      'import-x/no-unresolved': ['error', { ignore: ['\\.css$'] }],
+      // Import rules. `virtual:` is the Vite virtual-module scheme (the i18n catalogs,
+      // served by scripts/i18n/vite-plugin-catalogs.mjs), which the node resolver cannot see.
+      'import-x/no-unresolved': ['error', { ignore: ['\\.css$', '^virtual:'] }],
       'import-x/extensions': [
         'error',
         'ignorePackages',
@@ -143,6 +145,41 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'warn',
       'react/react-in-jsx-scope': 'off',
       'react/prop-types': 'off',
+    },
+  },
+
+  // Message hygiene for react-intl (issue #1770). Every message is declared with an
+  // explicit dotted id, a literal English `defaultMessage` and a literal `description`
+  // for the translator; its ICU is valid, its placeholders are passed, and a plural
+  // names at least `one` and `other`. Zero findings today; these gate every future
+  // message. Tests are out: their <FormattedMessage> fixtures (a dynamic defaultMessage
+  // to drive the error path, no translator description) are not messages, and the
+  // extraction (`npm run i18n:extract`) ignores the same files. Counting the hardcoded
+  // strings that are NOT yet messages is the separate eslint.i18n.config.js, which is
+  // deliberately not part of `npm run lint`.
+  {
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
+    ignores: ['src/**/*.test.{ts,tsx}', 'src/**/__tests__/**', 'src/setupTests.ts', 'src/test-utils/**'],
+    plugins: {
+      formatjs,
+    },
+    rules: {
+      'formatjs/enforce-id': [
+        'error',
+        {
+          idInterpolationPattern: '[sha512:contenthash:base64:6]',
+          idWhitelist: ['^[a-z][a-zA-Z0-9]*(\\.[a-zA-Z0-9]+)+$'],
+        },
+      ],
+      'formatjs/enforce-default-message': ['error', 'literal'],
+      'formatjs/enforce-description': ['error', 'literal'],
+      'formatjs/enforce-placeholders': 'error',
+      'formatjs/enforce-plural-rules': ['error', { one: true, other: true }],
+      'formatjs/no-invalid-icu': 'error',
+      'formatjs/no-multiple-whitespaces': 'error',
+      'formatjs/no-offset': 'error',
+      'formatjs/prefer-pound-in-plural': 'error',
+      'formatjs/no-complex-selectors': ['error', { limit: 20 }],
     },
   },
 

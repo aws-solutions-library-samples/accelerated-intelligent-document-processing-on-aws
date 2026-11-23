@@ -142,10 +142,17 @@ GATE_SECTION_PREFIXES = (
 )
 
 #: The one section this module excludes *wholesale*, and the only one where a single
-#: justification really is a property of every member: every target in "Stack tests"
-#: deploys or talks to a live IDP stack, which its own heading says and which no
-#: pull-request gate can do. They are mapped in ``docs/testing.md``, and that each one
-#: appears there is enforced by ``scripts/tests/test_testing_doc.py``.
+#: justification really is a property of every member: no target in "Stack tests" is a
+#: gate a pull-request run could hold. Members fall into three kinds:
+#:
+#: * most deploy or talk to a live stack, as the section heading says;
+#: * ``live-auth-checks`` and ``stacktest-sandbox-network`` need no stack, but they
+#:   need live AWS credentials and create throwaway AWS resources of their own;
+#: * ``stacktest-list``, ``transform-deploy-test-list``, ``stacktest-upgrade`` and
+#:   ``ux-record-deps`` assert nothing: they list, print or check for local tools.
+#:
+#: They are mapped in ``docs/testing.md``, and that each one appears there is enforced
+#: by ``scripts/tests/test_testing_doc.py``.
 #:
 #: Count-pinned by :func:`test_the_live_stack_section_exclusion_is_count_pinned`, so a
 #: target added inside this excluded section is a deliberate edit here rather than a
@@ -153,7 +160,15 @@ GATE_SECTION_PREFIXES = (
 LIVE_STACK_SECTION_PREFIXES = ("Stack tests",)
 
 #: How many targets that wholesale exclusion covers today, audited when written.
-LIVE_STACK_SECTION_TARGET_COUNT = 24
+#: 27 since ``stacktest-terraform-upgrade`` joined the section: it deploys one
+#: release's Terraform module, upgrades it in place to another and destroys it, so it
+#: needs a live deployment of its own and cannot run in a scanned section. 28 since
+#: ``stacktest-load`` joined: it submits documents to an existing deployed stack and
+#: reads their executions back, so it cannot run without one. 29 since
+#: ``stacktest-decision-window`` joined: it invokes a deployed decision-model
+#: function, installed on a host stack as an extension, so it cannot run without
+#: one either (its ``DRY_RUN=1`` mode only builds the requests).
+LIVE_STACK_SECTION_TARGET_COUNT = 29
 
 #: Name shapes that make a target a check wherever it lives. This is what stops
 #: :data:`GATE_SECTION_PREFIXES` from being a section-scoped hole: a ``check-*`` or
@@ -209,6 +224,11 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "this same target, so both CIs run it there. Named on its own only so the "
         "scan diff can be run without re-validating every Terraform binary."
     ),
+    "terraform-replay-releases": (
+        "The last step of `make terraform-check` (in SHARED_GATES), which runs this "
+        "same target, so both CIs run it there. Named on its own only so the release "
+        "replay can be run without re-validating every Terraform binary."
+    ),
     "cfn-lint-warnings": (
         "`cfn-lint` with CFN_LINT_SHOW_WARNINGS=1: identical checks, verbose "
         "output. `cfn-lint` runs from lint-cicd, so the checking is gated."
@@ -236,8 +256,8 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "gated; this Makefile wrapper is the local spelling of it."
     ),
     "test-cli": (
-        "`lib/idp_cli_pkg` alone, verbosely. The same suite runs in both CIs as the "
-        "first step of `test-packages-cicd`."
+        "`lib/idp_cli_pkg` alone, verbosely. The same suite runs in both CIs, under "
+        "coverage, as the `idp_cli` tree of `coverage-all-cicd`."
     ),
     "test-config-library": (
         "`config_library/test_config_library.py` alone, verbosely. The same file "
@@ -245,7 +265,8 @@ GATES_DELIBERATELY_OUT_OF_CI = {
     ),
     "test-hooks": (
         "`scripts/tests/test_check_commit_text.py` alone, verbosely. It sits under "
-        "`scripts/tests`, which `test-packages-cicd` runs in full in both CIs."
+        "`scripts/tests`, which `coverage-all-cicd` runs in full in both CIs as the "
+        "`scripts` tree."
     ),
     "test-capacity": (
         "`src/lambda/calculate_capacity` alone, verbosely. `make test` covers it "
@@ -273,8 +294,10 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "reports on that tree and passes — correct for a developer who measured one "
         "tree, and the exact state that left eight of nine trees advisory-but-passing "
         "in CI (#1256). Both CIs therefore reach `check-coverage-debt-cicd` instead, "
-        "which adds `--require-all-trees` and is in SHARED_GATES. Registered here for "
-        "this one target: the check runs in both CIs, under the other name."
+        "which adds `--require-all-trees` and is in SHARED_GATES. GitHub's "
+        "scripts_coverage job also calls this bare target, with `--require-tree scripts`, "
+        "for the one tree it measures; it is still not a shared gate, because GitLab "
+        "has no second coverage job to call it from."
     ),
     "coverage-table": (
         "Reprints the table from the last measurement without re-measuring. Reading "
@@ -982,7 +1005,9 @@ def test_the_recipe_slice_stops_at_the_recipe() -> None:
         "`make <gate>` can be found in the slice without lint-cicd invoking it. "
         "Narrow _lint_cicd_recipe()."
     )
-    assert 10 < len(recipe.splitlines()) < 120, (
+    # A plausibility bound, not a budget: the stray-target check above is what
+    # catches a widened slice. Each gate step in lint-cicd is about six lines.
+    assert 10 < len(recipe.splitlines()) < 140, (
         f"the lint-cicd slice is {len(recipe.splitlines())} lines, which is not a "
         "plausible length for one recipe — check _lint_cicd_recipe()."
     )
@@ -1822,12 +1847,12 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
 
 #: The ``make`` targets through which a CI job reaches ``scripts/tests``, and so
 #: ``scripts/tests/test_ui_test_discovery.py``, whose three calibrations consult the
-#: installed Vitest. ``test-packages-cicd`` runs that suite directly;
-#: ``coverage-all-cicd`` re-runs it in order to measure it, which drags the same
-#: toolchain requirement into a job whose name and ``script:`` block say nothing
-#: about it. Both spellings are listed because either one alone would leave a job
-#: that runs the suite outside the universe below.
-SCRIPTS_SUITE_TARGETS = ("test-packages-cicd", "coverage-all-cicd")
+#: installed Vitest. ``coverage-all-cicd`` runs that suite in order to measure it,
+#: which drags the toolchain requirement into a job whose name and ``script:`` block
+#: say nothing about it. ``test-packages-cicd`` no longer runs it: the coverage run is
+#: the one execution of it in CI, so that recipe leaves out every suite a coverage tree
+#: measures.
+SCRIPTS_SUITE_TARGETS = ("coverage-all-cicd",)
 
 #: The composite-action input by which a GitHub job asks for the UI's npm
 #: dependencies. GitHub Actions has no YAML anchors, so the install itself lives in
@@ -2227,4 +2252,61 @@ def test_the_github_ui_deps_input_actually_installs_the_dependencies() -> None:
         f"input against '{passed_value}' AND runs `npm ci` in src/ui. The input is "
         "therefore inert, and those jobs run scripts/tests with no UI dependencies "
         "while appearing to ask for them."
+    )
+
+
+@pytest.mark.parametrize(
+    "workflow", [GITHUB_TESTS, GITHUB_SECURITY], ids=lambda p: p.name
+)
+def test_github_gate_workflows_cancel_superseded_runs(workflow: Path) -> None:
+    """GitHub's spelling of GitLab's ``interruptible: true`` on the gate jobs.
+
+    Without it a push to a pull request leaves the previous head's run going to
+    completion on a runner the new head's jobs then queue behind, which is the
+    queue tail this exists to remove. Three properties, each with its own way of
+    going wrong:
+
+    - the group names the workflow, or the two gate workflows share one group and
+      cancel each other on every push;
+    - the group names the pull request, or a push to one PR cancels another's run;
+    - cancelling is limited to ``pull_request`` runs, so a ``workflow_dispatch``
+      re-run — the recovery path for a dropped event — is never killed by a second
+      one, only queued behind it.
+    """
+    loaded = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    concurrency = loaded.get("concurrency")
+    assert isinstance(concurrency, dict), (
+        f"{workflow.name} has no top-level `concurrency` block, so a superseded "
+        "head's run holds its runner until it finishes"
+    )
+    group = str(concurrency.get("group", ""))
+    assert "github.workflow" in group, (
+        f"{workflow.name}: the concurrency group does not name the workflow, so "
+        "both gate workflows land in one group and cancel each other"
+    )
+    assert "github.event.pull_request.number" in group, (
+        f"{workflow.name}: the concurrency group is not per pull request"
+    )
+    cancel = str(concurrency.get("cancel-in-progress", ""))
+    assert re.fullmatch(
+        r"\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}", cancel
+    ), (
+        f"{workflow.name}: cancel-in-progress is {cancel!r}; it must cancel "
+        "pull_request runs only, so a manual dispatch is never cancelled"
+    )
+
+
+@pytest.mark.parametrize("job", [".fast_check_job", "srt_security_review", "dep_audit"])
+def test_the_gitlab_gate_jobs_are_interruptible(job: str) -> None:
+    """The GitLab half of the same property, so neither side can drop it alone.
+
+    ``.fast_check_job`` carries it for the five jobs built on that anchor. The two
+    security gates, the twins of ``security-checks.yml``, do not use the anchor and
+    set it themselves, so each is pinned on its own.
+    """
+    loaded = yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
+    definition = loaded.get(job) or {}
+    assert definition.get("interruptible") is True, (
+        f"{job} is no longer interruptible, so a superseded MR pipeline's run of "
+        "it goes to completion"
     )

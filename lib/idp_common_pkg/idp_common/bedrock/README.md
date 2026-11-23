@@ -113,7 +113,7 @@ embedding = client.generate_embedding(
 
 ## Prompt Caching with CachePoint
 
-Prompt caching is a powerful feature in Amazon Bedrock that significantly reduces response latency for workloads with repetitive contexts. The Bedrock client provides built-in support for this via the `<<CACHEPOINT>>` tag.
+Prompt caching in Amazon Bedrock bills a repeated prompt prefix at a reduced cache-read rate. On most Claude models a read is 0.1× the input price (0.05× on Sonnet 5.5 and Opus 5.5) and a write 1.25×, so a prefix written and not read again within five minutes costs more than no caching, and a prefix below the model's minimum is never cached (see the minimum-token note below and `docs/benchmarking/studies/prompt-caching.md`). No benchmark in this repository has measured its effect on latency. The Bedrock client provides built-in support for this via the `<<CACHEPOINT>>` tag.
 
 ### Supported Models
 
@@ -733,15 +733,44 @@ Guardrails are configured via environment variables:
 
 - `GUARDRAIL_ID_AND_VERSION`: Contains the Guardrail ID and Version in format `id:version`
 
-When properly configured, the `get_guardrail_config()` function will automatically include guardrail parameters in Bedrock API calls.
+An unset or empty variable, an empty half, or a value that does not split into
+exactly two parts means no guardrail, and every request is sent exactly as it would
+be without one.
 
 ### How Guardrail Integration Works
 
-1. The `invoke_model` function checks if `GUARDRAIL_ID_AND_VERSION` is set
-2. If configured, guardrail parameters are parsed from the environment variable
-3. Appropriate guardrail parameters are added to Bedrock API calls:
-   - For `converse` API: Uses `guardrailIdentifier`, `guardrailVersion`, and `trace`
-4. Debug logs show when guardrails are being applied
+Within `idp_common` and the Lambdas built on it, the variable is parsed in one
+place, `idp_common.bedrock.guardrail`, and each model-call path attaches the result
+in the shape its API takes. (The knowledge base resolver's
+`retrieve_and_generate` call parses the variable with its own code.)
+
+| Path | API | What is attached | Helper |
+|---|---|---|---|
+| `BedrockClient.invoke_model` (and the module-level `invoke_model`) | `converse` | `guardrailConfig` | `guardrail_config_from_env()` |
+| `create_strands_bedrock_model` and agentic extraction | Strands `BedrockModel` | `guardrail_id`, `guardrail_version`, `guardrail_trace` | `strands_guardrail_kwargs()` in `idp_common.agents.common.strands_bedrock_model` |
+| A direct `converse` / `converse_stream` call (the chat processors) | `converse_stream` | `guardrailConfig` | `guardrail_config_from_env()` |
+| A direct `invoke_model` call (the Z3 rule translator) | `invoke_model` | `guardrailIdentifier`, `guardrailVersion`, `trace` | `guardrail_invoke_model_params()` |
+
+`BedrockClient.get_guardrail_config()` returns the same dict as
+`guardrail_config_from_env()`. Debug logs show when a guardrail is applied.
+
+Code that builds its own request rather than going through `BedrockClient` or the
+factory must attach the guardrail with one of these helpers.
+`scripts/tests/test_model_call_guardrail.py` enforces that. It finds every
+`BedrockModel(`, `converse(`, `converse_stream(`, `invoke_model(` and
+`invoke_model_with_response_stream(` in `lib/`, `src/lambda/`, `nested/*/src/` and
+`patterns/*/src/` by AST. Each call
+must go through one of the paths above, attach the guardrail itself, or be listed
+with its own reason.
+
+Two paths do not send the guardrail:
+
+- **Embeddings.** `generate_embedding` calls `invoke_model` on an embedding model,
+  and the request carries no guardrail.
+- **OpenAI GPT-5.x models.** `BedrockClient.invoke_model` sends these to the
+  Responses API on the `bedrock-mantle` endpoint (`openai_responses.py`), and that
+  request carries no guardrail. When one is configured, the first such request in
+  each process logs a warning.
 
 ### Example with Guardrails
 
@@ -858,6 +887,19 @@ Different Bedrock models implement these parameters with varying defaults, namin
     from the `ValidationException` and retries once.
 
 - **Nova models**:
+  - Limits differ within the family, so `model_config_limits.yaml` gives the
+    members whose Bedrock model card names a different window their own entry
+    ahead of the family pattern: Nova 2 Lite (`nova-2-lite`, every geo, global
+    and service-tier id) has a 1,000,000-token input window and 64,000 output
+    tokens, Nova Micro 128,000 input and 10,000 output, and Nova Pro, Nova Lite,
+    Nova Premier and any other Nova 2 id 300,000 input and 10,000 output. Nova 2
+    Pro has no Bedrock model card, so it keeps the conservative family values.
+    Because the client requests the model maximum when `max_tokens` is unset, a
+    Nova 2 Lite call with no cap asks for 64,000 output tokens, and Bedrock holds
+    that amount of the tokens-per-minute quota until the request finishes. The
+    system defaults therefore set `max_tokens: 10000` for the short-reply steps
+    that use Nova 2 Lite (the three classification calls, `ocr.max_tokens` and
+    `evaluation.llm_method.max_tokens`).
   - Default values: temperature=0.7, topP=0.9, topK≈50 (moderately constrained)
   - Parameters use camelCase: `temperature`, `topP`, `topK`
   - Implementation: `topK` is placed in `additionalModelRequestFields.inferenceConfig`
@@ -983,6 +1025,27 @@ The BedrockClient automatically handles common failure scenarios:
   `tests/unit/bedrock/test_retry_ladder_bounds.py` drives a real `bedrock-runtime`
   client with only urllib3's `urlopen` replaced, so the exception is the one botocore
   itself raises (#1706).
+- An HTTP 500, 502, 503 or 504 reply is retried whatever error code it carries, on
+  both `_invoke_with_retry` and `_generate_embedding_with_retry`. That includes the
+  bare status botocore uses as the code when a reply names no error type (`"500"`,
+  message `"Internal Server Error"`), which used to be logged as "Non-retryable
+  Bedrock error" and fail the call on its first attempt (#2036). A 501 or a 4xx is
+  still not retried on these two ladders; the bedrock-mantle path keeps its own rule
+  and retries any status of 500 or above. Each retry is logged as a server error and
+  counts in `BedrockThrottles` (or `BedrockEmbeddingThrottles`) like any retryable
+  error. The category metric goes by the code first: a 503 counts in
+  `BedrockServiceUnavailable`, the circuit breaker's default trigger, unless its code
+  names another category (a throttle carrying a 503 counts as `BedrockThrottling`).
+  The rule is `model_utils.http_server_error_status`. The agentic retry decorators
+  in `utils/bedrock_utils.py` apply it to Bedrock model calls only, and only under
+  their default vocabulary; `utils.transient_errors` uses only its bare-status half
+  (see the [utils README](../utils/README.md)). The Z3 rule translator has its own
+  retry list and does not use it.
+- A 429 reply that names no error type (botocore's code `"429"`, typically a front
+  end throttling the request) is retried by the same rule, and is logged and counted
+  as throttling (`BedrockThrottling`). Only the bare code counts: a 429 carrying a
+  named code is judged by the name, so `ThrottlingException` is retried and
+  `ModelNotReadyException`, which neither ladder lists, is not (#2112).
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
 - A retry frees the attempt it replaces before it starts. Every ladder here

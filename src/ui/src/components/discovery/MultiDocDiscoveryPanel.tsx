@@ -40,18 +40,20 @@ import {
   CollectionPreferences,
 } from '@cloudscape-design/components';
 import type { SelectProps } from '@cloudscape-design/components';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import SafeMarkdown from '../common/SafeMarkdown';
 import { generateClient } from '../../api/client-shim';
+import { uploadDiscoveryZip } from '../../api/discovery-zip-upload';
 
-import { startMultiDocDiscovery, uploadMultiDocDiscoveryZip, listDiscoveryJobs, deleteDiscoveryJob } from '../../graphql/generated';
+import { startMultiDocDiscovery, listDiscoveryJobs, deleteDiscoveryJob } from '../../graphql/generated';
 import { useNavigate } from 'react-router-dom';
 import { DISCOVERY_JOB_PATH } from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import { isReplaceOnActive, REPLACE_ON_ACTIVE_MESSAGE } from './replaceGuard';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -156,10 +158,12 @@ const MultiDocDiscoveryPanel = () => {
   // Settings & configuration profiles
   const { settings } = useSettingsContext();
   const { versions, loading: versionsLoading, getVersionOptions, fetchVersions } = useConfigurationVersions();
+  const { formatDateTime, formatFixed } = useFormatters();
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
   // Save mode: 'augment' (default) adds to the profile's existing schema;
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
   const [saveMode, setSaveMode] = useState<'augment' | 'replace'>('augment');
+  const replaceOnActive = isReplaceOnActive(saveMode, selectedVersion?.value, versions);
   const [showCreateVersionModal, setShowCreateVersionModal] = useState(false);
 
   // Input mode
@@ -238,40 +242,22 @@ const MultiDocDiscoveryPanel = () => {
       setError('The "default" configuration profile is read-only. Create a new profile to save the discovered schema.');
       return;
     }
+    // Before the zip is uploaded: the server would refuse the start call, leaving the
+    // uploaded zip behind.
+    if (replaceOnActive) {
+      setError(REPLACE_ON_ACTIVE_MESSAGE);
+      return;
+    }
 
     setStarting(true);
     setError(null);
 
     try {
       if (inputMode === 'zip' && zipFile) {
-        // Step 1: Get presigned URL for zip upload
         setUploading(true);
-        const uploadResponse = await client.graphql({
-          query: uploadMultiDocDiscoveryZip,
-          variables: {
-            fileName: zipFile.name,
-            fileSize: zipFile.size,
-            configVersion: selectedVersion.value!,
-          },
-        });
-
-        const uploadData = (uploadResponse as any)?.data?.uploadMultiDocDiscoveryZip;
-        if (!uploadData?.presignedUrl) {
-          throw new Error('Failed to get upload URL');
-        }
-
-        // Step 2: Upload zip file via presigned URL
-        const uploadResult = await fetch(uploadData.presignedUrl, {
-          method: 'PUT',
-          body: zipFile,
-          headers: { 'Content-Type': 'application/zip' },
-        });
-        if (!uploadResult.ok) {
-          throw new Error(`Upload failed: ${uploadResult.statusText}`);
-        }
+        await uploadDiscoveryZip(zipFile, selectedVersion.value!);
         setUploading(false);
 
-        // Step 3: Start discovery with zip reference
         const startResponse = await client.graphql({
           query: startMultiDocDiscovery,
           variables: {
@@ -519,7 +505,7 @@ const MultiDocDiscoveryPanel = () => {
     return (
       <ExpandableSection headerText="Quality Review Report" variant="container">
         <div style={{ maxHeight: '600px', overflow: 'auto', padding: '8px' }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{job.reflectionReport}</ReactMarkdown>
+          <SafeMarkdown rawHtml={false}>{job.reflectionReport}</SafeMarkdown>
         </div>
       </ExpandableSection>
     );
@@ -685,7 +671,7 @@ const MultiDocDiscoveryPanel = () => {
       cell: (item: MultiDocJob) => {
         const d = parseUtcTimestamp(item.createdAt);
         if (!d) return '—';
-        return d.toLocaleString(undefined, {
+        return formatDateTime(d, {
           month: 'short',
           day: 'numeric',
           hour: '2-digit',
@@ -807,7 +793,8 @@ const MultiDocDiscoveryPanel = () => {
             />
           </FormField>
 
-          {saveMode === 'replace' && selectedVersion && (
+          {replaceOnActive && <Alert type="error">{REPLACE_ON_ACTIVE_MESSAGE}</Alert>}
+          {saveMode === 'replace' && selectedVersion && !replaceOnActive && (
             <Alert type="warning">
               Replace mode removes all existing document classes in profile <strong>{selectedVersion.value}</strong>{' '}
               <strong>immediately, before discovery runs</strong>, then saves the newly discovered schema. If discovery fails, the profile
@@ -862,7 +849,7 @@ const MultiDocDiscoveryPanel = () => {
                 <input type="file" accept=".zip" onChange={(e) => setZipFile(e.target.files?.[0] || null)} style={{ fontSize: '14px' }} />
                 {zipFile && (
                   <Badge color="green">
-                    {zipFile.name} ({(zipFile.size / 1024 / 1024).toFixed(1)} MB)
+                    {zipFile.name} ({formatFixed(zipFile.size / 1024 / 1024, 1)} MB)
                   </Badge>
                 )}
               </SpaceBetween>
@@ -878,6 +865,7 @@ const MultiDocDiscoveryPanel = () => {
               disabled={
                 !selectedVersion ||
                 selectedVersion.value === 'default' ||
+                replaceOnActive ||
                 (inputMode === 'zip' && !zipFile) ||
                 (inputMode === 's3path' && !s3Prefix)
               }

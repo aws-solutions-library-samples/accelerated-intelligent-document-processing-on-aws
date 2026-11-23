@@ -39,9 +39,11 @@ Classification rules, in order:
    (``DEFAULT_RETRYABLE_ERRORS``) **and the retryable codes botocore's own standard
    retry mode recognises**, minus the entries that are deterministic at the task
    level, plus the S3 spellings (``SlowDown``, ``ServiceUnavailable``,
-   ``InternalError``), the streaming error, and the standard-library / botocore /
-   urllib3 network and timeout exception TYPES. Message markers are limited to
-   network-transport text that carries no error code of its own.
+   ``InternalError``), the streaming error, the bare HTTP statuses botocore uses as
+   the code when a reply names no error (``"500"``, ``"502"``, ``"503"``,
+   ``"504"``, #2036; and the throttle ``"429"``, #2112), and the standard-library / botocore / urllib3 network and
+   timeout exception TYPES. Message markers are limited to network-transport text
+   that carries no error code of its own.
 
    The botocore half is **read from botocore** rather than transcribed, because a
    hand-kept list of throttling spellings is a list that goes stale one service at a
@@ -60,6 +62,14 @@ Classification rules, in order:
    ``TRANSIENT_MESSAGE_MARKERS`` (transient text in an exception with no code) and
    is deliberately just as narrow: only text naming a reproducible outcome
    qualifies. The one entry today is Bedrock's mid-stream ToolUse failure (#895).
+5. An exception that carries its OWN retry verdict — a ``retry_later`` attribute
+   holding a ``bool`` — is judged by that verdict, and the walk ends there. This is
+   the decision-model client's contract: ``DecisionModelError`` and its subclasses
+   say whether repeating the step can re-run paid work, and only the client knows
+   whether the invocation may have started. Its ``ClientError`` cause is kept for
+   the log, not for a second opinion, so a bare ``"500"`` or ``"429"`` that the
+   client reported as ``retry_later=False`` stays not transient here, as it does in
+   section classification (#2112). Checked after rule 4 and before everything else.
 """
 
 from __future__ import annotations
@@ -71,7 +81,9 @@ from typing import Iterable
 
 import botocore.exceptions
 
+from idp_common.bedrock.model_utils import bare_http_server_status
 from idp_common.utils.bedrock_utils import DEFAULT_RETRYABLE_ERRORS
+from idp_common.utils.metering import attach_failure_metering
 
 try:  # urllib3 is a botocore dependency, but keep the import defensive
     from urllib3.exceptions import NewConnectionError, ProtocolError
@@ -259,6 +271,10 @@ TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
 
 _MAX_CHAIN = 16
 
+#: The attribute through which an exception states its own retry verdict (rule 5).
+#: ``idp_common.decision_model.DecisionModelError`` defines it.
+RETRY_VERDICT_ATTRIBUTE = "retry_later"
+
 
 class TransientError(Exception):
     """A failure the handler judged transient; re-raised so Step Functions retries it.
@@ -298,6 +314,12 @@ def _verdict(node: BaseException) -> bool | None:
     # for a modelStreamErrorException carrying the ToolUse text (#895).
     if any(marker in text for marker in DETERMINISTIC_MESSAGE_MARKERS):
         return False
+    # Rule 5: an exception that states its own retry verdict is the authority for
+    # its chain (the decision-model client's ``retry_later``; #2112). Read as an
+    # attribute so this module does not import the decision-model package.
+    own_verdict = getattr(node, RETRY_VERDICT_ATTRIBUTE, None)
+    if isinstance(own_verdict, bool):
+        return own_verdict
     if isinstance(node, TransientError):
         return True
     if isinstance(node, TRANSIENT_EXCEPTION_TYPES):
@@ -306,7 +328,15 @@ def _verdict(node: BaseException) -> bool | None:
     if code is not None:
         # A definite service code is the verdict for this node AND its chain: a
         # ValidationException raised after a swallowed throttle is still hard.
-        return code.lower() in TRANSIENT_ERROR_NAMES
+        # A bare HTTP 500/502/503/504 in place of a code is botocore saying the
+        # reply named no error, only that the server failed (#2036); a bare 429,
+        # that a front end throttled the request (#2112). The status
+        # of a NAMED code is not consulted: Lambda answers several deterministic
+        # errors with a 502, and rule 1 lets the name decide.
+        return (
+            code.lower() in TRANSIENT_ERROR_NAMES
+            or bare_http_server_status(code) is not None
+        )
     if type(node).__name__.lower() in TRANSIENT_ERROR_NAMES:
         return True
     if any(marker in text for marker in TRANSIENT_MESSAGE_MARKERS):
@@ -359,9 +389,18 @@ def raise_if_transient(exc: BaseException, where: str = "") -> None:
         raise TransientError(exc, where) from exc
 
 
-def reraise_if_transient(exc: BaseException, where: str = "") -> None:
+def reraise_if_transient(
+    exc: BaseException, where: str = "", metering: dict | None = None
+) -> None:
     """Surface ``exc`` as :class:`TransientError` — for an ``except`` that does NOT
     end in a bare ``raise``.
+
+    ``metering`` is the usage of the model calls the failed attempt completed
+    before ``exc``. When given, it is attached to the raised ``TransientError``
+    (``utils.attach_failure_metering``), replacing whatever was attached before, so
+    the handler can record that spend before Step Functions retries the step
+    (#2122). It must already include ``utils.failure_metering(exc)`` if ``exc``
+    carried any, because it replaces rather than adds.
 
     :func:`raise_if_transient` returns silently when ``exc`` already IS a
     ``TransientError``, because it is written for the pattern ::
@@ -382,6 +421,11 @@ def reraise_if_transient(exc: BaseException, where: str = "") -> None:
     where a bare ``raise`` follows. Neither ever wraps a ``TransientError`` in
     another one, so a chain of nested handlers reports one name and one cause.
     """
-    if isinstance(exc, TransientError):
-        raise exc
-    raise_if_transient(exc, where)
+    try:
+        if isinstance(exc, TransientError):
+            raise exc
+        raise_if_transient(exc, where)
+    except TransientError as transient:
+        if metering:
+            attach_failure_metering(transient, metering)
+        raise

@@ -35,6 +35,7 @@ session = boto3.Session()
 
 # Get environment variables
 AGENT_TABLE = os.environ.get("AGENT_TABLE")
+QUICK_START_AGENT_ID = "Quick-Start-Agent"
 
 
 def validate_job_ownership(table, user_id, job_id):
@@ -93,6 +94,8 @@ def process_agent_query(query: str, agent_ids: list, job_id: str = None, user_id
         # Validate agent_ids is not empty
         if not agent_ids:
             raise ValueError("At least one agent ID is required")
+        if QUICK_START_AGENT_ID in agent_ids:
+            raise ValueError("Quick Start runs from its own panel, not as an analytics agent")
             
         logger.info(f"Processing query with agent IDs: {agent_ids}")
         

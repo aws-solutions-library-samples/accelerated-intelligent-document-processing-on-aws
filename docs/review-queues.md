@@ -2,10 +2,10 @@
 title: "Review Queues"
 ---
 
-# Review Queues
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Review Queues
 
 ## Table of Contents
 
@@ -62,6 +62,12 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
      `hitl.route_missing_required_fields` is on (the default). Its review reason
      reads **Missing required: <field>** (see
      [Absent values and missing required fields](./extraction-and-confidence.md#absent-values-and-missing-required-fields))
+   - a section's extraction failed without failing the document, so the section
+     has no extracted data: Amazon Bedrock's content filter withheld the
+     extraction model's reply, for example. Its review reason reads **Extraction
+     failed**, and its details give the section and the section's
+     `extraction_failed` issue message (see
+     [Where a failed section shows up](./extraction-and-confidence.md#where-a-failed-section-shows-up))
    - in BDA mode, the matched blueprint's confidence is under
      `hitl.confidence_threshold`, or BDA matched a blueprint but returned no
      usable confidence for it: null, NaN, infinite, `true` or `false`, a string
@@ -316,7 +322,10 @@ documents each is assigned. The **Documents** table shows each item's **Document
 **Priority**, **State** and **Annotator** (who it is assigned to; sortable), with its
 actions in the row menu. The info icon opens a panel describing the page.
 
-To work a queue, open its page, select items, and choose one of:
+To work a queue, open its page, select items, and choose **Assign to…** or **Unassign**
+above the **Documents** table, or one of the actions in its **More actions** menu, grouped
+as **Queue** (**Move…**, **Remove from queue…**) and **Skip reviews** (**Skip All Reviews
+(N)**, **Skip All Reviews by profile…**):
 
 - **Assign to…** picks one of the queue's Annotators. The item appears in their Tasks and
   they get an Inbox message. Assigning an item that already has an assignee
@@ -330,6 +339,14 @@ To work a queue, open its page, select items, and choose one of:
   with its machine output, no draft is applied, and the review status object is
   deleted. An assignee is told. The note is optional and is kept in the item's
   history.
+- **Skip All Reviews (N)** and **Skip All Reviews by profile…** finish items with their
+  machine output, like Remove, but with a required reason, and are recorded as
+  **Skipped (Skip All Reviews)** in each item's history. Reviewers have them too, for
+  items waiting for review and their own claims; an Admin can skip any waiting or
+  assigned item. See [bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents).
+- An item that someone created with **Send to review** shows **Sent to review** with
+  its reason in the item's **Review Reason** panel; it is worked like any other item.
+  See [Send to review](human-review.md#send-to-review).
 
 **Test Studio queues** come from test sets: each test set is a queue, created and
 deleted with the set. Its page shows **Queue Progress**, a bar of the documents completed,
@@ -407,7 +424,9 @@ its queue item:
   Baseline**) are disabled, with the reason that the document is in a review queue;
   correct and regroup the document from its queue item. The server refuses the same
   changes too: a regroup by anyone but the queue item's holder, and processing changes
-  on a document in review. **Skip All Reviews** and **Start Review** aren't offered.
+  on a document in review. **Skip All Reviews** is shown disabled with the reason
+  that the document is in a review queue, and **Start Review** isn't offered; skip
+  queue items in bulk from the queue's page or the Document List's **Review** menu.
   A direct upload of the
   document's section results (`uploadDocument`) is refused as well, with
   `QUEUE_MANAGED`.
@@ -456,6 +475,12 @@ polling for `COMPLETED`. The SDK and CLI report the same value as `review_status
 The full contract, including the schema, the ordering, `sequence` and an
 EventBridge rule pattern, is in the
 [review queues module README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/review_queues/README.md#review-status-contract).
+
+A batch watched with `idp-cli run-inference --monitor` or `idp-cli status --wait`,
+or polled through the SDK's `batch.get_status`, counts a document held in a queue
+as **awaiting review** and stops waiting once nothing else is queued or running.
+See [IDP CLI](./idp-cli.md#process--run-inference) and
+[IDP SDK](./idp-sdk.md#batchget_status).
 
 ## Limits and behaviour to know
 

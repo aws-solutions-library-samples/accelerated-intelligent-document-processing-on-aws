@@ -26,6 +26,13 @@ not load.
 Assumes a **disposable dev stack**. Do not point this at anything in production
 uses: the review saves edits, re-extracts documents and can reset labels.
 
+Nothing stops a review you drive yourself from doing that. The unattended MR review
+(`scripts/sdlc/ai_ux_test.py`, in CI and through `run_in_docker.py review`) is
+different: it runs on a shared stack, and every click, key and edit its session
+makes passes the first-time-user stories' commit guard before it reaches the
+browser, which refuses each control that would commit (see
+[`ux-test-ci.md`](ux-test-ci.md)).
+
 ### 1. Install the browser MCP server (once)
 
 ```bash

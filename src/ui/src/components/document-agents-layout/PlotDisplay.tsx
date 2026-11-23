@@ -16,6 +16,7 @@ import {
   Filler,
 } from 'chart.js';
 import { Bar, Line, Pie, Doughnut } from 'react-chartjs-2';
+import { useFormatters } from '../../i18n/format';
 
 // Register Chart.js components
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, ArcElement, Filler);
@@ -61,6 +62,7 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
   // State to track the current chart type, initialized with the type from JSON
   const [currentChartType, setCurrentChartType] = useState<string | null>(null);
   const [selectedOption, setSelectedOption] = useState<ChartTypeOption | null>(null);
+  const { formatPercent } = useFormatters();
 
   // Initialize chart type when plotData changes
   useEffect(() => {
@@ -242,8 +244,9 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
                   const value = (context.parsed as number) || 0;
                   const dataset = context.dataset as { data: number[] };
                   const total = dataset.data.reduce((sum: number, val: number) => sum + val, 0);
-                  const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
-                  return `${label}: ${value} (${percentage}%)`;
+                  const percentage =
+                    total > 0 ? formatPercent(value / total, { fractionDigits: 1 }) : formatPercent(0, { fractionDigits: 0 });
+                  return `${label}: ${value} (${percentage})`;
                 } catch (error) {
                   console.error('Error in tooltip callback:', error);
                   return (context.label as string) || 'Unknown';

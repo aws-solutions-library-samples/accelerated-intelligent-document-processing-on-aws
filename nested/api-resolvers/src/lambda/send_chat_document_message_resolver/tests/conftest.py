@@ -13,6 +13,8 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 
 os.environ.setdefault("CHAT_DOCUMENT_SESSIONS_TABLE", "chat-sessions-table")
+os.environ.setdefault("CHAT_SESSION_OWNERS_TABLE", "chat-session-owners-table")
+os.environ.setdefault("CHAT_MESSAGES_TABLE", "chat-messages-table")
 os.environ.setdefault(
     "CHAT_DOCUMENT_PROCESSOR_FUNCTION_ARN",
     "arn:aws:lambda:us-east-1:000000000000:function:chat-processor",

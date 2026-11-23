@@ -46,22 +46,23 @@ _REGION_TYPES = {"eu-": "eu", "ca-": "ca"}
 
 
 @pytest.mark.unit
-def test_the_discovery_fallbacks_agree_with_the_swap_tables():
+def test_the_code_fallbacks_agree_with_the_swap_tables():
     """A code fallback must be what the deploy-time swap makes of the same id.
 
     Otherwise a stack that read its configuration gets one model and a stack that
     fell back gets another, which is the divergence the fallbacks exist to remove.
+    Every id a fallback passes is in ``FALLBACK_MODEL_IDS``, which
+    ``tests/unit/test_geographic_fallbacks.py`` holds by reading every call.
     """
-    from idp_common.discovery import regional_defaults
+    from idp_common import regional_models
 
-    assert set(regional_defaults.REGIONAL_DEFAULT_MODELS) == set(_REGION_TYPES)
-    for us_id in (
-        regional_defaults.DEFAULT_EMBEDDING_MODEL_ID,
-        regional_defaults.DEFAULT_ANALYSIS_MODEL_ID,
-    ):
+    assert set(regional_models.REGIONAL_DEFAULT_MODELS) == set(_REGION_TYPES)
+    rows = {k for row in regional_models.REGIONAL_DEFAULT_MODELS.values() for k in row}
+    assert rows <= regional_models.FALLBACK_MODEL_IDS
+    for us_id in sorted(regional_models.FALLBACK_MODEL_IDS):
         for prefix, region_type in _REGION_TYPES.items():
             region = f"{prefix}central-1"
-            assert regional_defaults.regional_default(
+            assert regional_models.regional_default(
                 us_id, region
             ) == index.get_model_mapping(us_id, region_type), (us_id, region)
 

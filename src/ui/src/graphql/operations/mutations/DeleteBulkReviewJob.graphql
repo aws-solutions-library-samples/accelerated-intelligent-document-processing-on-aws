@@ -1,0 +1,3 @@
+mutation DeleteBulkReviewJob($jobId: String!) {
+  deleteBulkReviewJob(jobId: $jobId)
+}

@@ -28,7 +28,9 @@ follows the mode each document was processed under, not a deployment-time choice
 
 #### Pipeline mode (`use_bda: false`, the default)
 - **Amazon Textract**: Costs based on the number of pages processed, when the Textract OCR backend is used.
+- **Converted documents** (text, CSV, Excel and Word files): no per-page charge. The OCR step renders these pages itself with local libraries instead of calling an OCR service, so their `converted/document_conversion` metering row is priced at $0.00. What they cost is the Lambda compute that rendering uses, which is metered and priced with the rest of that function's work.
 - **Amazon Bedrock**: Costs based on the models used, input tokens processed, and output tokens generated — across classification, extraction, assessment and summarization. This is normally the largest line in this mode.
+- **Cohere Embed v4 embeddings**: Section classification by embeddings ([Section classification by embeddings](classification.md#section-classification-by-embeddings)) meters each embedding call's input tokens, and the default pricing prices them at $0.12 per million input tokens, the InputTokenCount rate in the AWS price list for `us-east-1`. Text and image calls are priced at that one rate, because an image is billed as input tokens by its pixel count (about 196 pixels per token, so roughly 1,000 tokens for a page scaled to 512 pixels). The price list also lists a second, lower Embed v4 usage type ("Units", $0.00000002 per unit) without saying how it relates to these calls, so your bill may be lower than the estimate; the higher rate is the default so the estimate does not understate spend. The rows cover the `us.`, `eu.` and `global.cohere.embed-v4:0` profiles at the `us-east-1` rate. Multi-document discovery's embedding calls are not metered, so they are not in the estimate.
 
 ### 2. Storage Costs
 
@@ -55,7 +57,7 @@ a budget set without separating them will be wrong in one direction or the other
 
 | | What it is | How it scales |
 |---|---|---|
-| **Per-document** | Bedrock inference (classification, extraction, assessment, summarization), Textract or BDA, the Lambda and Step Functions work around them | Linear in documents × pages, and **dominated by Bedrock inference**. Retries multiply it: a document that retries a Bedrock call several times pays for each attempt |
+| **Per-document** | Bedrock inference (classification, extraction, assessment, summarization, and the `LLM` comparisons of [evaluation](evaluation.md) when it is enabled), Textract or BDA, the Lambda and Step Functions work around them | Linear in documents × pages, and **dominated by Bedrock inference**. Retries multiply it: a document that retries a Bedrock call several times pays for each attempt |
 | **Always-on** | S3 and DynamoDB storage, CloudWatch logs and metrics, Cognito monthly active users, the API Gateway requests the UI's polling makes, and — if enabled — a Bedrock Knowledge Base vector store | Roughly flat per month. Independent of how many documents you process, including when you process none |
 
 Two consequences. First, a deployment that processes nothing still costs money,
@@ -82,7 +84,8 @@ as long as it is running.
    - Select processing options based on document requirements
 
 3. **Implement prompt caching**:
-   - The solution supports prompt caching to significantly reduce costs when processing similar documents
+   - The solution supports prompt caching, which bills a cached prompt prefix at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5) when it is read again within five minutes
+   - It can also cost more: a cached prefix that is not read again within that window is billed at about 25% more than with no cache point (on the prefix only, not the whole request), and a prefix below the model's minimum (1,024 tokens on Claude Sonnet 5) is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
    - Especially effective when using few-shot examples, as these can be cached across invocations
 
 4. **Optimize document preprocessing**:
@@ -113,6 +116,110 @@ The GenAI IDP Accelerator solution includes a built-in cost estimation feature i
 - Uses service pricing from the solution configuration, which can be modified to reflect any pricing variations or special agreements
 
 This real-time cost tracking helps you monitor actual usage patterns and optimize costs based on real-world usage.
+
+**Model calls whose result was not used are still counted.** An Advanced-mode
+(agentic) extraction run that stops on an error, or that ends without a valid
+extraction, adds the tokens of every model call it completed to the document's
+metering under its step. The case you will see in the estimate is a failed
+[validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation): it keeps the original result, the document
+continues, and the escalation's calls appear under `ExtractionEscalation`. When an
+extraction attempt fails with a transient error and Step Functions retries it, the
+calls of the failed attempt are not counted; only the attempt that finishes is.
+
+**A classification or summarization attempt that fails transiently records what it
+spent.** The step is retried, so the document keeps its `CLASSIFYING` or `SUMMARIZING`
+status rather than being shown as failed, and the usage of the calls the attempt
+completed is written to the document's tracking record. If the execution then ends
+unsuccessfully, that usage is in what it reports, but only for the **most recent**
+failed attempt: each attempt starts by writing the document it was given, which
+replaces the record's usage, so a step that failed transiently several times reports
+the last failed attempt's calls and not the earlier ones'. At page-level
+classification the pages earlier attempts classified are restored from the page
+cache on every attempt, so they stay counted. If a retry succeeds, the reported
+usage is the succeeding attempt's: at page-level classification that includes the
+pages the failed attempt classified, because the retry reuses them from the page cache,
+but under summarization, split-then-classify or packet granularity the failed
+attempt's calls are not in it.
+
+**A workflow that fails still reports what it spent.** A workflow execution that
+ends `FAILED`, `TIMED_OUT` or `ABORTED` writes its usage to the reporting `metering`
+table like one that succeeds, with `execution_status` saying how it ended, so the
+reports show actual spend including failed attempts. Its usage is what the stages
+that ran had recorded on the document's tracking record: the step that failed, and
+the shards of a section map that finished before another shard failed, are not in
+it, except for the classification and summarization attempts described above. Each execution is reported once, under its `execution_arn`, and reprocessing a
+failed document is a new execution with a record of its own. To see the failed
+attempts on their own, filter on `execution_status`; see
+[Reporting Database](reporting-database.md#metering-table).
+
+**Advanced-mode extraction counts the calls that compact its conversation.** When an
+agentic extraction's conversation grows too large for the model's context window,
+the agent summarizes its oldest turns with an extra call to the extraction model.
+Those calls are counted under the section's `Extraction` step and the extraction
+model, whether or not the extraction then succeeds.
+
+**Validation escalation is one row in both extraction modes.** The calls a
+[validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation)
+makes to the escalation model are metered under the context
+`ExtractionEscalation`, whether the section was extracted in Simple or Advanced
+mode. Documents that earlier releases processed in Simple mode carry those calls
+under `Extraction-Escalation` instead, so a query over the `metering` table that
+groups escalation cost across releases should match both spellings, for example
+`context IN ('ExtractionEscalation', 'Extraction-Escalation')`.
+
+#### Editing the pricing table
+
+Administrators change prices on the **Pricing** page. The shipped rates come from
+`config_library/pricing.yaml` and are stored at deployment as the stack's default
+pricing; what you save is stored separately as custom pricing.
+
+A price is a non-negative decimal number, optionally with an exponent: `0.0015`,
+`6.0E-8` and `.5` are prices. Hexadecimal (`0x10`), `Infinity`, `NaN` and digit
+separators (`1_000`) are not, because the cost reports and the web UI read them
+differently. A sign and surrounding spaces are not accepted either, so that every
+saved price has one form. A missing price (`null`) is refused as well. Earlier
+releases stored a null sent to the backend as `0.0`, so such a price now reads as a
+plain zero: it is valued at $0 and is not listed for correction. The Pricing page
+marks an invalid value and will not save the table until it is corrected, and the
+backend refuses to store one.
+
+A custom table saved by an earlier release can still hold such a value. It still
+loads, and the page lists the value for correction. A value whose only problem is
+surrounding spaces is still priced, because the reports and the web UI both read it.
+Any other invalid value is reported as unpriced until it is corrected.
+
+The Pricing page saves the whole table, and the stack prices with the shipped
+defaults with your saved table laid over them, model by model and unit by unit:
+
+- A rate you saved overrides the default rate for that unit of that model.
+- A unit or model you added that the defaults do not have is kept.
+- A default unit or model your saved table does not mention is priced at its
+  default rate. So a model that a later release adds to `pricing.yaml` is priced
+  on a stack that saved the page before the upgrade.
+
+Two consequences follow:
+
+- ⚠️ A rate that a later release corrects in `pricing.yaml` does not reach a unit
+  your saved table holds, even if you never edited that unit, because every save
+  stores the whole table. Saving once pins the defaults of that moment for every
+  row in the table.
+- A default row cannot be deleted. The saved table records no deletions, so a
+  deleted default row would be back at its default rate once the table is saved and
+  the page reloaded; the Pricing page therefore disables **Delete unit** on every
+  row from the default price list and says why. A row removed in the JSON or YAML
+  view, or left out of an imported file, comes back in the same way. To have a
+  default model cost nothing in the reports, set its rates to `0` instead. Rows you
+  added stay deletable, and every row stays editable.
+
+To put one default row back to its default rate, choose **Restore default price**
+on that row; it is available when the row's price differs from the default.
+
+To pick up the current defaults for every row, choose **Restore default (All)** on
+the Pricing page, which discards the saved table, and then re-apply your own
+changes. The button is enabled whenever the table on the page differs from the
+defaults: a price that differs by any amount (the same value in a different
+notation, such as `2.2E-6` and `0.0000022`, does not count), a row the defaults do
+not have, or a default row removed in the JSON or YAML view or by an import and not yet saved.
 
 ### What the estimate cannot express: prices that change with request size
 
@@ -238,10 +345,17 @@ your filter actually returns your spend before you trust a budget built on it.
 
 There is no single recommended amount, because per-document cost across the
 configurations this solution supports spans roughly two orders of magnitude.
-Measured figures from the benchmark suite bracket it: the OCR benchmark corpus
-costs **$0.02–0.05 per document** in simple mode, while large multi-page
-documents through advanced (agentic) mode measured **$1.22–$2.65 per document**
-across Sonnet 4.6, Sonnet 5, Opus 5 and GPT-6 Astra on the v0.6.11 grid. See
+Measured figures from the v0.6.14 benchmark bracket it. The OCR benchmark corpus
+(20 real documents, extracted with Claude Sonnet 4.6) cost **$0.02–0.04 per
+document** in simple mode, as the mean of each configuration (single documents
+reached $0.07). On the synthetic grid
+of seven synthetic bank statements (from a one-page, 5-row form to 17 pages
+and 800 rows), advanced (agentic)
+mode averaged **$0.60 per document** with the shipped default (Claude Sonnet 5),
+**$0.92** with Claude Opus 5.5 and **$1.17** with Claude Opus 5; GPT-6 Astra
+cost at least $2.22, a lower bound because its long-context pricing band is not
+modelled. A 66-page, 3,200-row statement cost $3.76–4.20 in advanced mode with
+the shipped default. See
 [the configuration guidance](benchmarking/config-guidance.md) for the full
 matrix. Pick from your own arm of that range rather than averaging it.
 

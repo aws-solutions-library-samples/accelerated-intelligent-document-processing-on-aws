@@ -122,6 +122,105 @@ them by `$id` (falling back to `x-aws-idp-document-type`), and inserts each newl
 discovered class — overwriting only a class with the same identifier. It never
 deletes classes the user curated.
 
+### Discovered text is kept to plain text
+
+`discovered_text` cleans what a model wrote before it is saved or shown:
+`clean_schema_text` (every string in a schema, at any depth, except the syntax keys
+`SYNTAX_KEYS` and `-regex` keys; property names are never changed),
+`clean_rule_classes` (rule-class and rule text) and `clean_report` (the reflection
+report, line breaks kept). Text is normalised first (HTML entities decoded, NFKC,
+format characters such as zero-width spaces removed); then URLs, markdown images and
+HTML (including an unclosed tag) are removed, a markdown link keeps its text, and
+lengths are capped (`MAX_DESCRIPTION_CHARS`, `MAX_PROMPT_CHARS`, `MAX_EXAMPLE_CHARS`,
+`MAX_EXAMPLES`, `MAX_REPORT_CHARS`). It is called on `_merge_and_save_class` (both
+class discovery flows), on `DiscoveryAgent.analyze_cluster` and `reflect`, and on the
+rules path (`discovery_rules_from_document` and `to_policy_class`). Existing, authored
+classes in the target profile are not cleaned.
+
+### Multi-document results separate noise from failed embeddings
+
+`MultiDocDiscoveryResult` reports two disjoint sets of documents that no
+discovered class covers. `failed_embedding_keys` (count `num_failed_embeddings`)
+holds the documents whose embedding failed, which never reach clustering.
+`noise_document_keys` (count `num_noise_documents`) holds the documents that were
+embedded and clustered but labelled `-1`, because `ClusteringService` relabels a
+cluster smaller than `min_cluster_size` as noise. `noise_document_keys()` derives
+the second from `ClusterResult.cluster_labels`, which is indexed like
+`EmbeddingResult.valid_keys`, and refuses a label count that does not match. Both
+new fields default to an empty list, so a result constructed without them, and a
+reader of the older `to_dict()` keys, are unaffected. The SDK maps them to
+`noise_documents`/`noise_document_keys` and
+`failed_embeddings`/`failed_embedding_keys`.
+
+### The multi-document agent's tools are bounded
+
+`DiscoveryAgent.analyze_cluster` binds `ClusterAnalysisTool` to the cluster under
+analysis and `DocumentVisualTool` to that cluster's members and to
+`max_sample_size` distinct documents (viewing one again is free). A request outside
+either bound returns a tool error the agent can read, rather than an image.
+
+### Rules discovery saves only into a named profile
+
+`RulesDiscovery` with a configuration manager (that is, without `config=`) requires
+`version=`. With none it raises `ValueError` before the model runs; there is no
+fallback to the active profile.
+
+### Rules discovery can accumulate uploads into a policy group (#608)
+
+`discovery_rules_from_document(..., policy_group=...)` names an optional group,
+validated by `normalize_policy_group` (the same function the upload resolver
+calls). `_save_rules_to_config` then puts every rule from every returned rule class
+into the one policy class whose `x-aws-idp-policy-group` matches by
+`policy_group_key` (case and spacing ignored), creating it on the first upload under
+`policy_group_class_name(group)` (`_2`-suffixed on a name collision). A later upload
+**appends**: only `rule_properties` gains entries, a rule name already present is
+added as `<name>_2` and reported in the save warnings, and nothing is superseded.
+Two classes carrying one group raise `ValueError` before anything is written. With
+no group the save is unchanged. Every rules-discovery save holds a per-profile lease
+(`PolicyDiscoverySaveLease#<profile>` in the configuration table, a conditional put
+with a `POLICY_SAVE_LEASE_SECONDS` expiry) around its read-modify-write, so
+concurrent saves into one profile do not lose each other's rules; other writers of
+the profile (Policy Schema edits, classes discovery, the resolver's Replace clear) do
+not take it. The upload resolver refuses a group with `saveMode: replace`, which
+would clear the group's class before the job runs, and with `pageRanges`.
+
+### A grouped upload can replace or supersede the group's rules (#608)
+
+`discovery_rules_from_document(..., policy_group_mode=..., superseded_rules=...,
+upload_id=...)` says what a grouped upload does to its group. `append` (the
+default) is the behaviour above. `replace` empties the class's `rule_properties`
+before adding the upload's rules; `supersede` removes exactly the rule names in
+`superseded_rules`, so an incoming rule with one of those names takes it and the
+rest append (with the `_2` rename). The class keeps every other key. Rule identity
+is never inferred. `normalize_policy_group_change` validates the shape (mode, a
+group for the non-append modes, rule names only for `supersede`) and
+`check_policy_group_change` the target (the group's class exists; every superseded
+name is one of its rules, exactly). The upload resolver calls both before minting a
+URL; `discovery_rules_from_document` calls the target check again before the model
+runs and `_save_rules_to_config` once more under the save lease, so a target that
+vanished in between fails the job without writing. A non-append upload that
+extracted no rules also fails without writing. Every such refusal is a
+`PolicyGroupChangeRefused` (a `ValueError`), propagated unwrapped so the discovery
+Lambda can tell it from a failure: it marks the job FAILED and keeps the message out
+of `batchItemFailures`, because an SQS retry would repeat the extraction and could
+apply the change after the group changed. The resolver re-raises it as a plain
+`ValueError`, because the dispatcher maps an error to a 400 by its class name.
+A save whose `upload_id` the profile's record already holds (`find_recorded_upload`)
+writes nothing, both before the model runs and under the lease, so a redelivered job
+cannot add its rules twice; the result's `alreadySaved` is then true (false otherwise), and the
+discovery Lambda's status message says the earlier delivery saved them. Superseded rules
+are deleted from the active ruleset; the revision the save cuts keeps the previous
+ruleset, subject to revision retention.
+
+Every save appends an entry to the class's `x-aws-idp-policy-uploads` list:
+`uploadId` (the discovery job id), `document` (file name), `savedAt`, `mode`,
+`rules` (names as saved) and `superseded` (`{rule, uploadId, document}` of the
+upload that had supplied each, from `policy_rule_sources`, which replays the list).
+Ungrouped uploads record themselves on their own class too. Rule validation reads
+none of it. Rules are identified by name, so a rule deleted and re-added by hand
+under the same name keeps its earlier attribution, and the list is never trimmed. The result's `groupChange` (`{mode, rules, superseded}`) is what the
+discovery Lambda puts in the job's status message.
+
 ### Multi-record samples produce a suggestion, not a setting (#765)
 
 Both single-document flows append `_INSTANCE_COUNT_INSTRUCTION` to the prompt: the
@@ -253,6 +352,26 @@ silently dropped rather than reported.** `without_ground_truth`,
 `model_id` and `user_prompt`. `rules` is `RuleDiscoveryConfig`, which spells them
 `model` and `task_prompt`. `discovery.rules.model_id` and
 `discovery.without_ground_truth.model` are both unread keys.
+
+### Models written in code follow the Region
+
+A model written in code is not rewritten at deploy time, so a code fallback names
+its US model and passes it through `idp_common.regional_models.regional_default`,
+which returns what the deploy-time swap would have written for the Region:
+`DiscoveryAgent` built with no `analysis_model_id` (as the save step's reflection
+report is) uses `eu.anthropic.claude-sonnet-4-6` in an EU Region, and the SDK's
+local discovery falls back to `eu.amazon.nova-pro-v1:0` in an EU Region and
+`us.amazon.nova-2-lite-v1:0` in Canada when the system defaults name no model.
+The models `base-discovery.yaml` names for the SDK's local path (schema discovery
+with and without ground truth, and section detection under `auto_split`) are
+translated the same way through `regional_models.regional_shipped_model`, because
+that path never runs the deploy-time swap. A model passed by the caller is sent
+as given. `tests/unit/test_regional_shipped_models.py` fails if the YAML names a
+model for one of those sections that `regional_models` does not know.
+Every id passed to it must be in `regional_models.FALLBACK_MODEL_IDS`, and
+`src/lambda/update_configuration/test_eu_region.py` checks each against the swap
+tables. `tests/unit/test_geographic_fallbacks.py` reads every code fallback in the
+tree and fails on one naming a geographic profile directly.
 
 ## Integration with IDP SDK
 

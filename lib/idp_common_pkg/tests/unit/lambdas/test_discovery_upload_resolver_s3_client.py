@@ -152,11 +152,14 @@ def test_upload_multi_doc_zip_returns_plain_put_url(monkeypatch):
 
     result = mod.handle_upload_multi_doc_discovery_zip(
         {
+            # An Admin: these tests are about the S3 key, and an Admin is never
+            # profile-scoped, so the configuration-scope lookup is not reached.
+            "identity": {"claims": {"cognito:groups": ["Admin"]}},
             "arguments": {
                 "fileName": "docs.zip",
                 "fileSize": 123,
                 "configVersion": "v1",
-            }
+            },
         },
         None,
     )
@@ -181,11 +184,14 @@ def test_start_multi_doc_discovery_fallback_matches_upload_key(monkeypatch):
 
     mod.handle_start_multi_doc_discovery(
         {
+            # An Admin: these tests are about the S3 key, and an Admin is never
+            # profile-scoped, so the configuration-scope lookup is not reached.
+            "identity": {"claims": {"cognito:groups": ["Admin"]}},
             "arguments": {
                 "configVersion": "v1",
                 "zipFileName": "docs.zip",
                 "zipFileSize": 123,
-            }
+            },
         },
         None,
     )
@@ -213,11 +219,14 @@ def test_start_multi_doc_discovery_honors_explicit_prefix(monkeypatch):
 
     mod.handle_start_multi_doc_discovery(
         {
+            # An Admin: these tests are about the S3 key, and an Admin is never
+            # profile-scoped, so the configuration-scope lookup is not reached.
+            "identity": {"claims": {"cognito:groups": ["Admin"]}},
             "arguments": {
                 "configVersion": "v1",
                 "zipFileName": "docs.zip",
-                "s3Prefix": "custom/location/docs.zip",
-            }
+                "s3Prefix": mod.multi_doc_zip_key("docs.zip"),
+            },
         },
         None,
     )
@@ -225,5 +234,22 @@ def test_start_multi_doc_discovery_honors_explicit_prefix(monkeypatch):
     import json
 
     sfn_input = json.loads(mod.sfn_client.start_execution.call_args.kwargs["input"])
-    # Callers that pass the objectKey back as s3Prefix are honored verbatim.
-    assert sfn_input["prefix"] == "custom/location/docs.zip"
+    # A caller passing back the objectKey uploadMultiDocDiscoveryZip returned is
+    # honoured; that key is the one derived from the name.
+    assert sfn_input["prefix"] == mod.multi_doc_zip_key("docs.zip")
+
+    # Any other key is refused: the Prepare step deletes the zip it is given.
+    mod.sfn_client.start_execution.reset_mock()
+    with pytest.raises(ValueError, match="s3Prefix must be omitted"):
+        mod.handle_start_multi_doc_discovery(
+            {
+                "identity": {"claims": {"cognito:groups": ["Admin"]}},
+                "arguments": {
+                    "configVersion": "v1",
+                    "zipFileName": "docs.zip",
+                    "s3Prefix": "custom/location/docs.zip",
+                },
+            },
+            None,
+        )
+    mod.sfn_client.start_execution.assert_not_called()

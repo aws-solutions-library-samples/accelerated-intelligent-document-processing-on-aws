@@ -19,10 +19,18 @@ extraction:
   confidence:
     mode: separate               # off | separate | integrated (enabled derived: mode != off)
     # Nova Lite is the default confidence model because the assessment pass is
-    # far cheaper on it. Live A/B on the OCR benchmark (identical prompt, only the
-    # confidence model swapped): ~$0.0011/doc on Nova Lite vs ~$0.145/doc on
-    # Sonnet 5 (~130x) — driven by Sonnet's higher per-token rate AND ~2x more
-    # (verbose) output tokens, which dominate assessment cost. Both models use the
+    # far cheaper on it. Live A/B on the OCR benchmark at release 0.6.0 (10 docs
+    # per arm, identical prompt, only the confidence model swapped): ~$0.0011/doc
+    # on Nova Lite vs ~$0.145/doc on Sonnet 5 (~130x). Both figures would have
+    # been priced from config_library/pricing.yaml as it then stood, and both
+    # rates have since been corrected: Sonnet 5 was 1.5x today's rate on every
+    # unit (issue #1830), and Nova Lite charged cache writes at the full input
+    # rate where they are now free (#1405). The token counts were not kept, so
+    # neither has been re-priced. Scaling the Sonnet 5 figure by 1/1.5 gives
+    # ~$0.097/doc; the Nova Lite figure is an overstatement of unknown size, so
+    # the ratio is at least ~88x. Both are estimates, not measurements. The gap is
+    # driven by Sonnet's higher per-token rate AND ~2x more (verbose) output
+    # tokens, which dominate assessment cost. Both models use the
     # two <<CACHEPOINT>> boundaries below for prompt-prefix caching (static
     # instructions cached across documents; the per-doc image+OCR block cached
     # across the initial call, the missing-row retry, and every list batch), so
@@ -53,6 +61,31 @@ extraction:
     image:
       target_height: ""
       target_width: ""
+    # llm (the model and prompts here) | decision_model (one yes/no question per
+    # extracted value, per page; docs/decision-models.md). Needs mode: separate.
+    method: llm
+    decision_model:
+      backend: lambda
+      # Function ARN (GENAIIDP- prefix). Required when method is decision_model.
+      endpoint: ''
+      # images | text | both. Page images measured best.
+      input: images
+      # Pages read per section, one request each: 1 to 50.
+      max_pages: 20
+      instructions: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
+      # Asked for a value the extraction left empty; yes must mean a value is shown,
+      # because the empty value scores 1 minus the highest answer over the pages.
+      empty_value_instructions: 'The system found no value for the field "{FIELD}" ({DESCRIPTION}). Does the page show a value for it?'
+      max_questions_per_request: 100
+      # The most tokens one request holds (page text, image, longest question), an
+      # estimate from characters. Page text past it is cut and never read, so a
+      # value only in the cut part is not seen. 4,096-token window less 512.
+      max_input_tokens: 3584
+      timeout_ms: 300000
+      max_concurrency: 4
+      # For metering GB-seconds; the Strands Decider's Lambda runs at 10240.
+      function_memory_mb: 10240
+      price_per_request: 0.0
     system_prompt: >-
       You are a document analysis assessment expert. Your role is to evaluate the confidence and accuracy of data extraction results by analyzing them against source documents.
       Provide accurate confidence scores for each assessment.
@@ -128,3 +161,6 @@ hitl:
   notifications:
     retention_days: 30  # Days an Inbox message is kept before DynamoDB TTL removes it (1-365)
     max_per_user: 50    # Messages kept per user; the oldest read message is removed first (1-200)
+  # Bulk Skip All Reviews runs inline up to this many documents and as a background
+  # job above it. Read from the ACTIVE configuration profile (cached ~60 s).
+  bulk_skip_sync_limit: 50  # Inline (synchronous) limit for bulk Skip All Reviews (1-100)

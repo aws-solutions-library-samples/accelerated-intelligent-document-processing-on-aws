@@ -70,6 +70,17 @@ three are the ones that bite on a single fix:
   where a change that looks like a fix is indistinguishable from an attack, however
   plainly the issue describes a real defect.
 
+**The work needs no credentials, so do not use any.** Read nothing under
+`~/.aws`, `~/.config/gh`, `~/.netrc` or `/proc/*/environ`, set no `AWS_PROFILE`,
+and call no AWS service: a fix here is verified by the offline suites and then by
+the PR's own CI. `gh` is used for this issue and this PR through the session's
+existing login, and for nothing else. Fetch only from GitHub, this repository's
+GitLab host, PyPI and npm. If the fix seems to need a live account or another host,
+that is a reason to hand it back, not to reach for one. In an agent worktree under
+`$HOME/wt`, `scripts/hooks/check_worktree_reach.py` refuses the plain spellings of
+the file reads and fetches; it matches command text, so it is a backstop to this
+rule and not a substitute for it.
+
 **Then decide whether this issue belongs in this skill at all.** Hand it back and say
 why if it needs a product decision (a default changes, a public interface moves, a
 user-visible behaviour is ambiguous), if it cannot be verified without a live stack
@@ -148,8 +159,9 @@ And a long suite exceeds the 120-second Bash timeout, which **backgrounds** rath
 kills it — so run it as `timeout N cmd > log 2>&1` and read the log, where **a log with
 no `N passed` summary line did not run**, whatever the exit status said.
 
-Add these when they apply: `make test-packages-cicd PYTEST_XDIST="-n 4"` if you touched
-`scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate; `make cfn-lint`
+Add these when they apply: `python3 scripts/coverage_all.py --only scripts --workers 4`
+if you touched `scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate
+(`make test-packages-cicd` does not run the `scripts` suites); `make cfn-lint`
 and `make check-arn-partitions` if you touched a CloudFormation template; `make
 test-hooks` if you touched `scripts/hooks/`.
 
@@ -305,8 +317,10 @@ Merge only when the six checks are green and every review finding is answered:
 gh pr merge <pr> --repo <repo> --merge --delete-branch
 ```
 
-The `check_shared_branch.py` hook refuses this on a **concluded** failing check, which
-is the behaviour you want — `ALLOW_RED_MERGE=1` exists and this is not the place for it.
+The `check_shared_branch.py` hook refuses this on a **concluded** failing check, and on
+a head whose checks have not all finished, which is the behaviour you want —
+`ALLOW_RED_MERGE=1` and `ALLOW_UNCHECKED_MERGE=1` exist and this is not the place for
+either.
 
 Then **write the closing comment**, and close the issue if `Fixes #N` did not. Write what the defect
 was, what was measured, what the fix does, **what was withdrawn or narrowed and why**,

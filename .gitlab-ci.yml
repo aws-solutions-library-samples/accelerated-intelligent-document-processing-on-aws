@@ -56,6 +56,19 @@ default:
 # that module's literals ran on developer machines and in neither CI (#1390). A
 # missing toolchain is the cheap failure; a toolchain whose absence is answered
 # with a skip is the expensive one.
+variables:
+  # code.aws.dev runs jobs as EKS pods (default 1 CPU / 1Gi). Baseline for untagged jobs; bigger jobs set their own KUBERNETES_* below. See sites.aws.dev/gitlab/Documentation/Amazon%20Customizations/cicd.html
+  KUBERNETES_CPU_REQUEST: "4"
+  KUBERNETES_CPU_LIMIT: "4"
+  KUBERNETES_MEMORY_REQUEST: "8Gi"
+  KUBERNETES_MEMORY_LIMIT: "8Gi"
+  KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
+  # The helper container (credential vendor setup, artifact/cache upload) defaults
+  # to 256Mi on code.aws.dev and was OOMKilled uploading static_checks' reports.
+  KUBERNETES_HELPER_MEMORY_REQUEST: "2Gi"
+  KUBERNETES_HELPER_MEMORY_LIMIT: "2Gi"
+  KUBERNETES_HELPER_CPU_REQUEST: "1"
+  KUBERNETES_HELPER_CPU_LIMIT: "2"
 stages:
   - fast_checks
   - deployment_validation
@@ -129,8 +142,11 @@ stages:
   - uv pip install -c "$LOCK_CONSTRAINTS" 'ruff==0.15.13'
   # Needed by publish.py for test imports
   - uv pip install -c "$LOCK_CONSTRAINTS" typer rich boto3
+  # `agents` for bedrock-agentcore: scripts/sdlc/tests/test_sandbox_network_probe.py
+  # pins the code-interpreter SDK's default, as GitHub's install ([all]) already
+  # provides.
   - uv pip install -c "$LOCK_CONSTRAINTS"
-                   -e "lib/idp_common_pkg[test,evaluation]"
+                   -e "lib/idp_common_pkg[test,evaluation,agents]"
                    -e "lib/idp_sdk[test]"
                    -e "lib/idp_cli_pkg[test]"
                    -e "lib/idp_feature_sdk[test]"
@@ -235,8 +251,14 @@ static_checks:
   # Larger runner (16 vCPU / 64 GB, size:2xlarge): the Vite production build
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
   # seconds locally.
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:2xlarge
     - arch:arm64
 
   # Cache the UI dependencies across runs so the single `npm ci` (in
@@ -304,8 +326,14 @@ static_checks:
 # `coverage combine` step before the ratchet below can read a complete report.
 unit_tests:
   <<: *fast_check_job
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:2xlarge
     - arch:arm64
 
   # For the UI dependencies the `scripts` suite needs — see the npm line in
@@ -388,17 +416,25 @@ unit_tests:
       junit: lib/idp_common_pkg/test-reports/test-results.xml
     expire_in: 1 week
 
-# The package / Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
-# idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
-# config_library, and the repo's own gate suites under scripts/).
+# The package / Lambda suites that neither idp_common_pkg's test-cicd nor
+# coverage-all-cicd runs (Terraform, the Lambda and resolver handlers, the samples,
+# benchmarks, the state machine, config_library). The suites a coverage tree measures
+# (idp_cli, idp_sdk, idp_feature_sdk, main-stack-extensions, the gate suites under
+# scripts/) run once, under coverage, in unit_tests.
 #
-# Many separate pytest invocations, of which the nine measured above 20s in CI run
-# `-n auto` — see PYTEST_XDIST in the Makefile for the selection rule and why it is
-# not applied to all of them.
+# Many separate pytest invocations; those measured above 20s in CI run `-n auto` —
+# see PYTEST_XDIST in the Makefile for the selection rule and why it is not applied
+# to all of them.
 package_tests:
   <<: *fast_check_job
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:2xlarge
     - arch:arm64
 
   # Same key and same path as `static_checks` and `ui_tests`, so the `npm ci` in
@@ -419,9 +455,15 @@ package_tests:
 
   before_script:
     - *python_setup
+    # ⚠️ The three toolchains below (Node with basedpyright, pinned cfn-lint, the UI's
+    # npm dependencies) were added for `scripts/tests` and `lib/idp_sdk`. Those suites
+    # no longer run in this job: `test-packages-cicd` leaves out every suite a coverage
+    # tree measures, and `unit_tests` runs them under `coverage-all-cicd` with the same
+    # three toolchains. They are kept here until it is measured that no remaining suite
+    # in this job needs them; the reasons below describe the suites they were added for.
     # ⚠️ Node and basedpyright ARE needed here, which is not obvious from the
     # script below and cost this job a red run when they were left out.
-    # `scripts/tests` is one of the suites `test-packages-cicd` runs, and
+    # `scripts/tests` is one of the suites `coverage-all-cicd` runs, and
     # `test_pyright_config.py` RUNS basedpyright — a live 0.5s probe confirming
     # that pyrightconfig.json's five `extraPaths` really resolve the first-party
     # packages, rather than trusting that the config looks right. That is the whole
@@ -466,8 +508,15 @@ package_tests:
 # toolchain for nothing. ~1 min including the install.
 ui_tests:
   <<: *fast_check_job
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:large
+    - arch:amd64
 
   cache:
     key:
@@ -490,7 +539,11 @@ ui_tests:
     # job still passed, but anything that failed after that point would have had no
     # diagnostic in the log at all, which is the worst shape a CI failure can have.
     # It silences console output from tests only; failure output is unaffected.
-    - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent)
+    # --testTimeout: on the 32-CPU code.aws.dev pod vitest runs ~31 workers at once, and
+    # the heaviest render tests (DocumentList add-to-test-set, capacity-planning populate)
+    # then take ~10.3s against the 10s default. Headroom here, not fewer workers, keeps
+    # the suite at full speed. CI only; `make ui-test` is unchanged.
+    - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent --testTimeout=20000)
 
 # The Terraform offline gate: translate template.yaml with terraform/translator,
 # then `init -backend=false` and `validate` the generated module with every pinned
@@ -505,14 +558,25 @@ ui_tests:
 terraform_checks:
   <<: *fast_check_job
   tags:
-    - size:large
+    - arch:amd64
 
   variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
     # Keep in step with TERRAFORM_*_VERSION / OPENTOFU_*_VERSION in the Makefile;
     # scripts/tests/test_ci_gate_parity.py fails if this, GitHub's
     # developer-tests.yml and the Makefile disagree.
     TERRAFORM_CHECK_BINARIES: "terraform@1.7.5 terraform@1.17.1 tofu@1.7.10 tofu@1.13.9"
     TERRAFORM_CHECK_CACHE: "$CI_PROJECT_DIR/.cache/idp-terraform-check"
+    # Full history, mirroring GitHub's fetch-depth: 0: `make
+    # terraform-replay-releases` (inside terraform-check) reads the template tree
+    # of each release in terraform/tools/replay_releases.json from its recorded
+    # commit.
+    GIT_DEPTH: 0
 
   # Verified binaries plus the provider plugin cache (~430 MB compressed). Keyed on
   # the file that pins both and on the vendored awscc schema whose version the gate
@@ -535,6 +599,13 @@ terraform_checks:
     - make terraform-check
 
 deployment_validation:
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   stage: deployment_validation
   interruptible: true
   # Pre-deploy IAM sanity check, on the same trigger as the deploy it validates:
@@ -547,6 +618,10 @@ deployment_validation:
   # form, kept because the nightly deploy path should validate the role in the
   # environment that is about to use it rather than trusting the offline read.
   rules:
+    # The weekly load-probe schedule runs load_probe alone: no deploy, no Slack
+    # post. See the comment on load_probe.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"
       when: manual
@@ -572,8 +647,9 @@ deployment_validation:
 
 integration_tests:
   stage: integration_tests
-  # Must exceed the pipeline monitor's longest max_wait — 195 min on the weekly
-  # variant-probe run (PROBE_RUN_MONITOR_MAX_WAIT_SECONDS), 135 min otherwise, in
+  # Must exceed the pipeline monitor's longest max_wait — 260 min on the weekly
+  # Terraform-migration run (MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS), 195 min on
+  # the weekly variant-probe run, 135 min otherwise, in
   # integration_test_deployment.py; the monitor refreshes its 1h-capped creds so
   # it can watch that long — plus before_script (~5 min) and after_script log
   # capture (~2 min), so the SCRIPT owns the deadline and always exits cleanly.
@@ -581,7 +657,7 @@ integration_tests:
   # and after_script never captured logs. A runner's maximum_timeout would cap this
   # silently; the fleet that ran these jobs set none (checked 2026-10-31), so recheck
   # it if integration_tests moves to other runners.
-  timeout: 3h30m
+  timeout: 4h30m
   # Serialize deploys. The resource_group is a size-1 mutex; it is now scoped to a
   # single SHARED group rather than per-branch, which is the right choice once the
   # trigger is a nightly schedule plus occasional manual clicks: the thing it has to
@@ -601,6 +677,12 @@ integration_tests:
   # running.
   resource_group: integration_deploy
   variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
     IDP_ADMIN_EMAIL: ${GITLAB_USER_EMAIL}
   # variables:
   #   # In order to run tests in another account, add a AWS_CREDS_TARGET_ROLE variable to the Gitlab pipeline variables.
@@ -636,6 +718,37 @@ integration_tests:
   #     no Terraform run happens. It holds the same resource_group as the
   #     CloudFormation nightly, so the two serialise; schedule it to start after
   #     the nightly normally finishes (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
+  #     A Terraform schedule that also carries IDP_TERRAFORM_PARITY=true deploys
+  #     a CloudFormation twin of the same commit beside it and compares the two
+  #     with terraform/tools/parity.py (terraform_parity_requested, honoured on a
+  #     schedule only and refused without IDP_IAC=terraform). Meant for a weekly
+  #     schedule: it adds one CloudFormation deployment to the run.
+  #   - the weekly Terraform VPC schedule        → auto, primary suite only, against
+  #     a Terraform deployment of the accelerator in the pipeline's persistent test
+  #     VPC (DeployInVPC=true with the IDP_TEST_* ids). The schedule carries
+  #     IDP_IAC=terraform AND IDP_TERRAFORM_VPC=true; terraform_vpc_requested
+  #     honours the second only on a schedule and refuses it without the first.
+  #     Inactive until the schedule is created; same resource_group.
+  #   - the weekly Terraform-migration schedule  → auto, and NOT the primary suite:
+  #     the build runs scripts/sdlc/terraform_migration_test.py instead, which
+  #     deploys a pinned awslabs/genai-idp-terraform release, migrates it in place
+  #     onto the module the build published, verifies and destroys both. The
+  #     schedule carries IDP_RUN_TERRAFORM_MIGRATION=true, honoured on a schedule
+  #     only (terraform_migration_requested) and refused beside IDP_RUN_PROBES,
+  #     IDP_TEST_REGION or IDP_IAC=terraform. Like the others it is inactive until
+  #     the schedule is created, and holds the same resource_group. ⚠️ Under the
+  #     run's TFDeployRole the upstream deploy is refused today (upstream's IAM
+  #     roles carry no permissions boundary); see CI_TEST_COVERAGE.md.
+  #   - the weekly Terraform-upgrade schedule    → auto, and NOT the primary suite:
+  #     the build runs scripts/sdlc/terraform_upgrade_test.py instead, which
+  #     deploys the newest published release's module (read from the release
+  #     bucket's idp-terraform-latest.json, then taken from that version's own
+  #     key), upgrades it in place to the module the build published, verifies
+  #     and destroys it. The schedule carries IDP_RUN_TERRAFORM_UPGRADE=true,
+  #     honoured on a schedule only (terraform_upgrade_requested) and refused
+  #     beside IDP_RUN_PROBES, IDP_TEST_REGION, IDP_IAC=terraform or
+  #     IDP_RUN_TERRAFORM_MIGRATION. Inactive until the schedule is created, and
+  #     holds the same resource_group.
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -669,6 +782,10 @@ integration_tests:
   #   - A scheduled failure is triaged by bisecting the merges since the last green
   #     run, not by reading the pipeline's own commit.
   rules:
+    # The weekly load-probe schedule runs load_probe alone: no deploy, no Slack
+    # post. See the comment on load_probe.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: on_success
     # Any MR targeting develop (Draft or not) gets the button. No `changes:`
@@ -1018,7 +1135,36 @@ integration_tests:
       if region_run:
           status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
       if terraform_run:
-          status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+          # The weekly Terraform VPC run is a Terraform run whose schedule also
+          # carries IDP_TERRAFORM_VPC=true (terraform_vpc_requested).
+          vpc_run = os.environ.get("IDP_TERRAFORM_VPC", "").strip().lower() == "true"
+          status = (
+              "🧱 WEEKLY TERRAFORM VPC RUN · " if vpc_run else "🧱 NIGHTLY TERRAFORM RUN · "
+          ) + status
+      # The weekly Terraform-migration run, read the same way as the build reads it
+      # (terraform_migration_requested in integration_test_deployment.py).
+      migration_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and os.environ.get("IDP_RUN_TERRAFORM_MIGRATION", "").strip().lower() == "true"
+      )
+      if migration_run:
+          status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+      # The weekly Terraform-upgrade run, read the same way as the build reads it
+      # (terraform_upgrade_requested in integration_test_deployment.py).
+      upgrade_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and os.environ.get("IDP_RUN_TERRAFORM_UPGRADE", "").strip().lower() == "true"
+      )
+      if upgrade_run:
+          status = "⏫ WEEKLY TERRAFORM UPGRADE RUN · " + status
+      # And the CloudFormation nightly: a schedule that is none of the above, so
+      # every scheduled post in the channel names the run it is.
+      cloudformation_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and not (probe_run or region_run or terraform_run or migration_run or upgrade_run)
+      )
+      if cloudformation_run:
+          status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -1063,6 +1209,108 @@ integration_tests:
       - slack_posted.txt
     expire_in: 1 week
 
+# The weekly load probe: a few dozen sample packets submitted at once to the
+# long-lived load-probe stack, idp-loadprobe (scripts/sdlc/load_probe.py). It runs
+# on ONE trigger only: a scheduled pipeline carrying IDP_RUN_LOAD_PROBE=true. Never
+# on a merge request, never on a push, never on the nightly or any other schedule,
+# and there is no manual button; to run it on demand, press Run on its schedule in
+# Build › Pipeline schedules.
+#
+# It runs THROUGH the CodePipeline/CodeBuild path, like integration_tests, rather
+# than on the runner. The runner role (idp-sdlc-GitLab) has no rights on an IDP
+# stack, and the build does: codebuild_deployment.run_load_probe updates
+# idp-loadprobe in place to this run's freshly published template (creating it on
+# first use), then probes it, so the probe always measures current code. It shares
+# integration_tests' resource group because both drive the one pipeline.
+#
+# The schedule is a GitLab project setting, not something in this file. It must carry:
+#   IDP_RUN_LOAD_PROBE=true         the selector (set it on this schedule ONLY: as a
+#                                   project or group variable it would reach every
+#                                   schedule, and the rules below would then take the
+#                                   nightly's deploy off every one of them)
+#   IDP_LOAD_PROBE_STACK=idp-loadprobe  the stack; the build refuses any other
+# and may carry IDP_LOAD_PROBE_REGION (default us-east-1),
+# IDP_LOAD_PROBE_DECIDER_ARN (enables the decision-model arm) and
+# IDP_LOAD_PROBE_ARGS (extra driver options, e.g. a different --max-cost-usd).
+#
+# On that schedule deployment_validation, integration_tests, nightly_notification
+# and the nightly story jobs are ruled out, so the pipeline posts nothing to Slack;
+# a red run is this probe's result alone. The fast_checks jobs still run, as on
+# every scheduled pipeline, and `needs: []` keeps this job from waiting for them.
+# See scripts/sdlc/docs/CI_TEST_COVERAGE.md.
+load_probe:
+  stage: integration_tests
+  needs: []
+  interruptible: false
+  # publish (~25 min) + the in-place update (~15-40 min) + the probe (<=45 min)
+  timeout: 4h30m
+  resource_group: integration_deploy
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: on_success
+    - when: never
+  before_script:
+    - apt-get update -y
+    - apt-get install zip unzip curl python3-pip -y
+    - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    - unzip -q awscliv2.zip
+    - ./aws/install
+    - pip install boto3 rich
+  script:
+    - |
+      if [ -z "${IDP_LOAD_PROBE_STACK:-}" ]; then
+        echo "❌ IDP_LOAD_PROBE_STACK is not set on the schedule: name the load-probe stack (idp-loadprobe)."
+        exit 2
+      fi
+    - aws sts get-caller-identity --no-cli-pager
+    # The account the job's credentials are in (the CI account), so this job adds
+    # no second copy of the IDP_ACCOUNT_ID default.
+    - export IDP_ACCOUNT_ID=${IDP_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}
+    - REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env)
+    - eval "$REGION_ENV"
+    - export IDP_PIPELINE_NAME=genaiic-sdlc-deploy-pipeline
+    # Writes load_probe into ci_run_options.json (IDP_RUN_LOAD_PROBE and the
+    # IDP_LOAD_PROBE_* schedule variables), uploads, and monitors the build.
+    - python3 scripts/sdlc/integration_test_deployment.py
+  after_script:
+    - |
+      if [ -f "aws_after_script_creds.env" ]; then . ./aws_after_script_creds.env; fi
+      REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env 2>/dev/null) || REGION_ENV=""
+      eval "$REGION_ENV"
+      export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+      mkdir -p load-probe
+      if [ ! -f pipeline_execution_id.txt ]; then
+        echo "⚠️ No pipeline execution id: the build never started, so there is no report"; exit 0
+      fi
+      EXECUTION_ID=$(cat pipeline_execution_id.txt)
+      BUILD_ID=""
+      for attempt in $(seq 1 12); do
+        BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>/dev/null || true)
+        [ -n "$BUILD_ID" ] && [ "$BUILD_ID" != "None" ] && break
+        sleep 5
+      done
+      if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "None" ]; then
+        echo "⚠️ Could not resolve the CodeBuild id; no report to fetch"; exit 0
+      fi
+      BUILD="${BUILD_ID#*:}"
+      ACCOUNT="${IDP_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+      SOURCE_BUCKET="genaiic-sdlc-sourcecode-${ACCOUNT}-${AWS_DEFAULT_REGION}"
+      aws s3 cp "s3://${SOURCE_BUCKET}/deploy/summaries/${BUILD}.txt" load-probe/summary.txt 2>/dev/null && cat load-probe/summary.txt || echo "⚠️ No build summary found"
+      if aws s3 cp "s3://${SOURCE_BUCKET}/deploy/summaries/${BUILD}.load-probe.json" load-probe/report.json 2>/dev/null; then
+        RUN_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run_id", "run"))' load-probe/report.json 2>/dev/null || echo run)
+        mkdir -p "load-probe/$RUN_ID" && mv load-probe/report.json "load-probe/$RUN_ID/report.json"
+        echo "📁 Report: load-probe/$RUN_ID/report.json"
+      else
+        echo "⚠️ No load-probe report was uploaded (the probe may not have run; see the summary)"
+      fi
+    - rm -f aws_after_script_creds.env
+  artifacts:
+    when: always
+    paths:
+      - load-probe/
+    expire_in: 90 days
+
+
 srt_security_review:
   stage: fast_checks
   interruptible: true
@@ -1076,8 +1324,15 @@ srt_security_review:
 
   # Use runner with more memory for SRT security scanning
   # saas-linux-medium-amd64: 4 vCPUs, 16 GB RAM
+  variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
   tags:
-    - size:large
+    - arch:amd64
 
   # Run on EVERY push and every MR (same as static_checks) — no AWS needed, and
   # this surfaces security regressions early on any branch (GitLab emails the
@@ -1132,6 +1387,9 @@ srt_security_review:
         [ -f ".srt/syft-summary.json" ] && cp .srt/syft-summary.json srt-syft-summary.json
         echo "✓ SRT reports captured for download"
       fi
+    # The status badge `pages` publishes. Rendered even when the scan stopped
+    # early: badge.py reads a missing verdict as "no result", never as a pass.
+    - python scripts/srt/badge.py .srt/verdict.json srt-badge.svg || true
 
   artifacts:
     when: always
@@ -1140,9 +1398,39 @@ srt_security_review:
       - srt-dashboard.html
       - srt-bandit-summary.json
       - srt-syft-summary.json
+      - srt-badge.svg
     reports:
       # Future: Add security scanning report format when GitLab supports it
     expire_in: 1 week
+
+# Publishes the SRT gate's verdict on develop as a status badge, the only file on
+# this project's Pages site (shown by the "SRT" project badge). It is published
+# from here rather than read from the job's artifacts because GitLab's "latest
+# artifacts for a ref" URL serves only the latest SUCCESSFUL pipeline, so a
+# failing gate would keep showing the last green badge; `when: always` is what
+# lets it publish after srt_security_review fails. The package registry was
+# tried too and serves the file as octet-stream with nosniff, which no browser
+# renders as an image. Not a gate: it reports the gate's outcome.
+pages:
+  stage: notify
+  needs:
+    - job: srt_security_review
+      artifacts: true
+      optional: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+      when: always
+  script:
+    - mkdir -p public
+    - |
+      if [ -f srt-badge.svg ]; then
+        cp srt-badge.svg public/srt-badge.svg
+      else
+        python scripts/srt/badge.py /nonexistent public/srt-badge.svg
+      fi
+  artifacts:
+    paths:
+      - public
 
 # Dependency vulnerability gate (SCA). Complements srt_security_review rather
 # than duplicating it: SRT runs syft, which builds an SBOM but does NO
@@ -1242,14 +1530,18 @@ dep_audit:
 # create the schedule in Build -> Pipeline schedules. Read the cost note above
 # first — a daily sweep of 10 MRs is the case that gets expensive.
 #
-# Requires two CI variables:
+# Requires three CI variables:
 #   GITLAB_REVIEW_TOKEN  project access token, `api` scope, MASKED. The review is
 #                        posted as this token's identity. CI_JOB_TOKEN cannot
 #                        create notes, so there is no fallback — without this the
 #                        job prints SKIPPED and exits 0.
-#   AWS credentials      the same ones integration_tests uses, plus
-#                        bedrock:InvokeModel. See the script's --help for how to
-#                        scope this job down to a Bedrock-only role.
+#   AI_REVIEW_GITLAB_ROLE_ARN
+#                        the ARN of idp-sdlc-GitLabReview (the GitLabReviewRole
+#                        output of the credential-vendor stack), MASKED. The
+#                        runner fleet vends the project's integration-test role
+#                        to this job like any other, so the script assumes this
+#                        ARN from that session before anything else and hands the
+#                        model only the review role's credentials.
 ai_mr_review:
   stage: fast_checks
   interruptible: true
@@ -1261,7 +1553,7 @@ ai_mr_review:
   # Reviewing is read-only, but it reads the whole checkout at the MR head and a
   # large diff wants memory for the model client + git worktree.
   tags:
-    - size:large
+    - arch:amd64
 
   rules:
     # Non-Draft MRs targeting develop, automatically. Ordered before the catch-all
@@ -1279,6 +1571,12 @@ ai_mr_review:
   needs: []
 
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # Pinned for the same reason CFN_LINT_VERSION is: an unpinned tool on a
     # scheduled job changes behaviour with no commit here.
     CLAUDE_CODE_VERSION: "2.1.281"
@@ -1288,6 +1586,24 @@ ai_mr_review:
     # Full history: the review diffs the MR head against its merge base with
     # develop, which a shallow clone does not have.
     GIT_DEPTH: 0
+    # The Bedrock-only review role, idp-sdlc-GitLabReview in
+    # scripts/sdlc/cfn/credential-vendor.yml. A job-level AWS_CREDS_TARGET_ROLE
+    # cannot select it: the project-level variable of that name outranks a job
+    # variable, so the runner fleet vends the integration-test role here as
+    # everywhere. The script therefore assumes the review role itself
+    # (--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN; the ARN embeds an account id,
+    # which scripts/check_account_ids.py refuses in this public tree, so it is a
+    # masked project variable), replaces the job's credentials in its own
+    # environment, and then asks STS which role it holds and refuses to review on
+    # any other.
+    #
+    # ⚠️ The fleet exports NO AWS_* variables: its vendor writes the job's session
+    # to files and symlinks them to $HOME/.aws in pre_build_script. The script has
+    # no AWS SDK, so job_credentials() in ai_mr_review.py reads those files itself;
+    # an env-only reader fails every run with "no AWS credentials".
+    REVIEW_ROLE_NAME: "idp-sdlc-GitLabReview"
+    REVIEW_HARNESS_DIR: "/tmp/review-harness"
+    REVIEW_HARNESS: "scripts/sdlc/ai_mr_review.py scripts/ux_runner/__init__.py scripts/ux_runner/redact.py scripts/hooks/check_commit_text.py"
 
   before_script:
     - apt-get update -y
@@ -1318,44 +1634,55 @@ ai_mr_review:
     - claude --version
 
   script:
-    # ⚠️ PIN THE HARNESS TO THE TARGET BRANCH BEFORE RUNNING IT.
+    # ⚠️ STAGE THE HARNESS FROM THE TARGET BRANCH, OUTSIDE THE CHECKOUT, RUN IT
+    # ISOLATED, AND FAIL CLOSED.
     #
-    # This checkout is the MR head, so without this the reviewer is the MR's own
-    # copy of itself: the permission mode, both tool lists, the secret-stripping
-    # list and the prompt are all author-controlled, and the script's internal
-    # pinning of instruction files runs too late to matter because the code doing
-    # the pinning is also the MR's. The blast radius is this job's environment,
-    # which holds an AWS credential and GITLAB_REVIEW_TOKEN.
+    # This checkout is the MR head, so its copy of the reviewer (the permission
+    # mode, both tool lists, the secret-stripping list, the posting check and the
+    # prompt) is author-controlled. So the harness comes from the target branch and
+    # only the DIFF comes from the MR. `git archive` into a fresh directory rather
+    # than `git checkout FETCH_HEAD -- ...` in place, because an in-place checkout
+    # leaves MR-added files beside the pinned ones and Python resolves imports
+    # from the script's own directory first; and `python3 -I`, so neither the
+    # current directory nor PYTHON* variables reach the import path either. The
+    # path list is REVIEW_HARNESS_PATHS in ai_mr_review.py, asserted equal to this
+    # one by test_ai_mr_review.py. The fetch names refs/heads/ so a tag called
+    # like the branch cannot stand in for it.
     #
-    # So the harness comes from the target branch and only the DIFF comes from the
-    # MR. The tradeoff is explicit: an MR that improves the reviewer is not
-    # exercised by its own pipeline — it takes effect once merged. That is the same
-    # trade the instruction-file pinning makes, for the same reason.
-    #
-    # The `||` arm covers the first landing, when the target branch has no copy
-    # yet. It says so loudly rather than proceeding silently, because "no pinned
-    # copy" and "pinned successfully" must not look alike in a log.
+    # An MR that improves the reviewer is not exercised by its own pipeline; it
+    # takes effect once merged. A target branch without the harness REFUSES rather
+    # than running the MR's own copy, the same trade ai_ux_test makes.
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
-      git fetch -q origin "$TARGET"
-      HARNESS="scripts/sdlc/ai_mr_review.py .claude/skills/pr-review.md .claude/skills/pr-review-ci.md CLAUDE.md"
-      if git checkout FETCH_HEAD -- $HARNESS 2>/dev/null; then
-        echo "Harness pinned to origin/$TARGET: $HARNESS"
+      git fetch -q origin "refs/heads/$TARGET"
+      rm -rf "$REVIEW_HARNESS_DIR" && mkdir -p "$REVIEW_HARNESS_DIR"
+      if git archive --format=tar -o /tmp/review-harness.tar FETCH_HEAD -- $REVIEW_HARNESS && tar -xf /tmp/review-harness.tar -C "$REVIEW_HARNESS_DIR" && chmod -R go-w "$REVIEW_HARNESS_DIR"; then
+        echo "Review harness staged from origin/$TARGET in $REVIEW_HARNESS_DIR: $REVIEW_HARNESS"
       else
-        echo "⚠️  Could not pin the harness to origin/$TARGET — it does not carry"
-        echo "    all of: $HARNESS"
-        echo "    Running the MR's own copy. Expected only on the MR that adds this."
+        echo "❌ Could not stage the review harness from origin/$TARGET — it does not"
+        echo "   carry all of: $REVIEW_HARNESS"
+        echo "   REFUSING to run this checkout's own copy: in an MR pipeline that would"
+        echo "   make the reviewer the MR's own copy of the reviewer."
+        exit 1
       fi
+    # A target branch whose reviewer predates --checkout and --require-aws-role
+    # cannot run this way; say so instead of failing on an argument error.
     - |
+      if ! grep -q -- "--require-aws-role" "$REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py"; then
+        echo "❌ The target branch's reviewer predates the staged, role-checked run, so"
+        echo "   it cannot review this MR. Reviews resume once the target carries it."
+        exit 1
+      fi
+      REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME --assume-role-from AI_REVIEW_GITLAB_ROLE_ARN"
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
-        python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"
+        $REVIEW --mr "$CI_MERGE_REQUEST_IID"
       else
         # --max-mrs 3, not the script's default of 10: at --timeout 1200 a batch of
         # ten has a 200-minute worst case against this job's 45m timeout, so the
         # sweep's own bound would never be the one that fires and the job would
         # truncate the batch silently. Three fits. (Unreachable today — no schedule
         # rule exists, so CI always takes the --mr branch above.)
-        python3 scripts/sdlc/ai_mr_review.py --all-open --max-mrs 3
+        $REVIEW --all-open --max-mrs 3
       fi
 
   artifacts:
@@ -1456,7 +1783,7 @@ ux_test_build:
   # which is the gate; this job must not add a second red mark for it.
   allow_failure: true
   tags:
-    - size:large
+    - arch:amd64
   rules: &ux_test_rules
     # Ordered before the catch-all so a Draft falls through to `never`, as in
     # ai_mr_review. `changes` is what keeps the job off non-UI MRs.
@@ -1476,6 +1803,12 @@ ux_test_build:
     name: ux-review-build
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # The merge base with develop, which ui_change.py diffs against.
     GIT_DEPTH: 0
   before_script:
@@ -1525,7 +1858,7 @@ ai_ux_test:
   allow_failure: true
   resource_group: ux_test_stack
   tags:
-    - size:large
+    - arch:amd64
   rules: *ux_test_rules
   needs:
     - job: ux_test_build
@@ -1536,6 +1869,12 @@ ai_ux_test:
     name: ux-review
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # Bedrock inference-profile id; the GitLab role grants the Opus family only.
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"
     AWS_REGION: "us-east-1"
@@ -1548,7 +1887,7 @@ ai_ux_test:
     # whatever the variables say. A merge request whose .gitlab-ci.yml predates
     # this setup runs this job as it was then, naming the harness in its own script
     # where no variable reaches it and setting neither; ai_ux_test.py runs for it.
-    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test.py"
     UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID"
     UX_ARTIFACTS: "ux-tests"
@@ -1590,8 +1929,7 @@ ai_ux_test:
     # runs from $UX_HARNESS_DIR, the toolchain install from inside it, and Python
     # runs it with -B, so no bytecode is written into it for root to read back;
     # nothing runs from the checkout. The MR that adds this job cannot exercise
-    # it, which is the same trade ai_mr_review makes, except that this one
-    # refuses rather than warns.
+    # it, which is the same trade ai_mr_review makes.
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
       git fetch -q origin "refs/heads/$TARGET"
@@ -1677,7 +2015,7 @@ ai_ux_test_stories:
   # nothing, and a best-effort guard refuses the saves it recognises), so it runs
   # alongside ai_ux_test.
   tags:
-    - size:large
+    - arch:amd64
   rules:
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "mr"
       when: never
@@ -1704,13 +2042,19 @@ ai_ux_test_stories:
     name: ux-review
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # Bedrock inference-profile id, inside the Opus family the GitLab role grants.
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
     AWS_REGION: "us-east-1"
     # The MR's story inputs diff against its merge base with develop.
     GIT_DEPTH: 0
     UX_HARNESS_DIR: "/tmp/ux-harness"
-    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
+    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
     # Posting is opt-in: this flag is what lets the precheck's one-line replies
     # and the run's reply reach the MR, and no other story job carries it.
@@ -1770,6 +2114,10 @@ nightly_notification:
   # it). allow_failure so a notification problem can never be the thing that
   # reddens a nightly.
   rules:
+    # The weekly load-probe schedule runs load_probe alone: no deploy, no Slack
+    # post. See the comment on load_probe.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: always
       allow_failure: true
@@ -2054,10 +2402,11 @@ nightly_notification:
 
           # Same label as the post in integration_tests: the weekly variant-probe
           # schedule shares the channel, and its result must not read as the nightly's.
-          if (
+          probe_run = (
               os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
               and os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
-          ):
+          )
+          if probe_run:
               status = "🔬 WEEKLY VARIANT PROBES · " + status
           # And a weekly region run names its region, read exactly as the post in
           # integration_tests reads it.
@@ -2075,7 +2424,36 @@ nightly_notification:
               and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
           )
           if terraform_run:
-              status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+              # The weekly Terraform VPC run is a Terraform run whose schedule also
+              # carries IDP_TERRAFORM_VPC=true (terraform_vpc_requested).
+              vpc_run = os.environ.get("IDP_TERRAFORM_VPC", "").strip().lower() == "true"
+              status = (
+                  "🧱 WEEKLY TERRAFORM VPC RUN · " if vpc_run else "🧱 NIGHTLY TERRAFORM RUN · "
+              ) + status
+          # And the weekly Terraform-migration run, read exactly as the post in
+          # integration_tests reads it.
+          migration_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and os.environ.get("IDP_RUN_TERRAFORM_MIGRATION", "").strip().lower() == "true"
+          )
+          if migration_run:
+              status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+          # And the weekly Terraform-upgrade run, read exactly as the post in
+          # integration_tests reads it.
+          upgrade_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and os.environ.get("IDP_RUN_TERRAFORM_UPGRADE", "").strip().lower() == "true"
+          )
+          if upgrade_run:
+              status = "⏫ WEEKLY TERRAFORM UPGRADE RUN · " + status
+          # And the CloudFormation nightly, read exactly as the post in
+          # integration_tests reads it.
+          cloudformation_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and not (probe_run or region_run or terraform_run or migration_run or upgrade_run)
+          )
+          if cloudformation_run:
+              status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -2159,12 +2537,12 @@ ai_ux_test_stories_nightly:
   timeout: 60m
   allow_failure: true
   tags:
-    - size:large
+    - arch:amd64
   # ceil(nightly flows / k), where k = floor((deadline_minutes - setup_minutes
   # - reserve_minutes) / flow_minutes) is how many flows fit in one shard's time
-  # gate: 13 p0 flows at 3 a shard. The CI-jobs test recomputes it from the
-  # catalogue.
-  parallel: 5
+  # gate. The CI-jobs test recomputes both from the catalogue and fails when a
+  # p0 flow no longer fits.
+  parallel: 7
   rules: &ux_story_nightly_rules
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
       when: never
@@ -2174,6 +2552,12 @@ ai_ux_test_stories_nightly:
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_IAC =~ /^\s*terraform\s*$/i
       when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_TERRAFORM_MIGRATION =~ /^\s*true\s*$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_TERRAFORM_UPGRADE =~ /^\s*true\s*$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "develop" && $UX_TEST_STORIES_RUN == "all"
@@ -2181,7 +2565,12 @@ ai_ux_test_stories_nightly:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"
       when: manual
     - when: never
-  # deployment_summary.txt, which records the review stack's state for the night.
+  # codebuild_logs.txt, the integration build's log, whose consolidated summary
+  # records the review stack's state for the night; the shard reads its last
+  # MiB, up to the line that starts the Bedrock narrative, which it never reads.
+  # Not deployment_summary.txt: when the job cannot fetch the build's
+  # summary from S3 it keeps only the log after that table, so the stack's row
+  # is not in it.
   dependencies:
     - integration_tests
   # ai_ux_test's environment, as on ai_ux_test_stories.
@@ -2189,6 +2578,12 @@ ai_ux_test_stories_nightly:
     name: ux-review
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
     AWS_REGION: "us-east-1"
     UX_HARNESS_DIR: "/tmp/ux-harness"
@@ -2197,7 +2592,7 @@ ai_ux_test_stories_nightly:
     # Under CI, --all is the nightly shard: a flow that gave up or ran out of
     # steps runs once more at twice its step budget, inside the catalogue's
     # job_usd and deadline.
-    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary deployment_summary.txt"
+    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary codebuild_logs.txt"
     UX_ARTIFACTS: "ux-test-stories/shard-$CI_NODE_INDEX"
   before_script: *ux_confined_setup
   # UX_HARNESS_SHA as in ai_ux_test_stories.
@@ -2279,8 +2674,9 @@ ai_ux_test_stories_digest:
   script:
     # The shards merged; on the schedule, compared with the earlier scheduled
     # nights' digests, read with GITLAB_REVIEW_TOKEN by GET requests alone, and
-    # the one-line summary posted to Slack, with UX_TEST_STORIES_SLACK_WEBHOOK_URL
-    # set. digest.md says when no earlier night was read.
+    # the night's summary posted to Slack, with UX_TEST_STORIES_SLACK_WEBHOOK_URL
+    # set: one plain-text line per flow, as the integration build's own post
+    # lists its tests. digest.md says when no earlier night was read.
     - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" --digest ux-test-stories --out "$UX_ARTIFACTS"
   artifacts:
     when: always

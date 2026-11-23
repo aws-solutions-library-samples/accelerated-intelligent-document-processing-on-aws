@@ -50,6 +50,12 @@ export interface AgentChatState {
   expandedSections: Set<string>;
   lastMessageCount: number;
   enableCodeIntelligence: boolean;
+  /** Off by default: External MCP agents send their query outside the deployment. */
+  enableExternalMcpAgents: boolean;
+  /** The server reported that this session holds Analytics or Error Analyzer results. */
+  sessionHoldsDataResults: boolean;
+  /** Short notice shown above the chat input, e.g. why a new session started. */
+  sessionNotice: string | null;
   inputValue: string;
   mode: ChatMode;
 }
@@ -58,6 +64,8 @@ export interface AgentChatContextValue {
   agentChatState: AgentChatState;
   updateAgentChatState: (updates: Partial<AgentChatState>) => void;
   resetAgentChatState: () => void;
+  /** Start a new, empty session, applying ``overrides`` to the fresh state. */
+  startNewAgentChatSession: (overrides?: Partial<AgentChatState>) => void;
   loadAgentChatSession: (sessionId: string, messages: ChatMessage[]) => void;
   addMessageToSession: (message: ChatMessage) => void;
   updateMessages: (updaterFunction: (messages: ChatMessage[]) => ChatMessage[]) => void;

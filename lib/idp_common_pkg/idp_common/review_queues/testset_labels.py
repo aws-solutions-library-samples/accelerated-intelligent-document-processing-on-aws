@@ -49,6 +49,7 @@ MAX_SECTION_LABEL_BYTES = 2_000_000
 SECTION_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
 __all__ = [
+    "EXTRACTED_AS_CLASS_KEY",
     "LABEL_SOURCE_HUMAN",
     "MAX_EDIT_HISTORY_ENTRIES",
     "MAX_SECTION_LABEL_BYTES",
@@ -64,6 +65,15 @@ __all__ = [
     "append_edit_history",
     "drafts_from_item",
 ]
+
+
+#: The class a section's fields were extracted under, recorded on its label (and on
+#: its draft) when Edit Page Grouping first changes the section's class, and removed
+#: when the class is changed back or the section is re-extracted (#1816). The editor
+#: reads it to say the fields still reflect the previous class. Top-level, beside
+#: ``labelSource``: every reader of a label reads named keys, so a release that predates
+#: it ignores it.
+EXTRACTED_AS_CLASS_KEY = "extractedAsClass"
 
 
 class LabelEditor(BaseModel):
@@ -113,6 +123,9 @@ class DraftMove(BaseModel):
     #: The section's pages after the regroup (0-based).
     page_indices: list[int]
     document_class: Optional[str] = None
+    #: The section label's :data:`EXTRACTED_AS_CLASS_KEY` after the regroup; None
+    #: when it has none. The draft is what the editor opens, so it carries it too.
+    extracted_as: Optional[str] = None
 
 
 def baseline_key(test_set_id: str, object_key: str, section_id: str) -> str:
@@ -501,6 +514,39 @@ class TestSetLabels:
                     raise
         self._delete_prefix(draft_prefix(test_set_id, object_key, section_id))
 
+    def clear_draft_extracted_as(
+        self, test_set_id: str, object_key: str, section_id: str
+    ) -> bool:
+        """Remove :data:`EXTRACTED_AS_CLASS_KEY` from a section's draft, if it has one.
+
+        For a re-extract that replaced the section's label: the draft is kept, as a
+        re-extract keeps drafts, but the class its key names is no longer what the
+        section's label was extracted under, and the editor opens the draft. The draft
+        object is rewritten in place, so its revision, and any editor's base revision,
+        are unchanged. Returns True when a draft was rewritten.
+        """
+        draft = next(
+            (
+                d
+                for d in self.drafts(test_set_id, object_key)
+                if d.section_id == section_id
+            ),
+            None,
+        )
+        if draft is None:
+            return False
+        content = self._read_json(draft.s3_key)
+        if not content or EXTRACTED_AS_CLASS_KEY not in content:
+            return False
+        content.pop(EXTRACTED_AS_CLASS_KEY)
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=draft.s3_key,
+            Body=json.dumps(content, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+        return True
+
     def delete_document_drafts(self, test_set_id: str, object_key: str) -> None:
         """Delete every draft of a document: its attributes (when its item exists)
         and every object under its draft prefix."""
@@ -530,8 +576,9 @@ class TestSetLabels:
         """Make drafts follow their sections through a regroup.
 
         Each moved draft is rewritten at its new section id, with the section's new
-        ``split_document.page_indices`` and ``document_class.type``, so applying it
-        does not restore the old grouping. A removed section's draft is deleted. One
+        ``split_document.page_indices``, ``document_class.type`` and
+        :data:`EXTRACTED_AS_CLASS_KEY`, so applying it does not restore the old
+        grouping and opening it says what its label says. A removed section's draft is deleted. One
         ``UpdateItem`` sets the moved attributes and removes the stale ones.
         """
         item = self._doc_item(test_set_id, object_key)
@@ -555,6 +602,10 @@ class TestSetLabels:
                     **(document_class if isinstance(document_class, dict) else {}),
                     "type": move.document_class,
                 }
+            if move.extracted_as:
+                content[EXTRACTED_AS_CLASS_KEY] = move.extracted_as
+            else:
+                content.pop(EXTRACTED_AS_CLASS_KEY, None)
             revision = (
                 max(
                     draft.revision,

@@ -12,8 +12,8 @@ the PRs, and report back in the shape under **Reporting**. Do not ask which tier
 run — the tier list is the deliverable. Ask only for the two things you genuinely
 cannot infer (see **Inputs**), and only if they are not already in the request.
 
-**The eight tiers, and what each is the only source of.** A release is validated when
-all eight have a row in the record — including any that could not run, with the reason.
+**The tiers, and what each is the only source of.** A release is validated when
+every tier has a row in the record — including any that could not run, with the reason.
 
 | | Tier | The only thing it proves |
 |---|---|---|
@@ -26,6 +26,8 @@ all eight have a row in the record — including any that could not run, with th
 | G | Browser UX review | whether a person can complete the web-UI flows |
 | H | Library integration tests | `idp_common` against real AWS rather than `moto` |
 | I | Terraform property parity | a Terraform deployment of the release stores what a CloudFormation deployment of it stores |
+| J | Migration from `genai-idp-terraform` | a deployment of the separate upstream Terraform implementation moves onto this release's module in place, keeping its data, users and passwords |
+| K | In-place Terraform upgrade `PREV → VERSION` | the Terraform customer's upgrade path: pointing an existing deployment at this release's module replaces no bucket, table, user pool or key, and loses no data |
 
 > **What "validated" means here.** `docs/release-validation/README.md` defines the
 > tier list and the record format; `docs/release-validation/v0.6.6.md` is the worked
@@ -52,6 +54,13 @@ all eight have a row in the record — including any that could not run, with th
 
 Nothing else needs asking. VPC wiring, the seller region, and the benchmark stack
 are all decided below.
+
+**The solution profile is part of the release.** Before the battery, confirm
+`make solution-profile-check` reports the release rules ON and passing (the profile
+was reviewed with [update-solution-profile](update-solution-profile.md)), and after
+the GitHub Release exists, that `gh release view v<VERSION> --json assets` lists
+`solution-profile-genai-idp-accelerator-<VERSION>.tar.gz` and its `.sha256`. Record
+both in the validation record.
 
 ## Preflight — ten minutes that save a day
 
@@ -116,6 +125,7 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Dependency audit | `make dep-audit` | nothing at or above HIGH | — |
 | Type check | `make typecheck` | compare **totals** against develop's baseline (4 errors / 51 warnings on 2026-09-11); file placement shifts with the installed deps. Report the delta, not the raw count | `full-test-battery.md` |
 | Build + package | `publish.py … --clean-build` in a **clean env** (`env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin AWS_PROFILE=default bash -lc '…'`) | template validation + cfn-lint clean on all packaged templates | `full-test-battery.md` |
+| Agent capability audit | follow `agent-capability-review.md` (one subagent per manifest entry; reads code only, writes only under `scratch/`) | every entry in `scripts/tests/agent_capabilities.yaml` re-verified against the code, and the diff against the manifest is empty or each line of it is a manifest edit in this release's validation PR. The release record carries the counts only (entries checked; verified, inferred and unverified; diff lines), never the findings' text | `agent-capability-review.md` |
 | **Test coverage** | `make coverage-all` then `make check-coverage-debt` | every measurable tree measured, and the ratchet green. Record the per-tree table in the release record and diff it against PREV's — a tree that *lost* coverage is a finding even when the ratchet's 1% tolerance absorbs it | `full-test-battery.md` |
 
 The build is needed anyway: the transform tiers publish from source, and the
@@ -237,6 +247,11 @@ cannot prove otherwise once the bucket is gone.
 
 Skill: `test-upgrade.md` (including rollback-deadlock recovery).
 
+Tiers K and J below ask this question of a Terraform customer, and unlike this tier
+both are scripted end to end: K is the same upgrade (an existing deployment of the
+module pointed at this release's), and J is the move from the separate
+`awslabs/genai-idp-terraform` implementation onto the module.
+
 ### F. Benchmarks — the release A/B **and** the full documentation refresh
 
 Tier F has two halves and both are mandatory. F1 answers "did this release regress?"
@@ -276,7 +291,7 @@ paper's sections are computed from; each result set goes under
 
 | Paper section | Suite(s) | What it establishes |
 |---|---|---|
-| §2 configuration matrix | `coresynth` (19 cells × 7 synthetic docs) | the cross-config grid: OCR × mode × assessment, the v0.7 feature arms |
+| §2 configuration matrix | `coresynth` (19 cells × 7 synthetic docs) | the cross-config grid: OCR × mode × assessment, plus the §2b feature-option arms (enforcement, forcing, schema restatement, section splitting) |
 | §2 real-world accuracy | `core` (= `coresynth` + the RealKIE and OCR-benchmark reference corpora) — run `core` *instead of* `coresynth` when budget allows, it is a superset; also `detection-real-corpora` and `forcing-real-corpus` if those studies are cited | labelled-corpus accuracy, not just synthetic exact-GT |
 | §2.1 / §6 standing hazards | `intconf`, `advverify` (`--set extraction_model=sonnet5`) | the two silent list-loss hazards, with repeats — the paper must say whether each is still open |
 | §3 scaling | `scaling` (simple vs advanced across 100→3,200 rows) — expect simple-mode cells above the single-response limit to fail; that *is* the finding | where each mode's completeness cliff sits on this release |
@@ -397,6 +412,94 @@ count, the explained and unexplained counts, and the types Cloud Control could n
 read (listed, not compared). Tear both deployments down afterwards
 (`idp-cli delete --terraform` for the Terraform one). It is read-only; the deploys
 are what cost money.
+
+### J. Migration from `genai-idp-terraform` (in place, onto the release module)
+
+The Terraform counterpart of tier E, for customers of the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation: `docs/terraform-migration.md`, run by a script rather than by hand.
+It needs the release's module zip URL, which `idp-cli publish --terraform` prints
+(for a published release, the versioned `idp-terraform-<VERSION>.zip` the release's
+`idp-terraform-latest.json` pointer names), and two unused names:
+
+```bash
+make stacktest-terraform-migration OLD_NAME=gitfN NEW_NAME=gitfnewN \
+    TERRAFORM_MODULE_URL=<module zip url> REGION=<region> \
+    WORK_DIR=<a directory outside /tmp> TERRAFORM_BIN=<terraform 1.7+>
+```
+
+The driver (`scripts/sdlc/terraform_migration_test.py`) clones upstream at the tag
+and commit it pins, deploys `examples/unified-processor` as `OLD_NAME`, seeds it
+(`lending_package.pdf` and a W-2 processed, an Admin and a scoped Author with random
+passwords and `@example.com` emails, one configuration edit through the API, a
+baseline and a test set), turns the agent-jobs table's old time-to-live off (the
+guide's hazard; DynamoDB accepts that only about an hour after upstream enabled it,
+and the module's setting only about an hour after that; the passing run took 166
+minutes, 76 of them those two waits), snapshots every kept bucket and table once the frozen old deployment has
+stopped writing, and runs each phase of `idp-cli terraform
+migrate-from-genai-idp-terraform` in the guide's order with `--apply`, including
+`restore-config`. It then verifies, destroys the old deployment through its own Terraform
+after `check-destroy` passes, checks the adopted resources survived that, and destroys
+the new deployment with `idp-cli delete --terraform`, sweeping what either retained by
+name. A failed phase still tears down (`KEEP=1` or `STOP_AFTER=<phase>` keep the
+deployments; `RESUME=1` continues from `WORK_DIR`, never past a failed `verify`).
+
+**Pass:** exit 0 and `result.json` status `PASS`, which means every phase passed, the
+snapshot compare found no lost or changed object or item beyond the named changes the
+migration makes (the two configuration counters `fix-config` removes, the profiles
+`restore-config` restores, the configuration rows every deploy rewrites, and the
+attributes the module's index backfill adds to tracking rows), both users signed in to the new app client by SRP with
+their old passwords and kept their scope, the new document ran on the new state machine
+and not the old, and the leftover check found nothing. Record the per-phase table from
+`summary.txt` (status and minutes), the adoption plan's import / add / change / destroy
+counts from the `migrate-apply` row, and any finding. Check the IAM role count against
+the quota first: the two deployments hold several hundred roles between them for the
+length of the run. On GitLab it also runs on the weekly Terraform-migration schedule,
+while that schedule is active; see `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
+
+### K. In-place Terraform upgrade `PREV → VERSION` (one deployment, two modules)
+
+The Terraform counterpart of tier E, and the tier a Terraform customer feels at every
+release: they already run `PREV` and they point the module at `VERSION`. Tier I
+compares two fresh deployments and says nothing about that path.
+
+```bash
+make stacktest-terraform-upgrade STACK_NAME=tfupN ADMIN_EMAIL=<you>@example.com \
+    FROM_MODULE_URL=<PREV module zip url> TO_MODULE_URL=<VERSION module zip url> \
+    REGION=<region> WORK_DIR=<a directory outside /tmp> TERRAFORM_BIN=<terraform 1.7+>
+```
+
+Both URLs are the versioned `idp-terraform-<version>.zip` objects each release
+publishes beside its templates; the previous release's is the one its
+`idp-terraform-latest.json` pointer named before this release moved it. The driver
+(`scripts/sdlc/terraform_upgrade_test.py`) deploys `FROM_MODULE_URL` with `idp-cli
+deploy --terraform`, seeds it the way tier J seeds upstream (two sample documents
+processed, an Admin and a scoped Author with random passwords and `@example.com`
+emails, one configuration edit through the API, a baseline and a test set), snapshots
+every bucket and table once the deployment has stopped writing, then runs `idp-cli
+deploy --terraform` again against `TO_MODULE_URL` — with neither `--parameters` nor
+`--admin-email`, so the remembered parameters are exercised, and **never** with
+`--terraform-allow-replace-stateful`, so a plan the deploy guard refuses fails the run
+and names the addresses. It then destroys the deployment and sweeps what it retained.
+A failed phase still tears down (`KEEP=1` or `STOP_AFTER=<phase>` keep it; `RESUME=1`
+continues from `WORK_DIR`).
+
+**Pass:** exit 0 and `result.json` status `PASS`, which means the upgrade applied, every
+bucket, table, user pool and key still has the physical identity it had before (matched
+by name, so a resource a `moved` block relocated passes and a replaced one does not),
+the snapshot compare found no lost or changed object or item beyond the configuration
+rows every deploy rewrites and the attributes the index backfill adds, both users signed
+in with their old passwords and kept their scope, the configuration edit survived, the
+label stack's description names `VERSION`, and a document uploaded after the upgrade
+reached `COMPLETED` on the deployment's own state machine. Record the per-phase table
+from `summary.txt`, the upgrade plan's add / change / destroy counts, and any finding.
+
+⚠️ **A refusal is a release finding, not a test defect.** The guard refuses a plan that
+would delete or replace a data-holding or retained resource, and that is exactly what a
+customer upgrading would hit, so report the addresses and what the release did to them
+rather than re-running with the override. One measured shape: turning a feature's
+parameter back off deletes the resources that feature created, which CloudFormation
+would also do — the finding is then the parameter, not the module.
 
 ## Operating a multi-hour run — what actually goes wrong
 

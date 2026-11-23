@@ -52,12 +52,19 @@ class PublishResult(BaseModel):
         default=None,
         description="HTTPS S3 URL of idp-terraform-latest.json (if --terraform)",
     )
+    terraform_versions_index_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "HTTPS S3 URL of idp-terraform-versions.json, the index of every "
+            "published module version (if --terraform)"
+        ),
+    )
     terraform_variant_modules: Dict[str, Dict[str, str]] = Field(
         default_factory=dict,
         description=(
             "Terraform modules of the template variants (if --terraform with "
             "--headless/--govcloud): variant -> {moduleUrl, sha256, pointerUrl, "
-            "version}"
+            "versionsIndexUrl, version}"
         ),
     )
     error: Optional[str] = Field(

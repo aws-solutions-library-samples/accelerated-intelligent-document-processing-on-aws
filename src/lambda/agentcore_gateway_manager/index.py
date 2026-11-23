@@ -53,6 +53,10 @@ IDP_TOOLS_SCHEMA = [
                 "prefix": {
                     "type": "string",
                     "description": "Optional batch ID prefix (default: 'mcp-batch')"
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "Optional Configuration Profile to process under. Without it the destination decides (a configured prefix mapping, else the active profile). A caller limited to some profiles must name one of them unless the destination already resolves to one."
                 }
             },
             "required": []
@@ -86,7 +90,7 @@ IDP_TOOLS_SCHEMA = [
     },
     {
         "name": "status",
-        "description": "Get processing status for a batch of documents. Returns progress, timing, and error information.",
+        "description": "Get processing status for a batch of documents. Returns progress, timing, and error information. all_complete is true once nothing is queued or running; documents held for human review are counted in status.awaiting_review and have no final result until a reviewer completes or rejects them.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -14,6 +14,7 @@ import { streamChat, type StreamCredentials } from '../../api/stream-client';
 import { pollForAssistantReply, fetchAssistantKeys } from '../../api/chat-poll';
 import { streamUrl } from '../../aws-exports';
 import SafeMarkdown from '../common/SafeMarkdown';
+import { useFormatters } from '../../i18n/format';
 import './ChatPanel.css';
 
 const useHttpApiTransport = true;
@@ -150,6 +151,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [currentStatus, setCurrentStatus] = useState<{ status: string; label: string } | null>(null);
   const [isWaiting, setIsWaiting] = useState(false);
+  const { formatTime } = useFormatters();
 
   const textareaRef = useRef<HTMLInputElement>(null);
   const rowIdRef = useRef(0);
@@ -261,7 +263,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
           withoutLoader.push({
             role: 'ai',
             content: text,
-            dt: new Date().toLocaleTimeString(),
+            dt: formatTime(new Date()),
             type: 'msg',
             isStreaming: true,
             modelId: update.modelId,
@@ -284,7 +286,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
               ...next[lastIdx],
               content: text || next[lastIdx].content,
               isStreaming: false,
-              dt: new Date().toLocaleTimeString(),
+              dt: formatTime(new Date()),
             };
             return next;
           }
@@ -292,7 +294,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
           next.push({
             role: 'ai',
             content: text,
-            dt: new Date().toLocaleTimeString(),
+            dt: formatTime(new Date()),
             type: 'msg',
             modelId: update.modelId,
           });
@@ -313,7 +315,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
               content: text || 'An error occurred.',
               isStreaming: false,
               type: 'error',
-              dt: new Date().toLocaleTimeString(),
+              dt: formatTime(new Date()),
             };
             return next;
           }
@@ -321,7 +323,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
             role: 'ai',
             content: text || 'An error occurred.',
             type: 'error',
-            dt: new Date().toLocaleTimeString(),
+            dt: formatTime(new Date()),
           });
           return next;
         });
@@ -330,7 +332,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
         return;
       }
     },
-    [sessionId],
+    [sessionId, formatTime],
   );
 
   // Subscribe to streaming updates for this session (appsync transport only).
@@ -374,7 +376,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
       {
         role: 'user',
         content: prompt,
-        dt: new Date().toLocaleTimeString(),
+        dt: formatTime(new Date()),
         type: 'msg',
       },
       { role: 'loader', content: 'loader' },

@@ -19,6 +19,8 @@ from typing import Dict, Any, Optional
 from idp_common import get_config, evaluation
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
+from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import is_transient_error, raise_if_transient
 
 # Environment variables
 BASELINE_BUCKET = os.environ.get("BASELINE_BUCKET")
@@ -98,6 +100,24 @@ def update_document_evaluation_status(
     return _get_document_service().update_document(document)
 
 
+def add_lambda_metering(document: Document, context: Any, start_time: float) -> None:
+    """Record this invocation's Lambda requests and GB-seconds on ``document``.
+
+    The same ``<context>/lambda/requests`` and ``<context>/lambda/duration`` keys
+    the OCR, classification, extraction and assessment Lambdas record, under the ``Evaluation`` context the
+    evaluation's own model calls use. Best-effort, as in the other steps: a
+    metering failure is logged and never turns an evaluation outcome into an
+    error.
+    """
+    try:
+        lambda_metering = calculate_lambda_metering("Evaluation", context, start_time)
+        document.metering = merge_metering_data(
+            document.metering or {}, lambda_metering
+        )
+    except Exception as e:
+        logger.warning(f"Failed to add Lambda metering for evaluation: {str(e)}")
+
+
 def extract_document_from_event(event: Dict[str, Any]) -> Optional[Document]:
     """
     Extract document from Lambda event (state machine format)
@@ -127,7 +147,7 @@ def extract_document_from_event(event: Dict[str, Any]) -> Optional[Document]:
         return document
     except Exception as e:
         logger.error(f"Error extracting document from event: {str(e)}")
-        raise ValueError(f"Failed to extract document from event: {str(e)}")
+        raise ValueError(f"Failed to extract document from event: {str(e)}") from e
 
 
 def load_baseline_document(document_key: str) -> Optional[Document]:
@@ -167,7 +187,7 @@ def load_baseline_document(document_key: str) -> Optional[Document]:
 
     except Exception as e:
         logger.error(f"Error loading baseline document: {str(e)}")
-        raise ValueError(f"Failed to load baseline document: {str(e)}")
+        raise ValueError(f"Failed to load baseline document: {str(e)}") from e
 
 
 def create_response(
@@ -192,6 +212,26 @@ def create_response(
 
 
 def handler(event, context):
+    """Evaluate one document, or record that its evaluation failed. See ``_handle``.
+
+    Transient causes are re-raised as ``TransientError``, the name
+    EvaluationStep's retrier lists beside the modeled throttling codes. The one
+    that matters is an LLM-judge call that failed transiently (a throttle that
+    outlasted the Bedrock client's retries, a bare HTTP 5xx, a read timeout):
+    the comparator raises it rather than scoring the field 0.0, and this handler
+    lets it out rather than recording a FAILED evaluation, so the document is
+    retried and its accuracy is not silently depressed (#2049). Deterministic
+    errors keep their current outcome. The ``record_failure_only`` branch never
+    raises, so the wrapper changes nothing there.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(e, where="evaluation")
+        raise
+
+
+def _handle(event, context):
     """
     Lambda function handler
 
@@ -372,6 +412,7 @@ def handler(event, context):
                     f"Could not record EvaluationStatus=DISABLED for "
                     f"{actual_document.input_key}: {e}"
                 )
+            add_lambda_metering(actual_document, context, start_time)
             return {
                 "document": actual_document.serialize_document(
                     working_bucket, "evaluation"
@@ -395,6 +436,7 @@ def handler(event, context):
                 actual_document, EvaluationStatus.NO_BASELINE
             )
             logger.info("Evaluation skipped - no baseline data available")
+            add_lambda_metering(actual_document, context, start_time)
             return {
                 "document": actual_document.serialize_document(
                     working_bucket, "evaluation"
@@ -433,6 +475,7 @@ def handler(event, context):
             update_document_evaluation_status(
                 evaluated_document, EvaluationStatus.FAILED
             )
+            add_lambda_metering(evaluated_document, context, start_time)
             return {
                 "document": evaluated_document.serialize_document(
                     working_bucket, "evaluation"
@@ -479,6 +522,7 @@ def handler(event, context):
         logger.info(
             f"Evaluation process completed successfully in {time.time() - start_time:.2f} seconds"
         )
+        add_lambda_metering(evaluated_document, context, start_time)
 
         # Return document in state machine format
         return {
@@ -490,6 +534,18 @@ def handler(event, context):
     except Exception as e:
         error_msg = f"Error in handler: {str(e)}"
         logger.error(error_msg)
+
+        # A transient failure is retried by EvaluationStep, so it must not be
+        # recorded as a FAILED evaluation first: the document would show as
+        # failed until the retry overwrote it, and returning here would end the
+        # step with nothing to retry. If the retries run out, the state's Catch
+        # routes to RecordEvaluationFailure, which records the failure then.
+        if is_transient_error(e):
+            logger.warning(
+                f"Transient evaluation failure ({type(e).__name__}); raising "
+                "TransientError for a Step Functions retry (NOT recording FAILED)"
+            )
+            raise
 
         # Update document status to FAILED if we have the document
         if actual_document:

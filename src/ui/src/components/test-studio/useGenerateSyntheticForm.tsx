@@ -33,6 +33,7 @@ import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { generateClient } from '../../api/client-shim';
 import { getTestSets } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -76,7 +77,6 @@ const extractClassNames = (custom: unknown, def: unknown): string[] => {
   return Array.from(new Set(names)).sort();
 };
 
-const usd = (n: number): string => (Number.isFinite(n) ? `$${Math.max(1, Math.round(n))}` : '—');
 const mins = (n: number): number => (Number.isFinite(n) ? Math.max(1, Math.ceil(n)) : 1);
 
 export interface GenerateFormOptions {
@@ -126,6 +126,9 @@ export const useGenerateSyntheticForm = ({
     : null;
   const { submitting, generateFromPrompt, generateFromConfig, suggestScenario, getEstimate } = useSyntheticDataGenerator();
   const { versions, fetchVersion } = useConfigurationVersions();
+  const { formatUsDollars } = useFormatters();
+  // A whole-dollar estimate, never below US$1.
+  const usd = (n: number): string => (Number.isFinite(n) ? formatUsDollars(Math.max(1, Math.round(n)), { fractionDigits: 0 }) : '—');
 
   const [mode, setMode] = useState<'prompt' | 'config'>('prompt');
   const [prompt, setPrompt] = useState('');

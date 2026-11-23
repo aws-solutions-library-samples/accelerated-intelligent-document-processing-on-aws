@@ -1,0 +1,1 @@
+# idp_common comes from IDPCommonBaseLayer; cfnresponse is vendored beside index.py.

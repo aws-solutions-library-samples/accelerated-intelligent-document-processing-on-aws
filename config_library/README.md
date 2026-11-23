@@ -228,9 +228,9 @@ For documents with extensive tabular data, consider enabling agentic extraction 
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true  # Deterministic Markdown table parser
       max_empty_line_gap: 3  # Tolerate OCR page breaks (0-10)

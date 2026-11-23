@@ -33,6 +33,12 @@ query ListMyReviewWork($limit: Int, $nextToken: String) {
       disposedAt
       rejectReason
       version
+      sentToReview {
+        reason
+        note
+        requestedBy
+        requestedAt
+      }
     }
     nextToken
   }

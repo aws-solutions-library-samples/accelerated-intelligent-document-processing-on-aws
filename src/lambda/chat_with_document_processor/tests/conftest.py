@@ -114,6 +114,19 @@ _bedrock_facade.stream_responses_api = MagicMock()
 sys.modules["idp_common.bedrock"] = _bedrock_facade
 sys.modules["idp_common.bedrock.client"] = _bedrock_mod
 
+# The guardrail parser is loaded for REAL: it is stdlib-only, and a MagicMock
+# attribute is truthy, so a stub would attach a fake ``guardrailConfig`` to every
+# converse_stream call these tests make and hide whether the processor passes the
+# configured guardrail at all.
+_guardrail_spec = importlib.util.spec_from_file_location(
+    "idp_common.bedrock.guardrail",
+    Path(__file__).resolve().parents[4]
+    / "lib/idp_common_pkg/idp_common/bedrock/guardrail.py",
+)
+_guardrail_mod = importlib.util.module_from_spec(_guardrail_spec)
+_guardrail_spec.loader.exec_module(_guardrail_mod)
+sys.modules["idp_common.bedrock.guardrail"] = _guardrail_mod
+
 # Stub idp_common.bedrock.openai_responses.is_openai_responses_model — used by
 # the processor to route GPT-5.x chat to the non-streaming Responses API.
 _openai_responses_mod = MagicMock()

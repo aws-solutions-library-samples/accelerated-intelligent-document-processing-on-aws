@@ -86,7 +86,7 @@ pytestmark = pytest.mark.unit
 #: 120 throughout the period when the set was missing 15 container-built source
 #: trees, because the count was never wrong — the set was. The per-resource closure
 #: assertions at the bottom of this module are what hold the set itself.
-EXPECTED_PACKAGED_DIRS = 139
+EXPECTED_PACKAGED_DIRS = 148  # both bulk-review Lambdas, two from develop, the customer-managed KMS key check (#2016), and the decider extension's image-build and ui-deployer handlers (#1656)
 
 #: CloudFormation resource types whose code comes from somewhere, and so whose
 #: packaging this gate has an opinion about.
@@ -555,6 +555,43 @@ def _function_resources() -> list[tuple[str, str, dict]]:
     return found
 
 
+def _container_builds_read_no_checkout(template_rel: str) -> bool:
+    """Whether every CodeBuild project the template declares has no source.
+
+    A ``NO_SOURCE`` project receives nothing from this checkout: whatever its inline
+    buildspec builds, it fetches itself. An image such a template deploys therefore
+    contains no code from any directory here, so it is outside this gate's universe
+    rather than unattributed. Computed from the template's own projects, so a template
+    with no project, or with one project that has a source, is not excused.
+    """
+    resources = _document(template_rel).get("Resources") or {}
+    projects = [
+        body
+        for body in resources.values()
+        if isinstance(body, dict) and body.get("Type") == "AWS::CodeBuild::Project"
+    ]
+    return bool(projects) and all(
+        ((p.get("Properties") or {}).get("Source") or {}).get("Type") == "NO_SOURCE"
+        for p in projects
+    )
+
+
+def test_an_image_from_a_sourceless_build_is_known_and_takes_no_checkout_code() -> None:
+    """Non-vacuity, and the premise, for the ``NO_SOURCE`` branch below.
+
+    The decision-model extension builds its image from a pinned upstream commit with
+    a ``NO_SOURCE`` project, so it is the case that branch exists for (#1656). Its
+    build must read no directory here, or the branch would hide one.
+    """
+    rel = "feature-platform/decision-model-decider/template.yaml"
+    assert _container_builds_read_no_checkout(rel)
+    assert not _image_build_inputs(rel)
+    assert not _container_builds_read_no_checkout("patterns/unified/template.yaml")
+    assert not _container_builds_read_no_checkout(
+        "feature-platform/idp-data-generator/template.yaml"
+    )
+
+
 def test_the_resource_universe_holds_both_packaging_types() -> None:
     """Non-vacuity for the closure assertion below.
 
@@ -596,6 +633,10 @@ def test_every_resource_whose_code_is_a_local_directory_has_one_packaged(
     for template_rel, logical_id, properties in _function_resources():
         if properties.get("PackageType") == "Image":
             build_dirs = _image_build_inputs(template_rel)
+            if not build_dirs and _container_builds_read_no_checkout(template_rel):
+                # Built by a NO_SOURCE project: the image holds no code from this
+                # checkout, so there is no directory for it to be packaged from.
+                continue
             if not any(d in packaged for d in build_dirs):
                 # The build's own trees are reported once per template by the
                 # directory-granular assertion below; naming all of them against

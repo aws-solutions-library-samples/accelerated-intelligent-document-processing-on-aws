@@ -18,7 +18,7 @@ test can actually fail. Gate exemptions are covered in
   `setup_method`, and mirror the module structure under `tests/unit/<subpackage>/`.
 - Register any directory that gains a `test_*.py` in `scripts/run_all_tests.py`.
   Put it in `RUN_ROOTS`, or in `QUARANTINE` with a reason.
-- Add each new root to the `test-packages-cicd` recipe through
+- Add each new root that no coverage tree measures to the `test-packages-cicd` recipe through
   `$(PYTEST_HERMETIC)`, on its own line if it defines a module named `index`.
   Being in `RUN_ROOTS` alone doesn't put it in CI.
 - Record a new root's coverage as well, or the suite you just wrote is

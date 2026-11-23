@@ -31,6 +31,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from idp_common.config import schema_constants as sc
+from idp_common.config.class_names import with_uri_safe_schema_ids
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,10 @@ def _validate_authored_schema(schema: Dict[str, Any]) -> tuple[bool, str]:
         return False, "Properties must not be empty"
     if Draft202012Validator is not None:
         try:
-            Draft202012Validator.check_schema(schema)
+            # A copy with percent-encoded ids: a class id is a display name and
+            # may contain spaces, which the uri-reference format rejects
+            # wherever that checker is installed.
+            Draft202012Validator.check_schema(with_uri_safe_schema_ids(schema))
         except SchemaError as e:
             return False, f"Invalid JSON Schema: {e}"
     return True, ""
@@ -233,9 +237,10 @@ def author_class_schema(
     suitable for schema design when ``model_id`` is not given.
     """
     from idp_common import bedrock
+    from idp_common.regional_models import SONNET_4_6_MODEL_ID, regional_default
 
     client = bedrock_client or bedrock.BedrockClient(region=region)
-    model = model_id or "us.anthropic.claude-sonnet-4-6"
+    model = model_id or regional_default(SONNET_4_6_MODEL_ID, region)
     system_prompt = (
         "You are an expert in document understanding and JSON Schema design. "
         "You produce precise, well-named extraction schemas."

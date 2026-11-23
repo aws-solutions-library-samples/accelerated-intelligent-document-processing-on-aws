@@ -1,6 +1,10 @@
 ---
 title: "Sample: Health Insurance Review"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Sample: Health Insurance Review
 
 > **This is a sample, not the Claims Processing product.** It exists to show how

@@ -18,6 +18,8 @@ query GetMyReviewQueues($itemLimit: Int) {
       definedInConfig
     }
     myClaimCount
+    defaultQueueEnabled
+    bulkSkipSyncLimit
     items {
       items {
         objectKey
@@ -52,6 +54,12 @@ query GetMyReviewQueues($itemLimit: Int) {
         disposedAt
         rejectReason
         version
+        sentToReview {
+          reason
+          note
+          requestedBy
+          requestedAt
+        }
       }
       nextToken
     }

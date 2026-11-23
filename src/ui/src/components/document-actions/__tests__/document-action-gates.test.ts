@@ -40,6 +40,9 @@ import {
   REVIEWER_UNCLAIMED_REASON,
   REVIEW_OWNER_REASON,
   RULE_VALIDATION_HISTORICAL_REASON,
+  REVIEW_QUEUE_OFF_REASON,
+  NOT_FINISHED_REASON,
+  ALREADY_IN_REVIEW_REASON,
 } from '../action-reasons';
 import { documentActionGates } from '../document-action-gates';
 import type { ActionRoles, DocumentActionId, GateInput, GatedDocument } from '../document-action-gates';
@@ -78,6 +81,7 @@ interface Situation {
   bdaMode?: boolean;
   configLoading?: boolean;
   baselineRequestInFlight?: boolean;
+  defaultQueueEnabled?: boolean | null;
   roles?: ActionRoles;
 }
 
@@ -174,6 +178,22 @@ describe('each action’s own availability', () => {
     ['edit', P, PROCESSING_REASON],
   ] as [DocumentActionId, Situation, string][])('%s is disabled with its reason (%#)', (action, situation, expected) => {
     expect(reason(action, situation)).toBe(expected);
+  });
+
+  it.each([
+    [{ defaultQueueEnabled: false }, REVIEW_QUEUE_OFF_REASON],
+    [{ doc: { objectStatus: 'RUNNING' } }, NOT_FINISHED_REASON],
+    [{ doc: { hitlStatus: 'in_review', hitlTriggered: true } }, ALREADY_IN_REVIEW_REASON],
+    [{ doc: { hitlStatus: 'PendingReview', hitlTriggered: true } }, ALREADY_IN_REVIEW_REASON],
+    [H, HISTORICAL_REASON],
+  ] as [Situation, string][])('Send to review is disabled with its reason (%#)', (situation, expected) => {
+    expect(reason('send-to-review', situation)).toBe(expected);
+  });
+
+  it('Send to review is available for a finished document, and while the queue state is unknown', () => {
+    expect(reason('send-to-review', { defaultQueueEnabled: true })).toBeUndefined();
+    expect(reason('send-to-review', { defaultQueueEnabled: null })).toBeUndefined();
+    expect(reason('send-to-review', { doc: { hitlStatus: 'Review Skipped', hitlTriggered: true } })).toBeUndefined();
   });
 
   it('Skip All Reviews is available for a legacy review pending', () => {

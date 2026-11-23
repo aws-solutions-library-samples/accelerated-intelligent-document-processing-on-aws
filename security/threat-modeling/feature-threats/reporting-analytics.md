@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
+| **Document Version** | 3.1 |
+| **Last Updated** | 2026-11-17 |
 | **Applies to release** | v0.6.3 |
 | **Feature** | Reporting Database, Analytics, Evaluation |
 | **Classification** | Internal |
@@ -58,13 +58,15 @@ flowchart TD
 |-----------|-------|
 | **Threat ID** | RPT.T01 |
 | **Category** | STRIDE: Tampering, Repudiation |
-| **Description** | Parquet files in the reporting S3 bucket could be modified or deleted, altering historical processing records and analytics |
-| **Attack Vector** | Direct S3 access with compromised credentials, or Lambda bug that overwrites existing reporting data |
-| **Impact** | Corrupted analytics, unreliable evaluation metrics, loss of audit trail |
+| **Description** | Parquet files in the reporting S3 bucket could be modified or deleted, altering historical processing records and analytics. The bucket holds raw `metering` and `document_sections_*` data, and the four rollup tables derived from it (`metering_hourly`, `metering_daily`, `metering_docs_hourly`, `metering_docs_daily`) that the dashboard's cost widgets and the analytics agent read |
+| **Attack Vector** | Direct S3 access with compromised credentials, or a Lambda bug that deletes or overwrites existing reporting data |
+| **Impact** | Corrupted analytics and cost reporting, unreliable evaluation metrics, loss of audit trail |
 | **Likelihood** | Low |
 | **Severity** | Medium |
-| **Affected Components** | S3 Reporting Bucket, Parquet files |
-| **Mitigations** | S3 versioning, write-only IAM policies for reporting Lambdas (no delete/overwrite), S3 Object Lock for critical records, CloudTrail logging of S3 operations |
+| **Affected Components** | S3 Reporting Bucket, Parquet files, `DataMartRollupFunction` (`src/lambda/data_mart_rollup/index.py`), `DataMartMigrationStateMachine`, `MeteringHourMigrationFunction` |
+| **Mitigations** | The stack-created `ReportingBucket` has versioning enabled, so an overwritten or deleted object's prior version is recoverable; it is encrypted with the stack's customer-managed key, blocks public access and writes server access logs to the logging bucket. Scheduled rollups are append-only: each partition is written once, and the handler probes for an existing partition and skips the `INSERT` rather than rewriting it. Delete permissions are prefix-scoped: `DataMartRollupFunction` holds `s3:DeleteObject` only on the four rollup prefixes, used only by the migration state machine's `InitialPurge` task, so it cannot delete raw `metering/` or `document_sections_*/` data; `MeteringHourMigrationFunction` holds it only on `metering/*`, for its copy-then-delete partition move. The rollups are derived data and can be rebuilt from raw `metering` |
+| **Residual risk** | No S3 Object Lock is configured, and a bucket supplied through `ReportingBucketName` takes whatever versioning its owner set. A rollup migration (a stack update that changes `MigrationVersion`, such as the one that adds `n_runs` to the doc-grain rollups) purges and rebuilds **all four** rollup tables over the replay window, so the cost rollups, the dashboard cost widgets and the analytics agent read low until it finishes; raw `metering` is unaffected, and partitions older than the window keep `n_runs` empty |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/lambdas/test_data_mart_rollup.py::TestPurgeRollupPrefixes::test_purge_covers_all_four_prefixes_within_window`; `lib/idp_common_pkg/tests/unit/lambdas/test_data_mart_rollup.py::TestPurgeRollupPrefixes::test_purge_task_does_not_touch_control_plane_prefixes`; `lib/idp_common_pkg/tests/unit/lambdas/test_data_mart_rollup.py::TestPurgeRollupPrefixes::test_purge_bounded_window_preserves_out_of_window_partitions`; UNVERIFIED: bucket versioning and the prefix scope of each `s3:DeleteObject` grant are read from `template.yaml`, not asserted by a test |
 
 ### RPT.T02: Athena Query Data Exposure
 
@@ -79,6 +81,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Amazon Athena, S3 query results, Glue Data Catalog |
 | **Mitigations** | Athena workgroup with restricted query result location, S3 lifecycle policies on query results (auto-delete), IAM restrictions on Athena access (Admin/Author only), Athena query logging |
+| **Evidence** | `scripts/tests/test_athena_result_lifecycle.py`; UNVERIFIED: the workgroup result location, Athena IAM scoping and query logging are not covered by a test |
 
 ### RPT.T03: Glue Catalog Manipulation
 
@@ -93,6 +96,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | AWS Glue Data Catalog, Glue Crawler |
 | **Mitigations** | IAM restrictions on Glue API operations, Glue Catalog resource policies, CloudTrail logging of Glue operations, periodic catalog validation |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T04: Evaluation Data Manipulation
 
@@ -107,6 +111,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | S3 (ground truth and evaluation data), Evaluation Lambda |
 | **Mitigations** | RBAC (Admin-only ground truth management), S3 versioning on ground truth data, evaluation result integrity checks, separate evaluation metrics storage |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T05: Discovery Feature — Prompt Injection via Sample Documents
 
@@ -121,6 +126,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Discovery Lambda, Amazon Bedrock, Configuration S3 |
 | **Mitigations** | Discovery generates draft configs that require human review before activation, configuration schema validation, RBAC (Admin/Author required), evaluation testing before production use |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T06: Test Studio — Uncontrolled Processing Costs
 
@@ -135,6 +141,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | Test Studio, processing pipeline, Bedrock, Textract |
 | **Mitigations** | RBAC (Admin/Author required for Test Studio), rate limiting on test submissions, separate test processing tracking, CloudWatch alarms on processing costs |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T07: Ground-Truth Tampering via the Test Set Visual Editor
 
@@ -150,6 +157,7 @@ flowchart TD
 | **Affected Components** | `test_set_resolver` (`getTestSetDocuments`), test-set baseline objects in TestSetBucket, evaluation framework |
 | **Mitigations** | Edits require the **Admin/Author** group, enforced server-side (`getTestSetDocuments` is Admin/Author; other roles are read-only in the editor). Every save writes an **`_editHistory` provenance entry** to the baseline, so a modification is attributable and reviewable rather than anonymous — the key anti-repudiation control here. TestSetBucket CORS permits only GET/HEAD + ranged reads for the browser's presigned fetches, so the browser cannot write objects directly; writes go through the resolver. S3 versioning on the bucket retains prior baseline bytes for recovery. |
 | **Residual risk** | `_editHistory` records that a change happened but nothing *alerts* on baseline mutation, and an Author is legitimately allowed to edit ground truth (that is the feature's purpose), so policy cannot distinguish correction from sabotage. Recommend (1) alerting/reporting on baseline edits for high-value test sets, and (2) treating unexplained accuracy improvements as a signal to diff `_editHistory`. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T08: Extended Data Retention via Document Version History
 
@@ -164,14 +172,15 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | `document_versions_resolver`, versioned S3 output objects, run manifests, `getFilePresignedUrl` |
 | **Mitigations** | Snapshots are bounded by **`DataRetentionInDays`**, so retention is finite and operator-configurable rather than indefinite. `deleteDocumentVersion` is **Admin-only** (server-side enforced), giving an explicit purge path for a specific run. The feature is documented, and the UI surfaces a Version History panel so retained versions are **visible** rather than hidden state. |
-| **Residual risk** | `listDocumentVersions` requires an **assigned group** (`ANY_GROUP`), so the enumerable index of object keys *and* version ids is not reachable by a caller in no group — but every group reaches all of it, which is the axis that still matters here. Reading the bytes now requires an API operation: `CognitoAuthorizedRole` grants **nothing** on the Output bucket, and **no** `s3:GetObjectVersion` on any bucket, so a `?versionId=` fetch goes through `getFilePresignedUrl` or `getFilePresignedUrls`, where the group floor, the bucket allow-list and `document_scope` apply. `document_scope` matches the owning document's `ConfigVersion` against the caller's `allowedConfigVersions`, which refuses a **scoped** caller another profile's version history — a narrowing this entry did not previously have. It refuses an **unscoped** caller nothing, scoping being opt-in per user, so for the default user row version history still widens the practical impact of UI.T06 and the group floor does not narrow that. Recommend scoping `listDocumentVersions` per document rather than per group, which needs the same document-ownership attribute UI.T06's residual asks for — the group floor is the wrong axis for "may this caller see this document's history", and no setting of it supplies one. For redaction workflows, prefer the PII feature's *redact copy and stop* mode (which deletes the original) over manual replace-and-reupload. |
+| **Residual risk** | `listDocumentVersions` requires an **assigned group** (`ANY_GROUP`), so the enumerable index of object keys *and* version ids is not reachable by a caller in no group — but every group reaches all of it, which is the axis that still matters here. Reading the bytes now requires an API operation: `CognitoAuthorizedRole` grants **nothing** on the Output bucket, and **no** `s3:GetObjectVersion` on any bucket, so a `?versionId=` fetch goes through `getFilePresignedUrl` or `getFilePresignedUrls`, where the group floor, the bucket allow-list and `document_scope` apply. `document_scope` matches the owning document's `ConfigVersion` against the caller's `allowedConfigVersions`, which refuses a **scoped** caller another profile's version history — a narrowing this entry did not previously have. It refuses an **unscoped** caller nothing, scoping being opt-in per user, so for the default user row version history still widens the practical impact of UI.T06 and the group floor does not narrow that. Recommend scoping `listDocumentVersions` per document rather than per group, which needs the same document-ownership attribute UI.T06's residual asks for — the group floor is the wrong axis for "may this caller see this document's history", and no setting of it supplies one. For redaction workflows, prefer the PII feature's *redact copy and stop* mode (which deletes the original) over manual replace-and-reupload. Deleting a document, whether from the UI, `idp-cli`, the SDK or *redact copy and stop*, purges every version and delete marker of the exact input key as well as the output version history, so a deleted or superseded upload is not left in the versioned Input bucket as a noncurrent version for `DataRetentionInDays`. Re-uploading a file over the same key without deleting the document is different: the earlier upload stays as a noncurrent Input-bucket version until the lifecycle rule expires it. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 
 | Control | Implementation | Threats Mitigated |
 |---------|---------------|-------------------|
 | **S3 versioning** | Versioning on reporting and ground truth buckets | RPT.T01, RPT.T04, RPT.T07 |
-| **Write-only IAM** | Reporting Lambda can write but not delete Parquet files | RPT.T01 |
+| **Append-only rollups, prefix-scoped deletes** | Scheduled rollups write each partition once; `s3:DeleteObject` limited to the rollup prefixes (migration purge) and `metering/*` (partition move) | RPT.T01 |
 | **Athena workgroup** | Restricted query result location, IAM scoping | RPT.T02 |
 | **IAM restrictions** | Glue API access restricted to platform roles | RPT.T03 |
 | **RBAC** | Role-based access to evaluation, discovery, test studio, ground-truth editing | RPT.T04, RPT.T05, RPT.T06, RPT.T07 |

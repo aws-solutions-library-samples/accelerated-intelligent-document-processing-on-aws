@@ -25,6 +25,8 @@ const isExcluded = (rel: string): boolean =>
   /\.(test|spec)\.(tsx?|jsx?)$/.test(rel) ||
   rel.endsWith('.d.ts') ||
   rel === 'setupTests.ts' ||
+  // Shared test helpers (`renderWithIntl`), imported by tests only, so never by the entry.
+  rel.startsWith('test-utils' + sep) ||
   rel.startsWith(join('graphql', 'generated') + sep);
 
 const sourceFiles = (dir: string): string[] =>

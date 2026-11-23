@@ -77,11 +77,15 @@ When `EnableMLflow` is `false` (the default), no MLflow resources are created an
    - All aggregated metrics (accuracy, cost, field-level scores, etc.)
    - The full IDP configuration (models, inference params, prompts, class definitions)
 4. The MLflow Logger Lambda:
-   - Creates an MLflow experiment named after the test run ID
+   - Creates an MLflow experiment named after the test run ID, and logs one run in it named `<test_run_id>_<unix time>`
    - Logs flat numeric values as MLflow metrics (searchable, chartable)
    - Logs model IDs and inference parameters as MLflow params (filterable)
    - Logs complex structures (prompts, class definitions, cost breakdown, full config) as JSON artifacts
 5. The invocation is `Event` type (async) — the test results resolver does not wait for MLflow logging to complete
+
+**Each test run is a separate MLflow experiment**, not another run inside a shared
+one. To compare test runs, select their experiments together in the MLflow UI, or
+search runs across those experiments with `mlflow.search_runs(experiment_names=[...])`.
 
 ## What Gets Logged
 
@@ -97,7 +101,7 @@ Numeric values logged as MLflow metrics. These are searchable and chartable in t
 | Document count | `document_count` | Number of documents in the test run |
 | Accuracy breakdown | `accuracy_breakdown.Payslip`, `accuracy_breakdown.W2` | Per-class accuracy (flattened from nested dict) |
 | Split classification | `split_classification_metrics.Payslip.precision` | Per-class precision/recall/f1 (flattened) |
-| Field-level metrics | `PayDate.cm_recall`, `CurrentGrossPay.cm_f1` | Per-field cm_precision, cm_recall, cm_f1, cm_accuracy |
+| Field-level metrics | `PayDate.cm_recall`, `CurrentGrossPay.cm_f1`, `PayDate.accuracy_observations` | Per-field cm_precision, cm_recall, cm_f1, cm_accuracy, plus accuracy_observations (the number of comparisons the field's accuracy is computed over, `tp + fp + tn + fn`) and accuracy_margin (half the width of the 95% Wilson interval on that accuracy, in proportion units) |
 | Cost breakdown | `cost.ocr.textract_analyze_document_layout_pages`, `cost.classification.bedrock_us.amazon.nova_2_lite_v1_0_inputtokens` | Per-service estimated cost (sanitized keys) |
 | Weighted scores | Logged as artifact (see below) | Complex nested structure |
 

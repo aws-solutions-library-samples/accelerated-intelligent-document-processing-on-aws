@@ -263,6 +263,7 @@ class TestDisplayDictMapping:
             "failed": 0,
             "running": 0,
             "queued": 0,
+            "awaiting_review": 0,
             "all_complete": True,
             "success_rate": 100.0,
             "completion_percentage": 100.0,
@@ -1232,3 +1233,84 @@ class TestTheMonitorCallersThatDiscardTheCode:
 
         monitor.assert_called_once()
         assert run.exit_code == 0, run.output
+
+
+# ---------------------------------------------------------------------------
+# Documents awaiting human review (#2022)
+# ---------------------------------------------------------------------------
+
+
+class TestAwaitingReview:
+    """`HITL_IN_PROGRESS`: processing stopped, waiting for a person.
+
+    The SDK counts such a document as settled, so `all_complete` ends the loop;
+    these tests hold the CLI side of that — the document is shown in its own
+    bucket rather than as running, and the run ends saying how many wait for
+    review and where to work them, with an exit code that does not claim every
+    document completed.
+    """
+
+    def _held_batch(self) -> BatchStatus:
+        return batch(
+            [
+                doc("batch-1/a.pdf", "COMPLETED", duration_seconds=2.0),
+                doc("batch-1/held.pdf", "HITL_IN_PROGRESS"),
+            ],
+            all_complete=True,
+        )
+
+    def test_a_held_document_maps_to_awaiting_review_not_running(self):
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            self._held_batch()
+        )
+
+        assert [d["document_id"] for d in status_data["awaiting_review"]] == [
+            "batch-1/held.pdf"
+        ]
+        assert status_data["running"] == []
+        assert stats["awaiting_review"] == 1
+        assert stats["running"] == 0
+        # Both documents' processing has stopped, so the run reads finished.
+        assert stats["completion_percentage"] == 100.0
+
+    def test_the_monitor_ends_and_says_where_to_review(
+        self, monkeypatch, pinned_console
+    ):
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        client, asked = monitored_client([self._held_batch()])
+
+        with pinned_console.capture() as captured:
+            exit_code = cli_module._monitor_progress(
+                client=client, batch_id="batch-1", refresh_interval=5
+            )
+        out = captured.get()
+
+        assert len(asked) == 1
+        assert clock.slept == []
+        assert "1 document(s) awaiting human review" in out
+        assert "batch-1/held.pdf" in out
+        assert display_module.REVIEW_LOCATION_HINT in out.replace("\n", " ")
+        # Not 0: "every document completed" is not yet true.
+        assert exit_code == 2
+
+    def test_a_failure_still_exits_one_alongside_a_held_document(self, monkeypatch):
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        client, _ = monitored_client(
+            [
+                batch(
+                    [
+                        doc("batch-1/bad.pdf", "FAILED", error="boom"),
+                        doc("batch-1/held.pdf", "HITL_IN_PROGRESS"),
+                    ],
+                    all_complete=True,
+                )
+            ]
+        )
+
+        exit_code = cli_module._monitor_progress(
+            client=client, batch_id="batch-1", refresh_interval=5
+        )
+
+        assert exit_code == 1

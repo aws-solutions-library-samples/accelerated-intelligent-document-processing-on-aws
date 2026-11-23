@@ -10,9 +10,23 @@ SPDX-License-Identifier: MIT-0
 ## Installation
 * Install the `s3-Sourcecode.yml` cloudformation template.
 * Install the `credential-vendor.yml` cloudformation template.
-    * Enter the gitlab group name (e.g. `genaiic-reusable-assets/engagement-artifacts`)
-    * Enter the gitlap project name (e.g. `genaiic-idp-accelerator`)
+    * Enter the gitlab group name (e.g. `proserve/genaiid/reusable-assets`)
+    * Enter the gitlab project name (e.g. `idp-accelerator`)
+    * The trust policy names the code.aws.dev runner fleet's jump role
+      (`SecondGitLabJumpRoleArn`: the credential vendor's `prod_jump_role`; see the code.aws.dev GitLab docs).
+      The live stack (`genaiic-sdlc-credential-vendor`) still also trusts the old
+      gitlab.aws.dev project through `GitLabGroupName`/`GitLabProjectName` until that
+      trust is removed after the migration.
     * Enter the bucket name created in the last step (e.g. `genaiic-sdlc-source-code-YOUR_AWS_ACCOUNT-YOUR_REGION`)
+    * The stack creates two roles: `idp-sdlc-GitLab` for the integration tests and
+      the UX test jobs, and the Bedrock-only `idp-sdlc-GitLabReview` for the
+      `ai_mr_review` job. The review job starts on `idp-sdlc-GitLab`, like every
+      job, and assumes `idp-sdlc-GitLabReview` from it, which the review role's
+      trust policy allows. Set the masked project CI variable
+      `AI_REVIEW_GITLAB_ROLE_ARN` to the stack's `GitLabReviewRoleArn` output; the
+      job refuses to review until it holds that role. Do not set
+      `AWS_CREDS_TARGET_ROLE` on the job: the project-level variable of that name
+      outranks it.
 * Customize the environment variables in your CodePipeline/CodeBuild configuration.
 * The deployment will use the new `scripts/sdlc/codebuild_deployment.py` script automatically.
     * This will ensure that an archive is there to install, when 

@@ -7,6 +7,7 @@
 import type { ButtonDropdownProps, TopNavigationProps } from '@cloudscape-design/components';
 
 import useInbox from '../../hooks/use-inbox';
+import { useFormatters } from '../../i18n/format';
 import { UNREAD_LABEL } from '../common/labels';
 import { formatRelativeTime } from '../../utils/date-time';
 import { inboxHref, isInternalRoute } from '../../routes/constants';
@@ -23,12 +24,13 @@ export const inboxBellAriaLabel = (unreadCount: number | null): string => {
 
 export const useInboxBellUtility = (): TopNavigationProps.MenuDropdownUtility => {
   const { unreadCount, recent, loaded, markMessages, markAllRead } = useInbox();
+  const { locale } = useFormatters();
 
   const recentItems: ButtonDropdownProps.Item[] = recent.length
     ? recent.map((m) => ({
         id: `${MSG_PREFIX}${m.id}`,
         text: m.title,
-        secondaryText: [severityLabel(m.severity), formatRelativeTime(m.createdAt), m.read ? null : UNREAD_LABEL]
+        secondaryText: [severityLabel(m.severity), formatRelativeTime(m.createdAt, locale), m.read ? null : UNREAD_LABEL]
           .filter(Boolean)
           .join(' · '),
         iconName: severityIcon(m.severity),

@@ -235,7 +235,7 @@ class TestListAvailableExtensions:
                 "featureApiEndpoint": "https://gen.example.com",
             },
             {
-                "featureId": "idp-autotune",
+                "featureId": "idp-auto-optimizer",
                 "displayName": "Auto Optimizer",
                 "installedVersion": "0.1.3",
                 "featureApiEndpoint": "https://tune.example.com",
@@ -247,7 +247,7 @@ class TestListAvailableExtensions:
         assert out["available"] is True
         # sorted by displayName: "Auto Optimizer" < "Test Set Generator"
         assert [e["featureId"] for e in out["extensions"]] == [
-            "idp-autotune",
+            "idp-auto-optimizer",
             "idp-data-generator",
         ]
 
@@ -318,3 +318,117 @@ class TestListSampleDocuments:
 
         assert out["available"] is False
         assert out["samples"] == []
+
+
+class TestActivateConfigVersion:
+    def test_activates_the_named_version(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        mgr = Mock()
+        with patch(
+            "idp_common.config.configuration_manager.ConfigurationManager",
+            return_value=mgr,
+        ):
+            out = json.loads(bt.activate_config_version_impl("bootstrap-paystub"))
+        mgr.activate_version.assert_called_once_with("bootstrap-paystub")
+        assert out == {"config_version": "bootstrap-paystub", "activated": True}
+
+    def test_refuses_an_empty_name_without_touching_configuration(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        with patch(
+            "idp_common.config.configuration_manager.ConfigurationManager"
+        ) as manager:
+            out = json.loads(bt.activate_config_version_impl(""))
+        manager.assert_not_called()
+        assert out["activated"] is False
+        assert "required" in out["error"]
+
+    def test_reports_a_failed_activation_instead_of_raising(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        mgr = Mock()
+        mgr.activate_version.side_effect = ValueError("version not found")
+        with patch(
+            "idp_common.config.configuration_manager.ConfigurationManager",
+            return_value=mgr,
+        ):
+            out = json.loads(bt.activate_config_version_impl("missing"))
+        assert out == {"activated": False, "error": "version not found"}
+
+
+class TestRefineSchema:
+    def test_reauthors_from_the_current_schema_keeping_its_class(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        refined = {**SCHEMA, "description": "pay, refined"}
+        with patch.object(
+            bt.schema_author, "author_class_schema", return_value=refined
+        ) as author:
+            out = json.loads(
+                bt.refine_schema_impl(json.dumps(SCHEMA), "add the pay date")
+            )
+        author.assert_called_once_with(
+            "add the pay date", class_name="Paystub", seed_schema=SCHEMA
+        )
+        assert out == refined
+
+    def test_rejects_a_schema_that_is_not_json(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        with patch.object(bt.schema_author, "author_class_schema") as author:
+            out = json.loads(bt.refine_schema_impl("{not json", "add a field"))
+        author.assert_not_called()
+        assert "not valid JSON" in out["error"]
+
+    def test_reports_when_no_valid_schema_comes_back(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        with patch.object(bt.schema_author, "author_class_schema", return_value=None):
+            out = json.loads(bt.refine_schema_impl(json.dumps(SCHEMA), "x"))
+        assert out == {"error": "Could not refine the schema"}
+
+
+class TestGetClassSchema:
+    OTHER = {**SCHEMA, "$id": "W2", "x-aws-idp-document-type": "W2"}
+
+    def _get(self, raw, version="v1", class_name=""):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        mgr = Mock()
+        mgr.get_raw_configuration.return_value = raw
+        with patch(
+            "idp_common.config.configuration_manager.ConfigurationManager",
+            return_value=mgr,
+        ):
+            out = json.loads(bt.get_class_schema_impl(version, class_name))
+        return out, mgr
+
+    def test_returns_the_only_class_when_no_name_is_given(self):
+        out, mgr = self._get({"classes": [SCHEMA]})
+        mgr.get_raw_configuration.assert_called_once_with("Config", "v1")
+        assert out == {"versionName": "v1", "schema": SCHEMA}
+
+    def test_returns_the_named_class(self):
+        out, _ = self._get({"classes": [SCHEMA, self.OTHER]}, class_name="W2")
+        assert out["schema"]["$id"] == "W2"
+
+    def test_asks_for_a_name_when_the_version_holds_several_classes(self):
+        out, _ = self._get({"classes": [SCHEMA, self.OTHER]})
+        assert "specify class_name" in out["error"]
+        assert out["availableClasses"] == ["Paystub", "W2"]
+
+    def test_names_the_classes_it_has_when_the_named_one_is_missing(self):
+        out, _ = self._get({"classes": [SCHEMA]}, class_name="Invoice")
+        assert "Invoice" in out["error"]
+        assert out["availableClasses"] == ["Paystub"]
+
+    def test_reports_a_version_that_does_not_exist(self):
+        out, _ = self._get(None, version="gone")
+        assert out == {"error": "Config version 'gone' not found"}
+
+    def test_requires_a_version_name(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        out = json.loads(bt.get_class_schema_impl(""))
+        assert out == {"error": "version_name is required"}

@@ -1,0 +1,104 @@
+# Attach the solution profile to a GitHub Release.
+#
+# Releases are cut by hand (docs/release-runbook.md, Step 6: `gh release create`),
+# so this runs when a release is PUBLISHED, and on demand for one tag to backfill
+# or re-run. It checks out the release tag, applies the profile contract's release
+# rules, builds the deterministic tarball, validates the unpacked copy, and uploads
+# the tarball and its .sha256 to that release.
+#
+# Security properties, each deliberate:
+#   * `permissions: contents: write` and nothing else -- the minimum that
+#     `gh release upload` needs. No id-token, no other scope.
+#   * Not triggered by pull requests, so no contributed code runs with this token;
+#     what is checked out is the release tag of this repository.
+#   * The only input is the tag. It is validated against ^v[0-9]+\.[0-9]+\.[0-9]+$
+#     before anything uses it, and reaches every `run:` through `env:`, never by
+#     `${{ }}` interpolation into a shell. Nothing reads the release title or body.
+#   * Actions are pinned to full commit SHAs; the checkout keeps no credentials.
+#   * Only PyYAML and jsonschema are installed, at the versions
+#     lib/idp_common_pkg/uv.lock records.
+name: Solution profile release asset
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and attach the profile for, e.g. v0.6.16"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: solution-profile-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  attach_solution_profile:
+    name: Build and attach the solution profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate the tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${RELEASE_TAG:-$INPUT_TAG}"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            # A pre-release tag (v0.6.16rc1) fails here on purpose: its VERSION is a
+            # development or release-candidate build, which the release rules reject.
+            echo "::error::'$TAG' is not a release tag of the form vX.Y.Z"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the release tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.3.1
+
+      - name: Install the validator's dependencies from the lock
+        run: |
+          uv venv --python 3.12 .venv
+          export LOCK_CONSTRAINTS="$GITHUB_WORKSPACE/build/lock-constraints/idp_common_pkg.txt"
+          make lock-constraints LOCK_CONSTRAINTS="$LOCK_CONSTRAINTS"
+          uv pip install --python .venv/bin/python -c "$LOCK_CONSTRAINTS" pyyaml jsonschema
+
+      - name: Check the tag matches VERSION
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          VERSION="$(cat VERSION)"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::tag $TAG does not match VERSION $VERSION at that tag"
+            exit 1
+          fi
+
+      - name: Apply the profile contract's release rules
+        env:
+          SOLUTION_PROFILE_RELEASE: "1"
+        run: .venv/bin/python scripts/check_solution_profile.py --contract-only
+
+      - name: Build the asset and validate the unpacked copy
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          .venv/bin/python scripts/build_solution_profile.py \
+            --out-dir dist --tag "$TAG" --validate --release
+
+      - name: Attach the asset to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release upload "$TAG" dist/solution-profile-*.tar.gz dist/solution-profile-*.tar.gz.sha256 \
+            --clobber --repo "$GITHUB_REPOSITORY"

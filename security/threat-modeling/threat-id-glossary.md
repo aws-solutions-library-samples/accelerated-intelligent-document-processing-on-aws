@@ -8,7 +8,7 @@
 | **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 109 |
+| **Total Threat IDs** | 120 |
 
 ## 1. Threat ID Naming Convention
 
@@ -60,7 +60,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | BDA.T04 | BDA service availability | DoS | 4 (Medium) |
 | BDA.T05 | S3 cross-access via BDA | ID | 2 (Low) |
 
-### AGT — Agent Analysis (5 threats)
+### AGT — Agent Analysis (6 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -69,6 +69,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | AGT.T03 | Agent routing manipulation | EoP | 4 (Medium) |
 | AGT.T04 | Conversation history poisoning | Tampering | 2 (Low) |
 | AGT.T05 | Cross-user data leakage via Athena | ID | 6 (High) |
+| AGT.T06 | Deployment data sent outside the deployment by an opt-in agent | ID | 3 (Medium) |
 
 ### CHAT — Companion Chat (6 threats)
 
@@ -81,7 +82,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | CHAT.T05 | Streaming response denial of service | DoS | 4 (Medium) |
 | CHAT.T06 | Client-supplied caller identity on the agent streaming route | Spoofing | 3 (Medium) |
 
-### MCP — MCP Integration (6 threats)
+### MCP — MCP Integration (7 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -91,6 +92,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | MCP.T04 | Unauthorized external service access | Spoofing, EoP | 6 (High) |
 | MCP.T05 | External MCP client abuse | Spoofing, DoS | 4 (Medium) |
 | MCP.T06 | AgentCore gateway lifecycle attacks | DoS, Tampering | 2 (Low) |
+| MCP.T07 | MCP client secret exposure and credential mismanagement | ID, EoP | 3 (Medium) |
 
 ### KB — Knowledge Base (4 threats)
 
@@ -98,8 +100,8 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 |----|-----------|--------|------|
 | KB.T01 | Knowledge Base poisoning | Tampering | 6 (High) |
 | KB.T02 | RAG context injection | Tampering, EoP | 6 (High) |
-| KB.T03 | OpenSearch Serverless data exposure | ID | 2 (Low) |
-| KB.T04 | Excessive RAG retrieval | ID, DoS | 2 (Low) |
+| KB.T03 | Vector store data exposure | ID | 2 (Low) |
+| KB.T04 | Excessive RAG retrieval | ID, DoS | 4 (Medium) |
 
 ### AUTH — Authentication & RBAC (16 threats)
 
@@ -124,16 +126,15 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 
 > **`AUTH.T14` and `AUTH.T16` are not in sequence with the rest, on purpose.**
 > `AUTH.T14` is the alternate-entry-path threat on the streaming Function URL;
-> its code-level residual is named `GAP-07` in
-> `scripts/api_rbac_expectations.yaml` and in `.claude/skills/api-rbac-test.md`,
-> and the *code* comments cite `GAP-07` rather than the threat id, so do not
-> expect to find `AUTH.T14` there. `AUTH.T16` — per-object authorization being opt-in
+> its code-level residual was named `GAP-07`, which is resolved and recorded as
+> such in `scripts/api_rbac_expectations.yaml`, so do not expect to find
+> `AUTH.T14` in the code. `AUTH.T16` — per-object authorization being opt-in
 > per resolver — was drafted as `AUTH.T14` and
 > renumbered, because a concurrent change had already assigned that identifier to
 > the threat above. A threat identifier is this model's primary key; two threats
 > sharing one is worse than a renumbering.
 
-### SDK — SDK/CLI (5 threats)
+### SDK — SDK/CLI (9 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -141,9 +142,13 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SDK.T02 | Insecure automation pipelines | Spoofing, ID | 6 (High) |
 | SDK.T03 | SDK supply chain attack | Tampering | 3 (Medium) |
 | SDK.T04 | Batch processing abuse | DoS | 4 (Medium) |
-| SDK.T05 | Deployment service role is broad enough to reach account administrator | EoP | 8 (Critical) |
+| SDK.T05 | Deployment service role is broad by design | EoP | 3 (Medium) |
+| SDK.T06 | Terraform working directory and state disclosure | ID, Tampering | 6 (High) |
+| SDK.T07 | Terraform module integrity | Tampering, EoP | 4 (Medium) |
+| SDK.T08 | Destructive Terraform plan or migration | DoS, Tampering | 4 (Medium) |
+| SDK.T09 | MCP credentials managed with AWS credentials | EoP, R | 3 (Medium) |
 
-### HOOK — Lambda Hooks (7 threats)
+### HOOK — Lambda Hooks (10 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -153,7 +158,10 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | HOOK.T04 | Hook Lambda timeout / failure cascade | DoS | 4 (Medium) |
 | HOOK.T05 | Privilege escalation via hook IAM role | EoP | 3 (Medium) |
 | HOOK.T06 | Preprocessing hook sees raw source document; can halt or replace it | Tampering, ID, DoS | 6 (High) |
-| HOOK.T07 | `onError: fail` does not halt the workflow at six of seven hook points | Tampering, EoP | 6 (High) |
+| HOOK.T07 | `onError: fail` does not halt the workflow at six of seven hook points | Tampering, R | 6 (High) |
+| HOOK.T08 | Decision model answers set classification and confidence without an independent check | Tampering | 3 (Medium) |
+| HOOK.T09 | `GENAIIDP-*` grant lets configuration send document content to any function so named | ID, EoP | 3 (Medium) |
+| HOOK.T10 | Decision model failure or cost amplification stops or inflates processing | DoS | 4 (Medium) |
 
 ### UI — Web UI (7 threats)
 
@@ -180,7 +188,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | RPT.T07 | Ground-truth tampering via the Test Set visual editor | Tampering, Repudiation | 6 (High) |
 | RPT.T08 | Extended data retention via document version history | ID | 3 (Medium) |
 
-### FEAT — Feature Platform (4 threats)
+### FEAT — Feature Platform (5 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -188,6 +196,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | FEAT.T02 | Feature registry enumeration by any authenticated user | ID | 2 (Low) |
 | FEAT.T03 | Feature stack IAM privilege and host resource access | EoP, Tampering | 6 (High) |
 | FEAT.T04 | Stale or downgraded feature bundle served to users | Tampering, DoS | 3 (Medium) |
+| FEAT.T05 | Test Set Generator's model-written HTML reaches the network while rendering | ID, Tampering | 2 (Low) |
 
 ### JOB — Jobs API (3 threats)
 
@@ -225,7 +234,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SELL.T09 | Customer roster disclosure | ID | 4 (Medium) |
 | SELL.T10 | Allow-list bypass left enabled in production | EoP | 4 (Medium) |
 
-### HITL — Review Queues (4 threats)
+### HITL — Review Queues (5 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -233,6 +242,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | HITL.T02 | Reviewer-controlled drafts become the document's final output | Tampering, R | 3 (Medium) |
 | HITL.T03 | Review metadata reaches readers beyond the queue's audience | ID | 2 (Low) |
 | HITL.T04 | Resolvers serving Annotator operations hold write grants on authorization and workflow state | EoP | 3 (Medium) |
+| HITL.T05 | Bulk Skip All Reviews releases unreviewed output at scale | Tampering, R, DoS | 3 (Medium) |
 
 ### TEN — Tenant Isolation (5 threats)
 

@@ -85,9 +85,9 @@ in the Extraction & Confidence guide.
 
 ## Mode guidance for large documents
 
-- **Advanced (agentic) extraction is recommended for large documents and big tables.** It shards both extraction and confidence assessment, and produced the **best-calibrated** confidence in A/B testing. For 100+ page documents prefer `runtime: step_functions` and raise `max_concurrent_batches`.
-- **Simple + `separate` confidence remains fully viable for large lists** via `list_batch_size` batching — full per-cell confidence and geometry with no extra configuration. This is the direct replacement for granular assessment.
-- **Rule of thumb:** a document that is large only because it contains a long *list* is well served by Simple + separate + batching; a document with a **very large single section** is better served by **Advanced sharding**.
+- **Advanced (agentic) extraction is recommended for sections that can hold more than about 400 list rows, and for very large documents.** It shards both extraction and confidence assessment, and on the v0.6.14 benchmark it returned every row at every size measured, where Simple mode returned part of an 800-row list on 8 of 13 runs at the shipped default ([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)). For 100+ page documents prefer `runtime: step_functions` and raise `max_concurrent_batches`.
+- **Simple + `separate` confidence scores long lists** via `list_batch_size` batching — full per-cell confidence and geometry with no extra configuration. This is the direct replacement for granular assessment. The limit on a long list in Simple mode is the extraction, not the confidence: above about 400 rows the single extraction call can return part of the list.
+- **Rule of thumb:** use Simple + separate + batching for lists up to about 400 rows per section; use **Advanced sharding** above that and for a **very large single section**.
 
 See [Large-Document Guidance](extraction-and-confidence.md#8-large-document-guidance).
 

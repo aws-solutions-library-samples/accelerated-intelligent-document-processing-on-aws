@@ -138,6 +138,47 @@ Bulk evaluation surfaces the standard calibration metrics:
 
 These are computed in the aggregation Lambda via Stickler's `BulkStructuredModelEvaluator` (see `patterns/unified/src/test_execution_aggregation_function/index.py`).
 
+**The aggregation reads documents in document-key order.** `_load_comparison_results`
+loads the documents' `results.json` in parallel but hands their comparisons to Stickler,
+and sums their scores, sorted by document key, whatever order the tracking-table scan
+and the loader threads produce. Stickler's error capture at a review budget breaks ties
+between equal confidences by input order, so without a fixed order it moved by whole
+errors between two aggregations of the same results (#2133). Ties are still broken by
+position: within one field by document key, and in the `overall` figure by field first
+(Stickler builds that list field by field, in first-seen order) and then by document key.
+awslabs/stickler#601 tracks making the metric independent of order altogether.
+
+`EvaluationService.evaluate_document` likewise evaluates a document's sections in
+parallel but folds their results in section order, so the document's
+`weighted_overall_score` and its `excluded_sections` list do not depend on which section
+finished first. A transient failure in any section still cancels the sections not yet
+started and leaves as `TransientError`.
+
+**Empty predictions are reported separately.** `_remove_none_values` drops every `None`
+before the Stickler models are built, so Stickler's `prediction_confidences` has no entry
+for a field the extractor returned as null, and the `overall` and `fields` figures above
+are computed without those fields. A scorer that rates a missed field above correctly
+found values is invisible there (#2033 measured AUROC 0.68 without empty values and 0.56
+with them). `empty_values.py` closes that gap without changing those figures:
+
+- `EvaluationService.evaluate_section` records the confidence of each empty prediction
+  Stickler omitted under `empty_prediction_confidences` in the section's
+  `stickler_comparison_result` (`STICKLER_RESULT_VERSION` 3.1).
+- The aggregation Lambda's `_empty_value_confidence_metrics` writes
+  `confidence_metrics.empty_values`: `count` and `wrong` (every empty prediction and how
+  many had a ground-truth value), `with_confidence`, `overall` (AUROC / ECE / Brier over
+  the empty predictions alone), `including_empty` (the same over every scored field with
+  them added) and `sections_without_record` (sections written before 3.1, whose null
+  predictions are counted but cannot be scored).
+- "Empty" is `contract._is_empty_value`, the predicate that already decides the `tn` /
+  `fn` verdict, exposed as `empty_values.is_empty_prediction`. A row with no string
+  `actual_key` (a ground-truth list item with no predicted counterpart) is not an empty
+  prediction, because no predicted field exists to carry a confidence.
+- The module is standard-library only so that the benchmark harness can import the same
+  predicate: `benchmarks/harness/analyze.py` already counts empty cells in its own
+  calibration join and reports how many it included as `calibration_empty_observations`
+  and `calibration_empty_wrong`.
+
 ### Confidence→accuracy curve and the review-effort estimator
 
 `confidence_curve.py` and `curve_store.py` implement the engine behind Test
@@ -475,9 +516,121 @@ per-field `x-aws-stickler-comparator-config` channel the model config uses, and
 > idea what field it was grading. Scores produced by the `LLM` method before this
 > fix are context-free and not comparable with scores produced after it.
 
+#### Which model and prompts judge an `LLM` field
+
+Every `LLM`-method field is judged with the service's `evaluation.llm_method`
+model, prompts and parameters. A field that also carries an
+`x-aws-idp-evaluation-method-config` (for example a `threshold`) has those keys
+laid on top of `evaluation.llm_method`, so it changes only what it names. When
+`LLMComparator` is given no model, or an empty one, or no prompt, it uses the
+`EvaluationLLMMethodConfig` field default, the same value
+`system_defaults/base-evaluation.yaml` ships; it carries no model ID or prompt
+text of its own.
+
+`model`, `temperature`, `top_k`, `top_p`, `max_tokens`, `reasoning_effort` and
+the two prompts reach `bedrock.invoke_model`, and the client applies its usual
+per-model handling (where `max_tokens` is carried, which models reject sampling
+parameters, which models take an effort and through which field). Only a model
+with an effort control receives `reasoning_effort` (effort-capable Claude models,
+Grok, GPT-6 Astra and GPT-5.x); Nova 2 Lite, the shipped model, does not.
+Because a value is always supplied, `BEDROCK_MANTLE_REASONING_EFFORT` no longer
+applies to evaluation on GPT-5.x. Every stored profile holds the field's default (`medium`),
+because the full model dump is stored, so an evaluation on an effort-capable
+model sends `medium` unless the profile sets another value. A setting that is
+absent, `None` or, for the numeric ones and `reasoning_effort`, an empty string
+takes the `EvaluationLLMMethodConfig` default. `max_tokens` is the exception: an
+absent one takes the default (10000), while `None` or an empty string requests the
+model's maximum output, as it does for classification and OCR. The two have to be
+kept apart because the service hands the comparator the profile's `model_dump()`,
+which turns an explicit `max_tokens: ""` into `None`. An **empty** `system_prompt` or
+`task_prompt` is refused rather than sent, as summarization and
+classification's combined page prompt refuse one (these prompts have always
+shipped, so an empty one is a broken configuration rather than an old stored
+profile): `LLMComparator` raises `ValueError`, which Stickler reports as a
+configuration error for the field. Because that happens while the section's
+Stickler model is built, `EvaluationService` records the **whole section** as
+failed (`failure_type: schema_configuration_error`, score 0), its non-`LLM`
+fields included. `compare_llm` called directly returns `(False, 0.0, <reason>)`
+without calling Bedrock. For `compare_llm` itself only an absent or `None`
+setting takes the default (for `max_tokens`, only an absent one); an empty string
+is passed to the client, which treats an empty `top_p` or `reasoning_effort` as
+unset.
+
 Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
 memoized per comparator instance.
+
+#### When a judge call fails
+
+A judge call that fails **transiently** (a throttle that outlasted the Bedrock
+client's retries, a bare HTTP 5xx, a read timeout or dropped connection, as
+`idp_common.utils.transient_errors.is_transient_error` judges it) is raised as
+`TransientError` by `compare_llm` and `LLMComparator`, and `evaluate_section` and
+`evaluate_document` let it out instead of recording a failed section or a
+document error. The evaluation Lambda raises it too, without recording a failed
+evaluation, and `EvaluationStep` retries the document. Scoring such a field 0.0
+would have lowered the document's accuracy for a judge that never answered. Any
+other failure (a request Bedrock rejects, a reply that is not JSON, a prompt that
+cannot be formatted) still scores the field 0.0, and `compare_llm` returns
+`(False, 0.0, <reason>)` for it. Neither outcome is memoized, so the next
+comparison of the same pair calls the judge again. A caller that runs the
+service outside the state machine should catch `TransientError` and retry the
+evaluation:
+
+```python
+from idp_common.utils.transient_errors import TransientError
+
+try:
+    document = service.evaluate_document(actual, expected)
+except TransientError:
+    ...  # retry later; the document was not scored
+```
+
+The S3 reads behind an evaluation follow the same rule. A transient failure
+reading a section's extraction result (actual or baseline) in
+`_prepare_stickler_data`, a baseline page or section in `Document.from_s3`, or a
+section for the doc split metrics is raised as `TransientError`, and the
+evaluation Lambda's two document loaders chain their `ValueError` to the cause so
+a transient load is retried too. A missing object or a body that cannot be
+parsed keeps its fallback: empty data (so the section's fields score as misses),
+a skipped baseline page or section, a recorded doc split error, or the loader's
+`ValueError`.
+
+#### Metering of `LLM` comparisons
+
+Every Bedrock call `compare_llm` makes is metered under the `Evaluation`
+context, so its keys read `Evaluation/bedrock/<model>`. `evaluate_document` runs
+the whole evaluation inside `collect_evaluation_metering()` and adds what was
+collected to `actual_document.metering` when it returns or raises, because the
+calls were billed either way. That metering is persisted only when the
+evaluation Lambda writes the document: on success, and when it records a failed
+evaluation. When the evaluation fails **transiently** the Lambda raises
+`TransientError` without writing the document, and `EvaluationStep`'s retry
+starts again from the document it was handed, so the failed attempt's calls are
+added in memory and then lost; that gap is tracked in
+[#2122](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2122). A call is recorded
+before its answer is parsed, so an answer that cannot be parsed is still
+counted. A pair that needs no call (both values null, equal after
+case and whitespace folding, or already in the comparator's verdict cache)
+adds nothing.
+
+The collector lives in a `ContextVar`, because comparator instances are shared
+across documents and Stickler's comparator protocol carries nothing per
+document. A `ContextVar` does not reach a `ThreadPoolExecutor` worker by itself,
+so `evaluate_document` submits each section through
+`contextvars.copy_context().run`. A new fan-out that runs comparisons must do
+the same, or its calls are billed and recorded nowhere. `compare_llm` called
+outside any `collect_evaluation_metering()` block records nothing.
+
+Capacity Planning reads these keys to measure judge requests per evaluated
+document for its Evaluation demand line (`EVALUATION_METERING_PREFIX` in
+`src/lambda/calculate_capacity/index.py`, checked against
+`EVALUATION_METERING_CONTEXT` by the test beside it). Until any are recorded it
+counts one request per `LLM`-compared field of the class schema
+(`countLlmComparisons` in `src/ui/src/components/capacity-planning/demand-lines.ts`),
+following the call pattern above: an `LLM` method on an object or a structured
+list makes no call of its own, and a field inside a structured list is counted
+only when it opts in with `x-aws-idp-evaluation-allow-llm-in-list`.
 
 #### DATE method configuration
 
@@ -768,6 +921,21 @@ Arrays of items where each item's attributes are evaluated individually:
 # - "Transactions[1].Amount" (NUMERIC_EXACT evaluation)
 # - And so on for each transaction...
 ```
+
+#### Lists of scalar values
+
+Stickler scores an array of scalars with one comparator, read off the array
+field and applied to each element pair. It raises on a field-level key under
+`items`, and that failure used to stop the whole class from being evaluated.
+`SticklerConfigMapper._hoist_scalar_item_keys` therefore moves every
+`x-aws-idp-evaluation-*` field key (method, method config, threshold, weight,
+allow-LLM-in-list, clip-under-threshold, aggregate) from scalar `items` to the
+array before translating it. That is the shape `config.migration` writes for a
+legacy list with a single item attribute. When both places set a key, the
+array's value wins and a differing item value is logged as a warning. The
+items' `method-config` is dropped along with their method. The exception is an
+array-level method that is invalid there, such as `HUNGARIAN` on scalars: it is
+removed with an `ERROR` log and the items' method is used.
 
 ### Data Flattening Process
 

@@ -40,14 +40,27 @@ model_id = idp_config.extraction.model
 
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
-IDs, max-token limits, required prompt placeholders, schema-field warnings, and
-model/feature-compatibility guards). Two guards, with deliberately different
+IDs, max-token limits, required prompt placeholders, schema-field warnings, a
+warning when `classification.fallback_class` is neither `unclassified` nor a
+configured class, and
+model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
+covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
+the active strategy makes, the per-class model overrides, and the `model` a field
+evaluated with `LLM` names in its method-config. The two embedding fields are left
+out because they also take Titan Multimodal Embeddings, which the embeddings
+client supports and `pricing.yaml` does not price (it prices only the Cohere
+Embed v4 profiles), so checking them would refuse a supported configuration, and
+`tests/unit/config/test_model_id_catalog_coverage.py` fails on a model field in
+`IDPConfig` that is not checked by one of those routes and not one of the two. IDs are compared as written, because the
+Bedrock client routes and sends them unchanged. Like the rest of the check, it does
+nothing when `pricing.yaml` is not on disk, as in a Lambda. Two guards, with
+deliberately different
 scopes — both hard errors at config time rather than an obscure mid-processing
 failure:
 
 | Guard | Rejects | Why |
 |---|---|---|
-| `_validate_agentic_openai` | OpenAI GPT-5.x with `extraction.agentic.enabled` | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
+| `_validate_agentic_openai` | OpenAI GPT-5.x when extraction is agentic — `extraction.mode: advanced`, or `agentic.enabled` with no `mode` — as resolved by the validated `IDPConfig`, which is what the runtime reads | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
 | `_validate_discovery_openai` | OpenAI GPT-5.x **and xAI Grok** as a discovery model | Discovery ingests whole PDFs as Converse `document` blocks; both models take text + image only, so the document would be silently dropped |
 
 Grok is therefore rejected for **discovery** but not for agentic extraction. The
@@ -233,13 +246,59 @@ the model's field default**. The YAML wins on a normal load, so nothing shows un
 a field is *cleared* — and then that one call falls back to the code's opinion
 instead of the value the rest of the profile is running. A cleared model field used
 to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
-profile did not use.
+profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
+translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
+`idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
+the deploy-time swap gives the call's stored siblings.
+
+A model key **absent** from the data, rather than cleared, resolves the same way,
+and not for classification only. Every configuration model whose field declares a
+`us.` profile (extraction, summarization, chat, the three classification calls, the
+agents, rule validation's fact extraction, orchestrator and Z3 blocks, evaluation's
+LLM judge, and discovery) inherits `RegionalModelDefaults`, a `mode="before"`
+validator that fills each such absent key with `regional_field_default(<declared
+id>)`. That reaches a stack whenever the stored configuration does not carry the
+key: BDA mode's system defaults ship no chat, classification or extraction model,
+and the Z3 blocks ship none at all. Three properties to rely on:
+
+- A key the input carries is never translated, an explicit `us.` id included, so
+  a stored value the deploy-time swap already rewrote, or one a user chose, is
+  kept as written.
+- `model_fields[...].default` stays the US id, so the parity tests above still
+  compare the declaration with the YAML.
+- A Region with no row in `idp_common.regional_models.REGIONAL_DEFAULT_MODELS`
+  gets the US id unchanged: GovCloud (`us-gov-*`), Asia Pacific and every other
+  Region the deploy-time swap also leaves alone. The swap has no mapping for
+  those, so there is no regional profile to choose.
+
+`tests/unit/config/test_regional_field_defaults.py` finds every such field by
+reading the declarations, asserts its class inherits the mixin and its default is
+in `FALLBACK_MODEL_IDS`, and checks the resolved id per field across US, EU,
+Canada, GovCloud and Asia Pacific Regions against the regional table. The
+evaluation comparator's own fallback for a missing `model` goes through
+`regional_field_default` too.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
-`scripts/tests/gate_exemptions.json`. It is the classification half of a gate that
-should eventually cover every section; `base-extraction.yaml` and its models are not
-compared yet.
+`scripts/tests/gate_exemptions.json`.
+
+The third property is also held for **every** section, in both patterns, by
+`tests/unit/config/test_system_defaults_value_parity.py`. It compares each value the
+merged system defaults ship with the owning model's default (read from a default
+instance, so a derived value is read as a caller sees it) and with the value a
+default `IDPConfig()` holds at the same path, which is where a parent
+`default_factory` passing its own value would show. A cleared numeric field
+falls back to the field default (`_default_if_none`), so this is the property that
+keeps clearing a field from changing what it does. Two shapes are excused by
+computation, and each is pinned: a top-level setting the two patterns ship
+differently (`PATTERN_DEPENDENT_PATHS`, today `notes` and `use_bda`), and a prompt
+whose code default is empty or `None` — the prompts that carry a code copy are
+listed in `PROMPTS_WITH_A_CODE_COPY` and never take it. Lists of models, such as
+`ocr.features`, are compared whole. Anything else that differs is listed one path
+at a time in `DEFAULT_PARITY_EXEMPT`, each with its reason, and an entry that no
+longer differs fails. The key-set directions are still
+asserted for classification only, and a field the YAML does not ship has no value
+to compare, so this gate says nothing about it.
 
 ## Files
 
@@ -453,7 +512,20 @@ Configuration is stored in DynamoDB with two record types:
 
 The same Default/Custom pattern is used for auxiliary records:
 - **`DefaultPricing` / `CustomPricing`** (`PricingConfig`) — service pricing for
-  cost estimation; Custom is deep-merged over Default (`get_merged_pricing`).
+  cost estimation, read through `get_merged_pricing`. Custom is laid over
+  Default **per model and per unit** (`merge_utils.overlay_pricing_rows`): a
+  Custom unit replaces the Default unit of the same name on the entry of the same
+  name, a unit or entry Default lacks is added, and a Default entry or unit Custom
+  does not mention is kept. A name repeated in Custom is applied in order, so the
+  last occurrence wins for each unit it names. The Pricing page saves
+  the full table, so a stack that has saved it gets prices for models a later
+  release adds, keeps its saved rate for every unit the table held (including ones
+  it never edited), and cannot delete a Default row: Custom records no deletions.
+  Only the reader merges; the stored records keep their shape, so an earlier
+  release reading the same Custom record replaces Default's list with it as it
+  always did. `delete_custom_pricing` (the page's **Restore default (All)**)
+  returns to Default. `tests/unit/config/test_pricing_row_merge.py` pins this
+  against the shipped `config_library/pricing.yaml`.
 - **`DefaultModelConfigLimits` / `CustomModelConfigLimits`**
   (`ModelConfigLimitsConfig`) — the ordered, first-match-wins list of per-model
   token limits, seeded from `config_library/model_config_limits.yaml`. Because
@@ -528,12 +600,13 @@ Four decisions worth knowing before changing this code:
   `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
   profile with history raises `RevisionNotRecordedError`.
 - **Resolving against `default` is recorded as a revision, by the deployment.**
-  `get_merged_configuration` resolves every profile against `default`. A pinned
-  read builds `IDPConfig` from the revision body without that resolution, so for a
-  profile with revision history the two differ whenever `default` holds a value
-  the model's own default does not (#1782). For such a profile a read applies the
-  resolution in memory and writes nothing, because whether its process may write
-  revisions depends on IAM grants the code cannot see.
+  `get_merged_configuration` resolves every profile against `default`, the head
+  and a pinned revision alike (`_resolve_against_default`, #1955). A revision's
+  stored body does not carry the values that fills in, so for a profile with
+  revision history the body Revision History shows differs from what documents
+  run whenever `default` fills something in (#1782). For such a profile a read
+  applies the resolution in memory and writes nothing, because whether its
+  process may write revisions depends on IAM grants the code cannot see.
   `record_resolution_against_default(profile)` saves the resolution as a revision
   (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) and publishes
   it, and its one caller is the stack-deployment custom resource
@@ -609,8 +682,23 @@ Lambda passes `document.config_revision`, which the queue processor pins at queu
 time, so a save made mid-flight cannot change the configuration under an in-flight
 document.
 
-Two deliberate choices:
+Three deliberate choices:
 
+- **A pinned revision is resolved against `default` exactly as the head is.**
+  `_load_revision_config()` and the head path both call
+  `_resolve_against_default()`: start from the current `default` profile and let
+  every key the stored configuration holds override it. A key it holds wins even
+  when empty, so a revision that stored `max_tokens: null` (one saved before the
+  10000-token defaults that left the cap empty) keeps requesting the model's maximum, on the
+  pinned read and on the head alike; a key it lacks, typically one a later release
+  added, takes `default`'s value — including the stack Region's model id that the
+  deployment stored in `default` for an absent model key — rather than the
+  model's own default. The same guards apply: `default` unreadable, or a merge
+  that fails a cross-field validator, returns the revision validated on its own.
+  Nothing is written, and `get_revision()` still returns the body as stored.
+  `restore_revision()` saves the resolved form, so the restored head runs what a
+  document pinned to that revision runs. A setting a revision lacks therefore
+  follows later changes to `default`; one it holds never does.
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
   enter a comparison. The one exception is below.
@@ -623,8 +711,8 @@ Two deliberate choices:
   conversion is **in memory only; the stored body is never rewritten**, because a
   revision is an immutable record of the configuration that actually ran. Callers
   that construct an `IDPConfig` from the result (`_load_revision_config()`,
-  `restore_revision()`) convert again through its validator, which is a no-op: the
-  chain is idempotent. What depends on this is shape agreement between the surfaces
+  `restore_revision()`) convert again before resolving it against `default`, which
+  is a no-op: the chain is idempotent. What depends on this is shape agreement between the surfaces
   that serve one revision — `get_revision()` behind `idp-cli config-download
   --config-revision`, the Revision History and Compare views, and a pinned run.
 - **No "published revision" branch on the unpinned path.** The head always holds
@@ -766,7 +854,7 @@ Two halves, deliberately separate, and the split is what makes the rule testable
 
 | Half | What it is |
 |---|---|
-| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites |
+| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites, and an append-only change log beside it (below) |
 | `resolve_config_assignment()` | The decision. **No boto3, no environment** — its only seams are three injected callables (`active_profile`, `published_revision`, `profile_exists`), all lazy because each costs a DynamoDB read on a per-document path |
 
 Lives here rather than in a Lambda for the reason `config_scope` does: the rule runs
@@ -803,8 +891,9 @@ land on every queued document, not on the admin who caused it.
 
 ⚠️ **`profile_exists` is the only existence check, and a pinned revision gets none.**
 `unresolvable` is set in that branch alone; `_resolve_revision` returns a pinned
-revision as given, with no lookup. So a mapping whose profile has been deleted falls
-back and is reported, while a mapping whose pinned *revision* has been deleted or has
+revision as given, with no lookup. So a mapping whose profile does not exist **refuses
+the document** (`rejected` and `unresolvable` both set, whatever the metadata says),
+while a mapping whose pinned *revision* has been deleted or has
 expired resolves cleanly at ingest and raises in
 `ConfigurationManager._load_revision_config` downstream. That is the intended trade —
 the per-document cost of a second lookup against a failure that surfaces loudly anyway —
@@ -818,6 +907,29 @@ unconditionally — so swallowing a throttle would turn one admin's write into "
 mapping list is now exactly this one entry", silently deleting every other mapping,
 and report success. Read failures are handled by the **caller**, which knows whether
 it is on the ingest path (fall open, emit a metric) or the admin path (refuse).
+
+### The change log
+
+Every `put` and `delete` appends one record, in the **same `TransactWriteItems`** as the
+aggregate update, so a change and its record land together or not at all. Each record
+is its own item, `ConfigPrefixMapHistory#<12-digit seq>`, holding `Seq`, `Timestamp`,
+`Actor` (byte-bounded like the entry's actor strings) and `Changes` — one element per
+changed prefix with `action` and the normalized entry `before` and `after`, derived by
+`describe_changes` from the two entry lists rather than told by the caller. The
+sequence lives on its own head item, `ConfigPrefixMapHistory#__head`, advanced under a
+condition in the same transaction, so recreating the aggregate by hand cannot make a
+later record collide with an earlier one; each record is `Put` with
+`attribute_not_exists`, which is what makes the log append-only in code. Neither key
+matches `begins_with(Configuration, "Config#")`.
+
+The count is **uncapped**, deliberately: the log is not on the aggregate, so it does not
+grow the item ingest reads or approach the 400 KB bound, and each record is bounded by
+two entries' worth of fields. `history(prefix=None, limit, before)` reads it newest first
+by `BatchGetItem` over descending sequence numbers — no `Scan` — and examines at most
+`MAX_HISTORY_EXAMINED` records per call, so a filtered read of a long log returns a
+short page and a `nextBefore` cursor rather than reading everything. A cancelled
+transaction is retried only when every cancellation reason is a lost condition; any
+other reason is raised as itself. A direct write to the table records nothing.
 
 ⚠️ **A revision carried across a profile change reads a configuration nobody asked
 for.** Revision numbers are per profile, so when the resolved profile differs from the
@@ -834,7 +946,25 @@ apply — failing open means a transient DynamoDB error bypasses every `reject` 
 in the deployment. It is still the right call, because the alternative is halting
 document ingest for the whole deployment when a *routing* table is unreadable, and
 every one of those objects processed under the active profile before this feature
-existed. The metric is alarmed so the window is visible rather than silent.
+existed. The metric is alarmed so the window is visible rather than silent, and
+`queue_sender` records a warning `ProcessingIssue` (`config_prefix_mapping_lookup_failed`,
+stage `ingest`) on each document processed in the window. It is a **document-level**
+issue — `Document.processing_issues`, persisted as the tracking row's top-level
+`ProcessingIssues` by `serialize_issue_list` — because the row is created before any
+section exists. Its `root_cause` is the error's type and AWS error code, never the
+message, which can carry a role ARN.
+
+### Only named internal producers are exempt
+
+Rule 1 applies only when `submission_source` is in `INTERNAL_SUBMISSION_SOURCES`
+(`test-studio`, `pii-anonymizer`), compared exactly by `is_internal_producer`. Any other
+value is an ordinary upload: it is mapped and adjudicated like one, and
+`tenants.ingest_rejection_reason` treats it as external too. The set is the exact values
+the two writers in this repository stamp (`src/lambda/test_file_copier` and the PII
+anonymizer hook), so a new producer must be added there deliberately. A browser cannot
+set the key at all, because the upload resolver's presigned-POST policy names every
+field it accepts; a principal with direct `s3:PutObject` on the Input bucket can, and is
+trusted because it already chooses the key.
 
 Note the asymmetry in `upload_resolver`: the **routing** read fails open, the **scope**
 read fails closed. They answer different questions — an unreadable mapping means a
@@ -1016,9 +1146,10 @@ convenience wrapper take an optional `region`, which is passed to the DynamoDB
 resource they build and, through `ConfigRevisionStore`, to the S3 client used for
 revision history.
 
-`region=None` means "let boto3 resolve it" — `AWS_REGION`, then
-`AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
-a Lambda, where the runtime always sets `AWS_REGION`, and it is why these classes
+`region=None` means "let boto3 resolve it" — `AWS_DEFAULT_REGION`, then the
+profile (boto3 does not read `AWS_REGION`, and does not take the Region from
+instance metadata). That is the right value inside a Lambda, where the runtime
+sets both `AWS_REGION` and `AWS_DEFAULT_REGION`, and it is why these classes
 worked for years without the parameter.
 
 **An out-of-region caller must pass it.** A DynamoDB table name is not

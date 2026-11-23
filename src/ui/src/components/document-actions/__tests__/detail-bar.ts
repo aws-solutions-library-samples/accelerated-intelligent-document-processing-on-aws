@@ -20,6 +20,7 @@ export const DETAIL_ITEM_IDS: Record<string, string> = {
   'Reset Page Class': 'reset-class',
   'Use As Evaluation Baseline': 'baseline',
   'Skip All Reviews': 'skip-all',
+  'Send to review': 'send-to-review',
   Reprocess: 'reprocess',
   Abort: 'abort',
   Delete: 'delete',

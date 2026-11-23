@@ -55,7 +55,7 @@ import pytest
 from rich.console import Console
 
 from idp_sdk._core import publish as publish_mod
-from idp_sdk._core.publish import IDPPublisher
+from idp_sdk._core.publish import MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP, IDPPublisher
 
 _BUCKET = "artifacts-bucket"
 _PREFIX = "idp"
@@ -223,6 +223,31 @@ def test_source_checksum_changes_when_a_file_s_contents_change(monkeypatch, tmp_
 
     before = _source_checksum("pkg")
     _write(tmp_path, "pkg/a.py", "VALUE = 2\n")
+    after = _source_checksum("pkg")
+
+    assert before != after
+
+
+def test_source_checksum_sees_an_edit_to_a_default_prompt_file(monkeypatch, tmp_path):
+    """A default prompt is its own file (GitHub #1652); editing it must rebuild.
+
+    The layer cache keys on this checksum, which counts only some suffixes (it
+    skips `.md`). The suffix and directory come from the loader that reads the
+    files, so moving the prompts to a suffix this checksum skips fails here.
+    """
+    from idp_common.config.merge_utils import DEFAULT_PROMPT_SUFFIX, DEFAULT_PROMPTS_DIR
+
+    monkeypatch.chdir(tmp_path)
+    rel = (
+        "pkg/idp_common/config/system_defaults/"
+        f"{DEFAULT_PROMPTS_DIR}/classification/combined.page.task_prompt"
+        f"{DEFAULT_PROMPT_SUFFIX}"
+    )
+    _write(tmp_path, "pkg/idp_common/__init__.py", "")
+    _write(tmp_path, rel, "Classify this page.\n")
+
+    before = _source_checksum("pkg")
+    _write(tmp_path, rel, "Classify this page, carefully.\n")
     after = _source_checksum("pkg")
 
     assert before != after
@@ -754,8 +779,11 @@ def test_a_changed_container_build_input_rebuilds_multi_doc_discovery(
     pub = _publisher(capture=True)
     items = pub.get_components_needing_rebuild()
     assert {i["component"] for i in items} == {"nested/multi-doc-discovery"}
+    # The bump moves the image's BuildHash too, which is recorded as its own
+    # dependency so changes the source checksum cannot see still rebuild (#1856).
     assert items[0]["changed_dependencies"] == [
-        "nested/multi-doc-discovery/requirements.txt"
+        "nested/multi-doc-discovery/requirements.txt",
+        MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP,
     ]
 
 

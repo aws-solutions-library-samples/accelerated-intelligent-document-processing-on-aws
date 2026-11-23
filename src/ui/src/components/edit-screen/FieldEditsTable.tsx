@@ -12,6 +12,7 @@ import React from 'react';
 import { Box, Table } from '@cloudscape-design/components';
 import type { TableProps } from '@cloudscape-design/components';
 
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime } from '../../utils/date-time';
 
 interface EditSide {
@@ -95,10 +96,11 @@ interface FieldEditsTableProps {
 }
 
 const FieldEditsTable = ({ sectionData, baselineData }: FieldEditsTableProps): React.JSX.Element => {
+  const { locale } = useFormatters();
   const rows = fieldEditRows(sectionData, baselineData);
   const showAppliesTo = rows.some((r) => r.appliesTo === 'Baseline');
   const columns: TableProps.ColumnDefinition<FieldEditRow>[] = [
-    { id: 'at', header: 'When', cell: (r) => (r.at ? formatDateTime(r.at) : '-') },
+    { id: 'at', header: 'When', cell: (r) => (r.at ? formatDateTime(r.at, locale) : '-') },
     { id: 'by', header: 'By', cell: (r) => r.by },
     { id: 'field', header: 'Field', cell: (r) => <code>{r.field}</code> },
     {

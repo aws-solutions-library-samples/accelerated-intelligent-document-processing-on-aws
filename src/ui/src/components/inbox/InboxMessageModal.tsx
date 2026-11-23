@@ -6,6 +6,7 @@ import { Box, Button, ColumnLayout, Modal, SpaceBetween, StatusIndicator } from 
 import SafeMarkdown from '../common/SafeMarkdown';
 import useInbox from '../../hooks/use-inbox';
 import type { InboxMessage } from '../../graphql/generated/operation-types';
+import { useFormatters } from '../../i18n/format';
 import { isInternalRoute, withEditOrigin } from '../../routes/constants';
 import { formatDateTime } from '../../utils/date-time';
 import { severityLabel, severityStatusType } from './severity';
@@ -19,6 +20,7 @@ interface InboxMessageModalProps {
 
 const InboxMessageModal = ({ message, onDismiss, onMarkedRead }: InboxMessageModalProps): React.JSX.Element | null => {
   const { markMessages } = useInbox();
+  const { locale } = useFormatters();
 
   // Opening an unread message reads it. Silent: the user's action is opening, not
   // marking, and a failure is already reported by the provider.
@@ -61,7 +63,7 @@ const InboxMessageModal = ({ message, onDismiss, onMarkedRead }: InboxMessageMod
           </div>
           <div>
             <Box variant="awsui-key-label">Received</Box>
-            <div>{formatDateTime(message.createdAt)}</div>
+            <div>{formatDateTime(message.createdAt, locale)}</div>
           </div>
           <div>
             <Box variant="awsui-key-label">Source</Box>

@@ -2,10 +2,10 @@
 title: "Capacity Planning"
 ---
 
-# Capacity Planning
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Capacity Planning
 
 ## Overview
 
@@ -37,7 +37,7 @@ The capacity planning system consists of several integrated components that work
 
 ### Core Components
 
-1. **GraphQL Resolver**: `CalculateCapacityResolverFunction` that handles capacity calculation requests
+1. **API Resolver**: `CalculateCapacityResolverFunction`, which handles the `calculateCapacity` operation the Web UI calls through the REST API dispatcher (`POST /op/calculateCapacity`)
 2. **Capacity Calculation Engine**: Lambda-based processing engine that analyzes document requirements and generates recommendations
 3. **Web UI Interface**: Interactive React-based capacity planning calculator with real-time visualizations
 4. **Token Usage Analysis**: Automatic population of token usage from processed documents' metering data
@@ -48,7 +48,7 @@ The capacity planning system consists of several integrated components that work
 
 1. **Input Configuration**: Users define document types, token usage, and processing schedules through the Web UI
 2. **Historical Analysis**: System extracts token usage and page counts from processed documents' metering data
-3. **Capacity Calculation**: GraphQL resolver invokes calculation engine to process requirements
+3. **Capacity Calculation**: The resolver Lambda invokes the calculation engine to process requirements
 4. **Real Metrics**: Processing times and queue delays are calculated from actual processed document data
 5. **Quota Assessment**: System calculates required AWS service quotas (TPM and RPM) with direct console links
 6. **Visualization**: Results displayed through interactive dashboard with hourly token distribution charts
@@ -80,7 +80,7 @@ The Web UI provides an intuitive interface for capacity planning with real-time 
 
 ### 2. Advanced Analytics Engine
 
-The capacity calculation system provides sophisticated analysis through GraphQL resolvers:
+The capacity calculation system provides the following analysis through its resolver Lambda:
 
 **Token Usage Extraction**:
 - Automatic extraction from processed documents' metering data
@@ -155,38 +155,79 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 > measurement**, and read the TPM table when deciding whether to request an
 > increase.
 >
-> This does not distort the capacity figure. The request limit is the **minimum RPM
-> across every model in the TPM map**, not just the ones the plan calls, so an
-> overstated value cannot bind a minimum. (The TPM map is what decides membership:
-> the RPM lookup is built from its key set — `generate_rpm_quota_codes(
-> tpm_model_quotas.keys())` — and `BEDROCK_MODEL_RPM_QUOTA_CODES` only supplies the
-> code for each key it finds. The two maps carry the same keys today, and a model
-> added to one and not the other is the case the checklist in
-> `.claude/skills/add-model.md` exists to prevent.)
+> **Both limits on the throughput estimate come from the plan's own models.** Quotas
+> are read only for the models the selected profile's steps call, and the RPM
+> lookup is built from that same set — `generate_rpm_quota_codes(
+> tpm_model_quotas.keys())`, with `BEDROCK_MODEL_RPM_QUOTA_CODES` supplying the code
+> for each key — so a model the pipeline never calls constrains neither the token
+> limit nor the request limit. The two maps carry the same keys, and a model added
+> to one and not the other is the case the checklist in
+> `.claude/skills/add-model.md` exists to prevent.
 >
-> ⚠️ **Note that this reduction is over a wider set than the TPM one, and the
-> difference is not cosmetic.** The token limit *is* narrowed to the plan's step models, so a model
-> the pipeline never calls cannot constrain it. The request limit is not, so a
-> genuinely **low** RPM quota for a model you do not use still binds the RPM row and
-> can send you to request an increase you do not need. Check which model the row
-> names before acting on it.
+> ⚠️ **For a plan that calls only Claude Sonnet 5 or Sonnet 5.5, the request limit is
+> therefore the placeholder above and does not bind.** The processing rate is then
+> set by the token limit, which is exact. No published requests-per-minute quota
+> exists to apply, so the estimate does not account for one.
 >
 > ⚠️ Separately: the quota maps cover a **subset** of the selectable models. A step
 > model with no entry in them fails Capacity Planning outright with
 > `ValueError: TPM quota not available for model <id>` rather than omitting a row,
 > and the message names the variable to add it to.
 >
-> ⚠️ **The reverse also holds, and it is not scoped to one row: a quota code that
-> does not resolve in the stack's Region fails the whole Capacity Planning
-> response.** Every entry in both maps is fetched with `get_service_quota`, and a
-> non-throttling error is re-raised rather than skipped — so one bad code takes out
-> the report for every model, not just its own. Add a code only after confirming it
-> resolves in the Regions you deploy to, with the `aws service-quotas
-> list-service-quotas --service-code bedrock` query in
-> `.claude/skills/add-model.md`. `BEDROCK_MODEL_QUOTA_CODES` and
+> **Only the models the selected profile's steps call are looked up.** A mapped
+> model whose quota Service Quotas will not return in the stack's Region (the
+> code does not exist there, or the lookup is denied) is left out of the quota
+> table, and the page shows a **"Some Bedrock quotas could not be read"** warning
+> naming the model, the quota code and the error. The rest of the analysis is
+> still reported; the calculation fails only when no planned model's quota can be
+> read. A model AWS publishes no quota for is mapped to `null`, which gives the
+> same warning without a lookup. Confirm a new code resolves in the Regions you
+> deploy to, with the `aws service-quotas list-service-quotas --service-code
+> bedrock` query in `.claude/skills/add-model.md`. `BEDROCK_MODEL_QUOTA_CODES` and
 > `BEDROCK_MODEL_RPM_QUOTA_CODES` in `template.yaml` are the authority for which
 > models are covered — read them rather than a list here, which would go stale on
 > the next model addition.
+
+#### Evaluation and escalation demand
+
+Two Bedrock workloads are not processing steps, and each is planned as its own
+line, charged to the model that serves it rather than to a step's model:
+
+- **Evaluation** is the LLM judge that compares extracted values to a baseline
+  (`evaluation.llm_method.model`). It is planned only while `evaluation.enabled` is
+  true, and the plan assumes every scheduled document is evaluated. Its request
+  rate is measured from the `Evaluation/bedrock/<model>` metering of documents
+  already evaluated. Until there is any, it is derived from the configuration: one
+  judge request per document for each field whose `x-aws-idp-evaluation-method` is
+  `LLM`. An `LLM` method on an object or a structured list makes no call of its
+  own (the fields inside are compared by their own methods), and a field inside a
+  structured list counts only when it sets
+  `x-aws-idp-evaluation-allow-llm-in-list`. A list field the judge compares costs
+  one request per pair of rows, so the derived figure is a floor for documents
+  with long lists. Without measured tokens, each judge request is estimated at 400
+  tokens, the shipped judge prompt plus the values and a short verdict.
+- **Escalation** is the re-extraction of a section that failed full-schema
+  validation, made when `extraction.validation.fail_action` is `escalate`. It is
+  charged to `extraction.validation.escalation_model`, or to the extraction model
+  when that is unset, because escalation then retries on the extraction model.
+  These requests are metered under `ExtractionEscalation` and are not counted in
+  the Extraction line. The escalation rate is **measured** from metering when the
+  sample holds at least 20 documents with extraction metering and at least one
+  escalation: the share of extraction tokens the escalations spent, and the
+  escalation requests per document. Otherwise the plan uses a **default** of 15%
+  of documents, each spending its extraction tokens again in one request. The
+  default comes from the benchmark suite, where between 12.8% and 14.9% of
+  documents had a section fail validation; a sample with no escalation at all is
+  not read as a measured zero, because a history processed under `fail_action:
+  warn` looks the same. Change the default with the **Escalation rate when not
+  measured (%)** field, shown under Processing Configuration while escalation is
+  on, or the `escalationRate` request field (a fraction from 0 to 1).
+
+The results' recommendations state, for each line, which basis was used: for
+escalation, the measured or the default rate and its value. A per-class
+`x-aws-idp-extraction-escalation-model` override is not reflected; the line is
+charged to the global escalation model. The judge and escalation models need
+entries in the quota code maps like any step model.
 
 **Latency Bar Color Coding**:
 - **Green** (P50, P75): When all model quotas are within limits

@@ -9,6 +9,9 @@ import { describePromptCache, summarizeCacheUsage } from '../common/promptCacheM
 import type { PromptCacheDescription } from '../common/promptCacheModel';
 import { priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
+import { toPricingLookup } from '../pricing-layout/price-format';
+import { formatUnitCostUsd } from '../test-studio/formatCost';
+import { useFormatters } from '../../i18n/format';
 
 const logger = new ConsoleLogger('MeteringTable');
 
@@ -67,24 +70,15 @@ const METERING_COLUMN_MIN_WIDTH = { context: 130, unit: 150, value: 100, unitCos
 const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps): React.JSX.Element | null => {
   // Use usePricing hook to get pricing data from the new separate pricing config
   const { pricing, nonChargeableUnits, loading } = usePricing();
+  const { locale, formatUsDollars } = useFormatters();
   const [pricingData, setPricingData] = useState<PricingLookup>({});
   // We no longer use a default unit cost, showing "None" instead
 
   useEffect(() => {
-    if (pricing && (pricing as PricingData).pricing) {
-      // Convert pricing array to lookup object for easier access
-      const pricingLookup: PricingLookup = {};
-      (pricing as PricingData).pricing.forEach((item) => {
-        if (item.name && item.units) {
-          pricingLookup[item.name] = {};
-          item.units.forEach((unitItem) => {
-            if (unitItem.name && unitItem.price !== undefined) {
-              // Ensure price is stored as a number
-              pricingLookup[item.name][unitItem.name] = Number(unitItem.price);
-            }
-          });
-        }
-      });
+    // The one lookup the cost panels share (see price-format.ts): a price the cost
+    // reports cannot read is left out, so the unit reads as unpriced here too.
+    const pricingLookup = toPricingLookup(pricing);
+    if (pricingLookup) {
       setPricingData(pricingLookup);
       logger.debug('Pricing data initialized:', pricingLookup);
     }
@@ -105,8 +99,9 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     serviceApi,
     unit,
     value: String(value),
-    unitCost: unitPrice !== null ? `$${unitPrice}` : 'None',
-    cost: unitPrice !== null ? `$${cost.toFixed(4)}` : 'N/A',
+    // The same adaptive rule as Test Studio's cost table, so one price renders one way on both screens.
+    unitCost: unitPrice !== null ? formatUnitCostUsd(unitPrice, locale) : 'None',
+    cost: unitPrice !== null ? formatUsDollars(cost, { fractionDigits: 4 }) : 'N/A',
     costValue: cost,
     isTotal: false,
     isSubtotal: false,
@@ -161,7 +156,7 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
       unit: '',
       value: '',
       unitCost: '',
-      cost: `$${contextTotal.toFixed(4)}`,
+      cost: formatUsDollars(contextTotal, { fractionDigits: 4 }),
       costValue: contextTotal,
       isTotal: false,
       isSubtotal: true,
@@ -183,7 +178,7 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     unit: '',
     value: '',
     unitCost: '',
-    cost: `$${finalTotalCost.toFixed(4)}`,
+    cost: formatUsDollars(finalTotalCost, { fractionDigits: 4 }),
     costValue: finalTotalCost,
     isTotal: true,
     isSubtotal: false,

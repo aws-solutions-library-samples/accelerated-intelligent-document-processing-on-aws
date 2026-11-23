@@ -35,11 +35,15 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
 import pytest
+from botocore.stub import Stubber
 
+from idp_common.bedrock import client as bedrock_client_module
+from idp_common.bedrock.client import BedrockClient
 from idp_common.classification.models import Segment
 from idp_common.classification.service import ClassificationService
 from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.models import Document, Page, Status
+from idp_common.utils.transient_errors import TransientError
 
 PACKET_PROMPT = (
     "<document-types>\n{CLASS_NAMES_AND_DESCRIPTIONS}\n</document-types>\n"
@@ -403,11 +407,24 @@ class TestWindowing:
 @pytest.mark.unit
 class TestMergeWindowSegments:
     def test_a_single_window_is_used_directly(self):
-        """Identical to the unwindowed path that preceded this, which is the
-        common case and the one with years of behaviour behind it."""
+        """The model's own segments, not a re-fold of them: their scores and
+        candidates are kept, as on the unwindowed path that preceded this."""
         service = _service()
         segments = [Segment(page_ids=["1", "2"], doc_class="invoice", confidence=0.7)]
-        assert service._merge_window_segments([segments], ["1", "2"]) is segments
+        merged = service._merge_window_segments([segments], ["1", "2"])
+        assert len(merged) == 1 and merged[0] is segments[0]
+
+    def test_a_single_window_reply_is_put_in_page_order(self):
+        """A reply may list the later document first. The segments are the
+        model's own objects, reordered, never re-folded."""
+        service = _service()
+        later = Segment(page_ids=["3", "4"], doc_class="receipt", confidence=0.6)
+        earlier = Segment(page_ids=["1", "2"], doc_class="invoice", confidence=0.7)
+        merged = service._merge_window_segments(
+            [[later, earlier]], ["1", "2", "3", "4"]
+        )
+        assert merged == [earlier, later]
+        assert merged[0] is earlier and merged[1] is later
 
     def test_the_earlier_window_wins_for_an_overlapping_page(self):
         """The overlap pages are window k's trailing pages and window k+1's
@@ -455,19 +472,18 @@ class TestMergeWindowSegments:
         assert merged[0].start_page == "1"
         assert merged[-1].end_page == "3"
 
-    def test_a_page_no_window_covered_is_reported_and_omitted(self, caplog):
-        import logging
-
+    def test_the_merge_leaves_a_page_no_window_covered_for_placement(self):
+        """The merge only folds what the windows reported; a page none of them
+        covered is placed afterwards by ``_place_pages_no_segment_holds`` (#2037),
+        which ``TestPagesTheModelPlacedInNoSegment`` exercises."""
         service = _service()
-        with caplog.at_level(logging.WARNING):
-            merged = service._merge_window_segments(
-                [
-                    [Segment(page_ids=["1"], doc_class="invoice")],
-                    [Segment(page_ids=["3"], doc_class="invoice")],
-                ],
-                ["1", "2", "3"],
-            )
-        assert "covered by no window" in caplog.text
+        merged = service._merge_window_segments(
+            [
+                [Segment(page_ids=["1"], doc_class="invoice")],
+                [Segment(page_ids=["3"], doc_class="invoice")],
+            ],
+            ["1", "2", "3"],
+        )
         covered = [pid for s in merged for pid in s.page_ids]
         assert covered == ["1", "3"]
 
@@ -964,14 +980,21 @@ class TestAWindowTooLargeForTheModelIsSplit:
         return invoke_model
 
     def _run(
-        self, *, pages: int = 10, limit: Optional[int] = None, refuse=None, **packet
+        self,
+        *,
+        pages: int = 10,
+        limit: Optional[int] = None,
+        refuse=None,
+        calls: Optional[List[List[str]]] = None,
+        **packet,
     ):
         service = _service(
             packet={"window_pages": "20", "overlap_pages": "1", **packet},
             modality={"images": True},
         )
         document = _document(pages)
-        calls: List[List[str]] = []
+        # Passed in by a caller that needs the calls when the run raises.
+        calls = [] if calls is None else calls
         with (
             patch("idp_common.s3.get_text_content", return_value="page text"),
             patch("idp_common.image.prepare_image", return_value=_png()),
@@ -1260,12 +1283,22 @@ class TestOnlyARefusalAboutImageCountIsSplit:
             # One image too large on its own: no window is small enough.
             ("ValidationException", "image exceeds maximum size of 5 MB"),
             ("ValidationException", "image dimensions exceed 8000 pixels"),
-            # A throttle that happens to mention images.
-            ("ThrottlingException", "Rate exceeded: too many images in flight"),
         ],
     )
     def test_any_other_image_error_is_not_split(self, code, message):
         _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message, code=code)
+        assert len(calls) == 1
+
+    def test_a_throttle_that_mentions_images_is_not_split(self):
+        """A throttle is transient, so it fails the classification step for the
+        state machine to retry (#2034) rather than being split into smaller
+        windows that the same limit would throttle."""
+        runner = TestAWindowWithTooManyImagesIsSplit()
+        runner.REFUSAL_CODE = "ThrottlingException"
+        runner.REFUSAL_MESSAGE = "Rate exceeded: too many images in flight"
+        calls: List[List[str]] = []
+        with pytest.raises(TransientError):
+            runner._run(calls=calls)
         assert len(calls) == 1
 
 
@@ -1816,3 +1849,618 @@ class TestPacketGranularityHonoursClassValidation:
         )
         assert len(calls) == 1
         assert segments[0].doc_class == "invoice"
+
+
+#: A normal-length answer that is not JSON: what the model sent in #2035.
+_PROSE = "The packet holds an invoice on pages 1-2 and a receipt on pages 3-4."
+_JSON_ONLY_RE_PROMPT = "Reply with only the JSON object"
+
+
+def _reply_text(
+    text: str, input_tokens: int, stop_reason: str = "end_turn"
+) -> Dict[str, Any]:
+    return {
+        "response": {
+            "output": {"message": {"content": [{"text": text}]}},
+            "stopReason": stop_reason,
+        },
+        "metering": {"Classification/bedrock/nova": {"inputTokens": input_tokens}},
+    }
+
+
+_STUBBED_MODEL = "us.amazon.nova-2-lite-v1:0"
+
+
+def _converse_reply(text: str, input_tokens: int) -> Dict[str, Any]:
+    return {
+        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+        "stopReason": "end_turn",
+        "usage": {
+            "inputTokens": input_tokens,
+            "outputTokens": 20,
+            "totalTokens": input_tokens + 20,
+        },
+        "metrics": {"latencyMs": 1},
+    }
+
+
+@pytest.mark.unit
+class TestAReplyThatIsNotJsonIsRetriedOnce:
+    """#2035: a reply that is not JSON used to fail the window, and with it a
+    one-window document, on the first attempt. It now gets one re-prompt asking
+    for the JSON only, on the same loop as the class-validation re-prompt, and
+    every call made is metered once."""
+
+    TWO_SEGMENTS = json.dumps(
+        {
+            "segments": [
+                {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "invoice"},
+                {"ordinal_start_page": 3, "ordinal_end_page": 4, "type": "receipt"},
+            ]
+        }
+    )
+
+    def _classify(self, replies: List[Dict[str, Any]], **classification: Any):
+        service = _service(**classification)
+        calls: List[List[Dict[str, Any]]] = []
+        queue = list(replies)
+
+        def invoke(*, content, config):
+            calls.append(content)
+            return queue.pop(0)
+
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=invoke),
+        ):
+            result = service.packet_classify_document(_document(4))
+        return result, calls
+
+    def test_a_reply_that_is_not_json_is_re_prompted_and_the_document_classified(
+        self,
+    ):
+        result, calls = self._classify(
+            [_reply_text(_PROSE, 300), _reply_text(self.TWO_SEGMENTS, 700)]
+        )
+
+        assert result.status != Status.FAILED, result.errors
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice"),
+            (["3", "4"], "receipt"),
+        ]
+        assert len(calls) == 2, "one re-prompt"
+        first_text = "".join(b.get("text", "") for b in calls[0])
+        assert _JSON_ONLY_RE_PROMPT not in first_text
+        assert calls[1][:-1] == calls[0], "the re-prompt repeats the request"
+        assert _JSON_ONLY_RE_PROMPT in calls[1][-1]["text"]
+        # Single-turn: the failed reply is not in the request, so it is not cited.
+        assert "previous reply" not in calls[1][-1]["text"]
+        # Both calls were billed, so both are counted, each once.
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+
+    def test_the_re_prompt_is_made_with_class_validation_off(self):
+        """It is not a validation retry, so turning validation off leaves it on."""
+        result, calls = self._classify(
+            [_reply_text(_PROSE, 300), _reply_text(self.TWO_SEGMENTS, 700)],
+            enforceValidClasses=False,
+        )
+        assert len(calls) == 2
+        assert len(result.sections) == 2
+
+    def test_two_replies_that_are_not_json_fail_with_a_clear_error(self):
+        result, calls = self._classify(
+            [_reply_text(_PROSE, 300), _reply_text(_PROSE, 700)]
+        )
+
+        assert len(calls) == 2, "one re-prompt, then the window fails"
+        assert result.status == Status.FAILED
+        assert result.sections == []
+        failure = next(e for e in result.errors if "produced no segments" in e)
+        assert "Document doc-1" in failure
+        assert "could not be parsed as JSON" in failure
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+
+    def test_the_re_prompt_goes_through_the_real_client(self, monkeypatch):
+        """End to end: the real service and the real ``BedrockClient``, with only
+        the ``bedrock-runtime`` client's replies stubbed. A botocore ``Stubber``
+        rather than moto, which does not implement ``bedrock-runtime``; it wraps
+        the client ``BedrockClient`` builds itself, from the region and placeholder
+        credentials the suite's ``conftest.py`` sets."""
+        default = bedrock_client_module.default_client
+        # A fresh client, built by BedrockClient and restored after the test.
+        monkeypatch.setattr(default, "_client", None)
+        runtime = default.client
+        requests: List[Dict[str, Any]] = []
+        runtime.meta.events.register(
+            "before-parameter-build.bedrock-runtime.Converse",
+            lambda params, **_kwargs: requests.append(params),
+        )
+        monkeypatch.setattr(default, "_put_metric", lambda *a, **k: None)
+        backoffs: List[int] = []
+        monkeypatch.setattr(
+            BedrockClient,
+            "_backoff_within_invocation",
+            lambda _self, retry_count: backoffs.append(retry_count) or 0.0,
+        )
+
+        with Stubber(runtime) as stubber:
+            stubber.add_response("converse", _converse_reply(_PROSE, 300))
+            stubber.add_response("converse", _converse_reply(self.TWO_SEGMENTS, 700))
+            with patch("idp_common.s3.get_text_content", return_value="page text"):
+                result = _service(modality={"images": False}).packet_classify_document(
+                    _document(4, with_images=False)
+                )
+            stubber.assert_no_pending_responses()
+
+        assert result.errors == []
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice"),
+            (["3", "4"], "receipt"),
+        ]
+        assert len(requests) == 2, "the first reply and one re-prompt"
+        re_prompt = requests[1]["messages"][-1]["content"][-1]["text"]
+        assert _JSON_ONLY_RE_PROMPT in re_prompt
+        assert backoffs == [], "a service re-prompt, not a client-level retry"
+        # Both replies were billed, so both are counted, each once.
+        assert result.metering == {
+            f"Classification/bedrock/{_STUBBED_MODEL}": {
+                "inputTokens": 1000,
+                "outputTokens": 40,
+                "totalTokens": 1040,
+                "requests": 2,
+            }
+        }
+
+    def test_a_valid_first_reply_makes_one_call(self):
+        result, calls = self._classify([_reply_text(self.TWO_SEGMENTS, 700)])
+
+        assert len(calls) == 1
+        assert len(result.sections) == 2
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 700
+
+    def test_an_unparseable_reply_to_a_class_re_prompt_keeps_the_first_answer(
+        self, caplog
+    ):
+        """The first answer is in hand, so it is kept with the fallback for its
+        invalid class, as when the class re-prompt overflows."""
+        bad_class = json.dumps(
+            {
+                "segments": [
+                    {"ordinal_start_page": 1, "ordinal_end_page": 4, "type": "po"}
+                ]
+            }
+        )
+        result, calls = self._classify(
+            [_reply_text(bad_class, 300), _reply_text(_PROSE, 700)]
+        )
+
+        assert len(calls) == 2
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "unclassified")
+        ]
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+        assert (
+            "the reply to the validation re-prompt could not be parsed as JSON"
+            in caplog.text
+        )
+        assert "after 2 request(s); kept the previous answer" in caplog.text
+        assert "still returned invalid class(es)" not in caplog.text
+
+    #: Replies that arrive, are billed, and cannot be used: an empty content
+    #: array, no segments, and segments that each cover no page of the document.
+    UNUSABLE_REPLIES = {
+        "empty content": {
+            "response": {"output": {"message": {"content": []}}},
+            "metering": {"Classification/bedrock/nova": {"inputTokens": 300}},
+        },
+        "no segments": _reply_text(json.dumps({"segments": []}), 300),
+        "every segment unusable": _reply_text(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "ordinal_start_page": 7,
+                            "ordinal_end_page": 8,
+                            "type": "invoice",
+                        }
+                    ]
+                }
+            ),
+            300,
+        ),
+    }
+
+    @pytest.mark.parametrize("reply", sorted(UNUSABLE_REPLIES))
+    def test_an_unusable_reply_fails_the_window_and_is_metered(self, reply):
+        result, calls = self._classify([self.UNUSABLE_REPLIES[reply]])
+
+        assert len(calls) == 1
+        assert result.status == Status.FAILED
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 300
+
+    def test_an_unusable_reply_to_a_class_re_prompt_keeps_the_first_answer(
+        self, caplog
+    ):
+        bad_class = json.dumps(
+            {
+                "segments": [
+                    {"ordinal_start_page": 1, "ordinal_end_page": 4, "type": "po"}
+                ]
+            }
+        )
+        result, calls = self._classify(
+            [
+                _reply_text(bad_class, 300),
+                _reply_text(json.dumps({"segments": []}), 700),
+            ]
+        )
+
+        assert len(calls) == 2
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "unclassified")
+        ]
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+        assert "the reply to the validation re-prompt was unusable" in caplog.text
+
+    def test_a_reply_cut_off_at_max_tokens_is_not_re_prompted(self):
+        """A re-prompt would have the same max_tokens and be cut off again."""
+        truncated = '{"segments": [{"ordinal_start_page": 1, "ordinal_end'
+        result, calls = self._classify(
+            [
+                _reply_text(truncated, 300, stop_reason="max_tokens"),
+                _reply_text(self.TWO_SEGMENTS, 700),
+            ]
+        )
+
+        assert len(calls) == 1
+        assert result.status == Status.FAILED
+        failure = next(e for e in result.errors if "produced no segments" in e)
+        assert "Document doc-1" in failure
+        assert "cut off at max_tokens" in failure
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 300
+
+
+# --------------------------------------------------------------------------
+# A page the model placed in no segment (#2037)
+# --------------------------------------------------------------------------
+
+
+def _range(start: int, end: int, doc_type: str) -> Dict[str, Any]:
+    return {"ordinal_start_page": start, "ordinal_end_page": end, "type": doc_type}
+
+
+def _filled_issues(section) -> List[Any]:
+    return [
+        pi
+        for pi in (section.processing_issues or [])
+        if pi.code == "classification_page_assigned_to_neighbour"
+    ]
+
+
+@pytest.mark.unit
+class TestPagesTheModelPlacedInNoSegment:
+    """A packet call's ranges need not cover every page it was shown. Such a page
+    used to be in no section — no class, nothing extracted, and a log line. It
+    now joins the segment of the page before it (or after it, when nothing
+    precedes it), and that section records a warning naming it."""
+
+    def _classify(self, page_count: int, replies, **service_kwargs) -> Document:
+        service = _service(**service_kwargs)
+        document = _document(page_count)
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=replies),
+        ):
+            return service.packet_classify_document(document)
+
+    @staticmethod
+    def _assert_every_page_in_exactly_one_section(document: Document) -> None:
+        placed = [pid for s in document.sections for pid in s.page_ids]
+        assert sorted(placed, key=int) == sorted(document.pages, key=int)
+
+    def test_a_trailing_page_joins_the_last_document(self):
+        """The case the benchmark met most: the last range stops one page short."""
+        result = self._classify(
+            4, [_bedrock_reply([_range(1, 2, "invoice"), _range(3, 3, "receipt")])]
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice"),
+            (["3", "4"], "receipt"),
+        ]
+        assert result.pages["4"].classification == "receipt"
+        assert _filled_issues(result.sections[0]) == []
+        (issue,) = _filled_issues(result.sections[1])
+        assert issue.severity == "warning"
+        assert issue.stage == "classification"
+        assert issue.section_id == result.sections[1].section_id
+        assert issue.details == {"page_ids": ["4"]}
+        assert result.status != Status.FAILED
+
+    def test_a_gap_between_documents_joins_the_one_before_it(self):
+        result = self._classify(
+            6, [_bedrock_reply([_range(1, 2, "invoice"), _range(5, 6, "receipt")])]
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "invoice"),
+            (["5", "6"], "receipt"),
+        ]
+        (issue,) = _filled_issues(result.sections[0])
+        assert issue.details == {"page_ids": ["3", "4"]}
+        assert _filled_issues(result.sections[1]) == []
+
+    def test_a_leading_page_joins_the_first_document(self):
+        """Nothing precedes page 1, so it joins the document after it — the
+        first one, not merely some covered one."""
+        result = self._classify(
+            4, [_bedrock_reply([_range(2, 2, "invoice"), _range(3, 4, "receipt")])]
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice"),
+            (["3", "4"], "receipt"),
+        ]
+        (issue,) = _filled_issues(result.sections[0])
+        assert issue.details == {"page_ids": ["1"]}
+        assert _filled_issues(result.sections[1]) == []
+
+    def test_a_complete_answer_records_nothing_and_is_used_as_is(self):
+        service = _service()
+        segments = [Segment(page_ids=["1", "2"], doc_class="invoice")]
+        assert service._place_pages_no_segment_holds(segments, ["1", "2"]) is segments
+        result = self._classify(
+            2, [_bedrock_reply([_range(1, 1, "invoice"), _range(2, 2, "receipt")])]
+        )
+        assert all(_filled_issues(s) == [] for s in result.sections)
+
+    def test_a_page_left_out_of_the_last_window_is_placed(self):
+        """Windows [1-4], [4-7], [7-8]; the last one reports page 7 only."""
+        replies = [
+            _bedrock_reply([_range(1, 4, "invoice")]),
+            _bedrock_reply([_range(1, 4, "invoice")]),
+            _bedrock_reply([_range(1, 1, "invoice")]),
+        ]
+        result = self._classify(
+            8, replies, packet={"window_pages": "4", "overlap_pages": "1"}
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [s.page_ids for s in result.sections] == [
+            ["1", "2", "3", "4", "5", "6", "7", "8"]
+        ]
+        (issue,) = _filled_issues(result.sections[0])
+        assert issue.details == {"page_ids": ["8"]}
+
+    def test_a_page_whose_window_failed_is_not_given_a_neighbours_class(self):
+        """No call answered for pages 3-4, so no class was decided for them; the
+        window's failure is already in the document's errors."""
+        result = self._classify(
+            4,
+            [_bedrock_reply([_range(1, 2, "invoice")]), RuntimeError("bad request")],
+            packet={"window_pages": "2", "overlap_pages": "0"},
+        )
+        assert [s.page_ids for s in result.sections] == [["1", "2"]]
+        assert _filled_issues(result.sections[0]) == []
+        assert any("bad request" in e for e in result.errors)
+
+    def test_a_page_after_a_failed_window_joins_the_document_after_it(self):
+        """Windows [1-4], [5-8], [9-12] with no overlap; the middle one fails and
+        the last reports 10-12. Page 9's predecessor, page 8, was answered by no
+        call, so the page before it in a call that saw it does not exist: it
+        joins the document after it, never the invoice across the gap."""
+        result = self._classify(
+            12,
+            [
+                _bedrock_reply([_range(1, 4, "invoice")]),
+                RuntimeError("bad request"),
+                _bedrock_reply([_range(2, 4, "receipt")]),
+            ],
+            packet={"window_pages": "4", "overlap_pages": "0"},
+        )
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "invoice"),
+            (["9", "10", "11", "12"], "receipt"),
+        ]
+        assert [len(_filled_issues(s)) for s in result.sections] == [0, 1]
+
+    def test_a_page_joins_only_a_document_its_own_call_showed_beside_it(self):
+        """Windows [1-4] and [5-8] with no overlap. Pages 5-6 were shown only to
+        the second call, so the first call's invoice is no neighbour of theirs."""
+        result = self._classify(
+            8,
+            [
+                _bedrock_reply([_range(1, 2, "invoice")]),
+                _bedrock_reply([_range(3, 4, "receipt")]),
+            ],
+            packet={"window_pages": "4", "overlap_pages": "0"},
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "invoice"),
+            (["5", "6", "7", "8"], "receipt"),
+        ]
+        assert [_filled_issues(s)[0].details for s in result.sections] == [
+            {"page_ids": ["3", "4"]},
+            {"page_ids": ["5", "6"]},
+        ]
+
+    def test_an_overlap_page_both_windows_left_out_follows_the_earlier_window(
+        self,
+    ):
+        """Windows [1-4] and [4-7]; neither reports page 4. It is the first page
+        of the second window, which has nothing before it there, but the first
+        window saw page 3 beside it — and the earlier window wins for an overlap
+        page, as it does in the merge."""
+        result = self._classify(
+            7,
+            [
+                _bedrock_reply([_range(1, 3, "invoice")]),
+                _bedrock_reply([_range(2, 4, "receipt")]),
+            ],
+            packet={"window_pages": "4", "overlap_pages": "1"},
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "invoice"),
+            (["5", "6", "7"], "receipt"),
+        ]
+
+    def test_each_section_lists_only_its_own_placed_pages(self):
+        result = self._classify(
+            6, [_bedrock_reply([_range(1, 2, "invoice"), _range(4, 5, "receipt")])]
+        )
+        assert [s.page_ids for s in result.sections] == [
+            ["1", "2", "3"],
+            ["4", "5", "6"],
+        ]
+        assert [_filled_issues(s)[0].details for s in result.sections] == [
+            {"page_ids": ["3"]},
+            {"page_ids": ["6"]},
+        ]
+
+    def test_leading_pages_join_their_neighbour_when_segments_are_out_of_order(
+        self,
+    ):
+        """The model listed the later document first. Page 1 joins the segment
+        holding page 2, and the sections come out in page order."""
+        result = self._classify(
+            6, [_bedrock_reply([_range(4, 6, "receipt"), _range(2, 3, "invoice")])]
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3"], "invoice"),
+            (["4", "5", "6"], "receipt"),
+        ]
+        assert _filled_issues(result.sections[0])[0].details == {"page_ids": ["1"]}
+        assert _filled_issues(result.sections[1]) == []
+
+    def test_several_leading_pages_keep_page_order(self):
+        result = self._classify(4, [_bedrock_reply([_range(3, 4, "invoice")])])
+        assert [s.page_ids for s in result.sections] == [["1", "2", "3", "4"]]
+        assert _filled_issues(result.sections[0])[0].details == {"page_ids": ["1", "2"]}
+
+    def test_a_window_holding_no_segment_places_nothing_of_its_own(self):
+        """Not reachable through a call — a window whose answer holds no usable
+        segment fails — but if one ever were, its pages have no neighbour in
+        their own call and are left out rather than given the other window's
+        class."""
+        segments = [Segment(page_ids=["1", "2"], doc_class="invoice")]
+        placed = ClassificationService._place_pages_no_segment_holds(
+            segments, [["1", "2"], ["3", "4"]]
+        )
+        assert [s.page_ids for s in placed] == [["1", "2"]]
+        assert [s.filled_page_ids for s in placed] == [[]]
+
+    def test_recording_twice_leaves_one_issue(self):
+        result = self._classify(3, [_bedrock_reply([_range(1, 2, "invoice")])])
+        ClassificationService._record_filled_page_issues(
+            result,
+            [Segment(page_ids=["1", "2", "3"], filled_page_ids=["3"])],
+        )
+        assert len(_filled_issues(result.sections[0])) == 1
+
+    def test_one_section_for_the_document_is_not_revoted(self):
+        """``sectionSplitting: disabled`` already puts every page in the one
+        section. Placing the left-out pages would only add them to the vote for
+        its class — here turning invoice (2 pages) into receipt (1 + 2)."""
+        result = self._classify(
+            5,
+            [_bedrock_reply([_range(1, 2, "invoice"), _range(3, 3, "receipt")])],
+            document_shape={"sectionSplitting": "disabled"},
+        )
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4", "5"], "invoice")
+        ]
+        assert _filled_issues(result.sections[0]) == []
+
+    def test_one_section_per_page_still_gets_every_page(self):
+        result = self._classify(
+            3,
+            [_bedrock_reply([_range(1, 2, "invoice")])],
+            document_shape={"sectionSplitting": "page"},
+        )
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1"], "invoice"),
+            (["2"], "invoice"),
+            (["3"], "invoice"),
+        ]
+        assert [len(_filled_issues(s)) for s in result.sections] == [0, 0, 1]
+
+
+# --------------------------------------------------------------------------
+# A one-window reply that lists documents out of page order
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestASingleWindowReplyIsPutInPageOrder:
+    """Sections are numbered in segment order, and evaluation pairs each section
+    with the baseline's of the same ``section_id``. The multi-window merge folds
+    per-page verdicts in page order, so it always produced page order; a packet
+    small enough for one window used the reply's order as given, so the same
+    packet was numbered differently depending on whether it was windowed."""
+
+    REPLY = [_range(3, 4, "receipt"), _range(1, 2, "invoice")]
+
+    def _classify(self, page_count: int, replies, **service_kwargs) -> Document:
+        service = _service(**service_kwargs)
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=replies),
+        ):
+            return service.packet_classify_document(_document(page_count))
+
+    @staticmethod
+    def _sections(document: Document):
+        return [(s.section_id, s.page_ids, s.classification) for s in document.sections]
+
+    def test_sections_are_numbered_in_page_order(self):
+        result = self._classify(4, [_bedrock_reply(self.REPLY)])
+        assert self._sections(result) == [
+            ("1", ["1", "2"], "invoice"),
+            ("2", ["3", "4"], "receipt"),
+        ]
+
+    def test_one_window_and_two_windows_agree(self):
+        """The windowed run is the reference: its merge sorts by construction."""
+        windowed = self._classify(
+            4,
+            [
+                _bedrock_reply([_range(1, 2, "invoice")]),
+                _bedrock_reply([_range(1, 2, "receipt")]),
+            ],
+            packet={"window_pages": "2", "overlap_pages": "0"},
+        )
+        single = self._classify(4, [_bedrock_reply(self.REPLY)])
+        assert self._sections(single) == self._sections(windowed)
+
+    def test_order_is_by_page_number_not_by_id_string_or_class(self):
+        """Past page 9 a string sort puts "10" before "2", and these classes in
+        page order are not alphabetical, so neither ordering passes for this one."""
+        reply = [
+            _range(10, 12, "invoice"),
+            _range(2, 9, "receipt"),
+            _range(1, 1, "invoice"),
+        ]
+        result = self._classify(12, [_bedrock_reply(reply)])
+        assert [
+            (s.section_id, s.page_ids[0], s.classification) for s in result.sections
+        ] == [
+            ("1", "1", "invoice"),
+            ("2", "2", "receipt"),
+            ("3", "10", "invoice"),
+        ]
+
+    def test_a_tie_under_disabled_goes_to_the_earliest_page(self):
+        """``sectionSplitting: disabled`` breaks a page-count tie by the earliest
+        segment, documented as the earliest page; with the reply's order that
+        was whichever document the model happened to list first."""
+        result = self._classify(
+            4,
+            [_bedrock_reply(self.REPLY)],
+            document_shape={"sectionSplitting": "disabled"},
+        )
+        assert self._sections(result) == [("1", ["1", "2", "3", "4"], "invoice")]

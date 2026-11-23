@@ -13,16 +13,18 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { TableProps } from '@cloudscape-design/components';
 import { Alert, Badge, Box, Button, ContentLayout, Header, Link, Pagination, Table, TextFilter } from '@cloudscape-design/components';
+import { useIntl } from 'react-intl';
 
 import usePolling from '../../hooks/use-polling';
 import useUserRole from '../../hooks/use-user-role';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { describeApiError } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import { productionQueuePath, testSetQueuePath } from '../../routes/constants';
 import type { ReviewQueueSummary, TestSetQueueSummary } from '../../graphql/generated/operation-types';
-import { paginationLabels } from '../common/labels';
-import { TableNoMatchState, getFilterCounterText } from '../common/table';
+import { usePaginationLabels } from '../common/labels';
+import { TableNoMatchState, filterCounterText } from '../common/table';
 import { QUEUES_POLL_INTERVAL_MS } from './QueuesPage';
 import { fetchMyReviewQueues } from './review-api';
 import { listTestSetQueues } from './reviewer-assignment';
@@ -76,6 +78,12 @@ export const fromTestSetQueue = (q: TestSetQueueSummary, mine: number | null): M
 const count = (n: number | null): React.ReactNode => (n == null ? '—' : n);
 const byNumber = (pick: (r: MyQueueRow) => number | null) => (a: MyQueueRow, b: MyQueueRow) => (pick(a) ?? -1) - (pick(b) ?? -1);
 
+/** The oldest waiting time in the UI locale; a column's `cell` cannot call a hook, so this is a component. */
+const OldestWaitingCell = ({ at }: { at: string }): React.JSX.Element => {
+  const { locale } = useFormatters();
+  return <span title={formatDateTime(at, locale)}>{formatRelativeTime(at, locale)}</span>;
+};
+
 const COLUMNS: TableProps.ColumnDefinition<MyQueueRow>[] = [
   {
     id: 'name',
@@ -101,13 +109,14 @@ const COLUMNS: TableProps.ColumnDefinition<MyQueueRow>[] = [
   {
     id: 'oldest',
     header: 'Oldest waiting',
-    cell: (row) =>
-      row.oldestEnqueuedAt ? <span title={formatDateTime(row.oldestEnqueuedAt)}>{formatRelativeTime(row.oldestEnqueuedAt)}</span> : '—',
+    cell: (row) => (row.oldestEnqueuedAt ? <OldestWaitingCell at={row.oldestEnqueuedAt} /> : '—'),
   },
   { id: 'priority', header: 'Priority', cell: (row) => row.priority ?? '—', sortingComparator: byNumber((r) => r.priority) },
 ];
 
 const MyQueuesPage = (): React.JSX.Element => {
+  const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const reviewWork = useOptionalReviewWork();
   const { canWorkTestSetQueues, loading: roleLoading } = useUserRole();
   const [production, setProduction] = useState<ReviewQueueSummary[] | null>(null);
@@ -216,7 +225,7 @@ const MyQueuesPage = (): React.JSX.Element => {
             {...filterProps}
             filteringPlaceholder="Find queues"
             filteringAriaLabel="Find queues"
-            countText={getFilterCounterText(filteredItemsCount ?? 0)}
+            countText={filterCounterText(intl, filteredItemsCount ?? 0)}
           />
         }
         pagination={<Pagination {...paginationProps} ariaLabels={paginationLabels} />}

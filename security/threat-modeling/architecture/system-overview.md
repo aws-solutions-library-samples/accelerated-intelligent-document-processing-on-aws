@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.4 |
-| **Last Updated** | 2026-11-09 |
-| **Applies to release** | v0.6.14 |
+| **Document Version** | 3.5 |
+| **Last Updated** | 2026-11-17 |
+| **Applies to release** | v0.6.16 |
 | **Classification** | Internal |
 | **System Name** | GenAI Intelligent Document Processing (IDP) Accelerator |
 
@@ -18,17 +18,20 @@
 > portal in the Web UI); and the **Feature Platform**, **Jobs API**, and
 > **preprocessing hook** are new trust-boundary-crossing surfaces.
 
-> **Re-derived for v0.6.13.** The sections below are taken from `template.yaml`,
-> the nested stacks it deploys (`patterns/unified`, `nested/api-resolvers`,
-> `nested/bedrockkb`, `nested/multi-doc-discovery`, the feature-platform main-stack
-> extensions), `patterns/unified/statemachine/workflow.asl.json`,
-> `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor /
-> review-queue source, and checked against the same sources at v0.6.14, which adds
-> tenant isolation (TB8 below). The main user pool has **five** groups; **168** operations
-> are routable through the dispatcher, with the group distribution in §5 taken from
+> **Sources.** The sections below are taken from `template.yaml`, the nested
+> stacks it deploys (`patterns/unified`, `nested/api-resolvers`, `nested/bedrockkb`,
+> `nested/multi-doc-discovery`, the feature-platform main-stack extensions),
+> `patterns/unified/statemachine/workflow.asl.json`,
+> `scripts/api_rbac_expectations.yaml`, the dispatcher / queue-processor /
+> review-queue / MCP interceptor source, the Terraform translator
+> (`terraform/translator`) and `lib/idp_sdk/idp_sdk/_core/terraform_deploy.py`. The
+> main user pool has **five** groups; **180** operations are routable through the
+> dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover;
-> §5.2 covers the two non-REST authenticated entry points, §5.3 admission control
-> and §5.4 the review-queue surface; §6 states encryption per store; §7.1 covers
+> §5.2 covers the three non-REST authenticated entry points (chat streaming, the
+> Jobs API and the MCP gateway), §5.3 admission control and §5.4 the review-queue
+> surface; §6 states encryption per store; §7 covers the two deployment routes
+> (CloudFormation and the experimental Terraform module) and §7.1
 > deployment-time privilege. Where a gap's fix is in flight it is cited by issue
 > number and marked **pending** — a pending fix is not a control, and nothing below
 > should be read as one.
@@ -41,7 +44,7 @@ The GenAI IDP Accelerator is an AWS-deployed intelligent document processing sol
 
 The system uses a **unified deployment model** with two processing modes selectable at runtime via the `use_bda` configuration flag:
 
-- **Pipeline Mode** (`use_bda: false`, default): Uses Amazon Textract (or BDA-as-OCR) for OCR and Amazon Bedrock foundation models (Claude, Nova, OpenAI GPT-5.x via `bedrock-mantle`) for classification, extraction, and confidence.
+- **Pipeline Mode** (`use_bda: false`, default): Uses Amazon Textract (or BDA-as-OCR) for OCR and Amazon Bedrock foundation models (Claude, Nova, OpenAI GPT-5.x via `bedrock-mantle`) for classification, extraction, and confidence; optionally a customer-deployed decision model (a `GENAIIDP-*` Lambda function) names sections under split-then-classify or scores extracted values.
 - **BDA Mode** (`use_bda: true`): Uses Amazon Bedrock Data Automation (BDA) as an integrated service for document processing, with results mapped back into the standard pipeline output format.
 
 Both modes share common infrastructure for document ingestion, preprocessing, queueing, tracking, human review, rule validation, evaluation, reporting, and the web UI.
@@ -104,16 +107,17 @@ flowchart TD
 | Component | Service | Purpose |
 |-----------|---------|---------|
 | **Input/Output Storage** | Amazon S3 (13 buckets) | Document upload, processing output, configuration, reporting, test sets, evaluation baseline, Web UI assets |
-| **Document Queue** | Amazon SQS (18 queues incl. DLQs) | Decouples ingestion from processing; manages throughput |
+| **Document Queue** | Amazon SQS (20 queues incl. DLQs) | Decouples ingestion from processing; manages throughput |
 | **Event Routing** | Amazon EventBridge | S3 events → Lambda, Step Functions status tracking, GuardDuty malware verdicts → queue sender (when `MalwareScanning` is on), scheduled sweepers; the Output bucket also sends every object event to the default bus for external consumers of `review/status.json`, with no consumer in the stack |
 | **Workflow Orchestration** | AWS Step Functions (5 state machines) | Multi-step document processing, agentic shard Distributed Map |
-| **Document Tracking** | Amazon DynamoDB (15 tables across the parent and nested stacks) | Tracking, Concurrency, Configuration, Users, Agent, ChatSessions, ChatMessages, IdHelperChatMemory, DiscoveryTracking, BootstrapTracking, **`HITLTable`** (review queues, items, drafts, history), **`NotificationsTable`** (each user's Inbox), plus ChatDocumentSessions, BDAMetadata and InstalledFeatures in nested stacks |
+| **Document Tracking** | Amazon DynamoDB (17 tables across the parent and nested stacks) | Tracking, Concurrency, Configuration, Users, Agent, ChatSessions, ChatMessages, **`ChatSessionOwnersTable`** (the owner of each chat session id), IdHelperChatMemory, **`McpCredentialsTable`** (the MCP service-credential registry, when `EnableMCP=true`), DiscoveryTracking, BootstrapTracking, **`HITLTable`** (review queues, items, drafts, history), **`NotificationsTable`** (each user's Inbox), plus ChatDocumentSessions, BDAMetadata and InstalledFeatures in nested stacks |
 | **UI API Layer** | **Amazon API Gateway REST** (`POST /op/{field}`) | Single Cognito-authorized route + dispatcher to resolver Lambdas |
 | **Chat Streaming** | **AWS Lambda Function URL** (`AuthType=AWS_IAM`, `RESPONSE_STREAM`) | SSE token-delta streaming for the two chat flows |
 | **Jobs API** (optional) | Amazon API Gateway REST (PRIVATE) | `EnableJobsApi=true`: `/jobs` endpoints for machine-to-machine batch submission |
-| **Edge / WAF** | CloudFront, optional WAFv2 (REGIONAL) | SPA delivery; optional IP allow-list WebACL on the REST API stage |
-| **Authentication** | Amazon Cognito (2 user pools + 1 identity pool) | Main user pool (**5 RBAC groups**: Admin, Author, Reviewer, Annotator, Viewer); Identity Pool mints the SigV4 credentials the chat Function URL requires; separate M2M pool for the Jobs API |
-| **Encryption keys** | AWS KMS customer-managed key | One stack-owned CMK (`CustomerManagedEncryptionKey`, `EnableKeyRotation: true`) used by 11 of the 13 buckets, the DynamoDB tables except `InstalledFeaturesTable` (AWS-managed key), the SQS queues and 124 of the 126 explicitly declared log groups; the optional bastion host adds a second key of its own |
+| **Edge / WAF** | CloudFront, optional WAFv2 (REGIONAL) | SPA delivery with a content security policy in both hosting modes; optional IP allow-list WebACL on the REST API stage, whose requests are logged to `aws-waf-logs-<StackName>-api` (`ApiWafLogGroup`, KMS-encrypted) |
+| **Authentication** | Amazon Cognito (2 user pools + 1 identity pool) | Main user pool (**5 RBAC groups**: Admin, Author, Reviewer, Annotator, Viewer), which also holds the MCP app clients (`ExternalAppClient` for signed-in users, `MCPConnectorClient` and each Admin-created client-credentials app); Identity Pool mints the SigV4 credentials the chat Function URL requires; separate M2M pool for the Jobs API |
+| **Secrets** | AWS Secrets Manager (CMK-encrypted) | With `EnableMCP=true`: the stack-created MCP clients' IDs and secrets (`McpConnectorClientSecret`, `McpUserClientSecret`, published as the ARNs `MCPConnectorClientSecretArn` and `MCPClientSecretArn`, never as values), one secret per Admin-created MCP credential under `<StackName>/mcp/credentials/`, and the key that signs MCP caller identities (`McpCallerSigningSecret`) |
+| **Encryption keys** | AWS KMS customer-managed key | One stack-owned CMK (`CustomerManagedEncryptionKey`, `EnableKeyRotation: true`) used by 11 of the 13 buckets, the DynamoDB tables except `InstalledFeaturesTable` (AWS-managed key), the SQS queues, the Secrets Manager secrets and 134 of the 136 explicitly declared log groups; the optional bastion host adds a second key of its own |
 | **Compute** | AWS Lambda (130+ functions) | Processing logic, API resolvers, agents, hooks |
 | **Monitoring** | Amazon CloudWatch | Alarms, dashboards, KMS-encrypted log groups |
 
@@ -127,6 +131,7 @@ flowchart TD
 | **Amazon Textract** | OCR (DetectDocumentText, AnalyzeDocument incl. `TABLES`/`LAYOUT`) |
 | **Amazon Bedrock Knowledge Bases** | RAG retrieval over OpenSearch Serverless or S3 Vectors |
 | **Amazon Bedrock AgentCore** | MCP Gateway (external tool access) and AgentCore Runtime (e.g. Test Set Generator) |
+| **Decision models** (optional) | A customer-deployed Lambda function named `GENAIIDP-*` (for example the Strands Decider) answering System One yes/no or choice questions with page images, for section classification (`section_classification.method: decision_model`) and extraction confidence (`extraction.confidence.method: decision_model`); a TB6 component, invoked by `idp_common.decision_model.invoker` |
 | **Amazon Athena / Glue** | SQL analytics over processed document data |
 
 ### 3.3 Application Features
@@ -136,9 +141,9 @@ flowchart TD
 | **Web UI** | React/Cloudscape SPA for configuration, monitoring, review | CloudFront **or** API Gateway S3 proxy, S3, REST API, Cognito |
 | **Agent Analysis** | Multi-agent AI for interactive document analysis | Bedrock, Athena, AgentCore |
 | **Companion Chat** | Multi-turn conversational AI with SSE streaming | **Lambda Function URL**, Bedrock, DynamoDB |
-| **MCP Integration** | External tool execution via Model Context Protocol | AgentCore Gateway, Lambda, Cognito M2M client |
+| **MCP Integration** | MCP server for external clients (`EnableMCP`, default `false`): tools act as the signed-in caller or as an Admin-managed service credential, with that principal's role and configuration scope; plus External MCP agents in chat, opt-in per conversation | AgentCore Gateway, gateway interceptor Lambda, MCP handler Lambda, Cognito app clients, Secrets Manager, DynamoDB (`McpCredentialsTable`) |
 | **RBAC** | **5-group** role-based access control, plus config-version scope (`allowedConfigVersions`) and test-set scope (`allowedTestSets`) | Cognito Groups, resolver Lambdas |
-| **Human Review (HITL)** | **Built-in review in the Web UI** (no A2I/SageMaker): the legacy Reviewer flow, and **review queues** (v0.6.13) worked by eligible Annotators with Admin supervision, a per-user Inbox, and a second (finalize) execution per reviewed document — see §5.4 | REST API, DynamoDB (`HITLTable`, `NotificationsTable`), S3, SQS, Step Functions |
+| **Human Review (HITL)** | **Built-in review in the Web UI** (no A2I/SageMaker): the legacy Reviewer flow, and **review queues** (v0.6.13) worked by eligible Annotators with Admin supervision, a per-user Inbox, a second (finalize) execution per reviewed document, and Admin/Reviewer bulk operations (Bulk Skip All Reviews as background jobs, Send to review) — see §5.4 | REST API, DynamoDB (`HITLTable`, `NotificationsTable`), S3, SQS (`BulkReviewJobQueue`), Step Functions |
 | **Malware scanning** (optional) | GuardDuty Malware Protection for S3 holds each upload at ingest until a verdict arrives; `QUARANTINED` and `MALWARE_SCAN_FAILED` documents never start a workflow (PM.T09) | GuardDuty, EventBridge, Lambda |
 | **Configuration prefix mappings** | An Input-bucket prefix decides a document's Configuration Profile and so its visibility partition; Admin-only CRUD (AUTH.T07) | DynamoDB, Lambda |
 | **Discovery** | AI-driven configuration generation from sample documents | Bedrock, Lambda, multi-doc-discovery ECR container |
@@ -163,6 +168,12 @@ flowchart TD
         Browser[Web Browser]
         CLI[SDK/CLI Client]
         M2M[M2M Clients / External MCP]
+    end
+
+    subgraph TB7[Trust Boundary: Deployment / IaC]
+        Deployer[Deploying principal: CloudFormation or Terraform apply]
+        TFState[Terraform state + idp-terraform working directory]
+        Label[Read-only label stack + resource directory object]
     end
 
     subgraph TB2[Trust Boundary: AWS Edge]
@@ -193,6 +204,12 @@ flowchart TD
         AgentCore[Bedrock AgentCore Gateway + Runtime]
     end
 
+    subgraph TB3b[Application Layer: MCP path]
+        Interceptor[MCP identity interceptor Lambda]
+        MCPHandler[MCP handler Lambda]
+        Secrets[Secrets Manager: MCP client secrets + caller-signing key]
+    end
+
     subgraph TB5[Trust Boundary: Analytics Layer]
         Athena[Amazon Athena]
         Glue[AWS Glue]
@@ -202,6 +219,7 @@ flowchart TD
     subgraph TB6[Trust Boundary: Customer-Managed Extensions]
         HookLambda[Pipeline Hook Functions]
         CustomMCP[Custom MCP Agents]
+        Decider[Decision model Lambda GENAIIDP-*]
         FeatStack[Installed Feature Stacks]
         FeatBundle[Feature UI Bundles - run in host SPA origin]
     end
@@ -212,7 +230,14 @@ flowchart TD
     Browser -->|SigV4 Cognito Identity Pool| FURL
     CLI --> Cognito --> APIGW
     M2M -->|client_credentials| JobsAPI
-    M2M --> AgentCore
+    M2M -->|Cognito access token| AgentCore
+    AgentCore -->|validated token| Interceptor
+    Interceptor -->|signed caller block| AgentCore
+    AgentCore --> MCPHandler
+    Interceptor --> Secrets
+    MCPHandler --> Secrets
+    MCPHandler --> S3Buckets
+    MCPHandler --> DDB
     APIGW --> Disp --> Lambda
     FURL --> Bedrock
     JobsAPI --> Lambda
@@ -227,6 +252,7 @@ flowchart TD
     Lambda --> Athena
     Lambda --> HookLambda
     Lambda --> CustomMCP
+    Lambda -->|page images + questions| Decider
     S3Buckets --> EB --> Lambda
     Lambda --> SQS
     SQS --> Lambda
@@ -235,6 +261,10 @@ flowchart TD
     FeatStack -->|writes ui-bundle.js| S3Buckets
     S3Buckets -->|served same-origin| FeatBundle
     FeatBundle -->|host credentials| APIGW
+    Deployer --> TFState
+    Deployer --> Label
+    Deployer -->|creates roles, key, buckets| S3Buckets
+    CLI -->|SDK hook reads resource directory| Label
 ```
 
 ### Trust Boundary Descriptions
@@ -242,13 +272,13 @@ flowchart TD
 | Boundary | Description | Controls |
 |----------|-------------|----------|
 | **TB1: Internet/End User** | Untrusted external users and clients | TLS 1.2+, authentication required |
-| **TB2: AWS Edge** | CDN, identity, optional WAF | CloudFront OAC, Cognito JWT validation, optional WAFv2 IP allow-list (default-block WebACL) |
-| **TB3: Application Layer** | Core application infrastructure | IAM roles, least-privilege Lambda execution roles, a **default-deny group floor at the dispatcher** with every narrower check (scope, ownership, review-queue eligibility) in the resolver Lambdas, VPC-optional (`ApiGatewayVisibility=PRIVATE`) |
-| **TB4: Managed AI Services** | AWS-managed AI/ML services | Service-linked roles, encryption in transit/at rest; note GPT-5.x is a non-Anthropic model family on Bedrock |
+| **TB2: AWS Edge** | CDN, identity, optional WAF, and the MCP gateway's token check | CloudFront OAC, Cognito JWT validation, optional WAFv2 IP allow-list (default-block WebACL, requests logged), the same content security policy in both hosting modes (`SecurityHeadersPolicy` in `template.yaml`, the `WebUiSecurity` mapping in `nested/api-resolvers/template.yaml`, held in sync by `scripts/tests/test_csp_policies_in_sync.py`; `default-src 'self'` with named sources per resource kind, but `script-src` keeps `'unsafe-inline'` and `'unsafe-eval'` — UI.T01, UI.T07), and the AgentCore Gateway's JWT authorizer, which admits access tokens only from the stack's MCP app clients |
+| **TB3: Application Layer** | Core application infrastructure | IAM roles, least-privilege Lambda execution roles, a **default-deny group floor at the dispatcher** with every narrower check (scope, ownership, review-queue eligibility) in the resolver Lambdas, VPC-optional (`ApiGatewayVisibility=PRIVATE`). On the MCP path the same role and scope model is applied by `idp_common.mcp_access` in two halves — the gateway interceptor and the MCP handler — joined by an HMAC-signed caller block (§5.2) |
+| **TB4: Managed AI Services** | AWS-managed AI/ML services | Service-linked roles, encryption in transit/at rest, an optional Bedrock guardrail, applied when configured through `idp_common/bedrock/guardrail.py` on the shared client and on the agentic extraction, Chat with Document, discovery and rule-translation paths (OpenAI GPT-5.x models do not receive it, and a warning is logged); note GPT-5.x is a non-Anthropic model family on Bedrock |
 | **TB5: Analytics Layer** | Data analytics and search | Athena workgroup isolation, OpenSearch encryption |
-| **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, and **installed features** | Separate IAM roles, invocation-only permissions from core. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. `onError: fail` is terminal at **every** hook point: each of the seven routes `HookFatalError` (what `onError: fail` raises) to a terminal failure state (HOOK.T07, closed by **issue #919**). Under queue review the four hooks before the review point run in both executions (§5.4) |
-| **TB7: Deployment / IaC** | The principal that creates the stack, and the optional CloudFormation service role shipped for it | CloudTrail attribution, `iam:PassRole` gating, `scripts/sdlc/validate_service_role_permissions.py` in both CI systems. The shipped role now carries a **permissions boundary**, which bounds what it can reach; its own policy still grants `iam:*`, so it is not yet narrowed to the resources the stack needs — see §7.1 and SDK.T05 (**issue #927**, closed on the boundary) |
-| **TB8: Tenant (inside one stack)** | Several tenants sharing one deployment, each a set of Input-bucket prefixes tied to a profile name pattern; the principals who decide tenancy (Admins under `TenantGrantSource=Manual`, the identity provider's role administration under `IdpClaim`, an entitlement system under `Api`) and whoever deploys the per-tenant S3 Access Points | Write-time boundary checks on mappings, tenants and scopes; under `TenantIsolationMode=Strict` or an external grant source, unscoped non-Admins denied, unscopable surfaces closed, ingest tenant check, access-point delegation with confining policies. Enforced by the application, not by IAM; Admins are cross-tenant. See [`tenant-isolation.md`](../feature-threats/tenant-isolation.md) (TEN.T01–T05) |
+| **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, decision models, and **installed features** | Separate IAM roles, invocation-only permissions from core: the pipeline functions that run classification, extraction (including the advanced-extraction shard runtime) and assessment hold `lambda:InvokeFunction` on `GENAIIDP-*` only, which carries both `LambdaHook` inference and decision models (`scripts/tests/test_decision_model_invoke_grants.py`). A decision model receives page images and the class descriptions or extraction questions, and its answer becomes the section's class or a value's confidence; a refused or failed call fails the section rather than falling back to an LLM. External MCP agents in chat are off unless enabled per conversation, and neither opt-in agent runs once Analytics or Error Analyzer results are in the conversation. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. `onError: fail` is terminal at **every** hook point: each of the seven routes `HookFatalError` (what `onError: fail` raises) to a terminal failure state (HOOK.T07, closed by **issue #919**). Under queue review the four hooks before the review point run in both executions (§5.4) |
+| **TB7: Deployment / IaC** | The principal that creates the deployment — through CloudFormation, optionally with the shipped CloudFormation service role, or through `terraform apply` of the generated module — and what that route leaves behind: Terraform state, the `idp-cli` working directory, the read-only label stack and the resource directory object the SDK reads | CloudTrail attribution, `iam:PassRole` gating, `scripts/sdlc/validate_service_role_permissions.py` in both CI systems. The shipped service role confines IAM writes and `iam:PassRole` to the stack-name prefix and requires the created-role boundary on every role it creates, but holds `cloudformation:*` and service-wide wildcards on the services the stack uses, so passing it is a broad grant (§7.1, SDK.T05). A Terraform deployment has no service role: every call is made with the credentials Terraform runs with, and the state holds every setting and the Cognito client secrets in clear (§7) |
+| **TB8: Tenant (inside one stack)** | Several tenants sharing one deployment, each a set of Input-bucket prefixes tied to a profile name pattern; the principals who decide tenancy (Admins under `TenantGrantSource=Manual`, the identity provider's role administration under `IdpClaim`, an entitlement system under `Api`) and whoever deploys the per-tenant S3 Access Points | Write-time boundary checks on mappings, tenants and scopes; under `TenantIsolationMode=Strict` or an external grant source, unscoped non-Admins denied, unscopable surfaces closed, MCP tools scoped like the UI with the stack-created MCP client starting disabled, ingest tenant check, access-point delegation with confining policies. Enforced by the application, not by IAM; Admins are cross-tenant. See [`tenant-isolation.md`](../feature-threats/tenant-isolation.md) (TEN.T01–T05) |
 
 > **Critical boundary note (new in v3.0).** TB6 now contains code that executes
 > *inside* TB1's browser context at the host's origin: an installed feature's
@@ -265,9 +295,10 @@ flowchart TD
 > pin between the bundle written to the Web UI bucket at install time and the
 > bundle the browser executes; the controls that apply are the bucket's write
 > permissions and the install-time review of the feature, not verification at
-> load time.
+> load time. The content security policy does not change this: the bundle is
+> served from the SPA's own origin, which `script-src 'self'` admits.
 
-## 5. Authorization Model (v0.6.13)
+## 5. Authorization Model (v0.6.16)
 
 ### 5.1 The Web UI API edge
 
@@ -279,43 +310,48 @@ table.
 
 | Layer | What it does | What it does NOT do |
 |-------|--------------|---------------------|
-| WAFv2 (optional) | IP allow-list, default-block WebACL on the REST stage | No authn/authz. Not associated with the chat Function URL |
+| WAFv2 (optional) | IP allow-list, default-block WebACL on the REST stage; requests logged to `aws-waf-logs-<StackName>-api` | No authn/authz. Not associated with the chat Function URL or the MCP gateway |
 | API Gateway resource policy | When `ApiGatewayVisibility=PRIVATE`, restricts to the VPC interface endpoint | No user authz |
 | Cognito authorizer (`COGNITO_USER_POOLS`) | **Authenticates** the ID token; 401 on missing/invalid/expired | **No group evaluation.** It cannot do per-operation authorization, because every operation shares one route |
 | Dispatcher (`http_api_dispatcher`) | Normalizes the event, validates argument shape (400), routes to a resolver Lambda or an in-process handler, maps denials to 403 | **Denies by default.** `authz.py` checks the caller's groups against the generated field-level manifest before routing, and a field with no entry is refused with 403 rather than forwarded (AUTH.T16, **issue #928** closed). Its 403 mapping now keys on the exception **type** first (`PermissionError`/`AuthorizationError`), with the conventional message prefix retained as a fallback — so a reworded exception raised as one of those types keeps its status, and one raised as a bare `Exception` still depends on its wording |
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `allowedConfigVersions` and `allowedTestSets` scope, per-object ownership and review-queue eligibility**, and repeats the group check | Nothing forces a per-object check to exist or to match the right object (AUTH.T16) |
 
-**168 operations** are routable — 42 mapped directly by the
+**181 operations** are routable — 44 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **116** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **127** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 169, not 168, because one field (`getCircuitBreakerStatus`)
+three sets sum to 182, not 181, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 168, which is exactly the number of entries in
+union is 181, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
-| Admin only | 43 |
+| Admin only | 50 |
 | Admin + Author | 42 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 27 |
 | Admin + Author + Viewer | 15 |
 | Admin + Annotator + Reviewer | 14 |
 | Admin + Annotator + Author | 11 |
 | Any authenticated user, group or no group (`ANY`) | 8 |
-| Admin + Reviewer | 3 |
+| Admin + Reviewer | 9 |
 | Admin + Annotator | 1 |
 | Annotator only | 1 |
 | All five groups | 1 |
 | IAM/backend only (Cognito callers rejected) | 2 |
 
-The four operations 0.6.14 adds — `listTenants`, `putTenant`, `deleteTenant` and
-`setUserTenant` — are all Admin only. The same release removes `Reviewer` from the
-Test Studio queue, labelling and test-set operations, which now admit Admin,
-Author and Annotator (Admin and Annotator for `listTestSetQueues`, Annotator alone for
-`claimTestSetDocument`), so a Reviewer
-works production review queues only.
+The tenant operations (`listTenants`, `putTenant`, `deleteTenant`, `setUserTenant`)
+and the MCP credential operations (`listMcpCredentials`, `createMcpCredential`,
+`updateMcpCredential`, `rotateMcpCredential`, `revokeMcpCredential`,
+`setMcpCredentialTenant`, served by `mcp_credential_manager` and present only when
+`EnableMCP=true`) are all Admin only; a scoped Admin may grant a credential only
+profiles inside their own `allowedConfigVersions`, inside one tenant, and cannot
+create an unscoped one. The bulk review operations (`bulkSkipAllReviews`,
+`sendToReview` and the four job operations, in `bulk_review_resolver`) are Admin +
+Reviewer. Test Studio queue, labelling and test-set operations admit Admin, Author
+and Annotator (Admin and Annotator for `listTestSetQueues`, Annotator alone for
+`claimTestSetDocument`), so a Reviewer works production review queues only.
 
 `ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
 group added there joins those 27 without an edit per operation; what they refuse is a
@@ -347,16 +383,14 @@ no profile and is refused every document. Per-user document ownership is not mod
 at all; per-*tenant* isolation is, through tenant declarations (see
 [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)).
 
-Beyond the group check, **45** operations verify config-version scope, **10** filter
-their result rows by it, and **17** verify per-object ownership.
+Beyond the group check, **61** operations verify config-version scope, **10** filter
+their result rows by it, and **21** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
-`make api-test`. Its `known_gaps` block holds **three** entries, of which two are accepted *authorization* gaps and the third is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. The not-found refusals that used to produce most of them now answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The two authorization gaps: **GAP-02**: the `queryKnowledgeBase`
+`make api-test`. Its `known_gaps` block holds **two** entries, of which one is an accepted *authorization* gap and the other is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. Not-found refusals answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The authorization gap: **GAP-02**: the `queryKnowledgeBase`
 *resolver* performs no group check of its own, so the dispatcher's floor — which
-requires an assigned group — is the only group gate on it. **GAP-07**: the chat
-Function URL transport carries no `cognito:groups` claim, so neither chat route's
-group check can be applied to callers arriving that way.
+requires an assigned group — is the only group gate on it.
 
 Two mechanical details matter when reading resolver code. The REST authorizer
 places claims at `requestContext.authorizer.claims` (not where an AppSync-era
@@ -368,19 +402,20 @@ type is `AWS::ApiGateway::RestApi` — a name to read carefully rather than a
 second API.
 
 The GraphQL schema (`schema.graphql`) is retained as the source for input-shape
-validation and as documentation of intent. Its 306 `@aws_cognito_user_pools`
+validation and as documentation of intent. Its 335 `@aws_cognito_user_pools`
 directives are **advisory only** — nothing enforces them at runtime now that
 AppSync is gone (see AUTH.T08).
 
-### 5.2 The two other authenticated entry points
+### 5.2 The three other authenticated entry points
 
-The REST route is not the whole edge. Two further paths authenticate differently
-and do **not** inherit the resolver authorization model:
+The REST route is not the whole edge. Three further paths authenticate differently
+and do **not** pass through the dispatcher or the resolvers:
 
 | Entry point | Authentication | Authorization |
 |---|---|---|
-| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool** | **No group check.** `lambda:InvokeFunctionUrl` (and `lambda:InvokeFunction`, on the function itself) is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them. Ownership of a chat session is not verified on this transport, and the caller identifier available to it is an assumed-role session name rather than a verified Cognito `sub`. See CHAT.T03 and CHAT.T06. **issue #920** is closed: both routes now resolve identity through one helper in which a body-supplied `callerSub` is a fallback only and a value contradicting the transport is refused with 403. What that does not supply is a *verified per-user* subject on this transport, and no group claim reaches it at all (`GAP-07`) — so CHAT.T03 stays open |
+| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool**, and also presents its Cognito **ID token** in `x-idp-id-token` | The endpoint verifies the ID token (signature against the user pool's key set, issuer, app client, `token_use`, expiry) and answers 401 without one. The group checks of both chat routes and the Chat-with-Document scope check run on the verified claims, and each session id is checked against its owner in `ChatSessionOwnersTable` before the stream opens. Nothing identity-like is read from the request body. See CHAT.T03 and CHAT.T06 |
 | **Jobs API** (optional, `EnableJobsApi=true`) | A separate `ApiUserPool` with OAuth **client-credentials** scopes (`idp-api/jobs.write`, `jobs.read`) | Scope-based, PRIVATE-endpoint only. A distinct realm from the Cognito group model — see JOB.T01–T03 |
+| **MCP server** (optional, `EnableMCP`, default `false`) | A Cognito **access token** from the main user pool, validated by the AgentCore Gateway's JWT authorizer against an allow-list of app clients: `ExternalAppClient` for a signed-in user (authorization-code flow), and client-credentials apps for services — the stack-created `MCPConnectorClient` and each credential an Admin creates on the MCP Configuration page. `idp_common.mcp_gateway` keeps the allow-list in step with the credential registry | The gateway interceptor (`McpIdentityInterceptorFunction`) resolves the token to a principal with `idp_common.mcp_access.resolve_caller`: a user takes their own Cognito groups and `allowedConfigVersions`; a service credential takes the role, configuration profiles, write-tools setting and expiry recorded in `McpCredentialsTable`. It refuses a tool the principal may not call, filters `tools/list`, discards any client-sent `_caller` argument and adds one HMAC-signed with `McpCallerSigningSecret` and bound to the gateway request id. The handler (`agentcore_mcp_handler`) verifies that block and refuses the call without it, then applies the principal's scope to every document it reads or returns. Tool policy (`MCP_TOOL_POLICY`): `process`/`reprocess` Admin or Author, `status`/`get_results` the four document roles, `search` Admin/Author/Viewer and only for an unscoped caller; Annotator reaches no tool. Credentials expire and are revoked by a daily sweep (`McpCredentialSweepSchedule`); switching MCP off, deleting the stack or downgrading revokes every one. See MCP.T01–T06 |
 
 When `WebUIHosting=APIGateway`, two further methods (`GET /` and `GET /{proxy+}`)
 serve the SPA from S3 with `AuthorizationType: NONE`. That is deliberate: they
@@ -391,6 +426,18 @@ controls that apply to them. Together with the CORS `OPTIONS` method
 `POST /op/{field}`, is the only `COGNITO_USER_POOLS` one. All three are
 allow-listed explicitly in check **S5** of the static scan, so a *fourth*
 unauthenticated method cannot be added without the gate noticing.
+
+Two properties of the MCP path are worth modelling rather than assuming. The
+gateway forwards tool arguments the schema does not declare, verbatim, and an
+`UpdateGateway` that omits the interceptor removes it; the signed caller block is
+what makes either fail closed, since a call reaching the handler without a valid
+signature is refused rather than served unattributed. A user's groups are read from the access token,
+so a group change reaches MCP when the token is refreshed; the interceptor reads the
+account with `AdminGetUser` (refusing a disabled account or a `sub` mismatch) and
+caches the resolved user for up to 30 seconds (`USER_CACHE_SECONDS`), so disabling a
+user or changing their scope takes effect within that window. Tool results that carry document text say so in a
+`provenance` field, which the MCP Connector passes to its client's model; that is a
+label for the client, not a control in this stack (MCP.T03).
 
 CORS is wildcard-origin on both the REST route and the Function URL. Because
 credentials travel in headers (bearer token or SigV4) and `AllowCredentials` is
@@ -403,7 +450,9 @@ empty `VITE_STREAM_URL`, so it uses the REST chat path, which carries verified
 Cognito claims and can be scoped. The streaming function itself refuses any turn it
 cannot attribute to a verified caller (`chat_stream_processor/app.py`), which on the
 Function URL is every turn. The Function URL and its Identity Pool grant still
-exist in those modes, but they serve nothing.
+exist in those modes, but they serve nothing. In the same modes MCP tools are scoped
+like the UI (an unscoped non-Admin resolves to a scope that matches no profile), and the stack-created MCP client
+starts disabled until an Admin narrows it on the MCP Configuration page.
 
 ### 5.3 Admission control at ingestion
 
@@ -427,15 +476,15 @@ arrives, so a held document occupies no slot. The failure mode worth modelling h
 *leaked* slot — capacity lost until reconciliation runs — rather than
 over-admission. See SDK.T04.
 
-### 5.4 The review-queue surface (v0.6.13)
+### 5.4 The review-queue surface
 
 Review queues are the largest change to the authorization surface since the REST
 migration: 40 operations, all behind the same dispatcher floor, in three resolvers
 (`review_queues_resolver`, new operations in `test_set_resolver`, and
-`notifications_resolver` for the Inbox). What they change is **who can reach a
-production document**: the `Annotator` group, previously confined by design to the
-test sets in `allowedTestSets`, now works the production items of every queue that
-lists it as eligible, and an Admin supervises.
+`notifications_resolver` for the Inbox). What they decide is **who can reach a
+production document**: the `Annotator` group, otherwise confined to the test sets
+in `allowedTestSets`, works the production items of every queue that lists it as
+eligible, and an Admin supervises.
 
 - **Per-item operations** check queue eligibility (keyed on the `email` claim) and
   the item's configuration profile against `allowedConfigVersions`, and fail closed
@@ -463,6 +512,18 @@ The legacy Reviewer operations remain for documents a queue does not manage, and
 refuse one it does (`QUEUE_MANAGED`); `uploadDocument` and `processChanges` refuse
 to overwrite a document's sections while it is in review.
 
+**Bulk review** (`bulk_review_resolver`, Admin + Reviewer) finishes many pending
+reviews without anyone checking them (`bulkSkipAllReviews`, with a required reason
+and a dry run) or puts finished production documents into the Default review queue
+(`sendToReview`). A by-profile request is refused unless the profile is in the
+caller's `allowedConfigVersions`; a selected-documents request reports an
+out-of-scope or unknown key as `NOT_PERMITTED` per document. Large requests run as
+background jobs on `BulkReviewJobQueue` (`BulkReviewWorkerFunction`), and a Reviewer
+lists, cancels and deletes only the jobs they requested, keyed on the verified
+caller. The resolver holds `sqs:SendMessage` on `DocumentQueue` (resubmission for
+downstream processing), write access to `<document>/review/` objects and read access
+to the whole Output bucket.
+
 ## 6. Data Classification
 
 > **How encryption is actually configured (restated in v3.2).** There is one
@@ -471,8 +532,8 @@ to overwrite a document's sections while it is in review.
 > access-log bucket and the Web UI asset bucket use SSE-S3 (`AES256`) instead,
 > which is appropriate — one is a log sink S3 itself writes to, the other holds
 > public SPA assets. The DynamoDB tables (except `InstalledFeaturesTable`, which
-> uses the AWS-managed key), the SQS queues and 124 of the 126 explicitly declared
-> CloudWatch log groups also use the CMK; the knowledge-base stack declares no log
+> uses the AWS-managed key), the SQS queues, the Secrets Manager secrets and 134 of
+> the 136 explicitly declared CloudWatch log groups also use the CMK; the knowledge-base stack declares no log
 > groups for its five functions, which therefore take Lambda's defaults. **All 13 buckets** block public access, enable
 > versioning, and carry a bucket policy that denies any request where
 > `aws:SecureTransport` is false, so cleartext access is refused at the bucket
@@ -482,7 +543,10 @@ to overwrite a document's sections while it is in review.
 > account that holds the key's data actions can use it directly rather than only
 > through the services that hold the data. The key is a stack resource, so its
 > deletion is a stack-scoped availability event for everything encrypted under
-> it.
+> it. A Terraform deployment adds one bucket of its own, the custom-resource
+> bridge's, which is SSE-KMS with the same key and TLS-only, and holds
+> custom-resource responses, the label stack's template and the resource directory
+> (§7).
 
 | Data Type | Classification | Storage | Encryption |
 |-----------|---------------|---------|------------|
@@ -494,6 +558,7 @@ to overwrite a document's sections while it is in review.
 | Chat conversations | Customer Confidential | DynamoDB | DynamoDB SSE-KMS (stack CMK) + TTL |
 | Inbox messages and preferences | Customer Confidential | DynamoDB (`NotificationsTable`, partitioned per user) | DynamoDB SSE-KMS (stack CMK) + TTL |
 | Review queues, items, drafts, history | Customer Confidential | DynamoDB (`HITLTable`); draft bodies and `review/status.json` in the Output bucket | DynamoDB SSE-KMS (stack CMK); SSE-KMS (stack CMK) |
+| MCP client IDs and secrets, MCP caller-signing key | Restricted | AWS Secrets Manager (`<StackName>/mcp/...`); the credential registry (role, profiles, expiry, no secret) in DynamoDB (`McpCredentialsTable`) | Secrets Manager with the stack CMK; DynamoDB SSE-KMS (stack CMK). Stack outputs carry only the secret ARNs |
 | **PII redaction mappings** | **Restricted** | DynamoDB (feature-owned table) | **SSE with CMK; opt-in storage only** |
 | Reporting data | Customer Confidential | S3 Reporting Bucket (Parquet) | SSE-KMS (stack CMK) |
 | Test sets + ground truth | Customer Confidential | S3 TestSetBucket | SSE-KMS (stack CMK) |
@@ -504,23 +569,25 @@ to overwrite a document's sections while it is in review.
 
 ## 7. Deployment Model
 
-- **Deployment method**: AWS SAM (CloudFormation) via `publish.py` / `idp-cli deploy`
+- **Deployment method**: AWS SAM (CloudFormation) via `publish.py` / `idp-cli deploy`, or — experimental — Terraform or OpenTofu (1.7 or later) with the module generated from the same templates (§7.2)
 - **Runtime**: Python 3.12+ (Lambda), React/Vite (UI)
-- **UI hosting**: `WebUIHosting=CloudFront` (default) or `APIGateway` (S3 proxy on the REST API; VPC-capable, GovCloud-compatible). **ALB hosting removed in v0.6.0.**
+- **UI hosting**: `WebUIHosting=CloudFront` (default) or `APIGateway` (S3 proxy on the REST API; VPC-capable, GovCloud-compatible). Both send the same content security policy, apart from `frame-ancestors` (`'self'` with CloudFront, `'none'` with API Gateway, matching each mode's `X-Frame-Options`). The UI CodeBuild project runs unprivileged and logs to a stack-owned `/<StackName>/codebuild/<ProjectLogicalId>` group. **ALB hosting removed in v0.6.0.**
 - **Regions**: All commercial AWS regions with required service availability; **GovCloud supported** via `idp-cli publish/deploy --govcloud` (full Web UI) or `--headless`
+- **MCP**: `EnableMCP` defaults to `false`, so a new stack has no MCP gateway, clients, secrets or MCP Configuration page unless it is set. The console and `idp-cli deploy` keep an existing stack's value; a tool that sends only named parameters (the AWS CLI, `idp-cli deploy --terraform`, the Terraform module) turns MCP off unless `EnableMCP=true` is passed, and turning it off revokes every MCP service credential
 - **Multi-tenancy**: one stack per tenant, or several tenants in one stack through
   tenant declarations (Input-bucket prefixes tied to a profile name pattern). With
   `TenantIsolationMode: Off` (the default) declarations are enforced when mappings,
   tenants and user scopes are written; `Strict` also denies unscoped non-admins,
   refuses documents whose key and profile belong to different tenants at ingest,
-  makes the cross-document agent and Knowledge Base surfaces Admin-only, refuses MCP
-  tools, and lets the Input and Output bucket policies delegate to per-tenant S3
+  makes the cross-document agent and Knowledge Base surfaces Admin-only, scopes MCP
+  tools like the UI (with the stack-created MCP client disabled until narrowed),
+  and lets the Input and Output bucket policies delegate to per-tenant S3
   Access Points. `TenantGrantSource` decides who writes a non-Admin's scope
   (`Manual`, `IdpClaim` or `Api`); under the two external sources an unscoped
   non-Admin is denied whatever the isolation mode, and Admin scope edits are
   refused. Admins are cross-tenant in every mode. Threats: TEN.T01–T05 in
   [`tenant-isolation.md`](../feature-threats/tenant-isolation.md)
-- **Infrastructure as Code**: `template.yaml` + nested stacks (`api-resolvers`, `bedrockkb`, `multi-doc-discovery`, feature-platform)
+- **Infrastructure as Code**: `template.yaml` + nested stacks (`api-resolvers`, `bedrockkb`, `multi-doc-discovery`, feature-platform); feature-platform extensions install as CloudFormation stacks under either deployment route
 
 ### 7.1 Deployment-time privilege
 
@@ -528,13 +595,81 @@ Deployment is itself a trust boundary (TB7 above), and the most privileged one:
 the deploying principal creates the IAM roles, the KMS key and the buckets that
 every runtime control in this document depends on. The repository ships an
 *optional* CloudFormation **service role**
-(`iam-roles/cloudformation-management/`) intended to let an operator deploy
-without holding administrator rights. As written it does not achieve that
-separation — it holds permissions broad enough to alter the guardrails that
-would otherwise bound it, so the ability to pass it is effectively equivalent to
-account administrator. **issue #927** is closed by attaching a **permissions boundary** to the role, which bounds what it can reach; the policy's own `iam:*` grant is unchanged, so the narrowing itself is still outstanding. Until it is
-narrowed, treat `iam:PassRole` for that role as an administrative grant and scope
-who holds it accordingly. See SDK.T05.
+(`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`) to let
+an operator deploy without holding administrator rights. Its IAM half is contained:
+`iam:CreateRole` and the role-policy actions are allowed only on roles named with
+`ManagedStackNamePrefix` and only when the role carries the boundary named by
+`CreatedRolePermissionsBoundaryArn`; `iam:PassRole` is confined to the same prefix
+with an `iam:PassedToService` condition; and stripping a boundary, editing either
+boundary policy, creating IAM users or keys, and modifying the role itself are
+denied. Its service half is not narrowed: it holds `cloudformation:*` and
+service-wide wildcards with `Resource: "*"` on the services the stack uses, so
+whoever can pass it can change any resource of those services in the account.
+Treat `iam:PassRole` on it as a broad grant and scope who holds it accordingly. See
+SDK.T05.
+
+A Terraform deployment uses no service role. Every call is made with the
+credentials Terraform runs with — administrator-level, or a role modelled on the
+service role above passed as `--terraform-assume-role-arn` — plus the Cloud Control
+actions for the `awscc` resources and `kms:GenerateDataKey`/`kms:Decrypt` on the
+stack key. Every role the module creates, the custom-resource bridge's included,
+takes `PermissionsBoundaryArn` when it is set.
+
+### 7.2 Terraform deployment (experimental)
+
+The module is generated by `terraform/translator` from the published templates and
+published beside them as a zip with a SHA-256 checksum file and an
+`idp-terraform-latest.json` pointer. It is used from the operator's own root
+configuration or written and applied by `idp-cli deploy --terraform`. What this
+route adds to the trust model:
+
+- **State is a credential store.** Terraform state holds every setting passed and
+  every resource attribute, including the Cognito app client secrets and the
+  `SecretString` of the MCP client secrets, in clear. `idp-cli` keeps state in the
+  local working directory (`./idp-terraform/<stack-name>`) unless a backend is
+  configured there, and writes `terraform.tfvars` and `idp-cli-parameters.json`
+  readable by their owner only (`write_private` in
+  `lib/idp_sdk/idp_sdk/_core/terraform_deploy.py`); protecting a remote backend is
+  the operator's responsibility.
+- **Module integrity.** `idp-cli` checks the archive it reads against the pointer's
+  `sha256`, but the pointer sits in the same bucket as the archive, so the check
+  detects corruption rather than a writer of that bucket. `terraform init`
+  downloads the module again and checks nothing; deploying exactly verified bytes
+  means extracting the archive into a local module directory.
+- **Custom-resource bridge.** CloudFormation custom resources run through a bridge
+  Lambda (`<stack>-cfn-bridge`) that calls each handler as CloudFormation would. Its
+  own policy grants no `lambda:InvokeFunction`; each handler grants it through a
+  resource policy naming the bridge role. Its bucket is SSE-KMS with the stack key,
+  TLS-only and public-access-blocked.
+- **The read-only label stack** (`stack_name`, one `WaitConditionHandle`, tags
+  `ManagedBy=Terraform` and `ReadOnly=true`) lets `idp-cli` and the SDK address the
+  deployment by `--stack-name`. Its parameters' allowed values are exactly their
+  applied values, so a CloudFormation update of them is refused, and `NoEcho`
+  parameters are left out. `idp-cli deploy` and `delete` without `--terraform`
+  refuse a label stack. The SDK installs a hook on the CloudFormation clients it
+  creates that answers resource lookups for a label stack from the resource
+  directory object in the bridge bucket, so a principal who can write that object
+  decides which resources `idp-cli` and SDK callers act on for that deployment; the
+  object's integrity rests on the bucket's IAM permissions.
+- **Destructive plans.** `idp-cli deploy --terraform` refuses a plan that deletes or
+  replaces a data-holding or retained resource unless given
+  `--terraform-allow-replace-stateful`. A failed apply is not rolled back.
+- **Migration from `genai-idp-terraform`.** `idp-cli terraform
+  migrate-from-genai-idp-terraform` has the new deployment adopt the old one's
+  buckets, tables, KMS key and Cognito user pool. Each phase is a dry run until
+  `--apply`. The module's key policy replaces the adopted key's; the adopted pool's
+  users keep their passwords and their group memberships, which become
+  authorization in the new deployment's group model; the old deployment's upload
+  rule is disabled by the `freeze` phase, and an apply in the old deployment's
+  directory afterwards would re-enable it and contend for resources both now hold.
+- **Offline checks.** `make terraform-check` (both CIs) translates `template.yaml`,
+  runs `init -backend=false` and `validate` with each pinned Terraform and OpenTofu
+  release, and `make terraform-scan-diff` fails on a pinned `checkov` finding the
+  generated Terraform has and the CloudFormation templates do not, unless it has a
+  reasoned entry in `scripts/terraform_scan_baseline.json` (or, for checks with no
+  CloudFormation counterpart, a pinned count in
+  `scripts/terraform_scan_tf_only_baseline.json`). Neither plans or applies, and a
+  scanner sees only what its rules look at.
 
 ## 8. Security Test Coverage
 
@@ -545,18 +680,28 @@ release under [`security/test-results/<version>/`](../../test-results/):
 |------|-------|-------------------|
 | **SRT** (SAST + deps) | Static analysis, dependency CVEs, IaC | Cross-cutting |
 | **ZAP DAST** | Authenticated dynamic scan of the REST API | UI.T01, UI.T03, AUTH.T11 |
-| **RBAC static** (`make api-test-static`) | Op↔schema↔expectations drift, missing server-side checks | AUTH.T03, AUTH.T08 |
-| **RBAC dynamic** (`make api-test`) | Live multi-role matrix, scope, IDOR, token lifecycle, input validation, TLS | AUTH.T03, T07–T12 |
+| **RBAC static** (`make api-test-static`) | Op↔schema↔expectations drift, missing server-side checks; for MCP (checks M1–M5 in `scripts/sdlc/scan_api_rbac.py`), that the `mcp_tools:` table, `MCP_TOOL_POLICY`, the handler's tools and the gateway schema agree, that no tool admits a role its REST equivalent refuses, and that the interceptor and handler call the shared checks | AUTH.T03, AUTH.T08, MCP.T05 |
+| **RBAC dynamic** (`make api-test`) | Live multi-role matrix, scope, IDOR, token lifecycle, input validation, TLS; on a stack with MCP, role, listing, scope and forged-caller-block cells per MCP tool (`scripts/api_rbac_mcp.py`) | AUTH.T03, T07–T12, MCP.T05 |
 
-Two coverage limits are worth stating alongside that table, because a reader can
-otherwise take it as broader assurance than it is. Both RBAC suites drive
-`POST /op/{field}` only, so **no test exercises the chat Function URL
-transport** — a regression on the paths described in §5.2 would not be detected
-(CHAT.T03, CHAT.T06). And the static suite asserts each operation against the
+These coverage limits are worth stating alongside that table, because a reader can
+otherwise take it as broader assurance than it is. The static suite
+covers the chat Function URL routes (S6–S9 in `scan_api_rbac.py`), and the live
+suite has cells for that transport (`run_chat_session_idor_suite`) that have not
+yet been run against a deployment, so a runtime regression on the paths described
+in §5.2 is caught only once they are (CHAT.T03, CHAT.T06). And the static suite asserts each operation against the
 expectations manifest and the dispatcher refuses an operation with no entry
 (**issue #928**, closed), but neither asserts that a resolver's per-object check —
 scope, ownership, review-queue eligibility — exists and matches the right object,
-which is the AUTH.T16 residual.
+which is the AUTH.T16 residual. The MCP presence checks (M4) see that the shared
+checks are called, not what a caller does with the result; the behaviour is held by
+the unit suites `lib/idp_common_pkg/tests/unit/test_mcp_access.py` and
+`lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py`.
+
+None of the four suites deploys or scans a Terraform deployment. The Terraform
+route is covered offline by `make terraform-check` and the translator's own tests
+(`terraform/translator/tests/`), and a deployed module by `make terraform-parity`,
+which compares it resource by resource with a CloudFormation stack of the same
+release and is run by hand.
 
 See [`security/README.md`](../../README.md) for how to run each, and
 `security/threat-modeling/README.md` for how this corpus is kept current

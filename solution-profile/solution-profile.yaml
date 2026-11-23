@@ -1,0 +1,78 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Solution profile manifest (Solution Profile contract v1, vendored under
+# solution-profile/schema/v1/). See docs/solution-profile.md.
+#
+# `version` is written by `make version` in the contract's version form: a PEP 440
+# development or release-candidate suffix becomes a hyphenated one
+# (0.6.16.dev1 -> 0.6.16-dev1), and a final release is copied unchanged.
+# `source.tag` and `source.commit` are stamped into the BUILT copy only, by
+# scripts/build_solution_profile.py; do not add them here.
+schema_version: 1
+id: genai-idp-accelerator
+name: GenAI Intelligent Document Processing Accelerator
+version: 0.6.16-dev1
+reviewed_for_version: 0.6.15
+source:
+  repository: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
+summary: >-
+  A serverless solution, deployed into the customer's own AWS account, that turns
+  unstructured documents (PDFs, scans, images, Office files) into structured JSON.
+  It combines OCR with generative AI on Amazon Bedrock to classify each document
+  or each section of a packet, extract the attributes defined in a JSON Schema per
+  class, score confidence, check business rules, and route low-confidence results
+  to human review. It ships a web UI, a CLI, an SDK and an MCP server, and it is
+  configured rather than coded for each new document type.
+problem_domains: [document-processing, data-extraction, document-classification]
+signals:
+  keywords:
+    - intelligent document processing
+    - IDP
+    - OCR
+    - document extraction
+    - document classification
+    - invoice
+    - bank statement
+    - W-2
+    - claim form
+    - loan package
+    - medical records
+    - passport application
+    - forms processing
+    - human review
+    - human-in-the-loop
+    - Amazon Bedrock
+    - Amazon Textract
+    - Bedrock Data Automation
+  phrases:
+    - we key in data from PDFs by hand
+    - documents arrive by email and someone reads them
+    - we need to pull fields and tables out of scanned forms
+    - a packet of many documents arrives as one PDF and has to be split and sorted
+    - extraction accuracy has to be measured before we go live
+  anti_signals:
+    - document management system or records archive
+    - e-signature or document authoring workflow
+    - real-time video or audio understanding
+    - general enterprise search over all company content
+    - an on-premises or non-AWS deployment
+licence: MIT-0
+support:
+  model: community-sample
+  statement: >-
+    A sample from the AWS Solutions Library, published as open source under MIT-0.
+    The customer deploys, owns and operates it in their own AWS account, including
+    upgrades, security review and the AWS charges it incurs. Questions and fixes go
+    through the public GitHub repository; there is no service-level agreement.
+docs_url: https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/
+files:
+  capabilities: capabilities.yaml
+  extension_points: extension-points.yaml
+  limitations: limitations.yaml
+  discovery_questions: discovery-questions.yaml
+  sizing: sizing.yaml
+  deployment: deployment.yaml
+  delivery: delivery.yaml
+  changes: changes.yaml
+skills: [skills/idp-solution-fit]

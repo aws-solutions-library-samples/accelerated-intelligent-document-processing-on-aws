@@ -22,6 +22,8 @@ import useUserRole from '../../hooks/use-user-role';
 import ConfigurationComparison from './ConfigurationComparison';
 import ResizableModal from '../common/ResizableModal';
 import UnrecordedChangesAlert from '../common/UnrecordedChangesAlert';
+import { formatDateTime, formatFixed, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 interface ConfigRevisionHistoryPanelProps {
   /** Configuration Profile whose history is shown. */
@@ -40,14 +42,14 @@ const BADGE_TOOLTIPS = {
   labeled: 'Labeled — exempt from the revision limit, but its stored configuration still expires after DataRetentionInDays.',
 };
 
-const formatSize = (bytes?: number | null): string => {
+const formatSize = (bytes: number | null | undefined, locale: Locale): string => {
   if (!bytes) return '-';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${formatFixed(bytes / 1024, locale, 1)} KB`;
+  return `${formatFixed(bytes / (1024 * 1024), locale, 1)} MB`;
 };
 
-const formatWhen = (iso?: string | null): string => (iso ? new Date(iso).toLocaleString() : '-');
+const formatWhen = (iso: string | null | undefined, locale: Locale): string => (iso ? formatDateTime(new Date(iso), locale) : '-');
 
 /**
  * Revision history for one Configuration Profile.
@@ -63,6 +65,7 @@ const ConfigRevisionHistoryPanel = ({
   onRestored,
 }: ConfigRevisionHistoryPanelProps): React.JSX.Element => {
   const { isAdmin, canWrite } = useUserRole();
+  const { locale } = useFormatters();
   const {
     revisions,
     profileMatchesPublished,
@@ -238,10 +241,10 @@ const ConfigRevisionHistoryPanel = ({
                 </SpaceBetween>
               ),
             },
-            { id: 'createdAt', header: 'Saved', cell: (item: ConfigProfileRevision) => formatWhen(item.createdAt) },
+            { id: 'createdAt', header: 'Saved', cell: (item: ConfigProfileRevision) => formatWhen(item.createdAt, locale) },
             { id: 'createdBy', header: 'By', cell: (item: ConfigProfileRevision) => item.createdBy || '-' },
             { id: 'notes', header: 'Notes', cell: (item: ConfigProfileRevision) => item.notes || '-' },
-            { id: 'size', header: 'Size', cell: (item: ConfigProfileRevision) => formatSize(item.sizeBytes) },
+            { id: 'size', header: 'Size', cell: (item: ConfigProfileRevision) => formatSize(item.sizeBytes, locale) },
             {
               id: 'actions',
               header: 'Actions',

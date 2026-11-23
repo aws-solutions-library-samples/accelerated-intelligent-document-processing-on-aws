@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Box, Spinner, Button, Modal, Header, SpaceBetween, Tabs } from '@cloudscape-design/components';
 import SafeMarkdown from '../common/SafeMarkdown';
+import { useFormatters } from '../../i18n/format';
 
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atelierLakesideLight } from 'react-syntax-highlighter/dist/esm/styles/hljs';
@@ -56,8 +57,9 @@ interface CloudWatchLogsDisplayProps {
  * CloudWatchLogsDisplay sub-component for structured log display
  */
 const CloudWatchLogsDisplay = ({ data }: CloudWatchLogsDisplayProps): React.JSX.Element => {
+  const { formatDateTime } = useFormatters();
   const formatTimestamp = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleString();
+    return formatDateTime(new Date(timestamp));
   };
 
   const formatLogMessage = (message: string): string => {

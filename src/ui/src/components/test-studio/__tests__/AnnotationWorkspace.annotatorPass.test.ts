@@ -95,22 +95,22 @@ describe('how precisely the label-accuracy estimate is printed', () => {
     expect(estimateDecimals('measured')).toBe(1);
     expect(estimateDecimals('prior')).toBe(0);
     expect(estimateDecimals(undefined)).toBe(0);
-    expect(formatPct(0.9223, 1)).toBe('92.2%');
-    expect(formatPct(0.9223, 0)).toBe('92%');
+    expect(formatPct(0.9223, 'en', 1)).toBe('92.2%');
+    expect(formatPct(0.9223, 'en', 0)).toBe('92%');
   });
 
   it('applies it to both the headline and the projection under it', () => {
     // The projection is the same estimate one step on; printing it to a different
     // precision would make the pair read as two different kinds of number.
-    expect(SOURCE).toMatch(/formatPct\(1 - impact\.baselineError, estimateDecimals\)/);
-    expect(SOURCE).toMatch(/formatPct\(1 - impact\.residualError, estimateDecimals\)/);
+    expect(SOURCE).toMatch(/formatPct\(1 - impact\.baselineError, locale, estimateDecimals\)/);
+    expect(SOURCE).toMatch(/formatPct\(1 - impact\.residualError, locale, estimateDecimals\)/);
   });
 
   it('is the only copy of the number on the queue page, with no quality tier beside it', () => {
     // Key Metrics carries no Quality metric, so the estimate is printed once. The tier
     // renderer stays shared with the Test Sets list and still takes the precision.
     expect(SOURCE).not.toMatch(/renderQualityTier/);
-    expect(TIER).toMatch(/\(accuracy \* 100\)\.toFixed\(decimals\)/);
+    expect(TIER).toMatch(/formatPercent\(accuracy, locale, \{ fractionDigits: decimals \}\)/);
   });
 
   it('keeps the default precision for the list that did not ask to change', () => {

@@ -28,6 +28,14 @@ Failures are classed by what they need:
 
 It makes no AWS call. The output is a Markdown table on stdout and, with
 ``--json <path>``, the raw results.
+
+``--check`` is the gate form ``make terraform-check`` runs. It replays the releases
+listed in ``terraform/tools/replay_releases.json``, each at the commit recorded
+there rather than at whatever a local tag names (the two forges' tags have disagreed
+on one release), and exits 1 when any of them fails to translate, cannot be read, or
+is not in the clone. It reads only the repository's own history, so it needs a clone
+with the recorded commits in it (CI checks out full history for this job) and no
+network of its own.
 """
 
 from __future__ import annotations
@@ -45,6 +53,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 TRANSLATOR = REPO / "terraform" / "translator"
 TAG = re.compile(r"^v0\.(5|6)\.(\d+)$")
+RELEASES_FILE = Path(__file__).resolve().with_name("replay_releases.json")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 CLASSES = (
     ("unmapped type", re.compile(r"has no hashicorp/aws mapping|not in the vendored")),
@@ -97,7 +107,7 @@ def _git(*args: str) -> bytes:
 
 def extract(tag: str, dest: Path) -> None:
     """The main template and every directory a nested TemplateURL names,
-    followed down the tree."""
+    followed down the tree. ``tag`` is any revision ``git archive`` reads."""
     wanted = ["template.yaml"]
     done: set[str] = set()
     while wanted:
@@ -160,10 +170,11 @@ def classify(line: str) -> str:
     return "other"
 
 
-def replay(tag: str) -> dict:
+def replay(tag: str, rev: str | None = None) -> dict:
+    """One release's result. ``rev`` is the revision to read (default: ``tag``)."""
     with tempfile.TemporaryDirectory(prefix=f"idp-replay-{tag}-") as tmp:
         root = Path(tmp)
-        extract(tag, root)
+        extract(rev or tag, root)
         result: dict = {
             "tag": tag,
             "types": [],
@@ -207,6 +218,7 @@ def replay(tag: str) -> dict:
         if not summary:
             result["shape"] = result["shape"] or _last_error(run.stderr or run.stdout)
             return result
+        result["reported"] = int(summary[-1].split()[0])
         for line in lines:
             if line is summary[-1] or line.startswith("stale declaration:"):
                 continue
@@ -270,6 +282,92 @@ def table(results: list[dict]) -> str:
     return "\n".join(rows)
 
 
+def load_releases(path: Path = RELEASES_FILE) -> dict[str, str]:
+    """``{tag: commit}`` from the releases file, refusing an empty or malformed one:
+    a gate over no release would pass having replayed nothing."""
+    data = json.loads(path.read_text())
+    releases = data.get("releases") if isinstance(data, dict) else None
+    if not isinstance(releases, dict) or not releases:
+        raise ValueError(f"{path} lists no releases")
+    for tag, commit in releases.items():
+        if (
+            not TAG.match(tag)
+            or not isinstance(commit, str)
+            or not _COMMIT.match(commit)
+        ):
+            raise ValueError(
+                f"{path}: {tag!r} -> {commit!r} is not a v0.<5|6>.<n> tag and a "
+                "40-character commit"
+            )
+    return dict(releases)
+
+
+def commit_present(commit: str) -> bool:
+    return (
+        subprocess.run(  # nosec B603 B607 - fixed argv
+            ["git", "-C", str(REPO), "cat-file", "-e", f"{commit}^{{commit}}"],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def check_problems(results: list[dict]) -> list[str]:
+    """Why the replayed releases fail the gate; empty when every one translated.
+
+    A release whose template was not read, or whose resource types could not be
+    listed, fails as well as one with a translation failure: neither was checked."""
+    problems = []
+    for r in results:
+        if r.get("missing"):
+            problems.append(f"{r['tag']}: {r['missing']}")
+            continue
+        if r["shape"]:
+            problems.append(f"{r['tag']}: template not read: {r['shape']}")
+        elif not r["types"]:
+            problems.append(f"{r['tag']}: no resource types were read")
+        for cls, lines in sorted(r["failures"].items()):
+            problems.append(
+                f"{r['tag']}: {len(lines)} {cls} failure(s), first: {lines[0]}"
+            )
+        # The translator's own count against the lines read from its output. An
+        # error may span lines, so more read than reported is normal; fewer means
+        # a reported failure went where this does not read it (stderr, a line
+        # shape the parse skips), and that must not pass.
+        read = sum(len(lines) for lines in r["failures"].values())
+        if r.get("reported", 0) > read:
+            problems.append(
+                f"{r['tag']}: the translator reported {r['reported']} failure(s) "
+                f"and only {read} were read from its output"
+            )
+    return problems
+
+
+def run_check(releases: dict[str, str], jobs: int) -> tuple[list[dict], list[str]]:
+    """Replay every listed release at its recorded commit."""
+    present = {
+        tag: commit for tag, commit in releases.items() if commit_present(commit)
+    }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        replayed = dict(
+            zip(present, pool.map(lambda t: replay(t, present[t]), present))
+        )
+    results = []
+    for tag, commit in releases.items():
+        results.append(
+            replayed.get(tag)
+            or {
+                "tag": tag,
+                "missing": (
+                    f"commit {commit} is not in this clone (fetch full history: "
+                    "git fetch --unshallow)"
+                ),
+            }
+        )
+    return results, check_problems(results)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
@@ -277,7 +375,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--json", type=Path, help="also write the raw results here")
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help=f"replay the releases in {RELEASES_FILE.name} at their recorded "
+        "commits and exit 1 on any failure",
+    )
     args = ap.parse_args(argv)
+    if args.check:
+        if args.tags:
+            ap.error("--check replays the releases file; it takes no --tags")
+        results, problems = run_check(load_releases(), args.jobs)
+        if args.json:
+            args.json.write_text(json.dumps(results, indent=1) + "\n")
+        print(table([r for r in results if not r.get("missing")]))
+        for problem in problems:
+            print(f"❌ {problem}")
+        if problems:
+            print(f"❌ {len(problems)} problem(s) replaying {len(results)} release(s)")
+            return 1
+        print(f"✅ {len(results)} release(s) translated with the current translator")
+        return 0
     tags = args.tags or release_tags()
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         results = list(pool.map(replay, tags))
