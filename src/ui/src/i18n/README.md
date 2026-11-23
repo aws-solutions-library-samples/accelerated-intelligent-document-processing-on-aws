@@ -1,9 +1,8 @@
 # Internationalization
 
 Developer notes for `src/ui/src/i18n/`: how the web UI shows a language other than English,
-how a message is declared, and what the gates around it check. Nothing here is visible to a user
-yet (only `en` is enabled); the user-facing description goes into
-[docs/web-ui.md](../../../../docs/web-ui.md) with the pull request that enables `fr-CA`. The series
+how a message is declared, and what the gates around it check. The user-facing description is
+[Interface language](../../../../docs/web-ui.md#interface-language) in the web UI guide. The series
 of pull requests that builds this out is tracked in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
 
@@ -453,15 +452,10 @@ candidate (it is never a file). This is the figure release notes quote.
 
 ## What stays English for now
 
-Admin, configuration and Test Studio screens (the configuration editor, including its help text,
-is a committed follow-up right after `fr-CA` ships; the rest is optional later); Cognito
-invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
-dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
-headers and generated report headings; the unit suffixes
-on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on integer percents
-built in template strings (`${progressPct}%`), until their screens convert; extension UIs that do
-not translate their own text, and feature `displayName`s; backend error texts until they carry
-stable codes; and document data, always. The remaining PRs of the series (the screens area by area,
-review tooling, enabling `fr-CA`, Cognito persistence, the configuration editor, error codes,
-agent-convention docs) are listed in
+The list a user reads is [Interface language](../../../../docs/web-ui.md#interface-language) in
+the web UI guide; change it together with this section. On the screens that list keeps English,
+the unit suffixes on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on
+integer percents built in template strings (`${progressPct}%`) stay until those screens convert.
+The follow-ups (keeping the choice with the user account, the configuration editor, stable error
+codes, agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
