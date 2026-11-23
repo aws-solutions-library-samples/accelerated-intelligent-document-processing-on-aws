@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Button, Icon } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import { AgentChatProvider, useAgentChatContext } from '../../contexts/agentChat';
 import AgentChatLayout from './AgentChatLayout';
 import { WELCOME_PATH } from '../../routes/constants';
@@ -10,10 +11,60 @@ import { isQuickStartEnabled } from '../../utils/quick-start-flag';
 import { TourHotspot } from '../../contexts/tourHotspots';
 import './QuickStartWidget.css';
 
+const messages = defineMessages<{
+  titleQuickStart: NoMessageValues;
+  titleChat: NoMessageValues;
+  openAriaLabel: NoMessageValues;
+  dialogAriaLabel: NoMessageValues;
+  minimize: NoMessageValues;
+  close: NoMessageValues;
+  resize: NoMessageValues;
+}>({
+  titleQuickStart: {
+    id: 'agentChat.quickStartWidget.titleQuickStart',
+    defaultMessage: 'Quick Start',
+    description: 'Title of the floating assistant panel while it runs Quick Start, which drafts a configuration for a document type.',
+  },
+  titleChat: {
+    id: 'agentChat.quickStartWidget.titleChat',
+    defaultMessage: 'Agent Companion Chat',
+    description:
+      'Title of the floating assistant panel while it runs the Agent Companion Chat. Agent Companion Chat is the name of the chat feature.',
+  },
+  openAriaLabel: {
+    id: 'agentChat.quickStartWidget.openAriaLabel',
+    defaultMessage: 'Open Quick Start',
+    description: 'Screen-reader label of the round launcher button that opens the floating Quick Start panel.',
+  },
+  dialogAriaLabel: {
+    id: 'agentChat.quickStartWidget.dialogAriaLabel',
+    defaultMessage: 'Assistant',
+    description: 'Screen-reader name of the floating assistant panel that holds Quick Start and the Agent Companion Chat.',
+  },
+  minimize: {
+    id: 'agentChat.quickStartWidget.minimize',
+    defaultMessage: 'Minimize',
+    description: 'Screen-reader label of the button that minimizes the floating assistant panel.',
+  },
+  close: {
+    id: 'agentChat.quickStartWidget.close',
+    defaultMessage: 'Close',
+    description: 'Screen-reader label of the button that closes the floating assistant panel.',
+  },
+  resize: {
+    id: 'agentChat.quickStartWidget.resize',
+    defaultMessage: 'Resize',
+    description: 'Screen-reader label of the corner handle that resizes the floating assistant panel.',
+  },
+});
+
 const WidgetHeaderTitle = (): React.JSX.Element => {
   const { agentChatState } = useAgentChatContext();
-  const title = agentChatState.mode === 'quick_start' ? 'Quick Start' : 'Agent Companion Chat';
-  return <span className="quick-start-widget-title">{title}</span>;
+  return (
+    <span className="quick-start-widget-title">
+      <FormattedMessage {...(agentChatState.mode === 'quick_start' ? messages.titleQuickStart : messages.titleChat)} />
+    </span>
+  );
 };
 
 const DRAG_THRESHOLD = 4;
@@ -97,6 +148,7 @@ const pinToStyle = (pin: Pin): React.CSSProperties => {
 };
 
 const QuickStartWidget = (): React.JSX.Element | null => {
+  const intl = useIntl();
   const location = useLocation();
   const [view, setView] = useState<View>('closed');
   const [mounted, setMounted] = useState(false);
@@ -273,7 +325,7 @@ const QuickStartWidget = (): React.JSX.Element | null => {
           <button
             type="button"
             className="quick-start-widget-launcher"
-            aria-label="Open Quick Start"
+            aria-label={intl.formatMessage(messages.openAriaLabel)}
             onPointerDown={startDrag('launcher', launcherRef)}
             onClick={handleLauncherClick}
           >
@@ -281,14 +333,25 @@ const QuickStartWidget = (): React.JSX.Element | null => {
           </button>
         </TourHotspot>
       </div>
-      <div ref={panelRef} className="quick-start-widget-panel" role="dialog" aria-label="Assistant" style={panelStyle}>
+      <div
+        ref={panelRef}
+        className="quick-start-widget-panel"
+        role="dialog"
+        aria-label={intl.formatMessage(messages.dialogAriaLabel)}
+        style={panelStyle}
+      >
         {mounted && (
           <AgentChatProvider initialMode="quick_start">
             <div className="quick-start-widget-header" onPointerDown={startDrag('panel', panelRef)}>
               <WidgetHeaderTitle />
               <span className="quick-start-widget-header-actions">
-                <Button variant="icon" iconName="treeview-collapse" ariaLabel="Minimize" onClick={() => setView('minimized')} />
-                <Button variant="icon" iconName="close" ariaLabel="Close" onClick={handleClose} />
+                <Button
+                  variant="icon"
+                  iconName="treeview-collapse"
+                  ariaLabel={intl.formatMessage(messages.minimize)}
+                  onClick={() => setView('minimized')}
+                />
+                <Button variant="icon" iconName="close" ariaLabel={intl.formatMessage(messages.close)} onClick={handleClose} />
               </span>
             </div>
             <div className="quick-start-widget-chat">
@@ -298,7 +361,7 @@ const QuickStartWidget = (): React.JSX.Element | null => {
               className={`quick-start-widget-resize quick-start-widget-resize-${handleCorner}`}
               onPointerDown={startResize}
               role="separator"
-              aria-label="Resize"
+              aria-label={intl.formatMessage(messages.resize)}
             />
           </AgentChatProvider>
         )}

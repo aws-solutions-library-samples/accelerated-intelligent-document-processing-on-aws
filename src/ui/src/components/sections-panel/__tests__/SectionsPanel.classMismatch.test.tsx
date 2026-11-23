@@ -13,6 +13,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 vi.mock('../../../api/client-shim', () => ({
   generateClient: () => ({ graphql: vi.fn() }),
@@ -45,11 +46,18 @@ const SECTIONS = [
 ];
 const DOC = { objectKey: 'doc', objectStatus: 'COMPLETED' };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderPanel = (classificationIndex = EMPTY_CLASSIFICATION_INDEX) =>
   render(
     <DocumentVersionProvider runId={null} files={[]}>
       <SectionsPanel {...({ sections: SECTIONS, pages: [], documentItem: DOC, classificationIndex } as Record<string, unknown>)} />
     </DocumentVersionProvider>,
+    { wrapper: English },
   );
 
 describe('SectionsPanel class mismatch annotation', () => {
