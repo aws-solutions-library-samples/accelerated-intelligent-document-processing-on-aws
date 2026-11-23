@@ -3557,7 +3557,7 @@ class Sweeper:
                 state = kms.describe_key(KeyId=key)["KeyMetadata"]["KeyState"]
             except Exception:  # noqa: BLE001 - NotFound
                 continue
-            if state not in ("PendingDeletion", "PendingReplicaDeletion"):
+            if state not in KMS_KEY_DELETION_STATES:
                 out.append(key)
         return out
 
@@ -3675,13 +3675,46 @@ class Sweeper:
         for key in self._keys():
             attempt(
                 f"kms key {key} (scheduled)",
-                lambda k=key: kms.schedule_key_deletion(KeyId=k, PendingWindowInDays=7),
+                lambda k=key: schedule_key_deletion(kms, k),
             )
         for role in self._roles():
             attempt(
                 f"role {role}", lambda r=role: delete_role(self.owner.boto("iam"), r)
             )
         return deleted, errors
+
+
+#: KMS key states in which deletion is already under way: a key in one of them
+#: needs nothing more from a sweep.
+KMS_KEY_DELETION_STATES = ("PendingDeletion", "PendingReplicaDeletion")
+
+#: The shortest pending window KMS accepts. A KMS key cannot be deleted at once,
+#: only scheduled for deletion, so this is as close to "deleted" as a sweep gets.
+KMS_MIN_PENDING_WINDOW_DAYS = 7
+
+
+def schedule_key_deletion(kms, key_id: str) -> bool:
+    """Schedule ``key_id`` for deletion with the minimum pending window.
+
+    Returns True when this call scheduled it, and False when there was nothing
+    to do: the key is already pending deletion, or it no longer exists. Any other
+    failure, of the describe or of the schedule, raises. Shared with the
+    nightly's retained-resource sweep (``codebuild_deployment``), so the two
+    teardowns handle a retained key the same way.
+    """
+    try:
+        state = kms.describe_key(KeyId=key_id)["KeyMetadata"]["KeyState"]
+    except Exception as e:
+        code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code")
+        if code == "NotFoundException":
+            return False
+        raise
+    if state in KMS_KEY_DELETION_STATES:
+        return False
+    kms.schedule_key_deletion(
+        KeyId=key_id, PendingWindowInDays=KMS_MIN_PENDING_WINDOW_DAYS
+    )
+    return True
 
 
 def delete_gateway(control, gateway_id: str, timeout: int = 300) -> None:
