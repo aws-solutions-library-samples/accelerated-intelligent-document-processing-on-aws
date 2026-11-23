@@ -32,7 +32,11 @@ Properties it is built around
    browser's only network path, one socket audit from Chrome's launch until after
    it has exited, the persona signed in over DevTools before the model starts, and
    a Bedrock-only session minted for that locale alone, or the run's own
-   credentials with a ``WARNING:`` line when none can be minted. A locale whose
+   credentials with a ``WARNING:`` line when none can be minted. Minting
+   re-assumes the credentials' own role with a Bedrock-only session policy.
+   Credentials that are already scoped, such as a session vended with a session
+   policy of its own, are normally refused that, so for them the warning is
+   expected, and their own policy is what bounds ``claude``. A locale whose
    audit is not clean fails the run.
 2. **The model can only look.** The commit guard knows controls by their English
    names, so on these screens it would let any click through; the session's grant
@@ -363,7 +367,8 @@ class LocaleRun:
         if bedrock is None:
             review.say(
                 "WARNING: no Bedrock-only session could be minted, so claude runs on "
-                "the run's own AWS credentials (credential_scope: ambient)"
+                "the run's own AWS credentials (credential_scope: ambient); expected "
+                "when those credentials are already scoped by a session policy"
             )
         aws_env = bedrock if bedrock is not None else agent.aws_env_from(rt.environ)
         root = artifacts.private_dir(run_dir / "agent")
