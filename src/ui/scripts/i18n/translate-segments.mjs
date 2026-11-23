@@ -108,7 +108,7 @@ const sentenceToHtml = (sentence, slots) =>
     })
     .join('');
 
-/** Any span, its closing tag, any other markup, or text. */
+/** Any span, its closing tag, any other markup, text, or a bare `<` that opens no tag. */
 const HTML_TOKEN = /<\s*span\b([^>]*)>|<\s*\/\s*span\s*>|<[a-zA-Z/!][^>]*>|[^<]+|</g;
 
 /**
@@ -157,10 +157,11 @@ const htmlToSentence = (html, slots) => {
         const sent = printAST([slots[closed.slot]]);
         if (closed.children.length !== 1 || closed.children[0] !== sent) throw new Error(`the answer changed span ${closed.slot}`);
       }
-    } else if (token.startsWith('<')) {
-      // The request escapes every `<` of the English, so any other `<`, even a bare one, is the engine's.
+    } else if (token !== '<' && token.startsWith('<')) {
+      // The request escapes every `<` of the English, so any markup other than its spans is the engine's.
       throw new Error(`the answer has markup the request did not: ${token}`);
     } else {
+      // Text. An engine may give an escaped `<` back bare; one that opens no tag is that text again.
       parent.children.push(unescapeHtml(token));
     }
   }

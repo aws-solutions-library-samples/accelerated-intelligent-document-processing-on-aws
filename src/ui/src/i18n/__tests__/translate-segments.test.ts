@@ -101,6 +101,18 @@ describe('joinMessage: rebuilding the answer', () => {
     expect(rebuilt('Hello {name}', [`Bonjour <span data-ph='0' translate='no'>{name}</span>`])).toBe('Bonjour {name}');
   });
 
+  it('keeps a < the engine gave back bare as text when it opens no tag, as the English had it', () => {
+    const english = 'Low confidence: {score, number, ::.00} < {threshold, number, ::.00}';
+    expect(splitMessage(english)[0].html).toBe(
+      `Low confidence: ${ph(0, '{score, number, ::.00}')} &lt; ${ph(1, '{threshold, number, ::.00}')}`,
+    );
+    const message = rebuilt(english, [`Faible confiance : ${ph(0, '{score, number, ::.00}')} < ${ph(1, '{threshold, number, ::.00}')}`]);
+    expect(message).toBe(`Faible confiance${NBSP}: {score, number, ::.00} < {threshold, number, ::.00}`);
+    expect(validateMessage('test.id', english, message)).toEqual({ ok: true, errors: [] });
+    expect(rebuilt('Score < 80%', ['Note < 80 %'])).toBe('Note < 80 %');
+    expect(rebuilt('Below <{threshold}', [`Sous <${ph(0, '{threshold}')}`])).toBe('Sous <{threshold}');
+  });
+
   it('decodes the HTML entities of the answer and lets the printer quote ICU syntax', () => {
     const message = rebuilt("Type '{name}' & go", ['Tapez {name} &amp; allez'], 'en');
     expect(message).toBe("Tapez '{name}' & allez");
@@ -113,12 +125,13 @@ describe('joinMessage: rebuilding the answer', () => {
     ['a span the request did not have', [`${ph(3, '{name}')}`], /span 3, which the request did not have/],
     ['a span with no number', ['<span>Bonjour</span>'], /a <span> the request did not/],
     ['other markup', [`Bonjour <b>${ph(0, '{name}')}</b>`], /markup the request did not: <b>/],
+    ['a line break the request did not have', [`Bonjour<br>${ph(0, '{name}')}`], /markup the request did not: <br>/],
+    ['an escaped < the engine turned into a tag', [`<No content> ${ph(0, '{name}')}`], /markup the request did not: <No content>/],
     ['an unclosed span', [`Bonjour <span translate="no" data-ph="0">{name}`], /leaves a <span> open/],
     ['a closing span with no opening', [`Bonjour ${ph(0, '{name}')}</span>`], /closes a <span> it never opened/],
     ['a placeholder turned into a tag', ['Bonjour <span data-tag="0">x</span>'], /changed what span 0 is/],
     ['text written into a protected span', ['Bonjour <span translate="no" data-ph="0">Marie</span>'], /changed span 0/],
     ['an emptied protected span', ['Bonjour <span translate="no" data-ph="0"></span>'], /changed span 0/],
-    ['a bare <', [`Bonjour ${ph(0, '{name}')} <`], /markup the request did not: <$/],
     ['too few answers', [], /no answer for sentence 1/],
     ['too many answers', [`Bonjour ${ph(0, '{name}')}`, 'extra'], /2 answers for 1 sentence/],
   ])('refuses %s, naming the message', (_, answers, reason) => {
