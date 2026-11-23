@@ -636,6 +636,64 @@ def test_an_answer_keeps_the_englishs_edges_and_is_nfc():
     assert MODULE.as_written("Upload", "Te\u0301le\u0301verser") == "Téléverser"
 
 
+@pytest.mark.parametrize(
+    "answer, written",
+    [
+        ("Statut : prêt", f"Statut{NBSP}: prêt"),
+        ("Statut: prêt", f"Statut{NBSP}: prêt"),
+        ("Statut\u202f:", f"Statut{NBSP}:"),
+        ("{name}: {value}", f"{{name}}{NBSP}: {{value}}"),
+        (
+            "{count,plural,one{Fichier :} other{Fichiers :}}",
+            f"{{count,plural,one{{Fichier{NBSP}:}} other{{Fichiers{NBSP}:}}}}",
+        ),
+        ("<b>Statut :</b> {value}", f"<b>Statut{NBSP}:</b> {{value}}"),
+        (
+            "https://example.com à 10:30, {h}:{m}",
+            "https://example.com à 10:30, {h}:{m}",
+        ),
+        ("{share, number, ::percent} gardé", "{share, number, ::percent} gardé"),
+        (f"Supprimer ? Oui ! Non ;{NBSP}ici\u202f?", f"Supprimer? Oui! Non;{NBSP}ici?"),
+        ("le profil « default »", f"le profil «{NBSP}default{NBSP}»"),
+        (f"le profil «{NBSP}default{NBSP}»", f"le profil «{NBSP}default{NBSP}»"),
+    ],
+    ids=[
+        "colon",
+        "colon without a space",
+        "narrow space",
+        "after an argument",
+        "end of a branch",
+        "before a closing tag",
+        "not a phrase end",
+        "number skeleton",
+        "; ? !",
+        "quotation marks",
+        "already right",
+    ],
+)
+def test_the_canadian_spacing_is_applied_by_code(answer, written):
+    assert MODULE.canadian_spacing(answer) == written
+    assert MODULE.as_written("x", answer, "fr-CA") == written
+    assert (
+        MODULE.as_written("x", answer) == answer.strip()
+    )  # another locale keeps the model's
+
+
+def test_the_written_catalog_gets_the_no_break_spaces_the_model_left_out(
+    tmp_path, monkeypatch
+):
+    layout, report_path, notes_path, _ = _tree(tmp_path, monkeypatch)
+    answers = dict(ANSWERS, **{"nav.queue": "Ouvrir : la file d’attente de révision"})
+    _use_client(monkeypatch, FakeBedrock(answer_with(answers)))
+
+    assert _run(layout, report_path, notes_path) == 0
+
+    assert (
+        _catalog(layout)["nav.queue"]["message"]
+        == f"Ouvrir{NBSP}: la file d’attente de révision"
+    )
+
+
 def _set(entry_id: str, **fields):
     def answer(request):
         revisions = []

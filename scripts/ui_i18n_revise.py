@@ -31,7 +31,10 @@ message only, per entry.
 
 WHAT IS WRITTEN
 ---------------
-The coverage worker (``src/ui/scripts/i18n/coverage.mjs``) checks every answer over a
+Each answer first gets the locale's spacing before punctuation (``SPACING``: for
+``fr-CA``, the no-break spaces of the translation tool's Canadian typography, which the
+model does not keep), then the coverage worker (``src/ui/scripts/i18n/coverage.mjs``)
+checks every answer over a
 scratch catalog with the parity check the UI build applies: ICU that parses, and the
 English's arguments, their kinds and its rich-text tags. An answer that fails, or that
 is not well formed, is refused with the reason, and its entry keeps the text it had.
@@ -77,6 +80,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -117,6 +121,27 @@ REVISE_RULES = {
 
 #: What every outcome is called, in the order the report counts them.
 OUTCOMES = ("revised", "unchanged", "refused", "skipped")
+
+#: Space characters a model puts before punctuation: space, no-break space, narrow no-break space.
+_SPACES = "[ \u00a0\u202f]"
+
+
+def canadian_spacing(message: str) -> str:
+    """The spacing of the translation tool's Canadian French typography
+    (``canadianFrenchTypography`` in ``translate-segments.mjs``), on a whole ICU message:
+    no space before ``;``, ``?`` and ``!``, no-break spaces inside « », and a no-break
+    space before a colon that ends a phrase, that is one followed by a space, the end of
+    the message, the end of a plural or select branch, or a closing tag (so ``https://``,
+    ``10:30``, ``{h}:{m}`` and a ``::`` number skeleton keep theirs). The model is asked
+    for the same and does not keep the no-break spaces, so they are applied here."""
+    message = re.sub(f"{_SPACES}+(?=[;?!])", "", message)
+    message = re.sub(f"«{_SPACES}*", "«\u00a0", message)
+    message = re.sub(f"{_SPACES}*»", "\u00a0»", message)
+    return re.sub(f"(?<=[^\\s:]){_SPACES}*:(?=\\s|$|}}|</)", "\u00a0:", message)
+
+
+#: The spacing applied to each locale's answers; a locale with no entry keeps the model's.
+SPACING = {"fr-CA": canadian_spacing}
 
 
 @dataclass
@@ -339,8 +364,6 @@ TOOL_SPEC = {
 
 def instructions(locale: str, glossary: review.Glossary | None) -> str:
     """The cached prefix of every request: the task, the rules and the glossary."""
-    # shortcut: the spacing before punctuation is asked of the model, not applied by
-    # code as the translation tool applies it; apply it by code if revised entries miss it.
     text = (
         f"You revise {locale} translations of the user interface of a web application, "
         "the GenAI Intelligent Document Processing accelerator: people upload documents, "
@@ -489,12 +512,15 @@ def read_answer(
     return messages, unusable
 
 
-def as_written(english: str, answer: str) -> str:
-    """An answer as the catalog takes it: NFC, with the English's own leading and
-    trailing spaces in place of the model's."""
+def as_written(english: str, answer: str, locale: str | None = None) -> str:
+    """An answer as the catalog takes it: NFC, with the locale's spacing (``SPACING``) and
+    the English's own leading and trailing spaces in place of the model's."""
     lead = english[: len(english) - len(english.lstrip())]
     trail = english[len(english.rstrip()) :]
-    return unicodedata.normalize("NFC", f"{lead}{answer.strip()}{trail}")
+    text = unicodedata.normalize("NFC", answer.strip())
+    if locale in SPACING:
+        text = SPACING[locale](text)
+    return f"{lead}{text}{trail}"
 
 
 # --- the run ---------------------------------------------------------------------------
@@ -508,6 +534,7 @@ def revise_batches(
     batches: list[list[Target]],
     max_usd: float,
     errors: tuple[type[BaseException], ...],
+    locale: str,
 ) -> tuple[review.Spend, str | None]:
     """Send batch after batch until done, the cap, or an AWS error; return the spend and
     why the run stopped early, if it did. An answered entry gets ``after``; an entry
@@ -544,7 +571,7 @@ def revise_batches(
         messages, unusable = read_answer(response, batch)
         for target in batch:
             if target.id in messages:
-                target.after = as_written(target.english, messages[target.id])
+                target.after = as_written(target.english, messages[target.id], locale)
             else:
                 target.outcome = "refused"
                 target.reason = unusable[target.id]
@@ -784,7 +811,7 @@ def revise_catalog(layout: review.Layout, args: argparse.Namespace) -> int:
     except errors as exc:
         raise ToolError(f"no Bedrock client could be made: {exc}") from None
     spend, stopped = revise_batches(
-        client, args.model, rates, prefix, batches, args.max_usd, errors
+        client, args.model, rates, prefix, batches, args.max_usd, errors, args.locale
     )
     check_answers(layout, args.locale, [t for t in plan.targets if t.after is not None])
 

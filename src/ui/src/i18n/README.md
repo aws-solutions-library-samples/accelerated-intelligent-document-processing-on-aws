@@ -440,9 +440,11 @@ and calls nothing; a real run needs `--region` (and `--profile` for a named prof
   no-break space before a colon that ends a phrase and none before `;`, `?` and `!`, then the whole glossary. Per
   entry it gets the English, its `description`, the current translation, the glossary terms its English uses, and the
   review's findings and the note when there are any. It answers with the message only.
-- **What is written.** The coverage worker checks every answer with the build's parity check. An answer that fails,
-  or is not well formed, is refused with the reason, and its entry keeps its text. An answer that passes and differs
-  is written with the `sourceHash` of its English. Review the French before committing it.
+- **What is written.** Each answer first gets the locale's spacing before punctuation by code, as the drafting tool
+  applies it (the model does not keep no-break spaces). The coverage worker then checks every answer with the
+  build's parity check. An answer that fails, or is not well formed, is refused with the reason, and its entry keeps
+  its text. An answer that passes and differs is written with the `sourceHash` of its English. Review the French
+  before committing it.
 - **Provenance.** Each run writes the model, the Region, the prompt's and the glossary's SHA-256, the cost, and per
   entry the text before and after and its outcome (revised, unchanged, refused or skipped) under
   `test-reports/ui-i18n-revise/`. `make ui-i18n-review` with `--provenance <file>` reviews the entries that run
