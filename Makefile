@@ -1819,6 +1819,22 @@ ui-i18n-review: ## Review src/ui/src/i18n/<LOCALE>.json with a Bedrock model and
 	@# same lock as the UI targets (issue #1447).
 	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_review.py --locale $(LOCALE) $(UI_I18N_REVIEW_ARGS)'
 
+# A DEVELOPER TOOL, NOT A GATE: it calls Amazon Bedrock with the developer's own AWS
+# credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
+# `fastlint` or `lint-cicd`, and its name matches none of the check shapes
+# test_ci_gate_parity.py classifies by. It rewrites the entries of
+# src/ui/src/i18n/<LOCALE>.json that a ui-i18n-review report flagged, writes each
+# answer that passes the build's parity check (review and commit them), and writes a
+# provenance file under test-reports/. Flags go through UI_I18N_REVISE_ARGS: start with
+# `make ui-i18n-revise LOCALE=fr-CA UI_I18N_REVISE_ARGS="--review <report.json> --dry-run"`,
+# then e.g. `UI_I18N_REVISE_ARGS="--review <report.json> --region ca-central-1 --profile <name>"`.
+UI_I18N_REVISE_ARGS ?=
+ui-i18n-revise: ## Rewrite the entries of src/ui/src/i18n/<LOCALE>.json that a review flagged with a Bedrock model, writing only answers that pass the build's parity check, using your AWS credentials (LOCALE=fr-CA; UI_I18N_REVISE_ARGS="--review <report.json> --dry-run" first) (issue #1770)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-revise LOCALE=fr-CA$(NC)"; exit 2; fi
+	@# It runs node out of src/ui/node_modules (the coverage worker), so it takes the
+	@# same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_revise.py --locale $(LOCALE) $(UI_I18N_REVISE_ARGS)'
+
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
 	@$(UI_DEPS_LOCK) 'npm run codegen'

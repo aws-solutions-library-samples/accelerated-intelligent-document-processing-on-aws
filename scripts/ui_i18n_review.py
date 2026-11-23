@@ -34,7 +34,8 @@ ONE TRANSLATION RUN
 wrote (under ``test-reports/ui-i18n-translate/``) and reviews only the entries that
 run wrote. Each carries that run's back-translation, when it was asked for, as
 evidence: a back-translation whose meaning differs from the English points at a
-meaning problem, though the model judges the translation itself.
+meaning problem, though the model judges the translation itself. The provenance file
+of a ``make ui-i18n-revise`` run is read the same way, and carries no back-translation.
 
 THE ANSWER IS DATA
 ------------------
@@ -1034,7 +1035,7 @@ def main(argv: list[str] | None = None, *, layout: Layout | None = None) -> int:
         "--provenance",
         type=Path,
         metavar="PATH",
-        help="review only the entries one make ui-i18n-translate run wrote, with its back-translations",
+        help="review only the entries one make ui-i18n-translate or make ui-i18n-revise run wrote, with its back-translations",
     )
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit < 1:
