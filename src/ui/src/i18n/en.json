@@ -96,7 +96,7 @@
     "description": "Screen-reader label of the paper-clip button that attaches example documents to a Quick Start message."
   },
   "agentChat.layout.chip.addDocumentType": {
-    "defaultMessage": "Add a new document type to my existing configuration",
+    "defaultMessage": "Add a document type to one of my profiles",
     "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
   },
   "agentChat.layout.chip.capabilities": {
