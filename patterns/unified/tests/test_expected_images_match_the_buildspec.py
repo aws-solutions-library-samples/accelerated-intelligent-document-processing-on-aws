@@ -20,9 +20,13 @@ or a one-sided addition here reproduces the same hang through a third route, and
 the scan wait's bound does not help because presence polling is deliberately
 unbounded.
 
-Only the subset direction is asserted. An image the buildspec builds and
-``ExpectedImages`` does not name is harmless: nothing waits for it, and two such
-images exist today by design.
+The reverse direction is asserted too, and it is not harmless: an image the
+buildspec builds that ``ExpectedImages`` does not name is outside both of the
+handler's image decisions -- the post-build wait and the rollback image-reuse
+check (#1824) -- so a rollback can reuse a version one of whose images has
+already expired. Two images were in that state until #2220. The list is also
+compared with the images the template's ``PackageType: Image`` functions pull,
+so the three sets -- built, expected, pulled -- must be equal.
 
 Both lists are parsed from the files rather than restated here, and both parses
 are checked for non-vacuity, because a parse that silently finds nothing would
@@ -900,4 +904,352 @@ def test_every_expected_image_is_actually_built() -> None:
         "fails the stack with 'CloudFormation did not receive a response from your "
         "Custom Resource' -- a message that names neither the image nor the build. "
         f"Images the buildspec does build: {sorted(built)}"
+    )
+
+
+def _unlisted(expected: list[str], built: frozenset[str]) -> list[str]:
+    """The built images ``ExpectedImages`` does not name -- the reverse direction.
+
+    A function for the same reason ``_unbuilt`` is one: the probes below drive the
+    comparison the gate really makes.
+    """
+    return sorted(built - set(expected))
+
+
+def test_every_built_image_is_expected() -> None:
+    """An image the build pushes but the list omits is checked by nothing.
+
+    ``src/lambda/start_codebuild`` reads ``ExpectedImages`` for both of its image
+    decisions: after a build it waits for every listed tag (and orders an ECR scan
+    before the tag goes live), and during a rollback it reuses the previous
+    version's images instead of rebuilding only if every listed tag is still in
+    the repository (#1824). An unlisted image is in neither check, so a rollback
+    can decide to reuse a version one of whose images the lifecycle rule has
+    already expired, and the function pulling it then fails mid-rollback. The
+    lifecycle-count check in ``scripts/tests/test_docker_build_run_wiring.py``
+    also sizes itself from this list, so an omission undercounts it too (#2220).
+    """
+    expected = _expected_images()
+    built = _built_images()
+
+    unlisted = _unlisted(expected, built)
+    assert not unlisted, (
+        f"{_buildspec_path().name} builds images that DockerBuildRun's "
+        f"ExpectedImages does not name: {unlisted}. Neither the post-build "
+        "verification nor the rollback image-reuse check covers them. Add them to "
+        f"ExpectedImages. Listed today: {sorted(expected)}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the functions that pull the images
+# --------------------------------------------------------------------------- #
+
+_FUNCTION_TYPES = ("AWS::Serverless::Function", "AWS::Lambda::Function")
+
+#: The one ImageUri shape this template uses. Anything else is refused, not
+#: skipped, for the same reason a computed ExpectedImages entry is.
+_IMAGE_URI = re.compile(
+    r"^\$\{ECRRepository\.RepositoryUri\}:(?P<name>.+)-\$\{ImageVersion\}$"
+)
+
+
+def _image_uri_of(properties: dict) -> Any:
+    """``ImageUri`` as SAM spells it, or as plain Lambda spells it under ``Code``."""
+    if "ImageUri" in properties:
+        return properties["ImageUri"]
+    code = properties.get("Code")
+    if isinstance(code, dict) and "ImageUri" in code:
+        return code["ImageUri"]
+    return None
+
+
+def _pulled_images_in(document: dict) -> frozenset[str]:
+    """The image name every image-packaged function in the document pulls.
+
+    The universe is every function resource that declares ``PackageType: Image``
+    **or** carries an ``ImageUri``, so a function that has one without the other
+    is refused rather than falling out of both sets.
+    """
+    resources = document.get("Resources") or {}
+    globals_function = (document.get("Globals") or {}).get("Function") or {}
+    default_package_type = globals_function.get("PackageType")
+
+    pulled: set[str] = set()
+    for logical_id, resource in resources.items():
+        if not isinstance(resource, dict):
+            continue
+        if resource.get("Type") not in _FUNCTION_TYPES:
+            continue
+        properties = resource.get("Properties") or {}
+        package_type = properties.get("PackageType", default_package_type)
+        uri = _image_uri_of(properties)
+        if package_type != "Image" and uri is None:
+            continue
+        assert package_type == "Image" and uri is not None, (
+            f"{logical_id}: PackageType is {package_type!r} and ImageUri is {uri!r}. "
+            "An image-packaged function needs both, so this gate cannot tell which "
+            "image it pulls."
+        )
+        assert isinstance(uri, dict) and set(uri) in ({"!Sub"}, {"Fn::Sub"}), (
+            f"{logical_id}: ImageUri {uri!r} is not a !Sub of the repository URI. "
+            "Extend this parse to read it; do not leave it unchecked."
+        )
+        (template,) = uri.values()
+        match = _IMAGE_URI.match(template) if isinstance(template, str) else None
+        assert match, (
+            f"{logical_id}: ImageUri {template!r} is not "
+            "'${ECRRepository.RepositoryUri}:<image>-${ImageVersion}', so this gate "
+            "cannot read the image name it pulls."
+        )
+        pulled.add(match.group("name"))
+    return frozenset(pulled)
+
+
+def _disagreement(
+    expected: list[str], pulled: frozenset[str]
+) -> tuple[list[str], list[str]]:
+    """(pulled but not expected, expected but pulled by no function)."""
+    return sorted(pulled - set(expected)), sorted(set(expected) - pulled)
+
+
+def test_the_pulled_image_set_parses_non_empty() -> None:
+    pulled = _pulled_images_in(_document())
+    assert len(pulled) >= 3, f"pulled images parsed as {sorted(pulled)}"
+    assert all(name.endswith("-function") for name in pulled), sorted(pulled)
+
+
+def test_the_expected_images_are_exactly_the_images_the_functions_pull() -> None:
+    """``ExpectedImages`` is the set of tags the template's functions depend on.
+
+    Every image-packaged function ``DependsOn: DockerBuildRun``, so a tag a
+    function pulls that the list omits is the same unchecked image as above,
+    reached from the template's side rather than the buildspec's; and a listed
+    tag no function pulls is a wait (and a rollback condition) for nothing.
+    """
+    pulled = _pulled_images_in(_document())
+    not_expected, not_pulled = _disagreement(_expected_images(), pulled)
+
+    assert not (not_expected or not_pulled), (
+        "DockerBuildRun's ExpectedImages and the images the PackageType: Image "
+        "functions pull disagree. "
+        f"Pulled but not expected: {not_expected}. "
+        f"Expected but pulled by no function: {not_pulled}."
+    )
+
+
+def test_the_pull_comparison_reports_both_directions() -> None:
+    assert _disagreement(["a-function"], frozenset({"a-function", "b-function"})) == (
+        ["b-function"],
+        [],
+    )
+    assert _disagreement(["a-function", "b-function"], frozenset({"a-function"})) == (
+        [],
+        ["b-function"],
+    )
+    assert _disagreement(["a-function"], frozenset({"a-function"})) == ([], [])
+
+
+def _function_document(*resources: tuple[str, dict]) -> dict:
+    return {"Resources": dict(resources)}
+
+
+def _image_function(name: str) -> dict:
+    return {
+        "Type": "AWS::Serverless::Function",
+        "Properties": {
+            "PackageType": "Image",
+            "ImageUri": {
+                "!Sub": "${ECRRepository.RepositoryUri}:" + name + "-${ImageVersion}"
+            },
+        },
+    }
+
+
+def test_a_plain_lambda_image_function_is_read_too() -> None:
+    document = _function_document(
+        ("Sam", _image_function("alpha-function")),
+        (
+            "Plain",
+            {
+                "Type": "AWS::Lambda::Function",
+                "Properties": {
+                    "PackageType": "Image",
+                    "Code": {
+                        "ImageUri": {
+                            "Fn::Sub": "${ECRRepository.RepositoryUri}:"
+                            "beta-function-${ImageVersion}"
+                        }
+                    },
+                },
+            },
+        ),
+        ("Zip", {"Type": "AWS::Serverless::Function", "Properties": {}}),
+    )
+    assert _pulled_images_in(document) == frozenset({"alpha-function", "beta-function"})
+
+
+def test_a_globals_package_type_is_honoured() -> None:
+    function = _image_function("alpha-function")
+    del function["Properties"]["PackageType"]
+    document = {
+        "Globals": {"Function": {"PackageType": "Image"}},
+        **_function_document(("F", function)),
+    }
+    assert _pulled_images_in(document) == frozenset({"alpha-function"})
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [
+        pytest.param({"PackageType": "Image"}, id="image-without-uri"),
+        pytest.param(
+            {"ImageUri": {"!Sub": "${ECRRepository.RepositoryUri}:a-${ImageVersion}"}},
+            id="uri-without-package-type",
+        ),
+        pytest.param(
+            {"PackageType": "Image", "ImageUri": "123.dkr.example/repo:latest"},
+            id="literal-uri",
+        ),
+        pytest.param(
+            {
+                "PackageType": "Image",
+                "ImageUri": {"!Sub": "${OtherRepository.RepositoryUri}:a"},
+            },
+            id="foreign-shape",
+        ),
+    ],
+)
+def test_an_unreadable_image_function_is_refused_rather_than_skipped(
+    properties: dict,
+) -> None:
+    document = _function_document(
+        ("F", {"Type": "AWS::Serverless::Function", "Properties": properties})
+    )
+    with pytest.raises(AssertionError):
+        _pulled_images_in(document)
+
+
+def _repository_uri_sites(node: Any, path: str = "") -> list[str]:
+    """Every place under ``node`` that names the repository's URI."""
+    sites: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ("!GetAtt", "Fn::GetAtt") and value in (
+                "ECRRepository.RepositoryUri",
+                ["ECRRepository", "RepositoryUri"],
+            ):
+                sites.append(path)
+            sites.extend(_repository_uri_sites(value, f"{path}/{key}"))
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            sites.extend(_repository_uri_sites(item, f"{path}/{index}"))
+    elif isinstance(node, str) and "${ECRRepository.RepositoryUri}" in node:
+        sites.append(path)
+    return sites
+
+
+def _unread_repository_uri_sites(document: dict) -> list[str]:
+    """Uses of the repository URI that are neither the build's push target nor a
+    function ``ImageUri`` this gate reads.
+
+    The pulled-image set covers Lambda functions only, so anything else pulling
+    from the repository -- a task definition, an agent runtime -- would sit
+    outside every comparison above. Closing the universe over the URI itself is
+    what makes that a failure rather than a silent gap.
+    """
+    unread: list[str] = []
+    for logical_id, resource in (document.get("Resources") or {}).items():
+        if not isinstance(resource, dict):
+            continue
+        for site in _repository_uri_sites(resource, logical_id):
+            is_function_image = resource.get("Type") in _FUNCTION_TYPES and (
+                site.endswith("/ImageUri/!Sub") or site.endswith("/ImageUri/Fn::Sub")
+            )
+            is_build_target = (
+                resource.get("Type") == "AWS::CodeBuild::Project"
+                and "/EnvironmentVariables/" in site
+            )
+            if not (is_function_image or is_build_target):
+                unread.append(site)
+    return unread
+
+
+def test_every_use_of_the_repository_uri_is_read() -> None:
+    unread = _unread_repository_uri_sites(_document())
+    assert not unread, (
+        "The ECR repository URI is used where this gate does not read an image "
+        f"name from it: {unread}. Whatever pulls from it there is not compared "
+        "with ExpectedImages or the buildspec. Extend _pulled_images_in to read it."
+    )
+
+
+def test_a_non_function_puller_is_reported() -> None:
+    document = _function_document(
+        ("Fn", _image_function("alpha-function")),
+        (
+            "Task",
+            {
+                "Type": "AWS::ECS::TaskDefinition",
+                "Properties": {
+                    "ContainerDefinitions": [
+                        {
+                            "Image": {
+                                "!Sub": "${ECRRepository.RepositoryUri}:"
+                                "orphan-${ImageVersion}"
+                            }
+                        }
+                    ]
+                },
+            },
+        ),
+        (
+            "Build",
+            {
+                "Type": "AWS::CodeBuild::Project",
+                "Properties": {
+                    "Environment": {
+                        "EnvironmentVariables": [
+                            {
+                                "Name": "ECR_URI",
+                                "Value": {"!GetAtt": "ECRRepository.RepositoryUri"},
+                            }
+                        ]
+                    }
+                },
+            },
+        ),
+    )
+    assert _unread_repository_uri_sites(document) == [
+        "Task/Properties/ContainerDefinitions/0/Image/!Sub"
+    ]
+
+
+def test_a_get_att_outside_the_build_is_reported() -> None:
+    function = _image_function("alpha-function")
+    function["Properties"]["Environment"] = {
+        "Variables": {"REPO": {"Fn::GetAtt": ["ECRRepository", "RepositoryUri"]}}
+    }
+    assert _unread_repository_uri_sites(_function_document(("Fn", function))) == [
+        "Fn/Properties/Environment/Variables/REPO"
+    ]
+
+
+def test_another_version_variable_is_refused() -> None:
+    function = _image_function("alpha-function")
+    function["Properties"]["ImageUri"] = {
+        "!Sub": "${ECRRepository.RepositoryUri}:alpha-function-${OtherVersion}"
+    }
+    with pytest.raises(AssertionError):
+        _pulled_images_in(_function_document(("F", function)))
+
+
+def test_the_reverse_comparison_reports_an_unlisted_image() -> None:
+    built = frozenset({"alpha-function", "beta-function", "beta-function-extra"})
+    assert _unlisted(["alpha-function", "beta-function"], built) == [
+        "beta-function-extra"
+    ]
+    assert (
+        _unlisted(["alpha-function", "beta-function"], built - {"beta-function-extra"})
+        == []
     )

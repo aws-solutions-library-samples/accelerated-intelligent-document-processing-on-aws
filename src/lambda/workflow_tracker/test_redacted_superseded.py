@@ -183,3 +183,27 @@ def test_superseded_deletes_original_key(index_module):
     kwargs = fake_delete.call_args.kwargs
     assert kwargs["object_key"] == "w2.pdf"
     assert kwargs["input_bucket"] == "test-input"
+
+
+def test_an_incomplete_superseded_delete_is_logged_as_an_error(index_module, caplog):
+    """``delete_single_document`` returns its failures; it does not raise them.
+
+    Logging the result at INFO as "Deleted" whatever it said reported an original whose
+    input versions were refused (#2166) as removed — the case the PII *redact copy and
+    stop* mode exists to prevent.
+    """
+    m = index_module
+    sys.modules["idp_common.delete_documents"].delete_single_document = MagicMock(
+        return_value={
+            "success": False,
+            "deleted": {"input_file": False},
+            "errors": ["Error deleting from input bucket: AccessDenied"],
+        }
+    )
+    with caplog.at_level("INFO"):
+        m._delete_superseded_original("w2.pdf")
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors and "AccessDenied" in errors[0].getMessage()
+    assert not any(
+        r.getMessage().startswith("Deleted REDACTED_SUPERSEDED") for r in caplog.records
+    )
