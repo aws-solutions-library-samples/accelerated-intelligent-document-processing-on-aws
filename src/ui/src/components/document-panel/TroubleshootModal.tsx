@@ -5,6 +5,7 @@ import React, { useState, useEffect } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Modal, Box, SpaceBetween, Button, Spinner, Alert, Header } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 
 import { submitAgentQuery, getAgentJobStatus, listAvailableAgents } from '../../graphql/generated';
 import AgentResultDisplay from '../document-agents-layout/AgentResultDisplay';
@@ -60,6 +61,103 @@ interface Subscription {
 const client = generateClient();
 const logger = new ConsoleLogger('TroubleshootModal');
 
+const messages = defineMessages<{
+  submitFailed: NoMessageValues;
+  jobFailed: NoMessageValues;
+  restoreAriaLabel: NoMessageValues;
+  running: NoMessageValues;
+  ready: NoMessageValues;
+  title: NoMessageValues;
+  copied: NoMessageValues;
+  copy: NoMessageValues;
+  report: NoMessageValues;
+  runAgain: NoMessageValues;
+  minimize: NoMessageValues;
+  close: NoMessageValues;
+  analyzing: { readonly objectKey: string | undefined; readonly strong: MessageTag };
+  analyzingFailure: NoMessageValues;
+  status: { readonly status: string };
+}>({
+  submitFailed: {
+    id: 'documents.troubleshoot.submitFailed',
+    defaultMessage: 'Failed to submit troubleshoot query',
+    description: 'Error in the Troubleshoot dialog when the troubleshooting request could not be sent and gave no reason.',
+  },
+  jobFailed: {
+    id: 'documents.troubleshoot.jobFailed',
+    defaultMessage: 'Job processing failed',
+    description: 'Error in the Troubleshoot dialog when the troubleshooting job failed and gave no reason.',
+  },
+  restoreAriaLabel: {
+    id: 'documents.troubleshoot.restoreAriaLabel',
+    defaultMessage: 'Restore Troubleshoot window',
+    description: 'Screen-reader label of the chip that reopens the minimized Troubleshoot dialog.',
+  },
+  running: {
+    id: 'documents.troubleshoot.running',
+    defaultMessage: 'Troubleshooting…',
+    description: 'Text of the minimized Troubleshoot chip while the analysis runs.',
+  },
+  ready: {
+    id: 'documents.troubleshoot.ready',
+    defaultMessage: 'Troubleshoot results ready',
+    description: 'Text of the minimized Troubleshoot chip once the analysis has finished.',
+  },
+  title: {
+    id: 'documents.troubleshoot.title',
+    defaultMessage: 'Troubleshoot Document',
+    description: 'Title of the Troubleshoot dialog, which asks an agent why a document failed.',
+  },
+  copied: {
+    id: 'documents.troubleshoot.copied',
+    defaultMessage: 'Copied',
+    description: 'Copy full details button of the Troubleshoot dialog, just after copying.',
+  },
+  copy: {
+    id: 'documents.troubleshoot.copy',
+    defaultMessage: 'Copy full details',
+    description: 'Button of the Troubleshoot dialog that copies the findings and deployment details.',
+  },
+  report: {
+    id: 'documents.troubleshoot.report',
+    defaultMessage: 'Report this issue on GitHub',
+    description: 'Button of the Troubleshoot dialog that opens a prefilled GitHub issue.',
+  },
+  runAgain: {
+    id: 'documents.troubleshoot.runAgain',
+    defaultMessage: 'Run again',
+    description: 'Button of the Troubleshoot dialog that starts a new analysis.',
+  },
+  minimize: {
+    id: 'documents.troubleshoot.minimize',
+    defaultMessage: 'Minimize',
+    description: 'Button of the Troubleshoot dialog that collapses it to a chip while the analysis runs.',
+  },
+  close: {
+    id: 'documents.troubleshoot.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes the Troubleshoot dialog.',
+  },
+  analyzing: {
+    id: 'documents.troubleshoot.analyzing',
+    defaultMessage: 'Analyzing document: <strong>{objectKey}</strong>',
+    description: 'Notice at the top of the Troubleshoot dialog. {objectKey} is the document key, shown as is.',
+  },
+  analyzingFailure: {
+    id: 'documents.troubleshoot.analyzingFailure',
+    defaultMessage: 'Analyzing document failure...',
+    description: 'Shown under the spinner while the troubleshooting request is being sent.',
+  },
+  status: {
+    id: 'documents.troubleshoot.status',
+    defaultMessage: 'Status: {status}',
+    description: 'Status of the troubleshooting job. {status} is the job status code (PENDING, PROCESSING, COMPLETED), shown as is.',
+  },
+});
+
+/** Renders a `<strong>...</strong>` element value: the document key. */
+const strong = (chunks: React.ReactNode[]): React.JSX.Element => <strong>{chunks}</strong>;
+
 const TroubleshootModal = ({
   visible,
   onDismiss,
@@ -80,8 +178,10 @@ const TroubleshootModal = ({
   // analysis keeps running (and polling continues) instead of being torn down.
   const [minimized, setMinimized] = useState(false);
 
+  const intl = useIntl();
   const deploymentContext = useDeploymentContext();
 
+  // English on purpose: the request the agent reads, which its results also print as "Results for: …".
   const query = `Troubleshoot ${documentItem?.objectKey} for failures or performance issues.`;
 
   // A terminal (COMPLETED/FAILED) job with either findings or an error is worth
@@ -192,7 +292,7 @@ const TroubleshootModal = ({
       subscribeToJobCompletion(job.jobId);
     } catch (err) {
       logger.error('Error submitting troubleshoot query:', err);
-      setError((err as Error).message || 'Failed to submit troubleshoot query');
+      setError((err as Error).message || intl.formatMessage(messages.submitFailed));
       setJobStatus('FAILED');
     } finally {
       setIsSubmitting(false);
@@ -245,7 +345,7 @@ const TroubleshootModal = ({
                 setJobResult(job.result ?? null);
                 clearInterval(intervalId);
               } else if (job.status === 'FAILED') {
-                setError(job.error ?? 'Job processing failed');
+                setError(job.error ?? intl.formatMessage(messages.jobFailed));
                 clearInterval(intervalId);
               }
             }
@@ -307,14 +407,14 @@ const TroubleshootModal = ({
         <Button
           iconName={isRunning ? undefined : 'status-positive'}
           onClick={() => setMinimized(false)}
-          ariaLabel="Restore Troubleshoot window"
+          ariaLabel={intl.formatMessage(messages.restoreAriaLabel)}
         >
           {isRunning ? (
             <>
-              <Spinner /> Troubleshooting…
+              <Spinner /> <FormattedMessage {...messages.running} />
             </>
           ) : (
-            'Troubleshoot results ready'
+            <FormattedMessage {...messages.ready} />
           )}
         </Button>
       </div>
@@ -331,30 +431,34 @@ const TroubleshootModal = ({
       }}
       visible={visible}
       size="large"
-      header={<Header variant="h1">Troubleshoot Document</Header>}
+      header={
+        <Header variant="h1">
+          <FormattedMessage {...messages.title} />
+        </Header>
+      }
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
             {canReport && (
               <Button iconName="copy" onClick={handleCopyFullDetails}>
-                {copied ? 'Copied' : 'Copy full details'}
+                <FormattedMessage {...(copied ? messages.copied : messages.copy)} />
               </Button>
             )}
             {canReport && (
               <Button iconName="bug" href={reportIssueUrl} target="_blank" rel="noopener noreferrer">
-                Report this issue on GitHub
+                <FormattedMessage {...messages.report} />
               </Button>
             )}
             {isTerminal && (
               <Button iconName="refresh" loading={isSubmitting} onClick={() => void submitTroubleshootQuery()}>
-                Run again
+                <FormattedMessage {...messages.runAgain} />
               </Button>
             )}
             <Button iconName="treeview-collapse" onClick={() => setMinimized(true)}>
-              Minimize
+              <FormattedMessage {...messages.minimize} />
             </Button>
             <Button variant="primary" onClick={onDismiss}>
-              Close
+              <FormattedMessage {...messages.close} />
             </Button>
           </SpaceBetween>
         </Box>
@@ -362,19 +466,25 @@ const TroubleshootModal = ({
     >
       <SpaceBetween size="l">
         <Alert type="info">
-          Analyzing document: <strong>{documentItem?.objectKey}</strong>
+          <FormattedMessage {...messages.analyzing} values={{ objectKey: documentItem?.objectKey, strong }} />
         </Alert>
 
         {isSubmitting && (
           <Box textAlign="center" padding={{ vertical: 'l' }}>
             <Spinner size="large" />
-            <Box padding={{ top: 's' }}>Analyzing document failure...</Box>
+            <Box padding={{ top: 's' }}>
+              <FormattedMessage {...messages.analyzingFailure} />
+            </Box>
           </Box>
         )}
 
         {error && <Alert type="error">{error}</Alert>}
 
-        {jobStatus && jobStatus !== 'FAILED' && <Alert type={jobStatus === 'COMPLETED' ? 'success' : 'info'}>Status: {jobStatus}</Alert>}
+        {jobStatus && jobStatus !== 'FAILED' && (
+          <Alert type={jobStatus === 'COMPLETED' ? 'success' : 'info'}>
+            <FormattedMessage {...messages.status} values={{ status: jobStatus }} />
+          </Alert>
+        )}
 
         {jobResult && <AgentResultDisplay result={jobResult} query={query} />}
 
