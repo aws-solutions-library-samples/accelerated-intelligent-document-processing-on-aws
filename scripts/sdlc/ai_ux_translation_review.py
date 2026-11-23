@@ -105,6 +105,7 @@ from ux_runner import (  # noqa: E402
     processes,
     readback,
     review_relay,
+    section,
     session,
     signin,
     tool_profiles,
@@ -126,6 +127,8 @@ SESSION_SHARE = 0.9
 MIN_SESSION_USD = 2.0
 #: The largest screenshot copied out of a session.
 SCREEN_BYTES = 4 * 1024 * 1024
+#: The most of a failed session's last error line the files keep.
+ERROR_CHARS = 300
 SCREENS_DIR = "screens"
 RUN_FILE = "run.json"
 FINDINGS_JSON = "findings.json"
@@ -218,6 +221,24 @@ def session_cap(left: float, sessions_left: int) -> float:
     """What one session may spend: :data:`SESSION_SHARE` of its even share of
     ``left``, in cents, rounded down."""
     return math.floor(left / max(sessions_left, 1) * SESSION_SHARE * 100) / 100
+
+
+def last_error_line(
+    result: agent.AgentResult | None, completed: processes.Completed
+) -> str:
+    """The last non-blank line ``claude`` left about a session that gave no report.
+
+    The result's own text when it reported an error, as an API refusal is, then
+    its standard error; ``""`` when neither holds a line. Unredacted: the caller
+    redacts it before it goes anywhere.
+    """
+    texts = [result.text] if result is not None and result.is_error else []
+    texts.append(completed.stderr or "")
+    for text in texts:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if lines:
+            return lines[-1]
+    return ""
 
 
 @dataclass(frozen=True)
@@ -402,6 +423,11 @@ class LocaleRun:
         }
         if result is None or result.is_error:
             stop = "no answer" if result is None else result.stop
+            error = last_error_line(result, completed)
+            if error:
+                kept = review.scrub.field(error)[:ERROR_CHARS]
+                self.entry["session"]["last_error"] = kept
+                review.say(f"{self.locale}: claude's last error: {kept}")
             raise ReviewError(
                 f"the session gave no report ({stop}, exit {completed.returncode})"
             )
@@ -735,12 +761,33 @@ class ScreenReview:
                 f"| {entry.get('screenshots', '')} | "
                 f"{audit if 'socket_audit' in entry else ''} |"
             )
+        lines += _problem_lines(self.record["locales"])
         page = "\n".join(lines) + "\n"
         for report in self.reports:
             page += "\n" + translation_prompt.report_markdown(
                 report, screens_href=SCREENS_DIR
             )
         return page
+
+
+def _problem_lines(entries: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Under the page's table: why each locale was not reviewed, with the last
+    error its session left, if any. An unreadable report says why in its section."""
+    lines: list[str] = []
+    for entry in entries:
+        if entry["status"] in ("reviewed", "unreadable"):
+            continue
+        text = f"- {entry['locale']}: {entry['status'].replace('_', ' ')}"
+        detail = section.sanitize(entry.get("detail"), ERROR_CHARS)
+        if detail:
+            text += f": {detail}"
+        error = section.sanitize(
+            entry.get("session", {}).get("last_error"), ERROR_CHARS
+        )
+        if error:
+            text += f". claude's last error: {error}"
+        lines.append(text)
+    return ["", *lines] if lines else []
 
 
 def _default_artifact_dir() -> Path:

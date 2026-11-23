@@ -274,6 +274,8 @@ class FakeRuntime(review.Runtime):
         answer = self.answers[index] if index < len(self.answers) else _report(locale)
         if callable(answer):
             answer = answer(root)
+        if isinstance(answer, tuple):
+            return answer
         cost = self.costs[index] if index < len(self.costs) else 3.0
         completed = processes.Completed(0, "", "", False, 1.0)
         if answer is None:
@@ -423,9 +425,61 @@ def test_a_session_with_no_answer_counts_its_whole_cap(
     first, second = record["locales"]
     assert first["status"] == "failed"
     assert "the session gave no report (no answer, exit 124)" in first["detail"]
+    assert first["session"]["last_error"] == "timed out"
     assert first["counted_usd"] == 18.0
     assert second["budget_usd"] == 19.8
     assert second["status"] == "reviewed"
+
+
+def _refusal(text: str, stderr: str = "") -> tuple[Any, processes.Completed]:
+    """A session that ended in an error, as an API refusal ends one."""
+    result = agent.AgentResult(text, 0.0, 1, 180.0, "end_turn", True, None)
+    return result, processes.Completed(1, "{}", stderr, False, 1.0)
+
+
+@pytest.mark.unit
+def test_a_failed_session_keeps_claudes_last_error_line_redacted(
+    tmp_path: Path, runtime: FakeRuntime, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime.answers = [
+        _refusal(
+            "API Error: 403\n"
+            f"User: {ARN} is not authorized to perform: bedrock:InvokeModel on "
+            f"account {ACCOUNT} for {LOGIN}\n\n",
+            stderr="not this line",
+        )
+    ]
+    code, record, out = _run(tmp_path, runtime)
+    assert code == 1
+    first = record["locales"][0]
+    assert first["status"] == "failed"
+    assert "the session gave no report (end_turn, exit 1)" in first["detail"]
+    error = first["session"]["last_error"]
+    assert error.startswith("User: ")
+    assert "is not authorized to perform: bedrock:InvokeModel on account" in error
+    page = (out / review.FINDINGS_MD).read_text(encoding="utf-8")
+    assert (
+        "- fr-CA: failed: the session gave no report (end_turn, exit 1). "
+        "claude's last error: User: " in page
+    )
+    printed = capsys.readouterr().out
+    assert "fr-CA: claude's last error: User: " in printed
+    for text in (error, page, printed, (out / review.RUN_FILE).read_text("utf-8")):
+        for secret in (ARN, ACCOUNT, LOGIN):
+            assert secret not in text
+
+
+@pytest.mark.unit
+def test_a_failed_session_that_left_no_line_keeps_its_detail_alone(
+    tmp_path: Path, runtime: FakeRuntime
+) -> None:
+    runtime.answers = [_refusal("  \n")]
+    _, record, out = _run(tmp_path, runtime, "--locale", "fr-CA")
+    assert "last_error" not in record["locales"][0]["session"]
+    page = (out / review.FINDINGS_MD).read_text(encoding="utf-8")
+    assert page.rstrip().endswith(
+        "- fr-CA: failed: the session gave no report (end_turn, exit 1)"
+    )
 
 
 @pytest.mark.unit
