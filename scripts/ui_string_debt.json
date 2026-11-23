@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 144,
-    "findings": 4316
+    "files": 143,
+    "findings": 4249
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -97,7 +97,6 @@
     "src/ui/src/components/edit-screen/SectionEditor.tsx": 1,
     "src/ui/src/components/edit-screen/document-edit-save.ts": 1,
     "src/ui/src/components/edit-screen/field-focus.ts": 1,
-    "src/ui/src/components/edit-screen/test-set-editor-slots.tsx": 67,
     "src/ui/src/components/edit-screen/test-set-item-edit-model.tsx": 1,
     "src/ui/src/components/feature-page/FeatureCatalogBrowser.tsx": 10,
     "src/ui/src/components/feature-page/FeatureLoader.tsx": 2,

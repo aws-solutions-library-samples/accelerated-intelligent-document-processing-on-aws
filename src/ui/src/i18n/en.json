@@ -6063,6 +6063,154 @@
     "defaultMessage": "Home › Queues",
     "description": "Text of the link to the page of the queues that list the user, named by its breadcrumb trail, inside the warning to an Annotator who cannot open a review item."
   },
+  "editScreen.testSetSlots.classCorrectedDocument": {
+    "defaultMessage": "Class corrected to {documentClass}. This document has authored ground truth, so its field values were kept rather than re-extracted; if they need to change, edit them here or in the JSON Editor tab.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract on a document with one section, when its labels are authored ground truth: its class changed and its field values stayed. {documentClass} is the document class, shown as is. JSON Editor is a tab of the section editor."
+  },
+  "editScreen.testSetSlots.classCorrectedSection": {
+    "defaultMessage": "Class corrected to {documentClass} on section {sectionId}. This section has authored ground truth, so its field values were kept rather than re-extracted; if they need to change, edit them here or in the JSON Editor tab.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract on one section of a document with several sections, when the section's labels are authored ground truth: its class changed and its field values stayed. {documentClass} is the section's document class and {sectionId} its number, both shown as is. JSON Editor is a tab of the section editor."
+  },
+  "editScreen.testSetSlots.documentTailAuthored": {
+    "defaultMessage": "The class is corrected, but this document has authored ground truth, so its field values are kept.",
+    "description": "Last sentence of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page: the document's labels are authored ground truth, which Re-extract does not replace."
+  },
+  "editScreen.testSetSlots.documentTailDraft": {
+    "defaultMessage": "The current draft labels for this document are replaced.",
+    "description": "Last sentence of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page: the document's labels are draft labels."
+  },
+  "editScreen.testSetSlots.documentTailReviewed": {
+    "defaultMessage": "This document was already marked reviewed; re-extracting discards those confirmed values.",
+    "description": "Last sentence of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page: the document's labels are marked reviewed."
+  },
+  "editScreen.testSetSlots.emptyEmptyResult": {
+    "defaultMessage": "This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.",
+    "description": "Text of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section's extraction result is empty."
+  },
+  "editScreen.testSetSlots.emptyHeader": {
+    "defaultMessage": "No field values for this section",
+    "description": "Heading of the notice in the section editor of a test-set item's edit page when the open section has no field values."
+  },
+  "editScreen.testSetSlots.emptyHintMerge": {
+    "defaultMessage": "If the pages belong with another section instead, <b>Edit Page Grouping</b> can merge them rather than classifying this one separately.",
+    "description": "Last sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has no document class. <b>…</b> marks bold text; Edit Page Grouping is a button in the section editor's header."
+  },
+  "editScreen.testSetSlots.emptyHintPerSection": {
+    "defaultMessage": "To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, which re-extracts this section only and leaves the others as they are, or use the <b>JSON Editor</b> tab to enter values by hand.",
+    "description": "Last sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has a class, on a document with several sections. <b>…</b> marks bold text: Edit Page Grouping is a button in the section editor's header, Re-extract a button of the notice the editor then shows and JSON Editor a tab of the section editor."
+  },
+  "editScreen.testSetSlots.emptyHintSingle": {
+    "defaultMessage": "To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, or use the <b>JSON Editor</b> tab to enter values by hand.",
+    "description": "Last sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has a class, on a document with one section. <b>…</b> marks bold text: Edit Page Grouping is a button in the section editor's header, Re-extract a button of the notice the editor then shows and JSON Editor a tab of the section editor."
+  },
+  "editScreen.testSetSlots.emptyNoClass": {
+    "defaultMessage": "This section has no document class, so there is no schema to extract against — that is why it has no fields. Set its class in Edit Page Grouping first; re-extracting before that will not produce anything.",
+    "description": "Text of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has no document class. Edit Page Grouping is a button in the section editor's header."
+  },
+  "editScreen.testSetSlots.emptyNoInference": {
+    "defaultMessage": "This section has no inference_result at all.",
+    "description": "Text of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section's file has no extraction result. inference_result is the name of that field in the file, shown as is."
+  },
+  "editScreen.testSetSlots.emptyOtherSections": {
+    "defaultMessage": "Other sections of this document may still have values — choose one from the Section list above.",
+    "description": "Sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, on a document with several sections. The Section list is the section editor's section selector."
+  },
+  "editScreen.testSetSlots.mergeWarning": {
+    "defaultMessage": "Changing the class for the whole document would merge all {count} sections into one and discard their ground truth, so Re-extract here works on this section only.",
+    "description": "Last sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page. {count} is how many sections the document has, two or more. Re-extract is the notice's button."
+  },
+  "editScreen.testSetSlots.pagesInSection": {
+    "defaultMessage": "Pages in this section",
+    "description": "Label of the field, in the section editor of a test-set item's edit page, that lists the page numbers the open section covers."
+  },
+  "editScreen.testSetSlots.pagesInSectionHelp": {
+    "defaultMessage": "Which pages of the document this section covers, in reading order. Use Edit Page Grouping at the top to move or reorder pages, or change a section's class.",
+    "description": "Help text of the field that lists the open section's page numbers, in the section editor of a test-set item's edit page. Edit Page Grouping is a button in the section editor's header."
+  },
+  "editScreen.testSetSlots.pagesMovedBody": {
+    "defaultMessage": "The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so their values may no longer match. Check them, and change the section's class and use <b>Re-extract</b> if you would rather the model redo it.",
+    "description": "Text of the warning, in the section editor of a test-set item's edit page, that a saved grouping changed the pages of some sections, on a document with one section. <b>…</b> marks bold text; Re-extract is a button of the section editor."
+  },
+  "editScreen.testSetSlots.pagesMovedBodyPerSection": {
+    "defaultMessage": "The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so their values may no longer match. Check them, and change the section's class and use <b>Re-extract</b> if you would rather the model redo it (on this document it re-extracts that one section).",
+    "description": "Text of the warning, in the section editor of a test-set item's edit page, that a saved grouping changed the pages of some sections, on a document with several sections, where Re-extract works on one section. <b>…</b> marks bold text; Re-extract is a button of the section editor."
+  },
+  "editScreen.testSetSlots.pagesMovedHeader": {
+    "defaultMessage": "{count, plural, one {Pages moved in section {ids}} other {Pages moved in sections {ids}}}",
+    "description": "Heading of the warning in the section editor of a test-set item's edit page after Edit Page Grouping saved a grouping that changed the pages of some sections. {count} is how many sections; {ids} lists their numbers, separated by commas."
+  },
+  "editScreen.testSetSlots.previousClassDocument": {
+    "defaultMessage": "These fields were extracted as <b>{previousClass}</b>. Re-extract to replace them with ones the <b>{documentClass}</b> schema produces. This re-runs the document through the pipeline and usually takes under a minute; you can leave this page and come back.",
+    "description": "Text of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page. <b>…</b> marks bold text. {previousClass} is the class the fields were extracted under and {documentClass} the document's class now, both shown as is. Re-extract is the notice's button."
+  },
+  "editScreen.testSetSlots.previousClassHeader": {
+    "defaultMessage": "Fields still reflect the previous class",
+    "description": "Heading of the notice in the section editor of a test-set item's edit page when Edit Page Grouping changed the open section's class: its fields were extracted under the class it had before."
+  },
+  "editScreen.testSetSlots.previousClassSection": {
+    "defaultMessage": "These fields were extracted as <b>{previousClass}</b>. Re-extract replaces this section's fields with ones the <b>{documentClass}</b> schema produces; the other {others, plural, one {# section keeps its} other {# sections keep their}} pages, class and fields.",
+    "description": "Text of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page. <b>…</b> marks bold text. {previousClass} is the class the fields were extracted under and {documentClass} the section's class now, both shown as is; {others} is how many other sections the document has. Re-extract is the notice's button."
+  },
+  "editScreen.testSetSlots.reextract": {
+    "defaultMessage": "Re-extract",
+    "description": "Button of the notice that the open section's fields still reflect its previous class, in the section editor of a test-set item's edit page: extracts the fields again under the section's class (the whole document's when it has one section)."
+  },
+  "editScreen.testSetSlots.reextractFailedDocument": {
+    "defaultMessage": "Could not re-extract this document: {error}",
+    "description": "Error in the section editor of a test-set item's edit page when Re-extract failed on a document with one section. {error} is why, as the request reported it, shown as is."
+  },
+  "editScreen.testSetSlots.reextractFailedSection": {
+    "defaultMessage": "Could not re-extract this section: {error}",
+    "description": "Error in the section editor of a test-set item's edit page when Re-extract failed on one section of a document with several sections. {error} is why, as the request reported it, shown as is."
+  },
+  "editScreen.testSetSlots.reextractSectionAria": {
+    "defaultMessage": "Re-extract section {sectionId}",
+    "description": "Accessible name of Re-extract, in the section editor of a test-set item's edit page, on a document with several sections. {sectionId} is the number of the section it extracts again."
+  },
+  "editScreen.testSetSlots.reextractTimeout": {
+    "defaultMessage": "Re-extraction is taking longer than expected. It is still running — reopen this document shortly to see the new fields.",
+    "description": "Notice in the section editor of a test-set item's edit page when a re-extract started with Re-extract has not finished after five minutes and is still running."
+  },
+  "editScreen.testSetSlots.reextractedDocument": {
+    "defaultMessage": "Re-extracted as {documentClass}.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract replaced the fields of a document with one section. {documentClass} is the document class it was extracted as, shown as is."
+  },
+  "editScreen.testSetSlots.reextractedSection": {
+    "defaultMessage": "Re-extracted section {sectionId} as {documentClass}. The other sections were not changed.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract replaced the fields of one section of a document with several sections. {sectionId} is the section's number; {documentClass} is the document class it was extracted as, shown as is."
+  },
+  "editScreen.testSetSlots.reextracting": {
+    "defaultMessage": "Re-extracting…",
+    "description": "Text of Re-extract, in the section editor of a test-set item's edit page, while the re-extract runs."
+  },
+  "editScreen.testSetSlots.regroupConsequence": {
+    "defaultMessage": "Moving pages rewrites this document's <b>section grouping</b> — the ground truth for how the packet splits. Your extracted field values, their <b>Reviewed</b> provenance and the edit history are all kept. Sections are renumbered so their ids follow page order.",
+    "description": "What saving a new page grouping does, in Edit Page Grouping opened from a test-set item's edit page. <b>…</b> marks bold text; Reviewed is the label source of labels marked reviewed."
+  },
+  "editScreen.testSetSlots.regroupPending": {
+    "defaultMessage": "Loading the saved grouping…",
+    "description": "Why Re-extract, in the section editor of a test-set item's edit page, is unavailable: a page grouping was just saved and the page is still re-reading the saved sections."
+  },
+  "editScreen.testSetSlots.saveGroupingFailed": {
+    "defaultMessage": "Could not save the page grouping: {error}",
+    "description": "Error in the Edit Page Grouping dialog of a test-set item's edit page when the page grouping could not be saved. {error} is why, as the request reported it, shown as is."
+  },
+  "editScreen.testSetSlots.sectionTailAuthored": {
+    "defaultMessage": "The class is corrected, but this section has authored ground truth, so its field values are kept.",
+    "description": "Sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page: the section's labels are authored ground truth, which Re-extract does not replace."
+  },
+  "editScreen.testSetSlots.sectionTailDraft": {
+    "defaultMessage": "This section's draft labels are replaced.",
+    "description": "Sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page: the section's labels are draft labels."
+  },
+  "editScreen.testSetSlots.sectionTailReviewed": {
+    "defaultMessage": "This section was already marked reviewed; re-extracting discards its confirmed values.",
+    "description": "Sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page: the section's labels are marked reviewed."
+  },
+  "editScreen.testSetSlots.tiffPreview": {
+    "defaultMessage": "Preview is not available for TIFF documents — use View Source Document to download. Ground truth editing still works.",
+    "description": "Notice above the page images of a test-set item's edit page when its document is a TIFF file, whose pages the page does not show."
+  },
   "editScreen.toolsPanel.button.cancel": {
     "defaultMessage": "<b>Cancel</b> leaves without finishing, asking first when there are unsaved edits.",
     "description": "Help panel note on the edit page's action bar. <b>Cancel</b> is the label of a button on the bar, in bold."
