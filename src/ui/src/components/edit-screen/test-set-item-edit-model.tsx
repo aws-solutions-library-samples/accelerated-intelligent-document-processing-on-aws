@@ -14,18 +14,19 @@
 // back to its queue, unassigned and not reviewed, for another Annotator to claim. The
 // assignee works the document; an Admin or Author may too. An Annotator listed on the
 // set's queue can open any document read-only, and Claim an unassigned one to work it.
-import React, { useCallback, useState } from 'react';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+import React, { useCallback, useEffect, useState } from 'react';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type MessageTag, type NoMessageValues } from 'react-intl';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Box, Button, Link } from '@cloudscape-design/components';
 
+import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { MY_QUEUES_PATH, parseEditOrigin, testSetAnnotateHref, testSetDetailHref, testSetQueuePath } from '../../routes/constants';
 import { getFieldsBelowThreshold, getHitlConfidenceThreshold } from '../common/confidence-alerts-utils';
-import { NEXT_ALERT_LABEL, PROCESS_CHANGES_LABEL } from '../common/labels';
+import { sharedLabelMessages } from '../common/labels';
 import { editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { claimTestSetDocument } from '../review-queues/reviewer-assignment';
@@ -40,27 +41,61 @@ import {
   versionBadgeText,
 } from '../test-studio/annotation-edit-flags';
 import type { EditAction } from './EditScreen';
+import { EditPageError, editPageErrorText, editScreenSharedMessages } from './edit-messages';
 import type { EditModel, EditNavigation, ReviewActivity } from './edit-model';
-import { NOT_ASSIGNED_MESSAGE, useTestSetItemEdit } from './test-set-item-edit-adapter';
+import { useTestSetItemEdit } from './test-set-item-edit-adapter';
 import { useTestSetEditorSlots } from './test-set-editor-slots';
 import { useLeavePath } from './use-edit-exit';
 import type { EditorSession } from './use-editor-session';
 
-/**
- * A test-set document's review activity, from what its queue row records (its
- * assignment and verdict); the field edits are in the label's own `_editHistory`.
- */
-export const testSetReviewHistory = (doc: {
-  assignedTo?: string | null;
-  assignedAt?: string | null;
-  reviewed?: boolean | null;
-  skipped?: boolean | null;
-}): ReviewActivity =>
-  doc.assignedAt && doc.assignedTo
-    ? [{ at: doc.assignedAt, event: 'assigned', actor: null, details: JSON.stringify({ note: `Assigned to ${doc.assignedTo}` }) }]
-    : [];
+type Name = { readonly name: string };
+type ProcessChanges = { readonly processChanges: string };
 
-const messages = defineMessages<{ regroupPending: NoMessageValues; regroupRereadFailed: NoMessageValues }>({
+const messages = defineMessages<{
+  regroupPending: NoMessageValues;
+  regroupRereadFailed: NoMessageValues;
+  reviewActivityAssigned: { readonly assignee: string };
+  savedDraft: Name & ProcessChanges;
+  notReviewed: Name & ProcessChanges;
+  claimFirstToRegroup: NoMessageValues;
+  roleCannotRegroup: NoMessageValues;
+  testSetCrumb: Name;
+  notAvailableHeader: NoMessageValues;
+  notAvailableBody: NoMessageValues;
+  cannotOpenHeader: NoMessageValues;
+  cannotOpenBody: { readonly link: MessageTag };
+  loadDocumentAction: NoMessageValues;
+  loading: NoMessageValues;
+  documentGone: { readonly link: MessageTag };
+  staleDraft: NoMessageValues;
+  viewOnlyAssigned: { readonly assignee: string };
+  viewOnlyClaim: NoMessageValues;
+  viewOnlyUnassigned: NoMessageValues;
+  viewOnlyRole: NoMessageValues;
+  alreadyReviewed: NoMessageValues;
+  alreadySkipped: NoMessageValues;
+  notAssignedToYou: NoMessageValues;
+  loadingShort: NoMessageValues;
+  saveFirst: NoMessageValues;
+  noLabelsSkipCompletes: NoMessageValues;
+  roleCannotSave: NoMessageValues;
+  noSectionsSkipCompletes: NoMessageValues;
+  statusReviewed: NoMessageValues;
+  statusSkipped: NoMessageValues;
+  statusToReview: NoMessageValues;
+  bucketMissing: NoMessageValues;
+  alertCount: { readonly count: number };
+  notReady: NoMessageValues;
+  authoredGroundTruth: ProcessChanges;
+  primaryHintReprocess: NoMessageValues;
+  primaryHintAuthored: NoMessageValues;
+  unsavedChanges: NoMessageValues;
+  noSections: { readonly objectKey: string };
+  skipHeader: NoMessageValues;
+  skipBody: NoMessageValues;
+  processingReviewed: Name;
+  completeReviewed: Name;
+}>({
   regroupPending: {
     id: 'testStudio.itemEdit.regroupPending',
     defaultMessage: 'Loading the saved grouping…',
@@ -73,35 +108,325 @@ const messages = defineMessages<{ regroupPending: NoMessageValues; regroupReread
     description:
       'Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page.',
   },
+  reviewActivityAssigned: {
+    id: 'testStudio.itemEdit.reviewActivity.assigned',
+    defaultMessage: 'Assigned to {assignee}',
+    description:
+      "Note of the assignment row in the Review Activity tab of a test-set item's History, on its edit page. {assignee} is the e-mail address of the user the document is assigned to.",
+  },
+  savedDraft: {
+    id: 'testStudio.itemEdit.savedDraft',
+    defaultMessage: 'Saved your changes to {name} as a draft. {processChanges} writes them as reviewed ground truth.',
+    description:
+      "Notice after Save on a test-set item's edit page kept the open section's changes as a draft. {name} is the file name of the item's document; {processChanges} is the name of the page's action, Process Changes.",
+  },
+  notReviewed: {
+    id: 'testStudio.itemEdit.notReviewed',
+    defaultMessage: 'Not every section of {name} is marked reviewed yet. Check its sections and choose {processChanges} again.',
+    description:
+      "Error after Process Changes on a test-set item's edit page applied every section, but the server does not count the document reviewed yet, so the page stays open. {name} is the file name of the item's document; {processChanges} is the name of the page's action, Process Changes.",
+  },
+  claimFirstToRegroup: {
+    id: 'testStudio.itemEdit.claimFirstToRegroup',
+    defaultMessage: 'Claim this document first to change its page grouping',
+    description:
+      "Why Edit Page Grouping is unavailable on an unassigned test-set item's edit page: only the document's holder may change its page grouping.",
+  },
+  roleCannotRegroup: {
+    id: 'testStudio.itemEdit.roleCannotRegroup',
+    defaultMessage: 'Your role cannot change this document’s page grouping',
+    description: "Why Edit Page Grouping is unavailable on a test-set item's edit page: the user's role may not change the page grouping.",
+  },
+  testSetCrumb: {
+    id: 'testStudio.itemEdit.testSetCrumb',
+    defaultMessage: 'Test set: {name}',
+    description:
+      "Breadcrumb of the test set's queue page in the trail of a test-set item's edit page, after Review Management or Home › Queues. {name} is the test set's name.",
+  },
+  notAvailableHeader: {
+    id: 'testStudio.itemEdit.notAvailableHeader',
+    defaultMessage: 'Not available for your account',
+    description: "Heading of the error a test-set item's edit page shows to a user whose roles cannot edit ground truth.",
+  },
+  notAvailableBody: {
+    id: 'testStudio.itemEdit.notAvailableBody',
+    defaultMessage: 'Editing ground truth requires an Annotator, Author or Admin role.',
+    description: "Text of the error a test-set item's edit page shows to a user whose roles cannot edit ground truth.",
+  },
+  cannotOpenHeader: {
+    id: 'testStudio.itemEdit.cannotOpenHeader',
+    defaultMessage: "You can't open this document",
+    description: "Heading of the warning a test-set item's edit page shows when the server refused to read the document for this user.",
+  },
+  cannotOpenBody: {
+    id: 'testStudio.itemEdit.cannotOpenBody',
+    defaultMessage:
+      "Only the Annotators listed on this test set's queue can open its documents. The queues that list you are in <link>Home › Queues</link>.",
+    description:
+      "Text of the warning a test-set item's edit page shows when the server refused to read the document for this user. <link>…</link> marks the link to Home › Queues, the page of the queues that list the user, named by its breadcrumb trail.",
+  },
+  loadDocumentAction: {
+    id: 'testStudio.itemEdit.action.loadDocument',
+    defaultMessage: 'load the document',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}") when a test-set item\'s edit page could not read its document.',
+  },
+  loading: {
+    id: 'testStudio.itemEdit.loading',
+    defaultMessage: 'Loading the document…',
+    description: "Shown beside a spinner while a test-set item's edit page reads its document.",
+  },
+  documentGone: {
+    id: 'testStudio.itemEdit.documentGone',
+    defaultMessage: "This document isn't in the test set any more. <link>Back to the test set</link>",
+    description:
+      "Text of the error a test-set item's edit page shows when its document is no longer in the test set. <link>…</link> marks the link back to the test set's queue page.",
+  },
+  staleDraft: {
+    id: 'testStudio.itemEdit.staleDraft',
+    defaultMessage: 'Someone saved newer changes to this section. It has been reloaded; reapply your last change.',
+    description: "Error on a test-set item's edit page when a save found a newer draft of the open section, which the page then reloaded.",
+  },
+  viewOnlyAssigned: {
+    id: 'testStudio.itemEdit.viewOnlyAssigned',
+    defaultMessage: 'View only. This document is assigned to {assignee}.',
+    description:
+      "Read-only notice at the top of a test-set item's edit page when the document is assigned to another user. {assignee} is that user's e-mail address.",
+  },
+  viewOnlyClaim: {
+    id: 'testStudio.itemEdit.viewOnlyClaim',
+    defaultMessage: 'View only. Claim this document to work on it; it is then assigned to you and shows in Home › Tasks.',
+    description:
+      "Read-only notice at the top of an unassigned test-set item's edit page, beside its Claim button. Home › Tasks is the page that lists the user's work, named by its breadcrumb trail.",
+  },
+  viewOnlyUnassigned: {
+    id: 'testStudio.itemEdit.viewOnlyUnassigned',
+    defaultMessage: 'View only. It is not assigned to you.',
+    description: "Read-only notice at the top of an unassigned test-set item's edit page when the user may not claim the document.",
+  },
+  viewOnlyRole: {
+    id: 'testStudio.itemEdit.viewOnlyRole',
+    defaultMessage: 'View only. Your role cannot edit these labels.',
+    description: "Read-only notice at the top of a test-set item's edit page when the user's role may not edit the document's labels.",
+  },
+  alreadyReviewed: {
+    id: 'testStudio.itemEdit.alreadyReviewed',
+    defaultMessage: 'This document is already reviewed',
+    description: "Why Skip and Process Changes are unavailable on a test-set item's edit page: the document is already reviewed.",
+  },
+  alreadySkipped: {
+    id: 'testStudio.itemEdit.alreadySkipped',
+    defaultMessage: 'This document was already skipped',
+    description: "Why Skip and Process Changes are unavailable on a test-set item's edit page: the document was already skipped.",
+  },
+  notAssignedToYou: {
+    id: 'testStudio.itemEdit.notAssignedToYou',
+    defaultMessage: 'This document is not assigned to you',
+    description: "Why Skip and Process Changes are unavailable on an unassigned test-set item's edit page.",
+  },
+  loadingShort: {
+    id: 'testStudio.itemEdit.loadingShort',
+    defaultMessage: 'Loading…',
+    description: "Why Skip, Refresh or Process Changes is unavailable on a test-set item's edit page while the document is being read.",
+  },
+  saveFirst: {
+    id: 'testStudio.itemEdit.saveFirst',
+    defaultMessage: 'Save your changes first',
+    description: "Why Skip is unavailable on a test-set item's edit page: the open section has unsaved changes.",
+  },
+  noLabelsSkipCompletes: {
+    id: 'testStudio.itemEdit.noLabelsSkipCompletes',
+    defaultMessage: 'This document has no labels yet; Skip completes it',
+    description:
+      "Why Process Changes is unavailable on a test-set item's edit page: the document has no labels yet. Skip is the button on the same bar.",
+  },
+  roleCannotSave: {
+    id: 'testStudio.itemEdit.roleCannotSave',
+    defaultMessage: 'Your role cannot save these labels',
+    description: "Why Process Changes is unavailable on a test-set item's edit page: the user's role may not save the document's labels.",
+  },
+  noSectionsSkipCompletes: {
+    id: 'testStudio.itemEdit.noSectionsSkipCompletes',
+    defaultMessage: 'This document has no sections; Skip completes it',
+    description:
+      "Why Process Changes is unavailable on a test-set item's edit page: the document has no sections. Skip is the button on the same bar.",
+  },
+  statusReviewed: {
+    id: 'testStudio.itemEdit.status.reviewed',
+    defaultMessage: 'Reviewed',
+    description: "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document is reviewed.",
+  },
+  statusSkipped: {
+    id: 'testStudio.itemEdit.status.skipped',
+    defaultMessage: 'Skipped',
+    description: "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document was skipped.",
+  },
+  statusToReview: {
+    id: 'testStudio.itemEdit.status.toReview',
+    defaultMessage: 'To review',
+    description:
+      "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document is neither reviewed nor skipped.",
+  },
+  bucketMissing: {
+    id: 'testStudio.itemEdit.bucketMissing',
+    defaultMessage: 'TestSetBucket is not configured in settings.',
+    description:
+      "Error at the top of a test-set item's edit page when the app's settings name no test-set bucket. TestSetBucket is the setting's name.",
+  },
+  alertCount: {
+    id: 'testStudio.itemEdit.alertCount',
+    defaultMessage:
+      '{count, plural, one {# field is below the confidence threshold.} other {# fields are below the confidence threshold.}}',
+    description:
+      "Notice at the top of a test-set item's edit page, beside its Next alert button. {count} is the number of the document's fields below the confidence threshold, 1 or more.",
+  },
+  notReady: {
+    id: 'testStudio.itemEdit.notReady',
+    defaultMessage: 'Not ready to edit: this document has no labels yet. Generate draft labels for the set first.',
+    description: "Warning at the top of a test-set item's edit page when the document has neither a review copy nor labels.",
+  },
+  authoredGroundTruth: {
+    id: 'testStudio.itemEdit.authoredGroundTruth',
+    defaultMessage: 'Authored ground truth: check its labels, correct them if needed, then choose {processChanges}.',
+    description:
+      "First sentence of the notice at the top of a test-set item's edit page when the document's labels are authored ground truth, with no review copy. {processChanges} is the name of the page's action, Process Changes.",
+  },
+  primaryHintReprocess: {
+    id: 'testStudio.itemEdit.primaryHintReprocess',
+    defaultMessage:
+      'Apply your saved changes and mark the labels reviewed (the rest as correct): evaluation and summarization re-run; OCR, classification and extraction are not repeated.',
+    description:
+      "Hint of Process Changes in the action bar of a test-set item's edit page, for a document with a review copy: what it does.",
+  },
+  primaryHintAuthored: {
+    id: 'testStudio.itemEdit.primaryHintAuthored',
+    defaultMessage:
+      'Apply your saved changes and mark the labels reviewed (the rest as correct). Authored ground truth has no review copy, so nothing is reprocessed.',
+    description:
+      "Hint of Process Changes in the action bar of a test-set item's edit page, for authored ground truth, which has no review copy: what it does.",
+  },
+  unsavedChanges: {
+    id: 'testStudio.itemEdit.unsavedChanges',
+    defaultMessage: 'You have unsaved ground truth changes. Leave this document and discard them?',
+    description: "Question a test-set item's edit page asks before the user leaves it with unsaved changes in the open section.",
+  },
+  noSections: {
+    id: 'testStudio.itemEdit.noSections',
+    defaultMessage: 'No ground truth (baseline) sections found for {objectKey}.',
+    description:
+      "Shown in the section editor's place on a test-set item's edit page when the document has no sections. {objectKey} is the document's key in the test set.",
+  },
+  skipHeader: {
+    id: 'testStudio.itemEdit.skipHeader',
+    defaultMessage: 'Skip this document',
+    description: "Title of the dialog that Skip opens on a test-set item's edit page, which asks why the document is skipped.",
+  },
+  skipBody: {
+    id: 'testStudio.itemEdit.skipBody',
+    defaultMessage: 'It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.',
+    description: "Text of the dialog that Skip opens on a test-set item's edit page: what skipping the document does.",
+  },
+  processingReviewed: {
+    id: 'testStudio.itemEdit.processingReviewed',
+    defaultMessage: 'Processing the changes to {name}. Its labels are marked reviewed.',
+    description:
+      "Notice shown as a test-set item's edit page closes after Process Changes, for a document with a review copy. {name} is the file name of the item's document.",
+  },
+  completeReviewed: {
+    id: 'testStudio.itemEdit.completeReviewed',
+    defaultMessage: '{name} is complete. Its labels are marked reviewed.',
+    description:
+      "Notice shown as a test-set item's edit page closes after Process Changes, for authored ground truth. {name} is the file name of the item's document.",
+  },
 });
 
-/** The toast after Save: a draft, which Process Changes later writes as reviewed ground truth. */
-export const savedDraftMessage = (name: string): string =>
-  `Saved your changes to ${name} as a draft. ${PROCESS_CHANGES_LABEL} writes them as reviewed ground truth.`;
+/**
+ * What a test-set item's failed action was trying to do: a phrase placed in the shared
+ * error sentence.
+ */
+const failedActionMessages = defineMessages<Record<EditAction, NoMessageValues>>({
+  claim: {
+    id: 'testStudio.itemEdit.action.claim',
+    defaultMessage: 'claim this document',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Claim failed on a test-set item\'s edit page.',
+  },
+  skip: {
+    id: 'testStudio.itemEdit.action.skip',
+    defaultMessage: 'skip this document',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Skip failed on a test-set item\'s edit page.',
+  },
+  process: {
+    id: 'testStudio.itemEdit.action.process',
+    defaultMessage: 'process the changes to this document',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Process Changes failed on a test-set item\'s edit page.',
+  },
+  save: {
+    id: 'testStudio.itemEdit.action.save',
+    defaultMessage: 'save this section',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Save failed on a test-set item\'s edit page.',
+  },
+  regroup: {
+    id: 'testStudio.itemEdit.action.regroup',
+    defaultMessage: 'edit the page grouping',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Edit Page Grouping failed on a test-set item\'s edit page.',
+  },
+  baseline: {
+    id: 'testStudio.itemEdit.action.baseline',
+    defaultMessage: 'use this document as the evaluation baseline',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Use As Evaluation Baseline failed on a test-set item\'s edit page.',
+  },
+  cancel: {
+    id: 'testStudio.itemEdit.action.cancel',
+    defaultMessage: 'leave this document',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Cancel failed on a test-set item\'s edit page.',
+  },
+  refresh: {
+    id: 'testStudio.itemEdit.action.refresh',
+    defaultMessage: 'reload this document',
+    description:
+      'Infinitive verb phrase placed inside the shared error sentence ("Failed to {action}: {error}", or the permission sentence) when Refresh failed on a test-set item\'s edit page.',
+  },
+});
 
-/** Process Changes applied everything, but the server does not yet count the document reviewed. */
-export const notReviewedMessage = (name: string): string =>
-  `Not every section of ${name} is marked reviewed yet. Check its sections and choose ${PROCESS_CHANGES_LABEL} again.`;
+/**
+ * A test-set document's review activity, from what its queue row records (its
+ * assignment and verdict); the field edits are in the label's own `_editHistory`.
+ */
+const testSetReviewHistory = (
+  doc: {
+    assignedTo?: string | null;
+    assignedAt?: string | null;
+    reviewed?: boolean | null;
+    skipped?: boolean | null;
+  },
+  intl: IntlShape,
+): ReviewActivity =>
+  doc.assignedAt && doc.assignedTo
+    ? [
+        {
+          at: doc.assignedAt,
+          event: 'assigned',
+          actor: null,
+          details: JSON.stringify({ note: intl.formatMessage(messages.reviewActivityAssigned, { assignee: doc.assignedTo }) }),
+        },
+      ]
+    : [];
 
 /** The server's verdict after Process Changes: not reviewed yet, so the page stays. */
 class NotReviewedYet extends Error {}
 
-/** What a failed action was trying to do, in the error it reports. */
-const FAILED_ACTION: Record<EditAction, string> = {
-  claim: 'claim this document',
-  skip: 'skip this document',
-  process: 'process the changes to this document',
-  save: 'save this section',
-  regroup: 'edit the page grouping',
-  baseline: 'use this document as the evaluation baseline',
-  cancel: 'leave this document',
-  refresh: 'reload this document',
-};
-
 export const useTestSetItemEditModel = (testSetId: string, objectKey: string, session: EditorSession): EditModel => {
   const intl = useIntl();
   const adapter = useTestSetItemEdit(testSetId, objectKey);
-  const { doc, draft, queue, loading, loadError, reload } = adapter;
+  const { doc, draft, queue, loading, loadError, reload, notice, clearNotice } = adapter;
+  const { setErrorMessage } = useAppContext();
   const { settings } = useSettingsContext();
   const { isAdmin, isAuthor, isReviewer, isAnnotator, canAnnotate, canWorkTestSetQueues, loading: roleLoading } = useUserRole();
   const leavePath = useLeavePath();
@@ -112,6 +437,14 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   const initialSectionId = searchParams.get('section');
   // The open section's alert Next alert moves to next.
   const [nextAlert, setNextAlert] = useState(0);
+
+  // A save's notice (a newer draft was found and reloaded), worded here with `intl` and then
+  // cleared, so the saving callback never words it.
+  useEffect(() => {
+    if (!notice) return;
+    setErrorMessage(intl.formatMessage(messages.staleDraft));
+    clearNotice();
+  }, [notice, clearNotice, intl, setErrorMessage]);
 
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
   const queuePath = testSetQueuePath(testSetId);
@@ -129,10 +462,10 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
     ? undefined
     : !mayWork
       ? doc.assignedTo
-        ? `Assigned to ${doc.assignedTo}`
-        : 'Claim this document first to change its page grouping'
+        ? intl.formatMessage(editScreenSharedMessages.assignedTo, { assignee: doc.assignedTo })
+        : intl.formatMessage(messages.claimFirstToRegroup)
       : !mayChangeClass || !testSetId
-        ? 'Your role cannot change this document’s page grouping'
+        ? intl.formatMessage(messages.roleCannotRegroup)
         : undefined;
 
   const slots = useTestSetEditorSlots({
@@ -162,7 +495,9 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
       origin,
       objectKey,
       name,
-      queue: setName ? { crumb: { text: `Test set: ${setName}`, href: `#${queuePath}` }, view: 'test' } : null,
+      queue: setName
+        ? { crumb: { text: intl.formatMessage(messages.testSetCrumb, { name: setName }), href: `#${queuePath}` }, view: 'test' }
+        : null,
       testSet: setName ? { text: setName, href: testSetDetailHref(testSetId) } : null,
     }),
     activeHref: editActiveHref(origin),
@@ -174,43 +509,47 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
       state: {
         kind: 'failure',
         type: 'error',
-        header: 'Not available for your account',
-        body: 'Editing ground truth requires an Annotator, Author or Admin role.',
+        header: intl.formatMessage(messages.notAvailableHeader),
+        body: intl.formatMessage(messages.notAvailableBody),
       },
     };
   }
   if (loadError && !doc) {
-    const notAssigned = loadError === NOT_ASSIGNED_MESSAGE;
+    const notAssigned = loadError === 'not-assigned';
+    let body: React.ReactNode;
+    if (notAssigned)
+      body = (
+        <FormattedMessage
+          {...messages.cannotOpenBody}
+          values={{ link: (chunks: React.ReactNode[]) => <Link href={`#${MY_QUEUES_PATH}`}>{chunks}</Link> }}
+        />
+      );
+    else if (loadError === 'load-failed') body = intl.formatMessage(editScreenSharedMessages.documentCouldNotLoad);
+    else body = describeApiError(loadError.cause, messages.loadDocumentAction, intl);
     return {
       navigation,
       state: {
         kind: 'failure',
         type: notAssigned ? 'warning' : 'error',
-        header: notAssigned ? "You can't open this document" : "Couldn't open this document",
-        body: notAssigned ? (
-          <>
-            Only the Annotators listed on this test set&apos;s queue can open its documents. The queues that list you are in{' '}
-            <Link href={`#${MY_QUEUES_PATH}`}>Home › Queues</Link>.
-          </>
-        ) : (
-          loadError
-        ),
+        header: intl.formatMessage(notAssigned ? messages.cannotOpenHeader : editScreenSharedMessages.couldNotOpenDocument),
+        body,
         retry: notAssigned ? undefined : () => void reload(),
       },
     };
   }
-  if (!queue) return { navigation, state: { kind: 'loading', text: 'Loading the document…' } };
+  if (!queue) return { navigation, state: { kind: 'loading', text: intl.formatMessage(messages.loading) } };
   if (!doc || !editFlags) {
     return {
       navigation,
       state: {
         kind: 'failure',
         type: 'error',
-        header: 'Document not found',
+        header: intl.formatMessage(editScreenSharedMessages.documentNotFound),
         body: (
-          <>
-            This document isn&apos;t in the test set any more. <Link href={`#${queuePath}`}>Back to the test set</Link>
-          </>
+          <FormattedMessage
+            {...messages.documentGone}
+            values={{ link: (chunks: React.ReactNode[]) => <Link href={`#${queuePath}`}>{chunks}</Link> }}
+          />
         ),
       },
     };
@@ -261,23 +600,29 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   let readOnlyReason: string | undefined;
   if (!mayWork)
     readOnlyReason = doc.assignedTo
-      ? `View only. This document is assigned to ${doc.assignedTo}.`
-      : canClaim
-        ? 'View only. Claim this document to work on it; it is then assigned to you and shows in Home › Tasks.'
-        : 'View only. It is not assigned to you.';
-  else if (editorReadOnly) readOnlyReason = 'View only. Your role cannot edit these labels.';
+      ? intl.formatMessage(messages.viewOnlyAssigned, { assignee: doc.assignedTo })
+      : intl.formatMessage(canClaim ? messages.viewOnlyClaim : messages.viewOnlyUnassigned);
+  else if (editorReadOnly) readOnlyReason = intl.formatMessage(messages.viewOnlyRole);
   let skipReason: string | undefined;
-  if (isComplete) skipReason = doc.reviewed ? 'This document is already reviewed' : 'This document was already skipped';
-  else if (!mayWork) skipReason = doc.assignedTo ? `Assigned to ${doc.assignedTo}` : 'This document is not assigned to you';
-  else if (loading) skipReason = 'Loading…';
+  if (isComplete) skipReason = intl.formatMessage(doc.reviewed ? messages.alreadyReviewed : messages.alreadySkipped);
+  else if (!mayWork)
+    skipReason = doc.assignedTo
+      ? intl.formatMessage(editScreenSharedMessages.assignedTo, { assignee: doc.assignedTo })
+      : intl.formatMessage(messages.notAssignedToYou);
+  else if (loading) skipReason = intl.formatMessage(messages.loadingShort);
   // The primary action saves the open section itself, so unsaved edits don't block it.
   let completeReason: string | undefined = skipReason;
-  if (!skipReason && dirty) skipReason = 'Save your changes first';
+  if (!skipReason && dirty) skipReason = intl.formatMessage(messages.saveFirst);
   if (!completeReason) {
-    if (!doc.reviewObjectKey && !doc.labelSource) completeReason = 'This document has no labels yet; Skip completes it';
-    else if (roleCannotSave) completeReason = 'Your role cannot save these labels';
-    else if (sections.length === 0) completeReason = 'This document has no sections; Skip completes it';
+    if (!doc.reviewObjectKey && !doc.labelSource) completeReason = intl.formatMessage(messages.noLabelsSkipCompletes);
+    else if (roleCannotSave) completeReason = intl.formatMessage(messages.roleCannotSave);
+    else if (sections.length === 0) completeReason = intl.formatMessage(messages.noSectionsSkipCompletes);
   }
+
+  const savingChanges = intl.formatMessage(editScreenSharedMessages.savingChanges);
+  const processChanges = intl.formatMessage(sharedLabelMessages.processChanges);
+  /** Process Changes applied everything, but the server does not yet count the document reviewed. */
+  const notReviewedMessage = (file: string): string => intl.formatMessage(messages.notReviewed, { name: file, processChanges });
 
   return {
     navigation,
@@ -285,7 +630,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
       kind: 'ready',
       header: {
         title: name,
-        status: doc.reviewed ? 'Reviewed' : doc.skipped ? 'Skipped' : 'To review',
+        status: intl.formatMessage(doc.reviewed ? messages.statusReviewed : doc.skipped ? messages.statusSkipped : messages.statusToReview),
         objectKey,
         // The source document is in the test-set bucket; without it there is nothing to show.
         source: testSetBucket ? { objectKey: doc.inputKey, bucket: testSetBucket } : null,
@@ -295,7 +640,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
       },
       // One alert for the screen's notices, so the space stays given over to annotation.
       notices: [
-        !testSetBucket && { id: 'bucket', type: 'error', content: 'TestSetBucket is not configured in settings.' },
+        !testSetBucket && { id: 'bucket', type: 'error', content: intl.formatMessage(messages.bucketMissing) },
         // What each step writes, while no draft version is open and this user may edit.
         !draft &&
           !editorReadOnly && {
@@ -310,10 +655,10 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         alertCount > 0 && {
           id: 'alerts',
           type: 'info',
-          content: `${alertCount} ${alertCount === 1 ? 'field is' : 'fields are'} below the confidence threshold.`,
+          content: intl.formatMessage(messages.alertCount, { count: alertCount }),
           action: (
             <Button onClick={handleNextAlert} disabled={alertFields.length === 0}>
-              {NEXT_ALERT_LABEL}
+              <FormattedMessage {...sharedLabelMessages.nextAlert} />
             </Button>
           ),
         },
@@ -321,29 +666,28 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
           !doc.labelSource && {
             id: 'no-labels',
             type: 'warning',
-            content: 'Not ready to edit: this document has no labels yet. Generate draft labels for the set first.',
+            content: intl.formatMessage(messages.notReady),
           },
+        // The second sentence is Test Studio's groundTruthAlertSuffix, which is English.
         !doc.reviewObjectKey &&
           !!doc.labelSource && {
             id: 'authored',
             type: 'info',
-            content: `Authored ground truth: check its labels, correct them if needed, then choose ${PROCESS_CHANGES_LABEL}.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline)}`,
+            content: `${intl.formatMessage(messages.authoredGroundTruth, { processChanges })}${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline)}`,
           },
       ],
       bar: {
-        primaryDisabledReason: completeReason ?? (saving ? 'Saving your changes…' : undefined),
-        primaryHint: reprocesses
-          ? 'Apply your saved changes and mark the labels reviewed (the rest as correct): evaluation and summarization re-run; OCR, classification and extraction are not repeated.'
-          : 'Apply your saved changes and mark the labels reviewed (the rest as correct). Authored ground truth has no review copy, so nothing is reprocessed.',
+        primaryDisabledReason: completeReason ?? (saving ? savingChanges : undefined),
+        primaryHint: intl.formatMessage(reprocesses ? messages.primaryHintReprocess : messages.primaryHintAuthored),
         showSkip: true,
         skipDisabledReason: skipReason,
         showCancel: !editorReadOnly,
-        cancelDisabledReason: saving ? 'Saving your changes…' : undefined,
+        cancelDisabledReason: saving ? savingChanges : undefined,
         // Save keeps a draft; only Process Changes marks the labels reviewed.
         showSave: !editorReadOnly,
-        saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined,
+        saveDisabledReason: !dirty ? intl.formatMessage(editScreenSharedMessages.noChangesToSave) : saving ? savingChanges : undefined,
         showRefresh: true,
-        refreshDisabledReason: saving ? 'Saving your changes…' : loading ? 'Loading…' : undefined,
+        refreshDisabledReason: saving ? savingChanges : loading ? intl.formatMessage(messages.loadingShort) : undefined,
         showRegroup: true,
         // While the refs lag a save the board would send stale section ids. A failed re-read
         // leaves them lagging, and the page shows that error nowhere else while a document
@@ -379,19 +723,23 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
               emptyFieldsSlot: slots.emptyFieldsSlot,
               pagesNotice: slots.pagesNotice,
             },
-            unsavedChangesMessage: 'You have unsaved ground truth changes. Leave this document and discard them?',
-            emptyText: `No ground truth (baseline) sections found for ${doc.objectKey}.`,
+            unsavedChangesMessage: intl.formatMessage(messages.unsavedChanges),
+            emptyText: intl.formatMessage(messages.noSections, { objectKey: doc.objectKey }),
           }
         : null,
       board: slots.canRegroup ? slots.board : null,
-      history: { reviewActivity: testSetReviewHistory(doc) },
+      history: { reviewActivity: testSetReviewHistory(doc, intl) },
       skip: {
-        header: 'Skip this document',
+        header: intl.formatMessage(messages.skipHeader),
         reasons: queue.skipReasons ?? [],
-        body: <Box>It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.</Box>,
+        body: (
+          <Box>
+            <FormattedMessage {...messages.skipBody} />
+          </Box>
+        ),
         run: async (reason, note) => {
           await adapter.skip(reason, note);
-          return { to: leavePath(queuePath), message: `${name} returned to the queue.`, workItemId };
+          return { to: leavePath(queuePath), message: intl.formatMessage(editScreenSharedMessages.returnedToQueue, { name }), workItemId };
         },
       },
       process: {
@@ -408,9 +756,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
           if (!reviewed) throw new NotReviewedYet(notReviewedMessage(name));
           return {
             to: leavePath(queuePath),
-            message: reprocesses
-              ? `Processing the changes to ${name}. Its labels are marked reviewed.`
-              : `${name} is complete. Its labels are marked reviewed.`,
+            message: intl.formatMessage(reprocesses ? messages.processingReviewed : messages.completeReviewed, { name }),
             workItemId,
           };
         },
@@ -423,14 +769,18 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         } finally {
           await Promise.all([reload(), reviewWork?.refresh()]);
         }
-        return `Claimed ${name}. It is in Home › Tasks.`;
+        return intl.formatMessage(editScreenSharedMessages.claimed, { name });
       },
-      savedMessage: savedDraftMessage(name),
+      savedMessage: intl.formatMessage(messages.savedDraft, { name, processChanges }),
       refresh: adapter.refresh,
       cancelTo: leavePath(queuePath),
       failures: {
         surface: 'flash',
-        describe: (action, err) => (err instanceof NotReviewedYet ? err.message : describeApiError(err, FAILED_ACTION[action])),
+        // The page's own error is worded here; any other is passed on as describeApiError reads it.
+        describe: (action, err) =>
+          err instanceof NotReviewedYet
+            ? err.message
+            : describeApiError(err instanceof EditPageError ? editPageErrorText(err, intl) : err, failedActionMessages[action], intl),
         // A failed claim has re-read the document already.
         after: (action) => {
           if (action !== 'claim') void reload();

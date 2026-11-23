@@ -207,7 +207,7 @@ export const sharedLabelMessages = defineMessages<{ processChanges: NoMessageVal
   },
 });
 
-/** English, for its readers not translated yet (the test-set item's edit model, the help panel, Test Studio's annotation-edit-flags.ts) and for the direct edit model's English reasons. */
+/** English, for its reader not translated yet (Test Studio's annotation-edit-flags.ts) and for the direct edit model's English reasons. */
 export const PROCESS_CHANGES_LABEL = String(sharedLabelMessages.processChanges.defaultMessage);
 
 /**
@@ -215,6 +215,3 @@ export const PROCESS_CHANGES_LABEL = String(sharedLabelMessages.processChanges.d
  * test set's page: both size the review first (ReviewEffortModal).
  */
 export const EDIT_GROUND_TRUTH_LABEL = 'Edit ground truth';
-
-/** English, for test-set-item-edit-model.tsx, which is not translated yet. */
-export const NEXT_ALERT_LABEL = String(sharedLabelMessages.nextAlert.defaultMessage);

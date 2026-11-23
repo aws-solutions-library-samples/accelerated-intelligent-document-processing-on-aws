@@ -10007,6 +10007,134 @@
     "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or open Quick Start from the side navigation to describe them in your own words.",
     "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is offered Quick Start. <link> wraps a link to the Discovery page."
   },
+  "testStudio.itemEdit.action.baseline": {
+    "defaultMessage": "use this document as the evaluation baseline",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Use As Evaluation Baseline failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.cancel": {
+    "defaultMessage": "leave this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Cancel failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.claim": {
+    "defaultMessage": "claim this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Claim failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.loadDocument": {
+    "defaultMessage": "load the document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\") when a test-set item's edit page could not read its document."
+  },
+  "testStudio.itemEdit.action.process": {
+    "defaultMessage": "process the changes to this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Process Changes failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.refresh": {
+    "defaultMessage": "reload this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Refresh failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.regroup": {
+    "defaultMessage": "edit the page grouping",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Edit Page Grouping failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.save": {
+    "defaultMessage": "save this section",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Save failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.skip": {
+    "defaultMessage": "skip this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Skip failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.alertCount": {
+    "defaultMessage": "{count, plural, one {# field is below the confidence threshold.} other {# fields are below the confidence threshold.}}",
+    "description": "Notice at the top of a test-set item's edit page, beside its Next alert button. {count} is the number of the document's fields below the confidence threshold, 1 or more."
+  },
+  "testStudio.itemEdit.alreadyReviewed": {
+    "defaultMessage": "This document is already reviewed",
+    "description": "Why Skip and Process Changes are unavailable on a test-set item's edit page: the document is already reviewed."
+  },
+  "testStudio.itemEdit.alreadySkipped": {
+    "defaultMessage": "This document was already skipped",
+    "description": "Why Skip and Process Changes are unavailable on a test-set item's edit page: the document was already skipped."
+  },
+  "testStudio.itemEdit.authoredGroundTruth": {
+    "defaultMessage": "Authored ground truth: check its labels, correct them if needed, then choose {processChanges}.",
+    "description": "First sentence of the notice at the top of a test-set item's edit page when the document's labels are authored ground truth, with no review copy. {processChanges} is the name of the page's action, Process Changes."
+  },
+  "testStudio.itemEdit.bucketMissing": {
+    "defaultMessage": "TestSetBucket is not configured in settings.",
+    "description": "Error at the top of a test-set item's edit page when the app's settings name no test-set bucket. TestSetBucket is the setting's name."
+  },
+  "testStudio.itemEdit.cannotOpenBody": {
+    "defaultMessage": "Only the Annotators listed on this test set's queue can open its documents. The queues that list you are in <link>Home › Queues</link>.",
+    "description": "Text of the warning a test-set item's edit page shows when the server refused to read the document for this user. <link>…</link> marks the link to Home › Queues, the page of the queues that list the user, named by its breadcrumb trail."
+  },
+  "testStudio.itemEdit.cannotOpenHeader": {
+    "defaultMessage": "You can't open this document",
+    "description": "Heading of the warning a test-set item's edit page shows when the server refused to read the document for this user."
+  },
+  "testStudio.itemEdit.claimFirstToRegroup": {
+    "defaultMessage": "Claim this document first to change its page grouping",
+    "description": "Why Edit Page Grouping is unavailable on an unassigned test-set item's edit page: only the document's holder may change its page grouping."
+  },
+  "testStudio.itemEdit.completeReviewed": {
+    "defaultMessage": "{name} is complete. Its labels are marked reviewed.",
+    "description": "Notice shown as a test-set item's edit page closes after Process Changes, for authored ground truth. {name} is the file name of the item's document."
+  },
+  "testStudio.itemEdit.documentGone": {
+    "defaultMessage": "This document isn't in the test set any more. <link>Back to the test set</link>",
+    "description": "Text of the error a test-set item's edit page shows when its document is no longer in the test set. <link>…</link> marks the link back to the test set's queue page."
+  },
+  "testStudio.itemEdit.loading": {
+    "defaultMessage": "Loading the document…",
+    "description": "Shown beside a spinner while a test-set item's edit page reads its document."
+  },
+  "testStudio.itemEdit.loadingShort": {
+    "defaultMessage": "Loading…",
+    "description": "Why Skip, Refresh or Process Changes is unavailable on a test-set item's edit page while the document is being read."
+  },
+  "testStudio.itemEdit.noLabelsSkipCompletes": {
+    "defaultMessage": "This document has no labels yet; Skip completes it",
+    "description": "Why Process Changes is unavailable on a test-set item's edit page: the document has no labels yet. Skip is the button on the same bar."
+  },
+  "testStudio.itemEdit.noSections": {
+    "defaultMessage": "No ground truth (baseline) sections found for {objectKey}.",
+    "description": "Shown in the section editor's place on a test-set item's edit page when the document has no sections. {objectKey} is the document's key in the test set."
+  },
+  "testStudio.itemEdit.noSectionsSkipCompletes": {
+    "defaultMessage": "This document has no sections; Skip completes it",
+    "description": "Why Process Changes is unavailable on a test-set item's edit page: the document has no sections. Skip is the button on the same bar."
+  },
+  "testStudio.itemEdit.notAssignedToYou": {
+    "defaultMessage": "This document is not assigned to you",
+    "description": "Why Skip and Process Changes are unavailable on an unassigned test-set item's edit page."
+  },
+  "testStudio.itemEdit.notAvailableBody": {
+    "defaultMessage": "Editing ground truth requires an Annotator, Author or Admin role.",
+    "description": "Text of the error a test-set item's edit page shows to a user whose roles cannot edit ground truth."
+  },
+  "testStudio.itemEdit.notAvailableHeader": {
+    "defaultMessage": "Not available for your account",
+    "description": "Heading of the error a test-set item's edit page shows to a user whose roles cannot edit ground truth."
+  },
+  "testStudio.itemEdit.notReady": {
+    "defaultMessage": "Not ready to edit: this document has no labels yet. Generate draft labels for the set first.",
+    "description": "Warning at the top of a test-set item's edit page when the document has neither a review copy nor labels."
+  },
+  "testStudio.itemEdit.notReviewed": {
+    "defaultMessage": "Not every section of {name} is marked reviewed yet. Check its sections and choose {processChanges} again.",
+    "description": "Error after Process Changes on a test-set item's edit page applied every section, but the server does not count the document reviewed yet, so the page stays open. {name} is the file name of the item's document; {processChanges} is the name of the page's action, Process Changes."
+  },
+  "testStudio.itemEdit.primaryHintAuthored": {
+    "defaultMessage": "Apply your saved changes and mark the labels reviewed (the rest as correct). Authored ground truth has no review copy, so nothing is reprocessed.",
+    "description": "Hint of Process Changes in the action bar of a test-set item's edit page, for authored ground truth, which has no review copy: what it does."
+  },
+  "testStudio.itemEdit.primaryHintReprocess": {
+    "defaultMessage": "Apply your saved changes and mark the labels reviewed (the rest as correct): evaluation and summarization re-run; OCR, classification and extraction are not repeated.",
+    "description": "Hint of Process Changes in the action bar of a test-set item's edit page, for a document with a review copy: what it does."
+  },
+  "testStudio.itemEdit.processingReviewed": {
+    "defaultMessage": "Processing the changes to {name}. Its labels are marked reviewed.",
+    "description": "Notice shown as a test-set item's edit page closes after Process Changes, for a document with a review copy. {name} is the file name of the item's document."
+  },
   "testStudio.itemEdit.regroupPending": {
     "defaultMessage": "Loading the saved grouping…",
     "description": "Why Edit Page Grouping is unavailable: a page grouping was just saved and the document editor is still re-reading the saved sections."
@@ -10014,6 +10142,74 @@
   "testStudio.itemEdit.regroupRereadFailed": {
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
+  },
+  "testStudio.itemEdit.reviewActivity.assigned": {
+    "defaultMessage": "Assigned to {assignee}",
+    "description": "Note of the assignment row in the Review Activity tab of a test-set item's History, on its edit page. {assignee} is the e-mail address of the user the document is assigned to."
+  },
+  "testStudio.itemEdit.roleCannotRegroup": {
+    "defaultMessage": "Your role cannot change this document’s page grouping",
+    "description": "Why Edit Page Grouping is unavailable on a test-set item's edit page: the user's role may not change the page grouping."
+  },
+  "testStudio.itemEdit.roleCannotSave": {
+    "defaultMessage": "Your role cannot save these labels",
+    "description": "Why Process Changes is unavailable on a test-set item's edit page: the user's role may not save the document's labels."
+  },
+  "testStudio.itemEdit.saveFirst": {
+    "defaultMessage": "Save your changes first",
+    "description": "Why Skip is unavailable on a test-set item's edit page: the open section has unsaved changes."
+  },
+  "testStudio.itemEdit.savedDraft": {
+    "defaultMessage": "Saved your changes to {name} as a draft. {processChanges} writes them as reviewed ground truth.",
+    "description": "Notice after Save on a test-set item's edit page kept the open section's changes as a draft. {name} is the file name of the item's document; {processChanges} is the name of the page's action, Process Changes."
+  },
+  "testStudio.itemEdit.skipBody": {
+    "defaultMessage": "It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.",
+    "description": "Text of the dialog that Skip opens on a test-set item's edit page: what skipping the document does."
+  },
+  "testStudio.itemEdit.skipHeader": {
+    "defaultMessage": "Skip this document",
+    "description": "Title of the dialog that Skip opens on a test-set item's edit page, which asks why the document is skipped."
+  },
+  "testStudio.itemEdit.staleDraft": {
+    "defaultMessage": "Someone saved newer changes to this section. It has been reloaded; reapply your last change.",
+    "description": "Error on a test-set item's edit page when a save found a newer draft of the open section, which the page then reloaded."
+  },
+  "testStudio.itemEdit.status.reviewed": {
+    "defaultMessage": "Reviewed",
+    "description": "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document is reviewed."
+  },
+  "testStudio.itemEdit.status.skipped": {
+    "defaultMessage": "Skipped",
+    "description": "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document was skipped."
+  },
+  "testStudio.itemEdit.status.toReview": {
+    "defaultMessage": "To review",
+    "description": "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document is neither reviewed nor skipped."
+  },
+  "testStudio.itemEdit.testSetCrumb": {
+    "defaultMessage": "Test set: {name}",
+    "description": "Breadcrumb of the test set's queue page in the trail of a test-set item's edit page, after Review Management or Home › Queues. {name} is the test set's name."
+  },
+  "testStudio.itemEdit.unsavedChanges": {
+    "defaultMessage": "You have unsaved ground truth changes. Leave this document and discard them?",
+    "description": "Question a test-set item's edit page asks before the user leaves it with unsaved changes in the open section."
+  },
+  "testStudio.itemEdit.viewOnlyAssigned": {
+    "defaultMessage": "View only. This document is assigned to {assignee}.",
+    "description": "Read-only notice at the top of a test-set item's edit page when the document is assigned to another user. {assignee} is that user's e-mail address."
+  },
+  "testStudio.itemEdit.viewOnlyClaim": {
+    "defaultMessage": "View only. Claim this document to work on it; it is then assigned to you and shows in Home › Tasks.",
+    "description": "Read-only notice at the top of an unassigned test-set item's edit page, beside its Claim button. Home › Tasks is the page that lists the user's work, named by its breadcrumb trail."
+  },
+  "testStudio.itemEdit.viewOnlyRole": {
+    "defaultMessage": "View only. Your role cannot edit these labels.",
+    "description": "Read-only notice at the top of a test-set item's edit page when the user's role may not edit the document's labels."
+  },
+  "testStudio.itemEdit.viewOnlyUnassigned": {
+    "defaultMessage": "View only. It is not assigned to you.",
+    "description": "Read-only notice at the top of an unassigned test-set item's edit page when the user may not claim the document."
   },
   "testStudio.modifiedAfter.customTimeIsUtc": {
     "defaultMessage": "Date and time are in UTC.",
