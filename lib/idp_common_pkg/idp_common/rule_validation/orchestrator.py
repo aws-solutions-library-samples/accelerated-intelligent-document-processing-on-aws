@@ -94,7 +94,7 @@ def _normalize_page_reference(page: Any) -> Optional[Tuple[str, Tuple[int, int, 
 
 
 #: The normalised verdicts of a policy rule.
-VERDICT_PASS = "pass"
+VERDICT_PASS = "pass"  # nosec B105 - a policy rule verdict, not a credential
 VERDICT_FAIL = "fail"
 VERDICT_NOT_FOUND = "not_found"
 VERDICT_UNKNOWN = "unknown"
