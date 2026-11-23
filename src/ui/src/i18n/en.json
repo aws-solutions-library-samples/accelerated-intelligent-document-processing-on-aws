@@ -543,6 +543,130 @@
     "defaultMessage": "Welcome to GenAI IDP (GenAIIDP)",
     "description": "Banner at the top of the app until the user dismisses it. GenAI IDP (GenAIIDP) is the name of the product."
   },
+  "common.pageGrouping.addSection": {
+    "defaultMessage": "Add section",
+    "description": "Button above the Edit Page Grouping board that adds an empty section."
+  },
+  "common.pageGrouping.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Edit Page Grouping board that closes it without saving."
+  },
+  "common.pageGrouping.chooseClass": {
+    "defaultMessage": "Choose a document class",
+    "description": "Placeholder of the class picker on a section's column of the Edit Page Grouping board."
+  },
+  "common.pageGrouping.clearSelection": {
+    "defaultMessage": "Clear selection",
+    "description": "Link button above the Edit Page Grouping board that unselects every selected page."
+  },
+  "common.pageGrouping.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes a page's full-size view, opened from the Edit Page Grouping board."
+  },
+  "common.pageGrouping.customOrder": {
+    "defaultMessage": "Custom page order",
+    "description": "Badge on a section's column of the Edit Page Grouping board when the section's pages are not in document order."
+  },
+  "common.pageGrouping.defaultSave": {
+    "defaultMessage": "Save grouping",
+    "description": "The Edit Page Grouping board's save button, when the screen that shows the board gives the button no label of its own."
+  },
+  "common.pageGrouping.defaultTitle": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Title of the Edit Page Grouping board's dialog, when the screen that opens it gives no title of its own."
+  },
+  "common.pageGrouping.deleteSection": {
+    "defaultMessage": "Delete section {id}",
+    "description": "Label, for screen readers, of the button that deletes an empty section from the Edit Page Grouping board. {id} is the section's number."
+  },
+  "common.pageGrouping.drag": {
+    "defaultMessage": "Page {id}, drag to reorder it or move it to another section",
+    "description": "Label, for screen readers, of a page's thumbnail on the Edit Page Grouping board, which is dragged to move the page. {id} is the page's number."
+  },
+  "common.pageGrouping.dragWithSelection": {
+    "defaultMessage": "{others, plural, one {Page {id}, drag to move it and # other selected page} other {Page {id}, drag to move it and # other selected pages}}",
+    "description": "Label, for screen readers, of a page's thumbnail on the Edit Page Grouping board when the page is selected with others, which move with it. {id} is the page's number; {others} is how many other pages are selected."
+  },
+  "common.pageGrouping.draggingPages": {
+    "defaultMessage": "{count} pages",
+    "description": "Label under the page being dragged on the Edit Page Grouping board when the selected pages move with it. {count} is how many pages move, two or more."
+  },
+  "common.pageGrouping.dropHere": {
+    "defaultMessage": "Drop a page here.",
+    "description": "Shown in a section's column of the Edit Page Grouping board while the section has no pages."
+  },
+  "common.pageGrouping.expand": {
+    "defaultMessage": "Expand",
+    "description": "Button above the Edit Page Grouping board, when the board is shown in place on its screen, that opens it in a dialog."
+  },
+  "common.pageGrouping.invalidHeader": {
+    "defaultMessage": "This grouping is not valid yet",
+    "description": "Heading of the alert above the Edit Page Grouping board that lists the problems with the grouping as a whole."
+  },
+  "common.pageGrouping.moveEarlier": {
+    "defaultMessage": "Move earlier",
+    "description": "Item of a page's menu on the Edit Page Grouping board: moves the page one place earlier in its section."
+  },
+  "common.pageGrouping.moveLater": {
+    "defaultMessage": "Move later",
+    "description": "Item of a page's menu on the Edit Page Grouping board: moves the page one place later in its section."
+  },
+  "common.pageGrouping.movePage": {
+    "defaultMessage": "Move page {id}",
+    "description": "Label, for screen readers, of the menu button on a page of the Edit Page Grouping board. {id} is the page's number."
+  },
+  "common.pageGrouping.movePageWithSelection": {
+    "defaultMessage": "{others, plural, one {Move page {id} and # other selected page} other {Move page {id} and # other selected pages}}",
+    "description": "Label, for screen readers, of the menu button on a page of the Edit Page Grouping board when the page is selected with others, which move with it. {id} is the page's number; {others} is how many other pages are selected."
+  },
+  "common.pageGrouping.moveToSection": {
+    "defaultMessage": "Move to section",
+    "description": "Item of a page's menu on the Edit Page Grouping board that lists the other sections the page can move to."
+  },
+  "common.pageGrouping.notRendered": {
+    "defaultMessage": "This page has not finished rendering.",
+    "description": "Shown beside a spinner in a page's full-size view, opened from the Edit Page Grouping board, while the page's image is not ready."
+  },
+  "common.pageGrouping.orderWithin": {
+    "defaultMessage": "Order within this section",
+    "description": "Item of a page's menu on the Edit Page Grouping board that holds Move earlier and Move later, which move the page within its section."
+  },
+  "common.pageGrouping.pageLabel": {
+    "defaultMessage": "Page {id}",
+    "description": "A page on the Edit Page Grouping board: its thumbnail's alternative text, the label under it while it is dragged alone, and the title and image text of its full-size view. {id} is the page's number."
+  },
+  "common.pageGrouping.sectionHeader": {
+    "defaultMessage": "Section {id}",
+    "description": "Heading of a section's column on the Edit Page Grouping board. {id} is the section's number."
+  },
+  "common.pageGrouping.sectionOption": {
+    "defaultMessage": "Section {id}",
+    "description": "A section with no class, in the Move to section list of a page's menu on the Edit Page Grouping board. {id} is the section's number."
+  },
+  "common.pageGrouping.sectionOptionWithClass": {
+    "defaultMessage": "Section {id} ({class})",
+    "description": "A section in the Move to section list of a page's menu on the Edit Page Grouping board. {id} is the section's number; {class} is its document class, shown as is."
+  },
+  "common.pageGrouping.selectPage": {
+    "defaultMessage": "Select page {id}",
+    "description": "Label, for screen readers, of the checkbox that selects a page on the Edit Page Grouping board. {id} is the page's number."
+  },
+  "common.pageGrouping.selected": {
+    "defaultMessage": "{count, plural, one {# page selected — moving any one moves all of them} other {# pages selected — moving any one moves all of them}}",
+    "description": "Shown above the Edit Page Grouping board while pages are selected. {count} is the number of selected pages."
+  },
+  "common.pageGrouping.sortSection": {
+    "defaultMessage": "Sort section {id} pages in document order",
+    "description": "Label, for screen readers, of the button on a section's column of the Edit Page Grouping board that puts the section's pages back in document order. {id} is the section's number."
+  },
+  "common.pageGrouping.summary": {
+    "defaultMessage": "{pages, plural, one {# page} other {# pages}} · {sections, plural, one {# section} other {# sections}}",
+    "description": "Badge above the Edit Page Grouping board. {pages} is the number of the document's pages; {sections} is the number of sections on the board."
+  },
+  "common.pageGrouping.viewFullPage": {
+    "defaultMessage": "View full page",
+    "description": "Item of a page's menu on the Edit Page Grouping board: shows the page at full size."
+  },
   "common.pagination.next": {
     "defaultMessage": "Next page",
     "description": "Screen-reader label of the next-page button of a table's pagination."
@@ -554,6 +678,82 @@
   "common.pagination.previous": {
     "defaultMessage": "Previous page",
     "description": "Screen-reader label of the previous-page button of a table's pagination."
+  },
+  "common.processChangesModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the confirmation before Process Changes or Save and Re-extract: closes it and does nothing."
+  },
+  "common.processChangesModal.confirm": {
+    "defaultMessage": "Confirm & Process",
+    "description": "Button of the Confirm Reprocessing dialog, shown before the edit page's Process Changes on a document and before Save and Re-extract in the document page's Edit Page Grouping: runs it."
+  },
+  "common.processChangesModal.effect.classes": {
+    "defaultMessage": "Record their classes as confirmed (class confidence 1.0)",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the sections it re-extracts, in the Confirm Reprocessing dialog's list. 1.0 is the confidence recorded for their classes."
+  },
+  "common.processChangesModal.effect.others": {
+    "defaultMessage": "Leave the other sections' values as they are; OCR and classification are not repeated",
+    "description": "What Save and Re-extract in Edit Page Grouping leaves alone, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.effect.review": {
+    "defaultMessage": "Mark this document's pending review as completed, if it has one",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the document's review, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.effect.rules": {
+    "defaultMessage": "Clear the document's rule validation results",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the document's rule validation results, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.effect.values": {
+    "defaultMessage": "Replace their extracted values, including any corrected by hand",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the sections it re-extracts, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.noStructure": {
+    "defaultMessage": "No section structure changes detected. This will trigger <strong>evaluation and summarization</strong> reprocessing.",
+    "description": "Text of the Confirm Reprocessing dialog before the edit page's Process Changes on a document. The <strong> tags mark the words shown in bold."
+  },
+  "common.processChangesModal.regroupIntro": {
+    "defaultMessage": "You are about to save the new page grouping, then extract these sections again:",
+    "description": "Text of the Confirm Reprocessing dialog before Save and Re-extract in Edit Page Grouping, above the list of the sections it re-extracts."
+  },
+  "common.processChangesModal.reprocessHeader": {
+    "defaultMessage": "Confirm Reprocessing",
+    "description": "Title of the dialog shown before the edit page's Process Changes on a document and before Save and Re-extract in the document page's Edit Page Grouping, which says what reprocessing will do."
+  },
+  "common.processChangesModal.sectionLine": {
+    "defaultMessage": "{count, plural, one {Section {id}: {class}, page {pages}} other {Section {id}: {class}, pages {pages}}}",
+    "description": "A section in the list of the Confirm Reprocessing dialog before Save and Re-extract in Edit Page Grouping. {id} is the section's number; {class} is its document class, shown as is (empty for a section with no class); {count} is how many pages it has; {pages} lists their numbers, separated by commas."
+  },
+  "common.processChangesModal.skipBda": {
+    "defaultMessage": "BDA (Bedrock Data Automation) processing will be automatically skipped since existing data is preserved.",
+    "description": "Note in the Confirm Reprocessing dialog before the edit page's Process Changes on a document processed with BDA (Bedrock Data Automation)."
+  },
+  "common.processChangesModal.skipPipeline": {
+    "defaultMessage": "OCR, Classification, Extraction, and Assessment steps will be automatically skipped since existing data is preserved.",
+    "description": "Note in the Confirm Reprocessing dialog before the edit page's Process Changes on a document not processed with BDA (Bedrock Data Automation)."
+  },
+  "common.processChangesModal.useEvaluate": {
+    "defaultMessage": "Re-run evaluation to compare predictions against baseline",
+    "description": "A reason to use Process Changes, in the list of the Confirm Reprocessing dialog before the edit page's Process Changes on a document."
+  },
+  "common.processChangesModal.useSummary": {
+    "defaultMessage": "Update the document summary report",
+    "description": "A reason to use Process Changes, in the list of the Confirm Reprocessing dialog before the edit page's Process Changes on a document."
+  },
+  "common.processChangesModal.useWhen": {
+    "defaultMessage": "Use this when you have edited extraction data (predictions or baseline) and want to:",
+    "description": "Text of the Confirm Reprocessing dialog before the edit page's Process Changes on a document, above a list of two reasons."
+  },
+  "common.processChangesModal.versionBody": {
+    "defaultMessage": "{processChanges} opens the next version of this test set (the current version stays as it is) and writes your labels as reviewed ground truth.",
+    "description": "Text of the dialog shown before Process Changes on a test-set item's edit page while the test set has no draft version open. {processChanges} is the name of the Process Changes button."
+  },
+  "common.processChangesModal.versionHeader": {
+    "defaultMessage": "Open a new version and save ground truth",
+    "description": "Title of the dialog shown before Process Changes on a test-set item's edit page while the test set has no draft version open."
+  },
+  "common.processChangesModal.willDo": {
+    "defaultMessage": "This will:",
+    "description": "Text of the Confirm Reprocessing dialog before Save and Re-extract in Edit Page Grouping, above the list of what it does."
   },
   "common.promptCache.counts": {
     "defaultMessage": "{read, number} read · {written, number} written · {uncached, number} uncached input tokens",
@@ -738,6 +938,30 @@
   "common.reviewStatus.state.withdrawn": {
     "defaultMessage": "Withdrawn",
     "description": "State of a review queue item taken out of review without a result, for example because its document was processed again. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.sectionGrouping.duplicateId": {
+    "defaultMessage": "Section id ''{id}'' is used by more than one section.",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board. {id} is the section id that more than one section uses."
+  },
+  "common.sectionGrouping.noId": {
+    "defaultMessage": "A section has no id.",
+    "description": "A problem with the grouping, listed in the alert above the Edit Page Grouping board."
+  },
+  "common.sectionGrouping.noPages": {
+    "defaultMessage": "This section has no pages. Move a page into it, or delete the section.",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board while the section has no pages."
+  },
+  "common.sectionGrouping.notInDocument": {
+    "defaultMessage": "{count, plural, one {Page {pageIds} not in this document.} other {Pages {pageIds} not in this document.}}",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board when the section holds pages the document does not have. {count} is how many; {pageIds} lists their numbers, separated by commas."
+  },
+  "common.sectionGrouping.pageClaimed": {
+    "defaultMessage": "Page {pageId} is already in section {sectionId}.",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board when another section already holds one of its pages. {pageId} is the page's number; {sectionId} is the number of the section that holds it."
+  },
+  "common.sectionGrouping.pagesNotInSection": {
+    "defaultMessage": "{count, plural, one {Page {pageIds} is not in any section. Every page has to belong to one.} other {Pages {pageIds} are not in any section. Every page has to belong to one.}}",
+    "description": "A problem with the grouping, listed in the alert above the Edit Page Grouping board, when pages of the document are in no section. {count} is how many; {pageIds} lists their numbers, separated by commas."
   },
   "common.summaryReport.empty": {
     "defaultMessage": "Summary report not available for this document",
@@ -5386,6 +5610,38 @@
   "editScreen.page.refreshDiscard.header": {
     "defaultMessage": "Discard your changes and reload?",
     "description": "Title of the dialog the edit page shows when Refresh would lose unsaved changes."
+  },
+  "editScreen.pageGrouping.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping."
+  },
+  "editScreen.pageGrouping.partialFailed": {
+    "defaultMessage": "The page grouping was saved, but the sections were not re-extracted: {message}",
+    "description": "Error in the dialog shown when Save and Re-extract saved the grouping but the re-extract failed, above the list of those sections. {message} is why, as the request reported it, shown as is."
+  },
+  "editScreen.pageGrouping.reextractAgain": {
+    "defaultMessage": "Re-extract again",
+    "description": "Button of the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping: tries the re-extract again."
+  },
+  "editScreen.pageGrouping.save": {
+    "defaultMessage": "Save page grouping",
+    "description": "Button of the Edit Page Grouping dialog that saves the grouping."
+  },
+  "editScreen.pageGrouping.saveAndReextract": {
+    "defaultMessage": "Save and Re-extract",
+    "description": "Button of the Edit Page Grouping dialog on the document page: saves the grouping, then extracts again the sections whose class or pages changed, after a confirmation."
+  },
+  "editScreen.pageGrouping.sectionLine": {
+    "defaultMessage": "{count, plural, one {Section {id}: {class}, page {pages}} other {Section {id}: {class}, pages {pages}}}",
+    "description": "A section in the list of the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping. {id} is the section's number; {class} is its document class, shown as is (empty for a section with no class); {count} is how many pages it has; {pages} lists their numbers, separated by commas."
+  },
+  "editScreen.pageGrouping.thumbnailsUnavailable": {
+    "defaultMessage": "Page thumbnails unavailable",
+    "description": "Heading of the alert in the Edit Page Grouping dialog shown when the page thumbnails could not be loaded."
+  },
+  "editScreen.pageGrouping.title": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Title of the Edit Page Grouping dialog, on the edit page and the document page, where the document's pages are regrouped into sections; also the title of the dialog that reports a re-extract that failed after the grouping was saved."
   },
   "editScreen.productionItem.action.baseline": {
     "defaultMessage": "use this document as the evaluation baseline",

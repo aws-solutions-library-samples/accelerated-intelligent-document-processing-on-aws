@@ -2044,7 +2044,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(
             "components/common/ProcessChangesConfirmModal.tsx",
             "Process Changes",
-            source="PROCESS_CHANGES_LABEL",
+            source=_PROCESS_CHANGES,
             inside_dialog=True,
         ),
     ),

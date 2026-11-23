@@ -207,7 +207,7 @@ export const sharedLabelMessages = defineMessages<{ processChanges: NoMessageVal
   },
 });
 
-/** English, for its readers not translated yet: the edit models, the help panel, ProcessChangesConfirmModal, Test Studio's annotation-edit-flags.ts. */
+/** English, for its readers not translated yet (the test-set item's edit model, the help panel, Test Studio's annotation-edit-flags.ts) and for the direct edit model's English reasons. */
 export const PROCESS_CHANGES_LABEL = String(sharedLabelMessages.processChanges.defaultMessage);
 
 /**

@@ -286,7 +286,7 @@ describe('Edit Page Grouping › Save and Re-extract', () => {
     await openBoard();
     act(() => board().secondarySave.onSave(changedOnly));
     const confirm = await waitFor(() => shown(modalTitled('Confirm Reprocessing')));
-    expect([...confirm.findContent().getElement().querySelectorAll('li')][0].textContent).toBe('Section 2: FieldTicket, pages 4');
+    expect([...confirm.findContent().getElement().querySelectorAll('li')][0].textContent).toBe('Section 2: FieldTicket, page 4');
     expect(order()).toEqual([]);
     await act(async () => footerButton('Confirm Reprocessing', 'Confirm & Process').click());
     await waitFor(() => expect(order()).toEqual(['updateDocumentSections', 'processChanges']));

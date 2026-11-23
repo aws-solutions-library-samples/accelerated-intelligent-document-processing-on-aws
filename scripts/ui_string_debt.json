@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 150,
-    "findings": 4478
+    "files": 146,
+    "findings": 4415
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -49,13 +49,10 @@
     "src/ui/src/components/chat-panel/ChatPanel.tsx": 21,
     "src/ui/src/components/common/CreateConfigProfileModal.tsx": 23,
     "src/ui/src/components/common/NoConfigProfilesInScopeAlert.tsx": 2,
-    "src/ui/src/components/common/PageGroupingEditor.tsx": 29,
-    "src/ui/src/components/common/ProcessChangesConfirmModal.tsx": 19,
     "src/ui/src/components/common/ResizableModal.tsx": 3,
     "src/ui/src/components/common/UnrecordedChangesAlert.tsx": 5,
     "src/ui/src/components/common/create-issue-button.tsx": 4,
     "src/ui/src/components/common/download-func.ts": 1,
-    "src/ui/src/components/common/section-grouping.ts": 6,
     "src/ui/src/components/common/utilities.ts": 5,
     "src/ui/src/components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx": 83,
     "src/ui/src/components/config-prefix-mappings/TenantsSection.tsx": 60,
@@ -104,7 +101,6 @@
     "src/ui/src/components/edit-screen/test-set-item-edit-adapter.ts": 2,
     "src/ui/src/components/edit-screen/test-set-item-edit-model.tsx": 55,
     "src/ui/src/components/edit-screen/tools-panel.tsx": 43,
-    "src/ui/src/components/edit-screen/use-page-class-board.tsx": 9,
     "src/ui/src/components/feature-page/FeatureCatalogBrowser.tsx": 10,
     "src/ui/src/components/feature-page/FeatureLoader.tsx": 2,
     "src/ui/src/components/feature-page/FeatureStateMessages.tsx": 76,
