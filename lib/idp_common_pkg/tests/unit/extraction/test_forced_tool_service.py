@@ -382,11 +382,12 @@ class TestOffByDefault:
 
     def test_the_system_default_is_off(self):
         """Read from the shipped system defaults, not from a test fixture."""
+        from idp_common.config.merge_utils import load_system_defaults
         from idp_common.config.models import IDPConfig
 
-        cfg = IDPConfig()
-        assert cfg.extraction.forced_tool.enabled is False
-        assert cfg.extraction.forced_tool.fallback_to_prompt is True
+        for cfg in (IDPConfig(), IDPConfig(**load_system_defaults())):
+            assert cfg.extraction.schema_enforcement.mode == "off"
+            assert cfg.extraction.schema_enforcement.fallback_to_prompt is True
 
 
 @pytest.mark.unit
