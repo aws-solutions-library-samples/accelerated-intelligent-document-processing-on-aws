@@ -564,6 +564,22 @@ STARTUP_SWEEPS = (
         ),
     ),
     StartupSweep(
+        func="cleanup_stale_idp_kms_keys",
+        label="Dead-run retained KMS key sweep",
+        fails_run=False,
+        why=(
+            "Reported in the table, not fatal. What an inert sweep costs is the "
+            "monthly charge of each customer-managed key a dead run's stack "
+            "retained (template.yaml keeps CustomerManagedEncryptionKey on a "
+            "stack delete, #2235), accruing until somebody schedules them: money, "
+            "and no deploy, quota or test that has been seen to fail on it. The "
+            "teardown of a run's own stack already schedules its key and fails "
+            "that run when it cannot, so this sweep catches only the keys of runs "
+            "whose own teardown never got that far, and ending a night's run red "
+            "over those would put a cost question on the verdict."
+        ),
+    ),
+    StartupSweep(
         func="cleanup_stale_ci_diagnostics",
         label="CI diagnostics expiry",
         fails_run=False,
@@ -624,8 +640,8 @@ def _first_failure_reason(existing, candidate):
 #: place rather than created per run. Each sweep asks the set ahead of its age
 #: gate and of the run-prefix protection it applies, so a name it spares is
 #: counted as not examined, never reported as an item whose age could not be
-#: established (#1445). The BDA, IAM-role and IAM-policy sweeps do not read the
-#: set: each reaps only names carrying a run prefix, and
+#: established (#1445). The BDA, IAM-role, IAM-policy and KMS-key sweeps do not
+#: read the set: each reaps only names carrying a run prefix, and
 #: test_startup_sweep_outcomes.py computes that no name opening with a member's
 #: name carries one.
 #: Registered in scripts/tests/gate_exemptions.json.
@@ -6143,7 +6159,9 @@ def _terraform_retained_resources(terraform):
 def _sweep_terraform_retained(stack_name, retained, deployer=None):
     """Delete what the Terraform delete retained, as `--force-delete-all` does for
     a CloudFormation stack: tables, then log groups (plus those Lambda created on
-    its own under the stack's prefix), then buckets with the logging bucket last.
+    its own under the stack's prefix), then buckets with the logging bucket last,
+    then the KMS key that encrypted them (scheduled for deletion, the only way a
+    key goes), then this run's IAM roles.
 
     Returns the resources that could not be deleted, as strings.
     """
@@ -6184,6 +6202,19 @@ def _sweep_terraform_retained(stack_name, retained, deployer=None):
             deployer._empty_and_delete_bucket(bucket["physical_id"])
         except Exception as e:  # noqa: BLE001
             errors.append(f"S3 bucket {bucket['physical_id']}: {e}")
+    keys = retained_kms_keys(retained)
+    if keys:
+        # The same handling as the migration test's sweep: the minimum pending
+        # window, and a key already pending deletion counts as swept. Stdlib-only
+        # module, so importing it here costs nothing.
+        from terraform_migration_test import schedule_key_deletion
+
+        kms = boto3.client("kms", config=_THROTTLE_RETRY_CONFIG)
+        for key in keys:
+            try:
+                schedule_key_deletion(kms, key)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"KMS key {key}: {e}")
     for role in retained_iam_roles(stack_name, retained):
         try:
             _delete_retained_role(role)
@@ -6211,6 +6242,23 @@ def retained_iam_roles(stack_name, retained):
         ):
             out.append(name)
     return out
+
+
+#: Retained-resource types the sweep schedules for deletion from ``other``. The
+#: translator emits ``awscc_kms_key`` for the template's CustomerManagedEncryptionKey
+#: (DeletionPolicy Retain); the others are the same key under another provider.
+RETAINED_KMS_KEY_TYPES = ("awscc_kms_key", "aws_kms_key", "AWS::KMS::Key")
+
+
+def retained_kms_keys(retained):
+    """Key ids of the KMS keys in this run's retained set. Every one is this
+    run's: the set is read from this deployment's own state, and a key has no
+    name to share with another run."""
+    return [
+        str(other["physical_id"])
+        for other in (retained or {}).get("other") or []
+        if other.get("type") in RETAINED_KMS_KEY_TYPES and other.get("physical_id")
+    ]
 
 
 def _delete_retained_role(name):
@@ -6299,9 +6347,12 @@ def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 *
         for error in errors:
             print(f"[{stack_name}] ⚠️ retained resource not deleted: {error}")
             findings.append(f"retained resource not deleted: {error}")
-        swept_roles = set(retained_iam_roles(stack_name, retained))
+        swept = set(retained_iam_roles(stack_name, retained)) | set(
+            retained_kms_keys(retained)
+        )
         for other in retained.get("other") or []:
-            if str(other.get("physical_id") or "") in swept_roles:
+            # A swept resource that failed is already a finding, from `errors`.
+            if str(other.get("physical_id") or "") in swept:
                 continue
             # The categories the sweep cannot delete. Retained by design, but
             # this run created them and nothing else will remove them.
@@ -8357,11 +8408,86 @@ def cancel_bedrock_ingestion_jobs(stack_name):
         print(f"[{stack_name}] ⚠️ Error checking ingestion jobs: {e}")
 
 
-def cleanup_stack(result):
-    """Delete this run's IDP stack, then its IAM pre-stack and boundary policy.
+#: template.yaml's stack-created KMS key. `DeletionPolicy: Retain`, so the stack
+#: delete leaves it standing and billed; the teardown schedules its deletion
+#: (#2235). A stack given `CustomerManagedKmsKeyArn` has no such resource.
+STACK_KMS_KEY_LOGICAL_ID = "CustomerManagedEncryptionKey"
 
-    Returns cleanup_iam_resources' findings: an EMPTY list means the teardown
-    was verified, anything else names what is still standing.
+
+def _read_stack_kms_key(stack_name):
+    """The physical id of the stack's retained KMS key, read BEFORE its delete.
+
+    Returns `(key_id, findings)`. `key_id` is None when there is nothing to
+    schedule: the stack is gone, or it has no such resource because a key ARN
+    was supplied (CloudFormation answers both with `ValidationError`). Any other
+    failure is a finding, because then whether the delete leaves a key behind is
+    unknown. Never raises.
+    """
+    try:
+        cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+        detail = cf.describe_stack_resource(
+            StackName=stack_name, LogicalResourceId=STACK_KMS_KEY_LOGICAL_ID
+        )["StackResourceDetail"]
+    except Exception as e:  # noqa: BLE001
+        if _aws_error_code(e) == "ValidationError":
+            return None, []
+        return None, [
+            f"could not read {STACK_KMS_KEY_LOGICAL_ID} before the stack delete, "
+            f"so a retained KMS key may be left behind unscheduled: {e}"
+        ]
+    return (detail.get("PhysicalResourceId") or None), []
+
+
+def _schedule_stack_kms_key(stack_name, key_id):
+    """Schedule the retained key's deletion once its stack is confirmed gone.
+
+    Returns findings. A key already pending deletion, or no longer there, is done
+    (`schedule_key_deletion` answers False). A stack still standing keeps its
+    key, which is still in use: that is not this key's finding, and once the
+    stack goes the Step 0 key sweep (`cleanup_stale_idp_kms_keys`) schedules it.
+    Never raises.
+    """
+    if not key_id:
+        return []
+    try:
+        # Shared with the Terraform teardown's sweep (_sweep_terraform_retained),
+        # so both handle a retained key the same way. Stdlib-only module.
+        from terraform_migration_test import schedule_key_deletion
+
+        cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+        try:
+            stacks = cf.describe_stacks(StackName=stack_name)["Stacks"]
+        except Exception as e:  # noqa: BLE001
+            if _aws_error_code(e) != "ValidationError":
+                raise
+            stacks = []
+        standing = [s for s in stacks if s.get("StackStatus") != "DELETE_COMPLETE"]
+        if standing:
+            print(
+                f"[{stack_name}] ℹ️ stack still {standing[0].get('StackStatus')}, "
+                f"so its KMS key {key_id} is left for the Step 0 key sweep"
+            )
+            return []
+        kms = boto3.client("kms", config=_THROTTLE_RETRY_CONFIG)
+        if schedule_key_deletion(kms, key_id):
+            print(f"[{stack_name}] 🔑 retained KMS key {key_id} scheduled for deletion")
+        else:
+            print(
+                f"[{stack_name}] 🔑 retained KMS key {key_id} already pending deletion"
+            )
+        return []
+    except Exception as e:  # noqa: BLE001
+        finding = f"retained KMS key {key_id} not scheduled for deletion: {e}"
+        print(f"[{stack_name}] ❌ {finding}")
+        return [finding]
+
+
+def cleanup_stack(result):
+    """Delete this run's IDP stack, then its IAM pre-stack and boundary policy,
+    and schedule the deletion of the KMS key the stack delete retains.
+
+    Returns cleanup_iam_resources' findings, then the KMS key's: an EMPTY list
+    means the teardown was verified, anything else names what is still standing.
 
     The IAM cleanup runs whatever happened to the IDP stack above. It used to
     sit inside the same `try`, so an exception from the stack delete — or from
@@ -8371,6 +8497,9 @@ def cleanup_stack(result):
     """
     stack_name = result.get("stack_name")
     print(f"🧹 Starting cleanup for stack: {stack_name}")
+    # Read before the delete: afterwards the stack, and with it the only record
+    # of which key it created, is gone.
+    kms_key_id, kms_findings = _read_stack_kms_key(stack_name)
     try:
         # Check stack status first
         cmd_result = run_command(
@@ -8401,9 +8530,11 @@ def cleanup_stack(result):
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ Cleanup task failed: {e}")
 
+    kms_findings += _schedule_stack_kms_key(stack_name, kms_key_id)
+
     # Clean up CodeBuild-specific IAM resources -- outside the block above on
     # purpose, so a failure there cannot skip it.
-    return cleanup_iam_resources(stack_name)
+    return cleanup_iam_resources(stack_name) + kms_findings
 
 
 def teardown_primary_stack(result, stack_name, terraform=None):
@@ -10210,6 +10341,154 @@ def cleanup_stale_idp_roles():
             "the leaked idp- IAM role sweep gave out part-way through the roles "
             f"it selected, so an unknown number were never deleted: {e}"
         )
+
+
+#: template.yaml's description of CustomerManagedEncryptionKey, with the stack's
+#: name in the one group. Matched whole: a key is attributed to a stack only by
+#: this exact sentence, which every key the template has retained since it began
+#: retaining them carries (the earlier description named no stack, and those keys
+#: were deleted with their stacks). Held to the template's literal by
+#: test_cfn_teardown_kms_key.py.
+STACK_KMS_KEY_DESCRIPTION_RE = re.compile(
+    r"Encrypts the data of IDP stack (\S+); kept when the stack is deleted"
+)
+
+#: The key states the Step 0 key sweep schedules from. A key in any other state is
+#: already being deleted, or is mid-creation or unavailable, and is left alone.
+KMS_KEY_REAPABLE_STATES = ("Enabled", "Disabled")
+
+#: Only schedule a dead run's key once it is older than this, the bucket and role
+#: gates' value. The run-prefix protection already keeps a running run's key; this
+#: is the backstop against a stack listing that has not caught up yet.
+IDP_KMS_KEY_STALE_AGE_SECONDS = 6 * 3600
+
+
+def cleanup_stale_idp_kms_keys():
+    """Schedule the deletion of the KMS keys dead idp- runs' stacks retained.
+
+    template.yaml's CustomerManagedEncryptionKey is `DeletionPolicy: Retain`, so
+    every stack delete that is not this harness's own teardown — the stack sweep
+    reaping a retained failure or an interrupted run, a manual delete — leaves
+    the key standing and billed, owned by nothing. Each is billed per month
+    until deleted, and a key can only be scheduled for deletion, here with the
+    minimum 7-day window (#2235).
+
+    THREE enumerations: the account's surviving stacks
+    (`_live_idp_run_prefixes`), `list_keys` in this build's region, and a
+    `describe_key` per key, which is the only place a key's description is
+    readable. A key that could not be described is a finding, since any of
+    them may be one of ours; the sweep still schedules the rest.
+
+    A key is scheduled only if ALL of:
+      * its description is exactly STACK_KMS_KEY_DESCRIPTION_RE, naming a stack
+        whose name carries a run prefix (idp-MMDD-HHMMSS). A key the template
+        did not create, or that names no run, is never touched;
+      * it is in a KMS_KEY_REAPABLE_STATES state;
+      * that run has NO surviving CloudFormation stack in any region the stacks
+        are listed in, so an in-flight run, and a stack retained for inspection,
+        keep their keys; and
+      * its age is KNOWN and exceeds IDP_KMS_KEY_STALE_AGE_SECONDS, failing
+        closed as every age gate here does.
+
+    A SWEEP_EXEMPT_STACK_NAMES stack's key is kept by the first condition alone,
+    so this sweep does not read that set: no name opening with a member's carries
+    a run prefix, which test_startup_sweep_outcomes.py computes for every member.
+
+    Never raises. A key that would not schedule is named and left for the next
+    run.
+    """
+    print("🧹 Scheduling deletion of KMS keys retained by dead idp- runs...")
+
+    try:
+        protected = _live_idp_run_prefixes()
+        kms = boto3.client("kms", config=_THROTTLE_RETRY_CONFIG)
+        now = datetime.now(tz=timezone.utc)
+        listed = [
+            key["KeyId"]
+            for page in kms.get_paginator("list_keys").paginate()
+            for key in page.get("Keys", [])
+        ]
+    except Exception as e:  # noqa: BLE001
+        return _sweep_finding(
+            "could not enumerate the account's KMS keys (or the live stacks that "
+            "protect them), so 0 of an unknown number of keys retained by dead "
+            f"idp- runs were considered, and each is billed until deleted: {e}"
+        )
+
+    try:
+        stale, undescribed = [], []
+        skipped_protected = skipped_young = skipped_state = 0
+        age_unestablishable = []
+        for key_id in listed:
+            try:
+                meta = kms.describe_key(KeyId=key_id)["KeyMetadata"]
+            except Exception as e:  # noqa: BLE001
+                if _aws_error_code(e) != "NotFoundException":
+                    undescribed.append(f"{key_id}: {e}")
+                continue
+            match = STACK_KMS_KEY_DESCRIPTION_RE.fullmatch(meta.get("Description", ""))
+            run = _IDP_RUN_PREFIX_RE.match(match.group(1)) if match else None
+            if not run:
+                continue
+            stack = match.group(1)
+            if meta.get("KeyState") not in KMS_KEY_REAPABLE_STATES:
+                skipped_state += 1
+                continue
+            if run.group(1) in protected:
+                skipped_protected += 1
+                continue
+            age = _listing_age_seconds(meta.get("CreationDate"), now)
+            if age is None:
+                age_unestablishable.append(f"{key_id} ({stack})")
+                continue
+            if age < IDP_KMS_KEY_STALE_AGE_SECONDS:
+                skipped_young += 1
+                continue
+            stale.append((key_id, stack))
+
+        if skipped_protected or skipped_young or skipped_state:
+            print(
+                f"  ({skipped_protected} protected by a live stack, "
+                f"{skipped_young} younger than the age gate, {skipped_state} "
+                "already pending deletion or not usable — skipped)"
+            )
+        _report_age_unestablishable(
+            age_unestablishable,
+            "the age gate cannot be satisfied, and this path schedules a KMS key's "
+            "deletion, after which nothing it encrypted can be read",
+        )
+
+        # The teardown's helper: the minimum window, and a key that went pending
+        # since it was described counts as done. Stdlib-only module.
+        from terraform_migration_test import schedule_key_deletion
+
+        scheduled = 0
+        for key_id, stack in sorted(stale):
+            try:
+                schedule_key_deletion(kms, key_id)
+                scheduled += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"[{stack}] ⚠️ KMS key {key_id} NOT scheduled for deletion — {e}")
+        if stale:
+            print(
+                f"✅ Scheduled {scheduled}/{len(stale)} KMS key(s) retained by dead "
+                "idp- runs for deletion"
+            )
+        elif not undescribed:
+            print("✅ No KMS keys retained by dead idp- runs")
+    except Exception as e:  # noqa: BLE001
+        return _sweep_finding(
+            "the dead-run KMS key sweep gave out part-way through the keys it "
+            f"listed, so an unknown number were never scheduled for deletion: {e}"
+        )
+
+    if undescribed:
+        return _sweep_finding(
+            f"could not describe {len(undescribed)} of {len(listed)} KMS key(s), so "
+            "whether any is a key a dead idp- run retained is unknown and none of "
+            f"those was scheduled: {'; '.join(sorted(undescribed)[:5])}"
+        )
+    return []
 
 
 def validate_apigw_global_hosting(stack_name):
@@ -12568,7 +12847,7 @@ def build_consolidated_summary(
     # "the cleanup ran" is the claim that let three runs' permissions-boundary
     # policies survive while the log said cleanup was handled.
     lines.append("")
-    lines.append("🧹 Teardown (IAM pre-stack + permissions boundary)")
+    lines.append("🧹 Teardown (IAM pre-stack, boundary policy, retained KMS key)")
     teardown = (primary_result or {}).get("teardown")
     if not publish_success or teardown is None:
         lines.append(row("cancelled", "Not reached"))
@@ -12582,7 +12861,7 @@ def build_consolidated_summary(
         )
     elif teardown.get("findings"):
         for finding in teardown["findings"]:
-            lines.append(row("failed", "IAM teardown", finding))
+            lines.append(row("failed", "Teardown", finding))
         overall_ok = False
     else:
         lines.append(
@@ -13731,6 +14010,10 @@ def main():
     # roles and still leak every policy until the NEXT run.
     stale_role_findings = cleanup_stale_idp_roles()
     stale_policy_findings = cleanup_stale_idp_policies()
+    # After the stack sweep, for the bucket sweep's reason: a run is reaped here
+    # only once it has no stack left, so this takes the keys of the stacks that
+    # sweep removed on an earlier run (a delete it starts is still in progress).
+    stale_kms_key_findings = cleanup_stale_idp_kms_keys()
     # Evidence bundles from runs long since diagnosed. Not reaped by an S3
     # lifecycle rule because the bucket is not managed by this repository.
     diagnostics_sweep_findings = cleanup_stale_ci_diagnostics()
@@ -13746,6 +14029,7 @@ def main():
         "cleanup_stale_idp_buckets": stale_bucket_findings,
         "cleanup_stale_idp_roles": stale_role_findings,
         "cleanup_stale_idp_policies": stale_policy_findings,
+        "cleanup_stale_idp_kms_keys": stale_kms_key_findings,
         "cleanup_stale_ci_diagnostics": diagnostics_sweep_findings,
     }
 
@@ -14132,9 +14416,10 @@ def main():
     if teardown_findings:
         stack_success = False
         detail = "; ".join(teardown_findings)
-        # A Terraform teardown's findings include the destroy and the retained-
-        # resource sweep, not only IAM, so its line says teardown.
-        what = "Teardown" if terraform is not None else "IAM teardown"
+        # Either teardown's findings include more than IAM: a Terraform one's the
+        # destroy and the retained-resource sweep, a CloudFormation one's the
+        # retained KMS key (#2235).
+        what = "Teardown"
         print(f"[{stack_name}] ❌ {what} NOT verified: {detail}")
         if not failure_reason:
             failure_reason = f"{what} not verified: {detail}"
