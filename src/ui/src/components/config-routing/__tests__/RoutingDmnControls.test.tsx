@@ -93,6 +93,18 @@ describe('exporting', () => {
     expect(exportToTextFile).not.toHaveBeenCalled();
   });
 
+  it("shows the message inside the client's error envelope when an export is refused", async () => {
+    // What the REST client rejects with when the server refuses: the dispatcher's body, not an Error.
+    graphql.mockRejectedValue({ errors: [{ message: 'INVALID_ROUTING: the content is not a routing section', errorType: 'BadRequest' }] });
+    renderControls();
+
+    await exportAs('1.5');
+
+    expect(screen.getByText('The table could not be exported')).toBeTruthy();
+    expect(screen.getByText('INVALID_ROUTING: the content is not a routing section')).toBeTruthy();
+    expect(screen.queryByText(/object Object/)).toBeNull();
+  });
+
   it('says it is busy while the server converts, and that it is done after, failed or not', async () => {
     graphql.mockResolvedValueOnce({ data: { convertRoutingDmn: { xml: '<definitions/>', routing: null } } });
     graphql.mockRejectedValueOnce(new Error('boom'));
@@ -188,6 +200,18 @@ describe('importing', () => {
     await waitFor(() => expect(screen.getByText('The file could not be imported')).toBeTruthy());
     expect(screen.getByText("INVALID_DMN: hit policy 'COLLECT' is not supported; use FIRST")).toBeTruthy();
     expect(createWrapper(document.body).findModal()!.isVisible()).toBe(false);
+    expect(onImport).not.toHaveBeenCalled();
+  });
+
+  it("shows the message inside the client's error envelope when an import is refused", async () => {
+    graphql.mockRejectedValue({ errors: [{ message: 'INVALID_DMN: no decision table', errorType: 'BadRequest' }] });
+    const onImport = renderControls();
+
+    await choose(dmnFile());
+
+    await waitFor(() => expect(screen.getByText('The file could not be imported')).toBeTruthy());
+    expect(screen.getByText('INVALID_DMN: no decision table')).toBeTruthy();
+    expect(screen.queryByText(/object Object/)).toBeNull();
     expect(onImport).not.toHaveBeenCalled();
   });
 

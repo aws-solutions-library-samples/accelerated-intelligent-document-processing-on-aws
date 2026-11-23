@@ -51,9 +51,8 @@ def policy_rule_validation_enabled(config: Any) -> bool:
     ):
         return False
     if not (_read(config, "policy_classes") or []):
-        logger.info(
-            "Policy rule validation is enabled but no policy_classes are "
-            "configured; the stage is skipped"
+        logger.debug(
+            "Policy rule validation is skipped: no policy_classes are configured"
         )
         return False
     return True

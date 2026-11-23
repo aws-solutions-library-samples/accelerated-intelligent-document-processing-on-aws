@@ -39,7 +39,7 @@ from idp_common.config.routing_validation import (
     class_names,
     policy_input,
     policy_rule_ids,
-    refuse_retired_routing_shape,
+    refuse_single_outcome_shape,
     routing_input,
     routing_warnings,
     validate_routing,
@@ -1139,14 +1139,15 @@ class TestTheWriteBoundary:
         assert saved.routing.tables[0].rules[0].id == "stale"
 
 
-_RETIRED = (
-    "the outcome is a list of actions now: write actions: [{type: review_queue, "
+_ACTIONS_FORM = (
+    "the outcome is a list of actions: write actions: [{type: review_queue, "
     "queue: <id>}], or actions: [] for no review"
 )
 
 
-class TestTheRetiredShape:
-    """The single outcome never shipped; a write that still carries it is refused.
+class TestTheSingleOutcomeShape:
+    """No release reads or writes the single outcome; a write that carries it is
+    refused.
 
     The models drop the keys, so without the refusal the routing rule would be
     saved as "not reviewed" and nobody would be told.
@@ -1154,7 +1155,7 @@ class TestTheRetiredShape:
 
     def _refused(self, raw) -> str:
         with pytest.raises(ConfigurationValidationError) as raised:
-            refuse_retired_routing_shape(raw)
+            refuse_single_outcome_shape(raw)
         return str(raised.value)
 
     def test_a_rule_with_an_outcome_is_refused_by_name(self):
@@ -1171,13 +1172,13 @@ class TestTheRetiredShape:
         }
 
         assert self._refused(raw) == (
-            f"Routing table 'review-routing', rule 'old': {_RETIRED}"
+            f"Routing table 'review-routing', rule 'old': {_ACTIONS_FORM}"
         )
 
     def test_a_table_and_a_rule_with_no_id_are_named_by_position(self):
         raw = {"tables": [{"rules": [{"actions": []}, {"outcome": {}}]}]}
 
-        assert self._refused(raw) == f"Routing table '#1', rule '#2': {_RETIRED}"
+        assert self._refused(raw) == f"Routing table '#1', rule '#2': {_ACTIONS_FORM}"
 
     def test_an_outcome_beside_actions_is_still_refused(self):
         raw = {"tables": [{"rules": [{"id": "both", "actions": [], "outcome": {}}]}]}
@@ -1185,10 +1186,12 @@ class TestTheRetiredShape:
         assert "rule 'both'" in self._refused(raw)
 
     @pytest.mark.parametrize("key", ["kind", "queue"])
-    def test_a_default_outcome_with_a_retired_key_is_refused(self, key):
+    def test_a_default_outcome_with_a_single_outcome_key_is_refused(self, key):
         raw = {"tables": [{"id": "t", "rules": [], "default_outcome": {key: "x"}}]}
 
-        assert self._refused(raw) == f"Routing table 't', default outcome: {_RETIRED}"
+        assert self._refused(raw) == (
+            f"Routing table 't', default outcome: {_ACTIONS_FORM}"
+        )
 
     @pytest.mark.parametrize(
         "raw",
@@ -1206,10 +1209,10 @@ class TestTheRetiredShape:
         ],
     )
     def test_anything_else_is_left_to_the_validation(self, raw):
-        refuse_retired_routing_shape(raw)
+        refuse_single_outcome_shape(raw)
 
     def test_the_shape_of_this_release_is_not_refused(self):
-        refuse_retired_routing_shape(
+        refuse_single_outcome_shape(
             {
                 "tables": [
                     {
@@ -1219,10 +1222,10 @@ class TestTheRetiredShape:
                 ]
             }
         )
-        refuse_retired_routing_shape(IDPConfig().routing.model_dump())
+        refuse_single_outcome_shape(IDPConfig().routing.model_dump())
 
 
-class TestTheRetiredShapeAtTheWriteBoundary:
+class TestTheSingleOutcomeShapeAtTheWriteBoundary:
     def _delta(self, table) -> dict:
         return {"routing": {"tables": [table]}}
 
@@ -1248,7 +1251,9 @@ class TestTheRetiredShapeAtTheWriteBoundary:
                 {**delta, "notes": "after"}, version=PROFILE
             )
 
-        assert str(raised.value) == f"Routing table '#1', rule 'everything': {_RETIRED}"
+        assert str(raised.value) == (
+            f"Routing table '#1', rule 'everything': {_ACTIONS_FORM}"
+        )
         saved = manager.get_configuration(CONFIG_TYPE_CONFIG, PROFILE)
         assert saved.notes == "before"
         assert [rule.id for rule in saved.routing.tables[0].rules] == [
@@ -1272,7 +1277,7 @@ class TestTheRetiredShapeAtTheWriteBoundary:
             manager.handle_update_custom_configuration(delta, version=PROFILE)
 
         assert str(raised.value) == (
-            f"Routing table 'review-routing', default outcome: {_RETIRED}"
+            f"Routing table 'review-routing', default outcome: {_ACTIONS_FORM}"
         )
 
     @pytest.mark.parametrize("flag", ["saveAsVersion", "saveAsDefault"])

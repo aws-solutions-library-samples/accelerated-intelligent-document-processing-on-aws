@@ -535,7 +535,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 
 **Document Uploads but Rule Validation doesn't fire on subsequent documents:**
 - **Most common cause:** the extracted policy class has no `Document Name Regex` or `Page Content Regex`. See [Required: Add a Document Matching Regex](#required-add-a-document-matching-regex).
-- Check `ProcessResultsFunction` CloudWatch logs for `Rule validation is enabled but no policy_classes configured - skipping rule validation`. If you see that, `policy_classes` is empty in the deployed config profile.
+- Check `ProcessResultsFunction` CloudWatch logs for `Rule validation enabled: False`. If you see that, either `policy_classes` is empty or `rule_validation.enabled` is off in the configuration profile the document ran with.
 - Check the Step Functions execution history for whether `PolicyClassificationStep` and `ValidatePolicyRulesBySection` actually ran, or whether it short-circuited to `SetEmptyPolicyRuleValidationResult`.
 
 **Two identical rule classes after re-uploading:**

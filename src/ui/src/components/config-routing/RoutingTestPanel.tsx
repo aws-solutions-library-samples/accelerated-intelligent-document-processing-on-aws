@@ -19,6 +19,7 @@ import {
 import { defineMessages, useIntl, type MessageDescriptor, type NoMessageValues } from 'react-intl';
 
 import type { RoutingTestResult } from '../../graphql/generated/operation-types';
+import { extractGraphQLErrorMessage } from '../../hooks/utils/graphql-error';
 import { testInputs, testRoutingTable } from './routing-api';
 import type { RoutingConfig } from './routing-types';
 
@@ -230,7 +231,7 @@ const RoutingTestPanel = ({ routing, queueName, onResult }: RoutingTestPanelProp
       setResult(answer);
       onResult?.(answer);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(extractGraphQLErrorMessage(err));
     } finally {
       setTesting(false);
     }

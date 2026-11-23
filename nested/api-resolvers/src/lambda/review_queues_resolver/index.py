@@ -28,7 +28,7 @@ from idp_common.config.configuration_manager import (
     ConfigurationValidationError,
 )
 from idp_common.config.routing_models import RoutingConfig
-from idp_common.config.routing_validation import refuse_retired_routing_shape
+from idp_common.config.routing_validation import refuse_single_outcome_shape
 from idp_common.config_scope import (
     caller_email_from_claims,
     caller_sub_from_claims,
@@ -458,7 +458,7 @@ def _routing_argument(raw: Any) -> RoutingConfig | None:
     if not isinstance(raw, dict):
         raise ValueError("BAD_ARGUMENT: routing must be an object")
     try:
-        refuse_retired_routing_shape(raw)
+        refuse_single_outcome_shape(raw)
     except ConfigurationValidationError as e:
         raise ValueError(f"INVALID_ROUTING: {e}") from None
     return RoutingConfig.model_validate(raw)

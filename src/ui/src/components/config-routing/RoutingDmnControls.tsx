@@ -12,6 +12,7 @@ import React, { useImperativeHandle, useRef, useState } from 'react';
 import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
 import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
+import { extractGraphQLErrorMessage } from '../../hooks/utils/graphql-error';
 import { exportToTextFile } from '../common/download-func';
 import { routingFromDmn, routingToDmn, type DmnVersion } from './routing-api';
 import { tableOf, type RoutingConfig } from './routing-types';
@@ -111,7 +112,7 @@ const RoutingDmnControls = React.forwardRef<RoutingDmnControlsRef, RoutingDmnCon
         const xml = await routingToDmn(routing, version);
         await exportToTextFile(xml, `routing-${profileName}`, 'dmn', 'application/xml');
       } catch (err) {
-        setError({ header: intl.formatMessage(messages.exportError), text: err instanceof Error ? err.message : String(err) });
+        setError({ header: intl.formatMessage(messages.exportError), text: extractGraphQLErrorMessage(err) });
       } finally {
         onBusyChange?.(false);
       }
@@ -131,7 +132,7 @@ const RoutingDmnControls = React.forwardRef<RoutingDmnControlsRef, RoutingDmnCon
         setPending({ file: file.name, routing: await routingFromDmn(await file.text()) });
       } catch (err) {
         // The server names the construct it could not read; show its message as it is.
-        setError({ header: intl.formatMessage(messages.importError), text: err instanceof Error ? err.message : String(err) });
+        setError({ header: intl.formatMessage(messages.importError), text: extractGraphQLErrorMessage(err) });
       } finally {
         onBusyChange?.(false);
       }

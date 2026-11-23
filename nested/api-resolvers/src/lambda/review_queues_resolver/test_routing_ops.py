@@ -227,7 +227,7 @@ class TestATableThatIsNotSaved:
         assert type(refused.value) is ValueError
 
     @pytest.mark.parametrize(
-        ("retired", "named"),
+        ("single_outcome", "named"),
         [
             (
                 {"rules": [{"id": "big", "outcome": {"kind": "queue", "queue": "x"}}]},
@@ -238,11 +238,11 @@ class TestATableThatIsNotSaved:
     )
     @pytest.mark.parametrize("as_text", [False, True])
     def test_one_written_with_the_single_outcome_is_refused(
-        self, module, retired, named, as_text
+        self, module, single_outcome, named, as_text
     ):
-        """The models drop the old key, so the table would be tested as "no
+        """The models drop the key, so the table would be tested as "no
         review" and the answer would be about a table nobody wrote."""
-        routing = {"tables": [dict(retired, id="review-routing")]}
+        routing = {"tables": [dict(single_outcome, id="review-routing")]}
 
         with pytest.raises(ValueError, match="INVALID_ROUTING: ") as refused:
             _test(module, json.dumps(routing) if as_text else routing)

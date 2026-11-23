@@ -180,6 +180,18 @@ describe('the routing test panel', () => {
     expect(screen.queryByText('Held for review')).toBeNull();
   });
 
+  it("shows the message inside the client's error envelope, never the envelope itself", async () => {
+    // What the REST client rejects with when the server refuses: the dispatcher's body, not an Error.
+    graphql.mockRejectedValue({ errors: [{ message: 'NOT_FOUND: no such document', errorType: 'NotFound' }] });
+    renderPanel();
+
+    await test();
+
+    await waitFor(() => expect(screen.getByText('The table could not be tested')).toBeTruthy());
+    expect(screen.getByText('NOT_FOUND: no such document')).toBeTruthy();
+    expect(screen.queryByText(/object Object/)).toBeNull();
+  });
+
   it('clears the earlier result when a new test fails', async () => {
     graphql.mockResolvedValueOnce(answer({}));
     graphql.mockRejectedValueOnce(new Error('NOT_FOUND: no such document'));

@@ -8,7 +8,7 @@ level, and the class-schema helpers only inside
 :func:`collect_missing_required_fields`. It must not import ``idp_common.assessment``
 or ``idp_common.rule_validation``: review routing runs in a Lambda that installs
 neither of their extras, and it reads the same predicates the assessment step
-applies. ``idp_common.assessment.presence`` re-exports every name here.
+applies. ``idp_common.assessment.presence`` re-exports the public names here.
 
 Two rules live here, and both read the EXTRACTED VALUES, which the alert builders
 themselves never see (they are given the assessment and the class schema only):

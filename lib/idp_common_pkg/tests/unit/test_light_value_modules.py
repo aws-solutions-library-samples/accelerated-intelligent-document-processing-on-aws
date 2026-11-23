@@ -169,3 +169,20 @@ class TestLightValueModules:
             "coerce_numeric_reading",
         ):
             assert getattr(type_coercion, name) is getattr(field_paths, name), name
+
+    def test_presence_re_exports_public_names_only(self):
+        """The private helpers are reached through ``field_values`` alone.
+
+        A private name on ``presence`` would be a second place to patch that no
+        caller reads, so a patch of it would change nothing and say nothing.
+        """
+        from idp_common.assessment import presence
+
+        private = [
+            name
+            for name in vars(presence)
+            if name.startswith("_") and not name.startswith("__")
+        ]
+
+        assert private == []
+        assert [name for name in presence.__all__ if name.startswith("_")] == []

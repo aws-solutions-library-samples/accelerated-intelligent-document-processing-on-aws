@@ -313,7 +313,7 @@ to compare, so this gate says nothing about it.
 | `tenants.py` | Tenant declarations — the prefix subtrees and profile pattern of each tenant, and the boundary checks over mappings, scopes and ingest. See [Tenant declarations](#tenant-declarations--tenantspy). |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
 | `routing_models.py` | The `routing` section: `RoutingConfig`, `RoutingTable`, `RoutingRule`, `RoutingCondition`, `RoutingAction`, `RoutingDefaultOutcome`, `builtin_rules()`, and the two helpers every reader of an outcome uses, `review_queue_of()` and `queue_actions()`. See [Review routing](#review-routing--the-routing-section). |
-| `routing_validation.py` | `validate_routing()` and the input catalogue (`ROUTING_INPUTS`): what a routing table may read and what is checked when one is saved. Also `routing_warnings()` (what an accepted save will not do) and `refuse_retired_routing_shape()`. |
+| `routing_validation.py` | `validate_routing()` and the input catalogue (`ROUTING_INPUTS`): what a routing table may read and what is checked when one is saved. Also `routing_warnings()` (what an accepted save will not do) and `refuse_single_outcome_shape()`. |
 | `routing_reason.py` | The reason of a routing rule: `parse_reason()` (its placeholders, checked at save) and `render_reason()` (the text a reviewer reads), `format_value()`, `cut_bytes()`. Standard library only. |
 | `feature_flags.py` | Whether an optional step does its work for a configuration, one answer per step for every caller: `policy_rule_validation_enabled()`, `review_routing_enabled()` (`hitl.enabled`), `confidence_enabled()`, and `step_enabled()`, which gives all of them by step id. |
 | `routing_references.py` | `find_queue_references()`: which profiles' routing rules send documents to a review queue, in the published configuration and in a newer revision. |
@@ -905,7 +905,7 @@ a profile after a queue was deleted. Reset-to-default and `restore_revision` do 
 run it: both copy something that was valid when it was saved. It does two things,
 in this order:
 
-1. `refuse_retired_routing_shape(delta["routing"])`, on the section **as the write
+1. `refuse_single_outcome_shape(delta["routing"])`, on the section **as the write
    carries it**. A routing rule that holds an `outcome` key, and a `default_outcome`
    that holds `kind` or `queue`, are refused with the form to write instead. The
    check has to read the raw section: the models drop a key they do not define, so

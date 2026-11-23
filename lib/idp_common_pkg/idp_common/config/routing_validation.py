@@ -404,22 +404,24 @@ def policy_types(config: Any) -> List[str]:
     ]
 
 
-#: What a save says about the outcome shape this release replaced.
-_RETIRED_SHAPE = (
-    "the outcome is a list of actions now: write actions: [{type: review_queue, "
+#: What a save says about an outcome written as one ``outcome``: the form to write.
+_ACTIONS_FORM = (
+    "the outcome is a list of actions: write actions: [{type: review_queue, "
     "queue: <id>}], or actions: [] for no review"
 )
 
 
-def refuse_retired_routing_shape(raw: Any) -> None:
-    """Refuse a ``routing`` section written with the single outcome.
+def refuse_single_outcome_shape(raw: Any) -> None:
+    """Refuse a ``routing`` section that writes an outcome as one ``outcome``.
 
     ``raw`` is the section as the write carries it, before the models read it. A
     routing rule that holds ``outcome``, and a ``default_outcome`` that holds
-    ``kind`` or ``queue``, are the shape before actions. The models drop those
-    keys, so the routing rule would be saved as "not reviewed" without a word;
-    the write is refused instead. Anything that is not that shape is left to
-    :func:`validate_routing`.
+    ``kind`` or ``queue``, name a single outcome where the models hold a list of
+    ``actions``. No release reads or writes that shape: it reaches a save only
+    in a section written by hand, or in one a development build saved. The
+    models drop those keys, so the routing rule would be saved as "not reviewed"
+    without a word; the write is refused instead. Anything that is not that shape
+    is left to :func:`validate_routing`.
 
     Raises:
         ConfigurationValidationError: naming the table and the routing rule.
@@ -440,14 +442,14 @@ def refuse_retired_routing_shape(raw: Any) -> None:
                 rule_id = rule.get("id")
                 _refuse(
                     named,
-                    _RETIRED_SHAPE,
+                    _ACTIONS_FORM,
                     rule=rule_id
                     if isinstance(rule_id, str) and rule_id
                     else f"#{position}",
                 )
         default = table.get("default_outcome")
         if isinstance(default, dict) and ("kind" in default or "queue" in default):
-            _refuse(named, _RETIRED_SHAPE, where="default outcome")
+            _refuse(named, _ACTIONS_FORM, where="default outcome")
 
 
 def _check_actions(

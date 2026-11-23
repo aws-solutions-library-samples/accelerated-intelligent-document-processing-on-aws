@@ -384,6 +384,9 @@ class TestExpressions:
             # A backslash before the last quote escapes it: the string never closes.
             'field_value("a\\")',
             'field_value("a","any\\")',
+            # A backslash that ends the argument has nothing to escape: unclosed too.
+            'field_value("a\\)',
+            'field_value("a","any\\)',
             "policy_rule_verdict",
             "class_present",
             'class_present("W2","any")',

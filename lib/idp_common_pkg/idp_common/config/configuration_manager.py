@@ -2526,7 +2526,7 @@ class ConfigurationManager:
         copy something that was valid when it was saved, and both must stay
         possible when a queue has since been deleted.
 
-        A write that still carries the single-outcome shape (a routing rule with
+        A write that carries the single-outcome shape (a routing rule with
         ``outcome``, a ``default_outcome`` with ``kind`` or ``queue``) is refused
         first, on the raw ``delta``.
 
@@ -2535,11 +2535,11 @@ class ConfigurationManager:
         """
         if not isinstance(delta, dict) or "routing" not in delta:
             return
-        from .routing_validation import refuse_retired_routing_shape, validate_routing
+        from .routing_validation import refuse_single_outcome_shape, validate_routing
 
         # On the section as the write carries it: the models drop the keys of the
-        # single-outcome shape, so `config` no longer shows that it was written.
-        refuse_retired_routing_shape(delta["routing"])
+        # single-outcome shape, so `config` does not show that it was written.
+        refuse_single_outcome_shape(delta["routing"])
         validate_routing(config, queue_lookup=queue_lookup)
 
     @staticmethod

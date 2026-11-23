@@ -293,7 +293,7 @@ class TestTolerance:
         assert table.rules[0].actions[0].type == "lambda"
 
     def test_a_stored_rule_with_the_single_outcome_loads_with_no_actions(self):
-        """The shape before actions never shipped; a stored one must still load.
+        """No release wrote the single-outcome shape; a stored one must still load.
 
         The key is dropped, so the rule reads as "not reviewed". Saving that shape
         is refused (``test_routing_validation.py``).

@@ -80,6 +80,9 @@ class DecisionTable(BaseModel):
 
     id: str
     name: str = ""
+    #: DMN's own default, which is what a file with no ``hitPolicy`` means. The
+    #: built-in engine evaluates ``FIRST`` only and refuses any other policy, so a
+    #: table built in code for it sets ``hit_policy="FIRST"``.
     hit_policy: str = "UNIQUE"
     inputs: list[TableInput] = Field(default_factory=list)
     outputs: list[TableOutput] = Field(default_factory=list)
