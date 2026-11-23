@@ -1197,6 +1197,12 @@ class AssessmentService:
             model_lambda_hook_arn=confidence_cfg.model_lambda_hook_arn,
             reasoning_effort=reasoning_effort,
         )
+        # A withheld reply (stopReason content_filtered / guardrail_intervened) is
+        # raised here, where a blocked ValidationException is raised, so it
+        # degrades the section the same way instead of being parsed.
+        from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+        raise_if_output_withheld(response_with_metering)
 
         total_duration = time.time() - request_start_time
         logger.info(f"Time taken for assessment: {total_duration:.2f} seconds")

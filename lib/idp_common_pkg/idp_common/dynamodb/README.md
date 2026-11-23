@@ -207,7 +207,7 @@ document = Document(
 service.create_document(document)
 
 # Update document
-document.status = Status.PROCESSING
+document.status = Status.RUNNING
 updated_doc = service.update_document(document)
 
 # Retrieve document

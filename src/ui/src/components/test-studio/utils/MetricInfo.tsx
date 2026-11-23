@@ -14,6 +14,8 @@ interface MetricConfig {
 interface MetricInfoProps {
   metric:
     | 'AUROC'
+    | 'AUROC_INCLUDING_EMPTY'
+    | 'EMPTY_PREDICTIONS'
     | 'ECE'
     | 'Brier'
     | 'ECARB@30'
@@ -67,6 +69,14 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
   AUROC: {
     description: 'Area Under ROC Curve - how well confidence distinguishes correct from incorrect (1.0 = perfect, 0.5 = random)',
     docsUrl: 'https://en.wikipedia.org/wiki/Receiver_operating_characteristic#Area_under_the_curve',
+  },
+  AUROC_INCLUDING_EMPTY: {
+    description:
+      'AUROC over every scored field, including fields the extractor returned empty. AUROC above leaves empty predictions out, so a large gap means the confidence scorer ranks missed fields wrongly',
+  },
+  EMPTY_PREDICTIONS: {
+    description:
+      'Fields the extractor returned no value for, how many of them were wrong (a value was expected), and the AUROC over those fields alone. Below 0.5 means missed fields score higher than correctly empty ones',
   },
   ECE: {
     description: 'Expected Calibration Error - how far confidence is from actual accuracy (0.0 = perfect)',

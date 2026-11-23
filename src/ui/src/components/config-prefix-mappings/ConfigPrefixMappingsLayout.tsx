@@ -33,6 +33,7 @@ import useConfigPrefixMappings, {
 } from '../../hooks/use-config-prefix-mappings';
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import TenantsSection from './TenantsSection';
+import MappingHistory, { MappingHistoryLink } from './MappingHistory';
 import { prefixError, storedPrefix, type MatchMode } from '../../utils/config-prefix-key';
 import { useFormatters } from '../../i18n/format';
 
@@ -184,6 +185,9 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
   const [testResult, setTestResult] = useState<ConfigAssignmentPreview | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  // The change log panel: closed until asked for, optionally narrowed to one mapping.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyPrefix, setHistoryPrefix] = useState<string | null>(null);
 
   useEffect(() => {
     if (isAdmin && !roleLoading) loadMappings();
@@ -415,6 +419,13 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
           <Button variant="inline-link" onClick={() => setDeleting(m)}>
             Delete
           </Button>
+          <MappingHistoryLink
+            prefix={m.prefix}
+            onClick={() => {
+              setHistoryPrefix(m.prefix);
+              setHistoryOpen(true);
+            }}
+          />
         </SpaceBetween>
       ),
     },
@@ -514,6 +525,14 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
           </ExpandableSection>
         </SpaceBetween>
       </Container>
+
+      <MappingHistory
+        prefixFilter={historyPrefix}
+        onClearFilter={() => setHistoryPrefix(null)}
+        expanded={historyOpen}
+        onExpandedChange={setHistoryOpen}
+        reloadOn={mappings}
+      />
 
       <Modal
         visible={showForm}

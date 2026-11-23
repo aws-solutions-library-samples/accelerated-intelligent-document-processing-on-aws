@@ -154,6 +154,13 @@ UNCOVERED_LAMBDA_TREES: dict[str, tuple[str, int]] = {
         3,
     ),
     "feature-platform/confbench-testset": ("an optional feature extension package", 0),
+    "feature-platform/decision-model-decider": (
+        "an optional feature extension package whose two functions are custom "
+        "resource handlers. Their own code logs the request type and the build, "
+        "not the event; crhelper, which serves one of them, logs the whole event "
+        "at DEBUG, and the stack's LogLevel defaults to WARN",
+        0,
+    ),
     "feature-platform/feature-template": (
         "the scaffold a new feature is copied from",
         0,
@@ -215,6 +222,10 @@ TREE_INDEPENDENCE: dict[str, dict[str, bool]] = {
         "notBuiltWithMainStack": False,
     },
     "feature-platform/confbench-testset": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": False,
+    },
+    "feature-platform/decision-model-decider": {
         "notDeployedByParent": True,
         "notBuiltWithMainStack": False,
     },

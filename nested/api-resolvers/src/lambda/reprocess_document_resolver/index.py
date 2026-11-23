@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 
+from idp_common import document_attributes
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
     SOURCE_ACTIVE_PROFILE,
@@ -28,7 +29,7 @@ from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
 
 # Import IDP Common modules
-from idp_common.models import Document, Status
+from idp_common.models import Document, Status, attributes_dropped_issue
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -375,6 +376,16 @@ def _version_for_document(
             profile_exists=_memo_exists(manager, seam_cache),
             allowed_profiles=list(allowed_versions) if allowed_versions else None,
         )
+        if decided.rejected and decided.unresolvable:
+            # Refused rather than reprocessed under the caller's profile (#597): the
+            # mapping for this prefix names a profile that does not exist, and that
+            # is a broken routing rule for the admin to fix, not a contest the
+            # request wins by default. Same marker and metric as ingest.
+            logger.warning(
+                "Stale prefix mapping for %s: %s", object_key, decided.reason
+            )
+            _emit("PrefixMappingUnresolvable")
+            raise ValueError(_unresolvable_refusal(object_key, decided.mapping_prefix))
         if decided.rejected:
             _emit("PrefixMappingRejected")
             logger.warning("Refusing to reprocess %s: %s", object_key, decided.reason)
@@ -487,6 +498,11 @@ def _version_for_document(
         # line on this path sends them to the wrong Lambda.
         logger.warning("Stale prefix mapping for %s: %s", object_key, assignment.reason)
         _emit("PrefixMappingUnresolvable")
+    if assignment.rejected:
+        # Only reachable through an unresolvable mapping: with no profile requested
+        # there is nothing for a `reject` mapping to conflict with. Refused rather
+        # than reprocessed under the active profile (#597).
+        raise ValueError(_unresolvable_refusal(object_key, assignment.mapping_prefix))
     if assignment.scope_denied or not assignment.mapping_prefix:
         if assignment.scope_denied:
             logger.warning(
@@ -511,6 +527,21 @@ def _version_for_document(
         assignment.revision,
         assignment.source,
         assignment.mapping_prefix,
+    )
+
+
+def _unresolvable_refusal(object_key, mapping_prefix):
+    """The reprocess refusal for a mapping that names a profile that does not exist.
+
+    Names the prefix rather than the profile, as the conflict refusal does: the
+    prefix is what the admin edits to fix it. A caller outside the scope of the
+    mapped profile never reaches this -- the resolver reports a scope denial first.
+    """
+    return (
+        f"Refused: {object_key!r} is governed by the configuration prefix mapping "
+        f"for {mapping_prefix!r}, which names a Configuration Profile that does not "
+        f"exist. Recreate that profile, or change or delete the mapping, then "
+        f"reprocess."
     )
 
 
@@ -836,6 +867,9 @@ def _refuse_if_refused_by_the_malware_gate(object_key):
     hands it to SQS, so a DynamoDB blip that admits a possibly-quarantined file
     cannot be recovered by "the gate will see it again". A retry is cheap; a
     reprocessed infected document is not.
+
+    Returns the tracking row's document (``None`` when there is no row), so the
+    caller can carry its intake snapshot forward without a second read.
     """
     try:
         document = document_service.get_document(object_key)
@@ -849,7 +883,7 @@ def _refuse_if_refused_by_the_malware_gate(object_key):
             f"This is temporary — retry the request. ({e})"
         ) from e
     if document is None:
-        return
+        return None
     status = getattr(document.status, "value", document.status)
     if status == Status.MALWARE_SCANNING.value:
         # Worded as a wait rather than a refusal, because that is what it is: no
@@ -870,6 +904,7 @@ def _refuse_if_refused_by_the_malware_gate(object_key):
             f"password-protected PDF — re-upload an unprotected copy so it is "
             f"scanned again."
         )
+    return document
 
 
 def reprocess_document(
@@ -901,15 +936,38 @@ def reprocess_document(
         + (f" r{revision}" if revision is not None else "")
     )
 
-    _refuse_if_refused_by_the_malware_gate(object_key)
+    existing = _refuse_if_refused_by_the_malware_gate(object_key)
 
     # Verify file exists in S3
     try:
-        s3_client.head_object(Bucket=input_bucket, Key=object_key)
+        head = s3_client.head_object(Bucket=input_bucket, Key=object_key)
     except Exception as e:
         raise ValueError(
             f"Document {object_key} not found in S3 bucket {input_bucket}: {str(e)}"
         )
+
+    # Caller-supplied attributes (#1851) are carried unchanged: the snapshot the
+    # original intake stored on the row. Only when there is no row (it expired, or
+    # the document was never ingested) are they read from the object again, by
+    # the same rules intake uses.
+    attribute_issues = []
+    if existing is not None:
+        attributes = dict(getattr(existing, "attributes", None) or {})
+        # ...and so is the warning that intake dropped some, which describes the
+        # same snapshot.
+        attribute_issues = [
+            issue
+            for issue in (getattr(existing, "processing_issues", None) or [])
+            if getattr(issue, "code", None)
+            == document_attributes.ISSUE_ATTRIBUTES_DROPPED
+        ]
+    else:
+        intake = document_attributes.read_object_attributes(
+            (head or {}).get("Metadata") or {}, input_bucket, s3_client
+        )
+        attributes = intake.attributes
+        if intake.dropped:
+            attribute_issues.append(attributes_dropped_issue(intake.dropped))
 
     _withdraw_review(object_key)
 
@@ -934,6 +992,8 @@ def reprocess_document(
         config_revision=revision,
         config_source=config_source,
         config_mapping_prefix=config_mapping_prefix,
+        attributes=attributes,
+        processing_issues=attribute_issues,
     )
 
     logger.info(f"Created fresh document object for reprocessing: {object_key}")

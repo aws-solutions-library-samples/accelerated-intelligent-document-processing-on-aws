@@ -259,6 +259,9 @@ class ProgressMonitor:
                 # Review-queue status (None when the document was never routed).
                 "review": doc_result.get("review"),
             }
+            # Caller-supplied attributes (#1851), only when the document has any.
+            if doc_result.get("attributes"):
+                status["attributes"] = doc_result["attributes"]
 
             # Add error info for failed/aborted documents
             if status_value == "ABORTED":
@@ -391,6 +394,8 @@ class ProgressMonitor:
                 "duration": result.get("Duration", 0),
                 "review": result.get("review"),
             }
+            if result.get("attributes"):
+                doc_status["attributes"] = result["attributes"]
 
             # Add status-specific fields
             if status == "RUNNING":

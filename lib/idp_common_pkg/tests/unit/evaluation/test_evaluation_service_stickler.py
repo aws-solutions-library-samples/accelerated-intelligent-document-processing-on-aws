@@ -460,6 +460,28 @@ class TestSticklerEvaluationService:
         )
         assert "0.80" not in list_attr.evaluation_method
 
+    def test_missed_field_confidence_is_recorded_for_calibration(self, service):
+        """A field the extractor returned as null keeps its confidence (#2052).
+
+        The service removes ``None`` before building the models, so Stickler's
+        ``prediction_confidences`` has no entry for the missed field; without the
+        separate record the aggregation Lambda could never count its 0.95 against
+        the scorer.
+        """
+        section = Section(section_id="1", classification="Invoice", page_ids=["1"])
+        result = service.evaluate_section(
+            section,
+            {"invoice_number": "INV-1", "invoice_date": "2024-01-01"},
+            {"invoice_number": None, "invoice_date": "2024-01-01"},
+            {
+                "invoice_number": {"confidence": 0.95},
+                "invoice_date": {"confidence": 0.6},
+            },
+        )
+        blob = result.stickler_comparison_result
+        assert "invoice_number" not in blob["prediction_confidences"]
+        assert blob["empty_prediction_confidences"] == {"invoice_number": 0.95}
+
     def test_stickler_model_not_found(self, service):
         """Test error when Stickler model not found for class."""
         with pytest.raises(ValueError, match="No schema configuration"):

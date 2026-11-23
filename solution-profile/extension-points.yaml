@@ -1,0 +1,762 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Extension points of the GenAI IDP Accelerator (Solution Profile contract v1,
+# solution-profile/schema/v1/README.md). Items are ordered by the gap taxonomy:
+# configuration, hook, extension, core-enhancement, fork, other.
+
+extension_points:
+  # ---------------------------------------------------------------- configuration
+  - id: config-profiles-and-versions
+    title: Configuration profiles and their revisions
+    category: configuration
+    description: >-
+      A configuration profile is a named configuration (classes, prompts, models,
+      thresholds, hooks) that documents are processed under, selected per upload or
+      activated as the default, without redeploying the stack. Every save cuts an
+      immutable numbered revision, so a change can be compared in Test Studio and
+      rolled back. Profiles are also the unit of access control for scoped users.
+      The older name "configuration version" survives in API and stored field
+      names, and the CLI and SDK accept both spellings.
+    evidence:
+      - docs/configuration-profiles.md
+      - docs/configuration-profiles.md#revision-history
+      - docs/configuration-versions.md
+    when_to_use: >-
+      Run different document families, or a candidate and a production
+      configuration, side by side in one stack, and keep a reviewable history of
+      every configuration change.
+    constraints:
+      - >-
+        The last 20 revisions per profile are retained, plus the current, labelled
+        and test-pinned revisions; the cap is not an operator-facing setting.
+      - >-
+        Revision bodies in the Configuration bucket expire after
+        DataRetentionInDays (365 by default), whatever their label or pin.
+    effort: S
+    upgrade_risk: low
+    modes: [bda, pipeline]
+    related:
+      - capability:configuration-profiles
+      - capability:configuration-versions
+      - capability:test-studio
+
+  - id: config-library-presets
+    title: Start from a shipped configuration preset
+    category: configuration
+    description: >-
+      The configuration library ships one preset directory per document scenario
+      (bank statements, lending packets, W-2s, passports, healthcare packets and
+      others), chosen at deploy time with the Configuration Preset parameter or
+      loaded later. A preset holds only what differs from the system defaults, so a
+      new configuration can be a short override file. No preset is BDA-specific:
+      BDA mode is a flag set on whichever preset is chosen.
+    evidence:
+      - config_library/README.md
+      - config_library/README.md#system-defaults-and-configuration-inheritance
+      - config_library/README.md#creating-a-new-configuration
+      - config_library/unified
+    when_to_use: >-
+      Begin a delivery from the preset nearest the customer's documents and change
+      classes, prompts and models from there instead of writing a configuration
+      from nothing.
+    constraints:
+      - >-
+        Settings a preset omits are filled from the system defaults of the running
+        release, so an upgrade that changes a default changes the behaviour of a
+        configuration that did not set it.
+    effort: S
+    upgrade_risk: low
+    modes: [bda, pipeline]
+    related:
+      - capability:configuration-presets
+      - delivery:deploy-nearest-preset
+
+  - id: prompt-customisation
+    title: Edit system and task prompts, globally or per class
+    category: configuration
+    description: >-
+      Each pipeline-mode step (OCR with the Bedrock backend, classification,
+      extraction, confidence assessment, summarization) reads its system and task
+      prompts from the configuration, with placeholders such as DOCUMENT_TEXT,
+      DOCUMENT_IMAGE, ATTRIBUTE_NAMES_AND_DESCRIPTIONS and FEW_SHOT_EXAMPLES.
+      Extraction prompts can be overridden per class with
+      x-aws-idp-extraction-system-prompt and x-aws-idp-extraction-task-prompt, and
+      Prompt Preview in the web UI shows the prompt as sent.
+    evidence:
+      - docs/configuration.md#prompt-preview
+      - docs/configuration.md#comments-in-a-prompt
+      - docs/extraction-and-confidence.md#per-class-extraction-prompt-overrides
+      - docs/extraction-and-confidence.md#prompt-placeholders
+    when_to_use: >-
+      Tune accuracy for a document class whose fields need instructions the default
+      prompt does not carry, such as domain terminology or a disambiguation rule.
+    constraints:
+      - >-
+        Prompts drive pipeline mode only; BDA mode classifies and extracts inside
+        Bedrock Data Automation against its blueprints.
+      - >-
+        Releases change prompt handling (v0.6.15 made text between {# and #}
+        a comment that is no longer sent), so stored prompts are re-checked against
+        the CHANGELOG on upgrade.
+    effort: M
+    upgrade_risk: medium
+    modes: [pipeline]
+    related:
+      - capability:few-shot-examples
+      - delivery:prompt-schema-tuning
+
+  - id: json-schema-classes
+    title: Document classes as JSON Schema with x-aws-idp-* keywords
+    category: configuration
+    description: >-
+      Each document class is a JSON Schema (draft 2020-12) whose properties are the
+      attributes to extract, extended with x-aws-idp-* keywords for classification
+      hints and regexes, per-class models and prompts, multi-instance records,
+      evaluation method and threshold, confidence threshold, and few-shot examples.
+      Classes can be authored in the web UI, generated by Discovery from sample
+      documents, or written in YAML.
+    evidence:
+      - docs/json-schema-migration.md#aws-idp-extensions
+      - docs/configuration.md#evaluation-extensions-in-json-schema
+      - lib/idp_common_pkg/idp_common/config/schema_constants.py
+      - docs/extraction-and-confidence.md#per-class-extraction-prompt-overrides
+    when_to_use: >-
+      Add a new document type, add or change the attributes extracted for one, or
+      set how each field is scored against ground truth.
+    constraints:
+      - >-
+        An x-aws-idp-evaluation-method value outside EXACT, NUMERIC_EXACT, FUZZY,
+        LEVENSHTEIN, SEMANTIC, DATE, LLM and HUNGARIAN (uppercase) is accepted and
+        silently ignored.
+      - >-
+        The three thresholds are 0.0 to 1.0 by convention only; a percentage such
+        as 50 is accepted and makes the field score 0.
+      - >-
+        A class's extraction prompts are overridden with
+        x-aws-idp-extraction-system-prompt and x-aws-idp-extraction-task-prompt.
+      - >-
+        In BDA mode classes are synchronised to BDA blueprints, which do not accept
+        nested objects within objects or arrays of objects inside an object.
+    effort: M
+    upgrade_risk: low
+    modes: [bda, pipeline]
+    related:
+      - capability:discovery
+      - capability:evaluation
+      - question:document-classes
+      - question:class-attributes
+
+  # ------------------------------------------------------------------------- hook
+  - id: lambda-hook-model
+    title: LambdaHook model for custom inference
+    category: hook
+    description: >-
+      Selecting "LambdaHook" as a step's model makes the accelerator invoke a
+      customer Lambda function with a Bedrock Converse-compatible request instead
+      of calling Bedrock, so a model on Amazon SageMaker, on ECS or EC2, or behind
+      an external API can serve that step. Page images are uploaded to S3 and
+      passed by reference. The repository carries sample hooks for third-party OCR
+      services.
+    evidence:
+      - docs/lambda-hook-inference.md
+      - docs/lambda-hook-inference.md#supported-steps
+      - docs/lambda-hook-inference.md#error-handling
+      - docs/lambda-hook-inference.md#limitations
+      - lib/idp_common_pkg/idp_common/bedrock/client.py
+    when_to_use: >-
+      A required model is not on Amazon Bedrock, or a step must call a customer's
+      own fine-tuned or self-hosted model.
+    constraints:
+      - The function name must start with GENAIIDP- (case-sensitive); the stack's IAM grant is scoped to that prefix.
+      - >-
+        OCR (Bedrock backend), classification, extraction and assessment hooks run
+        in pipeline mode only; a summarization hook runs in both modes.
+      - >-
+        Invoked synchronously; the client waits up to 840 seconds per invocation
+        (read_timeout 840) inside a calling Lambda capped at 900 seconds.
+      - >-
+        One request makes at most max_retries + 1 invocations, which is 8 at the
+        default retry count, and each retry re-runs the hook's paid work.
+      - >-
+        Synchronous Lambda payloads are limited to 6 MB; images go by S3 reference,
+        but more than about 5 MB of text alone can still exceed it.
+      - Bedrock prompt caching (cachePoint) and Bedrock Guardrails do not apply to a hook invocation.
+    effort: M
+    upgrade_risk: medium
+    modes: [bda, pipeline]
+    related:
+      - capability:bedrock-model-choice
+      - limitation:lambda-hook-payload-limit
+      - limitation:lambda-hook-timeout
+      - delivery:hook-development
+
+  - id: custom-prompt-lambda
+    title: Custom prompt generator Lambda for extraction
+    category: hook
+    description: >-
+      extraction.custom_prompt_lambda_arn names a Lambda function that receives the
+      resolved prompts, the prompt placeholders (with images as S3 URIs) and the
+      serialised document, and returns the system prompt and task prompt content
+      the extraction call will use. It injects business logic into prompt
+      construction, for example per-customer rules or values looked up in an
+      external system, without changing the extraction code.
+    evidence:
+      - docs/configuration.md#custom-prompt-lambda-pipeline-mode
+      - docs/extraction-and-confidence.md#custom-prompt-generator-lambda
+      - lib/idp_common_pkg/idp_common/config/models.py
+      - lib/idp_common_pkg/idp_common/extraction/service.py
+    when_to_use: >-
+      The extraction prompt has to vary with the document's content or with data
+      held outside the configuration, beyond what per-class prompt overrides
+      express.
+    constraints:
+      - The function name must start with GENAIIDP-.
+      - >-
+        Must return JSON with system_prompt and task_prompt_content; an invocation
+        failure, invalid response, function error or timeout fails the extraction
+        (fail-fast).
+      - >-
+        Read only on the LLM extraction path, so it has no effect in BDA mode.
+      - Image bytes are never sent, only S3 URIs.
+    effort: M
+    upgrade_risk: medium
+    modes: [pipeline]
+    related:
+      - extension:prompt-customisation
+      - delivery:hook-development
+
+  - id: pipeline-hook-preprocessing
+    title: Preprocessing pipeline hook
+    category: hook
+    description: >-
+      A single customer Lambda function invoked first in the Step Functions
+      workflow, ahead of the BDA or pipeline routing decision, on the source
+      document before any OCR output exists. It can replace the document it
+      returns and can end the execution by returning halt true, which is how the
+      PII anonymisation extension redacts a copy and stops the original. It is the
+      one point to use when a hook must gate processing in both modes.
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode
+      - docs/feature-platform-developer-guide.md#optional-pipeline-hooks
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    when_to_use: >-
+      Screen, redact, convert or reject a document before any model sees it, for
+      example PII redaction or a policy gate that must hold in BDA mode as well.
+    constraints:
+      - One hook per profile at this point; the host refuses a registration that would overwrite another feature's hook.
+      - Invoked synchronously (RequestResponse) through the pipeline-hooks dispatcher.
+      - >-
+        The dispatcher Lambda's timeout is 900 seconds and covers every hook it
+        runs for the point; the hook adds directly to per-document latency.
+      - >-
+        onError is continue or fail; fail ends the execution in a terminal Fail
+        state (PreprocessingHookFailed) and never processes the unprocessed
+        original.
+      - >-
+        A returned document is capped at 5 MB inline; larger documents are
+        returned as a compressed S3 reference under compressed_documents/ in the
+        working bucket. id, input_key, input_bucket and output_bucket are
+        immutable.
+      - The function must carry the idp:feature-id tag or be named GENAIIDP-*; anything else fails with AccessDenied.
+    effort: M
+    upgrade_risk: medium
+    modes: [bda, pipeline]
+    tags: [hook-point:preprocessing]
+    related:
+      - capability:pipeline-mode
+      - capability:bda-mode
+      - delivery:hook-development
+
+  - id: pipeline-hook-post-ocr
+    title: Post-OCR pipeline hook
+    category: hook
+    description: >-
+      Customer Lambda functions invoked after the OCR step with the whole document
+      and its page results. A returned document propagates to classification and
+      everything after it, so a hook can correct or enrich OCR text, or add
+      metadata, before classification runs. Several hooks can be registered at
+      the point and run in order, each receiving the previous hook's document.
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    when_to_use: >-
+      Clean up or supplement OCR output, for example with a domain dictionary or a
+      second OCR engine, before classification and extraction read it.
+    constraints:
+      - >-
+        Pipeline mode only. In BDA mode there is no post-OCR state, so a hook here
+        never runs; registering one with onError fail under use_bda true is
+        refused.
+      - Invoked synchronously (RequestResponse); all hooks at the point share one dispatcher invocation with a 900-second Lambda timeout.
+      - >-
+        onError is continue, skip-remaining or fail; fail aborts the document in a
+        terminal Fail state (v0.6.9 and later). A dispatcher fault that is not the
+        fail policy, such as a timeout, routes forward.
+      - Inline returned documents are capped at 5 MB; use a compressed reference above that.
+    effort: M
+    upgrade_risk: medium
+    modes: [pipeline]
+    tags: [hook-point:postOcr]
+    related:
+      - capability:ocr-backends
+      - limitation:step-hooks-not-in-bda
+
+  - id: pipeline-hook-post-classification
+    title: Post-classification pipeline hook
+    category: hook
+    description: >-
+      Customer Lambda functions invoked after classification with the whole
+      document. A returned document feeds the per-section extraction fan-out, so
+      a hook can relabel a section's class, add or drop sections, or apply a
+      deterministic rule that overrides the model's classification.
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    when_to_use: >-
+      Enforce a business rule about which class or section split a document gets,
+      or route sections away from extraction, before any extraction is paid for.
+    constraints:
+      - >-
+        Pipeline mode only. In BDA mode there is no post-classification state, so a
+        hook here never runs; registering one with onError fail under use_bda true
+        is refused.
+      - Invoked synchronously (RequestResponse); all hooks at the point share one dispatcher invocation with a 900-second Lambda timeout.
+      - onError is continue, skip-remaining or fail; fail aborts the document in a terminal Fail state.
+      - A sections value in a returned compressed reference must be a list of section-id strings.
+    effort: M
+    upgrade_risk: medium
+    modes: [pipeline]
+    tags: [hook-point:postClassification]
+    related:
+      - capability:classification
+      - limitation:step-hooks-not-in-bda
+
+  - id: pipeline-hook-post-extraction
+    title: Post-extraction pipeline hook
+    category: hook
+    description: >-
+      Customer Lambda functions invoked inside the per-section extraction map,
+      once for each section, after that section's attributes are extracted. A
+      hook can normalise or enrich extracted values, look values up in a customer
+      system, or stop a document that fails a business rule. Only the section and
+      its metering are merged back into the final document.
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    when_to_use: >-
+      Normalise or validate extracted values per section, for example formatting
+      identifiers or checking an account number against a system of record.
+    constraints:
+      - >-
+        Pipeline mode only. In BDA mode there is no post-extraction state, so a
+        hook here never runs; registering one with onError fail under use_bda true
+        is refused.
+      - Runs once per section; top-level and page-level changes made here are discarded.
+      - Invoked synchronously (RequestResponse); all hooks at the point share one dispatcher invocation with a 900-second Lambda timeout.
+      - onError is continue, skip-remaining or fail; fail aborts the document in a terminal Fail state (PostExtractionHookFailed).
+    effort: M
+    upgrade_risk: medium
+    modes: [pipeline]
+    tags: [hook-point:postExtraction]
+    related:
+      - capability:simple-extraction
+      - capability:advanced-extraction
+      - limitation:step-hooks-not-in-bda
+
+  - id: pipeline-hook-post-rule-validation
+    title: Post-rule-validation pipeline hook
+    category: hook
+    description: >-
+      Customer Lambda functions invoked on the shared tail of the workflow after
+      the rule validation step, with the whole document. A returned document
+      reaches summarization, evaluation and the final output. The bundled health
+      insurance review sample uses this point to compute a claim status from rule
+      results.
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/feature-platform.md#two-reference-samples
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    when_to_use: >-
+      Turn rule-validation results into a business decision, such as an approve or
+      refer status, or enrich the document with values derived from those results.
+    constraints:
+      - Runs in both BDA and pipeline modes.
+      - Invoked synchronously (RequestResponse); all hooks at the point share one dispatcher invocation with a 900-second Lambda timeout.
+      - onError is continue, skip-remaining or fail; fail aborts the document in a terminal Fail state (PostStepHookFailed).
+      - Inline returned documents are capped at 5 MB; use a compressed reference above that.
+    effort: M
+    upgrade_risk: medium
+    modes: [bda, pipeline]
+    tags: [hook-point:postRuleValidation]
+    related:
+      - capability:rule-validation
+
+  - id: pipeline-hook-post-summarization
+    title: Post-summarization pipeline hook
+    category: hook
+    description: >-
+      Customer Lambda functions invoked on the shared tail after the summarization
+      step, with the whole document. A returned document reaches evaluation and
+      the final workflow output.
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    when_to_use: >-
+      Post-process or augment the generated summary, or attach derived metadata,
+      before evaluation and output.
+    constraints:
+      - Runs in both BDA and pipeline modes.
+      - Invoked synchronously (RequestResponse); all hooks at the point share one dispatcher invocation with a 900-second Lambda timeout.
+      - onError is continue, skip-remaining or fail; fail aborts the document in a terminal Fail state (PostStepHookFailed).
+    effort: S
+    upgrade_risk: medium
+    modes: [bda, pipeline]
+    tags: [hook-point:postSummarization]
+    related:
+      - capability:summarization
+
+  - id: pipeline-hook-postprocessing
+    title: Postprocessing pipeline hook
+    category: hook
+    description: >-
+      A single customer Lambda function invoked last, after evaluation and before
+      the workflow's terminal state, in both modes. A mutation here is the
+      workflow output, so it reaches the tracking record, the reporting tables and
+      the web UI. With human review enabled it fires once per pass, before and
+      after review, so the hook decides from the document's HITL fields whether to
+      deliver.
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/post-processing-lambda-hook.md#two-post-processing-mechanisms--which-one-do-i-want
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    when_to_use: >-
+      Validate, enrich or finalise the finished document inside the workflow, or
+      gate delivery of it, when the work is quick enough to sit on the critical
+      path.
+    constraints:
+      - One hook per profile at this point.
+      - Invoked synchronously (RequestResponse) with a 900-second dispatcher Lambda timeout; it holds the document's concurrency slot until it returns.
+      - >-
+        onError continue is the default and recommended value; fail marks an
+        otherwise successful document FAILED.
+      - Cannot set a terminal status; the tracker forces COMPLETED on success.
+      - halt is ignored at this point (haltIgnored true).
+    effort: M
+    upgrade_risk: medium
+    modes: [bda, pipeline]
+    tags: [hook-point:postprocessing]
+    related:
+      - extension:eventbridge-post-processing
+      - extension:downstream-integration
+      - capability:hitl-review-queues
+
+  - id: eventbridge-post-processing
+    title: EventBridge post-processing Lambda hook
+    category: hook
+    description: >-
+      The PostProcessingLambdaHookFunctionArn stack parameter names one Lambda
+      function that is invoked asynchronously, through an EventBridge rule, after
+      each document's Step Functions execution succeeds; failed executions do not
+      invoke it. It receives a snapshot of the processed
+      document and cannot change it, fail it, or add to its processing time, which
+      makes it the mechanism for fire-and-forget delivery to downstream systems.
+    evidence:
+      - docs/post-processing-lambda-hook.md
+      - docs/post-processing-lambda-hook.md#important-notes
+    when_to_use: >-
+      Push results to an ERP, case-management system, queue or notification
+      channel without extending document latency or risking a failed document.
+    constraints:
+      - Changing the target needs a stack update; there is one ARN per stack.
+      - A failed document is not delivered; failure notification needs another route.
+      - >-
+        Asynchronous invokes are capped at 1 MB; above that the function receives
+        a compressed S3 reference that it must resolve itself.
+      - >-
+        With human review enabled it fires twice per document, before and after
+        review; superseded originals halted by a preprocessing hook are skipped.
+      - Do not register the same Lambda here and as a postprocessing pipeline hook; it would run twice with different payloads.
+    effort: S
+    upgrade_risk: low
+    modes: [bda, pipeline]
+    related:
+      - extension:pipeline-hook-postprocessing
+      - extension:downstream-integration
+      - delivery:downstream-integration-build
+
+  # -------------------------------------------------------------------- extension
+  - id: feature-platform-extension
+    title: Installable extension on the feature platform
+    category: extension
+    description: >-
+      The feature platform makes the main stack a host for installable
+      extensions: each is its own CloudFormation stack in the same account that
+      registers a UI page, optional pipeline hooks and an optional configuration
+      preset with the host, and can be installed and removed without rebuilding
+      the host. The idp_feature_sdk package provides idp-feature-cli to scaffold,
+      validate, build and publish an extension. Paid extensions delivered through
+      AWS Marketplace are supported by the framework; as of v0.6.15 none is published.
+    evidence:
+      - docs/feature-platform.md
+      - docs/feature-platform-developer-guide.md
+      - lib/idp_feature_sdk/README.md
+      - feature-platform/feature-template
+    status: preview
+    when_to_use: >-
+      Package a customer-specific capability (a UI page, an API, hooks and the
+      classes they belong to) so it is installed beside the accelerator and
+      survives its upgrades, instead of editing the templates.
+    constraints:
+      - Deployed into the same AWS account as the host stack; installing requires the Admin Cognito group.
+      - >-
+        The headless deployment forces EnableFeaturePlatform off; turning the
+        platform off deletes its resources, so extension stacks are uninstalled
+        first.
+      - >-
+        The UI bundle is a UMD module sharing the host's React and Cloudscape
+        globals, so host UI upgrades can affect it.
+    effort: L
+    upgrade_risk: high
+    modes: [bda, pipeline]
+    related:
+      - extension:pipeline-hook-preprocessing
+      - extension:marketplace-models
+      - delivery:hook-development
+
+  # ------------------------------------------------------------- core-enhancement
+  - id: contribute-upstream
+    title: Contribute the change to the accelerator
+    category: core-enhancement
+    description: >-
+      A change the accelerator itself needs can be proposed in a public issue and
+      contributed as a pull request against the develop branch; it then ships in
+      the next release for every user. The maintainers expect evidence where
+      behaviour changes (a benchmark run or an evaluation against the previous
+      release), a focused change with its documentation and CHANGELOG entry, and
+      passing automated checks. Proposals that can be built as a hook or an
+      extension are steered that way.
+    evidence:
+      - GOVERNANCE.md#how-a-change-gets-accepted
+      - ROADMAP.md#extensibility-instead-of-forking
+      - ROADMAP.md#where-help-is-most-welcome
+      - CONTRIBUTING.md#pull-request-process
+    when_to_use: >-
+      The gap is a defect, a missing configuration option or a general capability
+      that other users would also need, and it cannot be met with configuration, a
+      hook or an extension.
+    constraints:
+      - Open an issue first for anything substantial; target develop, not main.
+      - Maintenance is best-effort with no published response time; contributors do not merge their own pull requests.
+      - Changes to extraction behaviour, cost or accuracy are expected to come with measurements.
+      - Proposals in the roadmap's non-goals will not be merged.
+      - Licensed MIT-0 with no Contributor License Agreement.
+    effort: M
+    upgrade_risk: low
+    related:
+      - limitation:refactors-need-a-problem
+
+  # ------------------------------------------------------------------------- fork
+  - id: private-fork
+    title: Maintain a private fork
+    category: fork
+    description: >-
+      Changing templates, Lambda code or the shared library in a private copy
+      meets any need but makes the customer the permanent owner of every upgrade.
+      Releases are cut when ready, with no published calendar; six were tagged
+      between v0.6.10 (2026-09-25) and v0.6.15 (2026-11-13), one to two weeks
+      apart. There are no backports or long-term-support line, and the internal
+      library API changes between minor releases.
+    evidence:
+      - ROADMAP.md#non-goals
+      - GOVERNANCE.md#branch-and-release-model
+      - CHANGELOG.md
+      - https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/releases
+    when_to_use: >-
+      Only when no configuration, hook, extension or upstream contribution can
+      meet a hard requirement, and the customer accepts merging every release by
+      hand.
+    constraints:
+      - >-
+        Each release from v0.6.10 to v0.6.15 carried between 8 and 32 CHANGELOG
+        items marked Action, each telling an upgrading deployment what to check or
+        change where it applies; a fork has to reconcile its changes with each of
+        them.
+      - Fixes land only on develop and ship in the next release; older tags stay deployable but are not maintained.
+      - idp_common signatures are not a stable contract before 1.0.
+    effort: L
+    upgrade_risk: high
+    related:
+      - limitation:no-lts-or-backports
+      - limitation:no-internal-api-stability
+      - extension:contribute-upstream
+
+  # ------------------------------------------------------------------------ other
+  - id: bedrock-quotas
+    title: Raise Amazon Bedrock service quotas
+    category: other
+    other_kind: aws-service
+    description: >-
+      Throughput is bounded by the account's Bedrock tokens-per-minute and
+      requests-per-minute quotas for each model the configuration calls, which
+      are raised through Service Quotas rather than in the solution. The Capacity
+      Planning page computes the TPM and RPM each model needs for a planned
+      schedule, compares them with the current quotas and links to the increase
+      request. Bedrock service tiers (priority, standard, flex) trade latency for
+      price per model call.
+    evidence:
+      - docs/capacity-planning.md#4-aws-service-quota-analysis
+      - docs/capacity-planning.md#5-aws-service-quota-management
+      - docs/service-tiers.md
+      - docs/canada-region-model-support.md#known-limitations
+    when_to_use: >-
+      The planned peak volume or latency target needs more model throughput than
+      the account's default quotas allow.
+    constraints:
+      - The capacity planner sizes pipeline mode only and is disabled for a BDA-mode profile.
+      - >-
+        The RPM row for Claude Sonnet 5 and Sonnet 5.5 is a placeholder (AWS
+        publishes no RPM quota for them); read the TPM rows.
+      - Capacity estimates do not cover ca. or eu. inference profiles, which have no Service Quotas keys in the planner.
+      - Service-quota issues and throttling go to AWS Support, not to the repository.
+    effort: S
+    upgrade_risk: low
+    related:
+      - capability:capacity-planning
+      - prerequisite:service-quotas
+      - question:peak-volume
+      - question:monthly-volume
+
+  - id: model-region-availability
+    title: Work within model availability per Region and partition
+    category: other
+    other_kind: aws-service
+    description: >-
+      Which models a stack can call depends on its Region: EU and Canada stacks
+      swap the US defaults for regional inference profiles at deploy time, some
+      models have no equivalent and fall back to another, and GovCloud uses its
+      own preset with GovCloud model ids. Cross-Region inference profiles can
+      process a request outside the stack's Region even though data at rest stays
+      in it. Availability is set by Amazon Bedrock, not by the solution.
+    evidence:
+      - docs/eu-region-model-support.md#important-limitations
+      - docs/canada-region-model-support.md#where-requests-are-processed
+      - docs/canada-region-model-support.md#known-limitations
+      - docs/govcloud-deployment.md#models-in-the-govcloud-preset
+      - lib/idp_common_pkg/idp_common/regional_models.py
+    when_to_use: >-
+      The customer must deploy outside us-east-1 or us-west-2, or has a data
+      residency rule about where inference runs.
+    constraints:
+      - >-
+        In a Canada stack ca.amazon.nova-lite-v1:0 is the only catalogue model
+        whose requests stay in Canada; us. profiles run in US Regions and global.
+        profiles in any commercial Region.
+      - >-
+        ca-west-1 receives the ca-central-1 model lists; on 2026-10-13 four offered
+        ids could not be called from ca-west-1.
+      - A Region outside the EU and Canada families keeps the US model ids unchanged.
+    effort: S
+    upgrade_risk: medium
+    related:
+      - capability:bedrock-model-choice
+      - limitation:deployment-regions
+      - limitation:cross-region-inference-residency
+      - question:data-residency
+      - question:aws-partition
+
+  - id: marketplace-models
+    title: AWS Marketplace subscriptions for models and paid extensions
+    category: other
+    other_kind: aws-service
+    description: >-
+      Two things in the solution involve AWS Marketplace. Bedrock models sold
+      through AWS Marketplace need a subscription in the account, and the stack's
+      Bedrock-calling roles hold aws-marketplace Subscribe and ViewSubscriptions
+      permissions for that. Paid feature-platform extensions are subscribed to in
+      AWS Marketplace and then launched from the host's web console, with no
+      separate account to create; the framework supports them, and as of v0.6.15 none is
+      published.
+    evidence:
+      - docs/marketplace-subscription-next-steps.md
+      - docs/feature-platform.md#subscription-checks-for-paid-extensions
+      - patterns/unified/template.yaml
+    when_to_use: >-
+      The chosen model is a Marketplace-sold model, or a paid extension is part of
+      the solution design.
+    constraints:
+      - Installing a paid extension requires the Admin Cognito group in the host stack.
+      - The subscription banner can take a minute or two to show Subscription active after subscribing.
+    effort: S
+    upgrade_risk: low
+    related:
+      - extension:feature-platform-extension
+      - prerequisite:bedrock-model-access
+
+  - id: downstream-integration
+    title: Integrate results with downstream systems
+    category: other
+    other_kind: integration
+    description: >-
+      The solution writes structured JSON results to the Output S3 bucket and to
+      a reporting database queryable with Athena, and exposes them through the
+      CLI, the SDK and an optional batch jobs REST API. Delivering results into a
+      customer's systems of record (ERP, case management, data lake) is
+      integration work the customer builds on one of these surfaces or on the
+      post-processing hooks.
+    evidence:
+      - docs/post-processing-lambda-hook.md#enterprise-system-integration
+      - docs/reporting-database.md
+      - docs/idp-sdk.md
+      - docs/govcloud-batch-api.md
+    when_to_use: >-
+      Extracted data has to land in another system, in that system's format, with
+      its own acknowledgement or retry semantics.
+    constraints:
+      - >-
+        The solution processes and hands data onward; long-term storage, records
+        management and approval workflows stay in the downstream systems.
+    effort: M
+    upgrade_risk: low
+    related:
+      - extension:eventbridge-post-processing
+      - extension:pipeline-hook-postprocessing
+      - capability:reporting-database
+      - question:downstream-systems
+      - delivery:downstream-integration-build
+
+  - id: ground-truth-data
+    title: Assemble labelled ground truth for evaluation
+    category: other
+    other_kind: data
+    description: >-
+      Accuracy is measured by comparing results with baseline (ground-truth) data
+      stored in the evaluation baseline bucket, field by field, with a method and
+      threshold per attribute. The baseline has to come from the customer: by
+      correcting processed results and promoting them to a baseline, by editing a
+      test set's ground truth in Test Studio, or by loading existing labels.
+      Without it, configuration changes cannot be shown to improve accuracy.
+    evidence:
+      - docs/evaluation.md
+      - docs/evaluation.md#how-it-works
+      - docs/test-studio.md
+    when_to_use: >-
+      Before go-live, and before any prompt, model or schema change whose effect on
+      accuracy has to be demonstrated.
+    constraints:
+      - >-
+        Type coercion during comparison can lose precision (very large integers to
+        floats), and complex objects coerced to strings may not compare back
+        exactly.
+    effort: M
+    upgrade_risk: low
+    related:
+      - capability:evaluation
+      - capability:test-studio
+      - question:ground-truth
+      - question:accuracy-target
+      - delivery:accuracy-baseline

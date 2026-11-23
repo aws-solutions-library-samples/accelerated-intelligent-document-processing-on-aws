@@ -24,12 +24,40 @@ logger = logging.getLogger(__name__)
 
 
 # Parameters that are FIXED when the stack is created and can never be changed
-# on an existing stack, because they set a Cognito User Pool schema flag (#835).
-# Cognito rejects a schema-flag change on an existing pool; CloudFormation surfaces
-# it as a misleading "Required custom attributes are not supported" and the stack
-# lands in UPDATE_ROLLBACK_FAILED. Maps parameter name -> the template default,
-# which is the value a stack created before the parameter existed effectively has.
-CREATION_FIXED_PARAMETERS: Dict[str, str] = {"ExternalIdPEmailMutable": "false"}
+# on an existing stack. Maps parameter name -> the template default, which is the
+# value a stack created before the parameter existed effectively has.
+#
+# ExternalIdPEmailMutable sets a Cognito User Pool schema flag (#835). Cognito
+# rejects a schema-flag change on an existing pool; CloudFormation surfaces it as a
+# misleading "Required custom attributes are not supported" and the stack lands in
+# UPDATE_ROLLBACK_FAILED.
+#
+# CustomerManagedKmsKeyArn chooses the key that encrypts the deployment's data
+# (#2016). The template's Custom::CustomerManagedKmsKeyCheck refuses a change and
+# the update rolls back; refusing it here says so before anything is touched.
+CREATION_FIXED_PARAMETERS: Dict[str, str] = {
+    "ExternalIdPEmailMutable": "false",
+    "CustomerManagedKmsKeyArn": "",
+}
+
+# Why each one is fixed, and what applying a change would do, for the refusal.
+CREATION_FIXED_REASONS: Dict[str, str] = {
+    "ExternalIdPEmailMutable": (
+        "it sets a Cognito User Pool schema flag. Applying it would fail the "
+        "update and can leave the stack in UPDATE_ROLLBACK_FAILED"
+    ),
+    "CustomerManagedKmsKeyArn": (
+        "it chooses the KMS key the deployment's data is encrypted with, and data "
+        "already written stays encrypted with the key it was written with. The "
+        "stack refuses the change and rolls the update back"
+    ),
+}
+
+# Creation-fixed parameters whose non-default value is refused, rather than
+# dropped with a warning, on a create against a template that does not declare
+# them: dropping a supplied key would create a stack that encrypts with a key of
+# its own, the opposite of what was asked.
+CREATION_FIXED_STRICT = frozenset({"CustomerManagedKmsKeyArn"})
 
 
 def guard_creation_fixed_parameters(
@@ -43,14 +71,15 @@ def guard_creation_fixed_parameters(
 
     UPDATE: a value that differs from what the stack was created with (absent
     from the stack means the template default) raises ``ValueError`` before any
-    CloudFormation call — the update would fail and could leave the stack in
-    UPDATE_ROLLBACK_FAILED. An identical value is harmless and passes through.
+    CloudFormation call. An identical value is harmless and passes through.
 
     CREATE: the parameter is dropped, with a warning, when ``declared_params``
     is known and does not contain it — e.g. a stack created from a template that
     predates the parameter — so a caller that injects the safe default for new
     stacks cannot fail a create against an older template with a CloudFormation
-    ValidationError for an unknown parameter.
+    ValidationError for an unknown parameter. A parameter in
+    ``CREATION_FIXED_STRICT`` with a non-default value raises ``ValueError``
+    instead, because the older template cannot do what it asks.
 
     Returns a new dict; never mutates ``parameters``.
     """
@@ -62,14 +91,19 @@ def guard_creation_fixed_parameters(
             current = (current_params or {}).get(name, template_default)
             if params[name] != current:
                 raise ValueError(
-                    f"{name} is fixed when a stack is created (it sets a Cognito "
-                    f"User Pool schema flag) and cannot be changed on an existing "
-                    f"stack: the stack has '{current}', the update asked for "
-                    f"'{params[name]}'. Applying it would fail the update and can "
-                    f"leave the stack in UPDATE_ROLLBACK_FAILED. Remove the "
-                    f"parameter from this update; to change it, deploy a new stack."
+                    f"{name} is fixed when a stack is created and cannot be changed "
+                    f"on an existing stack: the stack has '{current}', the update "
+                    f"asked for '{params[name]}'. It is fixed because "
+                    f"{CREATION_FIXED_REASONS[name]}. Remove the parameter from "
+                    f"this update; to change it, deploy a new stack."
                 )
         elif declared_params and name not in declared_params:
+            if name in CREATION_FIXED_STRICT and params[name] != template_default:
+                raise ValueError(
+                    f"{name} was given, but the target template does not declare it "
+                    f"(an older template?), so the stack could not use it. Deploy a "
+                    f"template that has {name}, or leave it out."
+                )
             logger.warning(
                 f"Dropping parameter {name}: the target template does not declare "
                 f"it (an older template?). The stack will use that template's "
@@ -1770,11 +1804,21 @@ class StackDeployer:
             + len(retained["s3_buckets"])
         )
 
+        # KMS keys are not deleted here: a key can only be scheduled for
+        # deletion, and anything it encrypted that survives this cleanup (a
+        # bucket that failed to delete, an object copied elsewhere) would become
+        # unreadable. They are reported so the caller can say how to do it.
+        kms_keys = [
+            r["physical_id"]
+            for r in retained["other"]
+            if r.get("type") == "AWS::KMS::Key" and r.get("physical_id")
+        ]
+
         if total == 0:
             logger.info(
                 "No retained resources found - CloudFormation deleted everything!"
             )
-            return {"total_deleted": 0, "errors": []}
+            return {"total_deleted": 0, "errors": [], "kms_keys_retained": kms_keys}
 
         logger.info(
             f"Found {total} retained resources: "
@@ -1793,6 +1837,7 @@ class StackDeployer:
             "logs_deleted": [],
             "buckets_deleted": [],
             "errors": [],
+            "kms_keys_retained": kms_keys,
         }
 
         # Phase 1: DynamoDB

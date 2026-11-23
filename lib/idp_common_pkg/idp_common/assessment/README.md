@@ -231,17 +231,23 @@ its own text.
 **A page's text is cut to fit `decision_model.max_input_tokens`** (#2032), which
 counts the page's text, its image and the longest question together (default 3584:
 the 4,096-token window less 512 for the model's own prompt). The text is cut from
-the end, at a line break where it can, by `decision_model.fit_text`, and each
+the end by `decision_model.fit_text`, at a line break when one is in the last tenth
+of the text that fits and mid-line otherwise (#2111), and each
 cut is logged at info with the page and the characters dropped. **Text beyond
 the limit is cut and never read by the decision model**, so a value that appears
 only in the cut part is not seen: it scores low, and an empty field is not checked
 against that part. The counts are estimates: the package has no tokenizer, so
-`decision_model.estimate_tokens` counts one token per digit or non-ASCII character
-and one per two other characters, which errs high. A request with no text is sent
-unchanged. A page whose text would be cut to nothing, because the question and
-image already fill the limit, is not sent: `fit_text` raises `DecisionModelRefused`,
-so the section degrades like any refusal instead of an empty field scoring about
-1.0 from no evidence.
+`decision_model.estimate_tokens` weights each character by class (a digit,
+punctuation mark or non-ASCII character is a token; see the
+[decision_model README](../decision_model/README.md#fitting-the-window-max_input_tokens)),
+which keeps a dense table or a page of serial numbers inside the window. A request with no text is sent
+unchanged. A page whose text would be cut to nothing or to under half of its budget,
+because the question and image already fill most of the limit, is not sent:
+`fit_text` raises `DecisionModelRefused`, so the section degrades like any refusal
+instead of an empty field scoring about 1.0 from no evidence. A question (with the
+image, in `images` or `both`) that is over the limit on its own is refused the same
+way by `decision_model.require_room`, before any request is built, in every `input`
+mode.
 
 The result has the LLM path's parsed shape and goes through the same
 `_finalize_assessment`, so thresholds, alerts and explainability are unchanged;

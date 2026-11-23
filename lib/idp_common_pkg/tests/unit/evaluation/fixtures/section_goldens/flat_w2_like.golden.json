@@ -396,6 +396,7 @@
         "tp": 3
       }
     },
+    "empty_prediction_confidences": {},
     "field_comparisons": [
       {
         "actual_key": "employer_ein",

@@ -673,3 +673,229 @@ class TestMatchThresholdOnItemsSchema:
         arr = result["properties"]["LineItems"]
         assert "x-aws-stickler-match-threshold" not in arr
         assert "x-aws-stickler-match-threshold" not in arr["items"]
+
+
+def _build_model(idp_schema):
+    """Translate an IDP class schema and build the Stickler model from it, the
+    way ``model_factory.get_stickler_model`` does."""
+    from pydantic import create_model
+    from stickler import StructuredModel
+    from stickler.structured_object_evaluator.models.json_schema_field_converter import (  # noqa: E501
+        JsonSchemaFieldConverter,
+    )
+
+    sch = SticklerConfigMapper.build_stickler_model_config(idp_schema)["schema"]
+    fields = JsonSchemaFieldConverter(sch).convert_properties_to_fields(
+        sch.get("properties", {}), sch.get("required", [])
+    )
+    return sch, create_model(  # type: ignore  # pyright: reportCallIssue=false
+        "L", **fields, __base__=StructuredModel
+    )
+
+
+def _list_class(array_keys, item_keys, item_type="string"):
+    return {
+        "$id": "L",
+        "x-aws-idp-document-type": "L",
+        "type": "object",
+        "properties": {
+            "codes": {
+                "type": "array",
+                **array_keys,
+                "items": {"type": item_type, **item_keys},
+            }
+        },
+    }
+
+
+@pytest.mark.unit
+class TestScalarArrayItemKeys:
+    """Evaluation keys written on the ``items`` of an array of scalars.
+
+    Stickler scores a list of scalars with one comparator read off the array
+    field and raises when a field key sits on ``items``, which used to fail the
+    whole class (``lending-package-sample-govcloud`` US-drivers-licenses, and
+    every legacy single-attribute list ``config.migration`` converts).
+    """
+
+    def test_item_only_method_is_applied_to_the_elements(self):
+        sch, model = _build_model(
+            _list_class({}, {"x-aws-idp-evaluation-method": "EXACT"})
+        )
+        arr = sch["properties"]["codes"]
+        assert arr["x-aws-stickler-comparator"] == "ExactComparator"
+        assert not any(k.startswith("x-aws-") for k in arr["items"])
+        # Exact scores a one-character difference 0; the inferred default
+        # (Levenshtein) would score it about 0.67, so this pins the method.
+        assert model(codes=["ABC"]).compare(model(codes=["ABD"])) == 0.0
+        assert model(codes=["ABC"]).compare(model(codes=["ABC"])) == 1.0
+
+    def test_array_method_wins_over_a_different_item_method(self, caplog):
+        with caplog.at_level("WARNING"):
+            sch, model = _build_model(
+                _list_class(
+                    {"x-aws-idp-evaluation-method": "LEVENSHTEIN"},
+                    {"x-aws-idp-evaluation-method": "EXACT"},
+                )
+            )
+        arr = sch["properties"]["codes"]
+        assert arr["x-aws-stickler-comparator"] == "LevenshteinComparator"
+        assert not any(k.startswith("x-aws-") for k in arr["items"])
+        assert 0.0 < model(codes=["ABC"]).compare(model(codes=["ABD"])) < 1.0
+        assert "'x-aws-idp-evaluation-method: EXACT' on the items is ignored" in (
+            caplog.text
+        )
+
+    def test_same_method_in_both_places_warns_nothing(self, caplog):
+        with caplog.at_level("WARNING"):
+            sch, _ = _build_model(
+                _list_class(
+                    {"x-aws-idp-evaluation-method": "EXACT"},
+                    {"x-aws-idp-evaluation-method": "EXACT"},
+                )
+            )
+        assert sch["properties"]["codes"]["x-aws-stickler-comparator"] == (
+            "ExactComparator"
+        )
+        assert "on the items" not in caplog.text
+
+    def test_invalid_array_method_gives_way_to_the_item_method(self):
+        # The notebooks/examples shape: HUNGARIAN is only valid on a list of
+        # objects, so the items' EXACT is the usable method.
+        sch, model = _build_model(
+            _list_class(
+                {"x-aws-idp-evaluation-method": "HUNGARIAN"},
+                {"x-aws-idp-evaluation-method": "EXACT"},
+            )
+        )
+        assert sch["properties"]["codes"]["x-aws-stickler-comparator"] == (
+            "ExactComparator"
+        )
+        assert model(codes=["ABC"]).compare(model(codes=["ABD"])) == 0.0
+
+    def test_item_threshold_and_weight_move_to_the_array(self):
+        sch, model = _build_model(
+            _list_class(
+                {},
+                {
+                    "x-aws-idp-evaluation-method": "LEVENSHTEIN",
+                    "x-aws-idp-evaluation-threshold": 0.9,
+                    "x-aws-idp-evaluation-weight": 2,
+                },
+            )
+        )
+        arr = sch["properties"]["codes"]
+        assert arr["x-aws-stickler-comparator"] == "LevenshteinComparator"
+        assert arr["x-aws-stickler-threshold"] == 0.9
+        assert arr["x-aws-stickler-weight"] == 2.0
+        assert not any(k.startswith("x-aws-") for k in arr["items"])
+
+    def test_method_config_follows_the_method_that_is_used(self):
+        cfg = {"dayfirst": True}
+        hoisted, _ = _build_model(
+            _list_class(
+                {},
+                {
+                    "x-aws-idp-evaluation-method": "DATE",
+                    "x-aws-idp-evaluation-method-config": cfg,
+                },
+            )
+        )
+        assert hoisted["properties"]["codes"]["x-aws-stickler-comparator-config"] == (
+            cfg
+        )
+        overridden, _ = _build_model(
+            _list_class(
+                {"x-aws-idp-evaluation-method": "EXACT"},
+                {
+                    "x-aws-idp-evaluation-method": "DATE",
+                    "x-aws-idp-evaluation-method-config": cfg,
+                },
+            )
+        )
+        arr = overridden["properties"]["codes"]
+        assert arr["x-aws-stickler-comparator"] == "ExactComparator"
+        assert "x-aws-stickler-comparator-config" not in arr
+
+    def test_item_method_config_alone_moves_to_an_array_method(self):
+        cfg = {"dayfirst": True}
+        sch, _ = _build_model(
+            _list_class(
+                {"x-aws-idp-evaluation-method": "DATE"},
+                {"x-aws-idp-evaluation-method-config": cfg},
+            )
+        )
+        assert sch["properties"]["codes"]["x-aws-stickler-comparator-config"] == cfg
+
+    def test_nullable_scalar_items_are_handled(self):
+        sch, _ = _build_model(
+            _list_class(
+                {}, {"x-aws-idp-evaluation-method": "EXACT"}, ["string", "null"]
+            )
+        )
+        assert sch["properties"]["codes"]["x-aws-stickler-comparator"] == (
+            "ExactComparator"
+        )
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": "array"},
+            {"type": "array", "items": [{"type": "string"}]},
+            {"type": "string", "items": {"type": "string"}},
+            {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+        ],
+    )
+    def test_only_arrays_of_scalars_qualify(self, schema):
+        assert SticklerConfigMapper._scalar_items(schema) is None
+
+    def test_object_items_are_not_touched(self):
+        schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "x-aws-idp-evaluation-method": "EXACT",
+            },
+        }
+        before = copy.deepcopy(schema)
+        SticklerConfigMapper._hoist_scalar_item_keys(schema, "rows")
+        assert schema == before
+
+    def test_shipped_govcloud_lending_preset_evaluates(self):
+        """The real preset, through the real EvaluationService, with the LLM
+        comparator stubbed so no Bedrock call is made."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import yaml
+
+        from idp_common.config.merge_utils import merge_config_with_defaults
+        from idp_common.evaluation.service import EvaluationService
+        from idp_common.evaluation.stickler_backend.comparators import LLMComparator
+        from idp_common.models import Section
+
+        repo = Path(__file__).resolve().parents[5]
+        preset = (
+            repo / "config_library/unified/lending-package-sample-govcloud/config.yaml"
+        )
+        cfg = merge_config_with_defaults(yaml.safe_load(preset.read_text()))
+        svc = EvaluationService(region="us-east-1", config=cfg)
+        with patch.object(
+            LLMComparator,
+            "compare",
+            lambda self, a, b: float(str(a).casefold() == str(b).casefold()),
+        ):
+            result = svc.evaluate_section(
+                Section(
+                    section_id="1",
+                    classification="US-drivers-licenses",
+                    page_ids=["1"],
+                ),
+                {"ENDORSEMENTS": ["M", "H"], "ID_NUMBER": "D123"},
+                {"ENDORSEMENTS": ["h", "M"], "ID_NUMBER": "D123"},
+            )
+        by_name = {a.name: a for a in result.attributes}
+        assert "__EVALUATION_FAILURE__" not in by_name
+        assert by_name["ENDORSEMENTS"].matched is True
+        assert by_name["ID_NUMBER"].matched is True

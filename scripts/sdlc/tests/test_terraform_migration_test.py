@@ -17,9 +17,11 @@ can be checked without AWS are the ones that decide what a green run means:
 
 import hashlib
 import json
+import re
 import secrets
 import string
-from datetime import datetime, timezone
+import subprocess
+from datetime import date, datetime, timedelta, timezone
 
 import cognito_srp as srp
 import pytest
@@ -1601,3 +1603,1411 @@ def test_the_buckets_are_emptied_again_before_the_second_attempt(tmp_path, monke
     run, calls, emptied = _forced(tmp_path, monkeypatch, [1, 0])
     assert "attempt 2" in run._old_destroy_forced()
     assert emptied == ["idpo1-logs", "idpo1-logs"]
+
+
+# -- the upstream release: pinned per release, rotated per week (#2009) -------------
+
+
+def test_every_release_is_pinned_to_a_commit_and_a_sources_object():
+    releases = tmt.UPSTREAM_RELEASES
+    assert releases, "the rotation needs at least one release"
+    tags = [r.tag for r in releases]
+    assert len(set(tags)) == len(tags)
+    assert tmt.UPSTREAM_TAG == releases[-1].tag
+    assert tmt.UPSTREAM_COMMIT == releases[-1].commit
+    for r in releases:
+        assert re.fullmatch(r"[0-9a-f]{40}", r.commit), r
+        kind, sha = r.sources
+        assert kind in ("commit", "tree"), r
+        assert re.fullmatch(r"[0-9a-f]{40}", sha), r
+
+
+def test_the_releases_are_oldest_first():
+    def key(tag):
+        return tuple(int(n) for n in re.findall(r"\d+", tag))
+
+    tags = [r.tag for r in tmt.UPSTREAM_RELEASES]
+    assert tags == sorted(tags, key=key)
+
+
+def test_the_release_the_passing_run_measured_keeps_its_pins():
+    """The guide's measured run: a moved pin must be a deliberate edit here too."""
+    r = tmt.upstream_release("v0.6.9-tf.0")
+    assert r.commit == "5fdac033b2376f16beddffc2a391422d18cf2292"
+    assert r.sources == ("commit", "325794a6ffe1c89bac41a0180c991e681eb70bc8")
+
+
+def test_an_unpinned_tag_is_refused():
+    with pytest.raises(ValueError, match="not one of the pinned releases"):
+        tmt.upstream_release("v0.5.16-tf.2")
+
+
+def _monday(year=2026, month=11, day=16):
+    d = date(year, month, day)
+    assert d.weekday() == 0
+    return d
+
+
+def test_the_rotation_is_one_release_per_monday_to_sunday_week():
+    monday = _monday()
+    week = {tmt.rotated_upstream_tag(monday + timedelta(days=i)) for i in range(7)}
+    assert len(week) == 1
+    assert tmt.rotated_upstream_tag(monday) == tmt.rotated_upstream_tag(monday)
+    assert tmt.rotated_upstream_tag(monday + timedelta(days=7)) != next(iter(week))
+
+
+@pytest.mark.parametrize("count", [1, 2, 3, 5])
+@pytest.mark.parametrize("weekday", range(7))
+def test_weekly_runs_take_consecutive_releases_and_cover_every_one(count, weekday):
+    """Whatever weekday the schedule fires on, ``count`` consecutive weekly runs
+    take each release exactly once, in list order, wrapping round."""
+    releases = [
+        tmt.UpstreamRelease(f"v0.{i}.0-tf.0", "0" * 40, ("tree", "1" * 40))
+        for i in range(count)
+    ]
+    start = _monday() + timedelta(days=weekday)
+    for offset in range(count):
+        first = start + timedelta(weeks=offset)
+        runs = [
+            tmt.rotated_upstream_tag(first + timedelta(weeks=w), releases)
+            for w in range(count)
+        ]
+        assert sorted(runs) == sorted(r.tag for r in releases)
+        i = [r.tag for r in releases].index(runs[0])
+        assert runs == [releases[(i + w) % count].tag for w in range(count)]
+
+
+def test_the_real_releases_are_all_covered_within_their_count_of_weeks():
+    n = len(tmt.UPSTREAM_RELEASES)
+    seen = {tmt.rotated_upstream_tag(_monday() + timedelta(weeks=w)) for w in range(n)}
+    assert seen == {r.tag for r in tmt.UPSTREAM_RELEASES}
+
+
+def test_an_empty_rotation_is_refused():
+    with pytest.raises(ValueError, match="no upstream releases"):
+        tmt.rotated_upstream_tag(_monday(), [])
+
+
+def test_rotate_without_a_recorded_release_takes_the_weeks():
+    day = _monday()
+    assert tmt.resolve_upstream_tag("rotate", None, day) == (
+        tmt.rotated_upstream_tag(day),
+        None,
+    )
+
+
+@pytest.mark.parametrize("requested", ["rotate", "v0.6.4-tf.0"])
+def test_a_recorded_release_is_kept_by_rotate_and_by_the_same_tag(requested):
+    for w in range(len(tmt.UPSTREAM_RELEASES) + 1):
+        day = _monday() + timedelta(weeks=w)
+        assert tmt.resolve_upstream_tag(requested, "v0.6.4-tf.0", day) == (
+            "v0.6.4-tf.0",
+            None,
+        )
+
+
+def test_a_different_explicit_tag_than_the_recorded_one_is_refused():
+    tag, problem = tmt.resolve_upstream_tag("v0.6.9-tf.0", "v0.6.4-tf.0", _monday())
+    assert tag is None and problem is not None
+    assert "'v0.6.9-tf.0' here but 'v0.6.4-tf.0'" in problem
+
+
+@pytest.mark.parametrize(("requested", "stored"), [("v9.9.9", None), ("rotate", "v9")])
+def test_an_unpinned_requested_or_recorded_tag_is_refused(requested, stored):
+    tag, problem = tmt.resolve_upstream_tag(requested, stored, _monday())
+    assert tag is None and problem is not None
+    assert "not one of the pinned releases" in problem
+
+
+def test_the_cli_takes_rotate_and_the_pinned_tags_only(tmp_path):
+    base = [
+        "--old-name",
+        "gitf2",
+        "--new-name",
+        "gitfnew2",
+        "--terraform-module-url",
+        "https://example.com/m.zip",
+        "--terraform-bin",
+        "/bin/true",
+        "--work-dir",
+        str(tmp_path),
+    ]
+    assert tmt.parse_args(base).upstream_tag is None
+    assert tmt.parse_args(base).upstream_commit is None
+    assert tmt.parse_args([*base, "--upstream-tag", "rotate"]).upstream_tag == "rotate"
+    with pytest.raises(SystemExit):
+        tmt.parse_args([*base, "--upstream-tag", "v0.5.16-tf.2"])
+
+
+class _Git:
+    """``Run.sh`` for the clone phase: answers rev-parse and ls-tree, records
+    every command."""
+
+    def __init__(self, head, ls_tree, sources_head=None):
+        self.head, self.ls_tree, self.sources_head = head, ls_tree, sources_head
+        self.calls = []
+
+    def __call__(self, cmd, log, cwd=None, timeout=0, check=True):
+        self.calls.append(list(cmd))
+        out = ""
+        if cmd[:2] == ["git", "rev-parse"]:
+            out = self.sources_head if str(cwd).endswith("sources") else self.head
+        elif cmd[:2] == ["git", "ls-tree"]:
+            out = self.ls_tree
+        return subprocess.CompletedProcess(cmd, 0, stdout=out)
+
+
+def _cloning(tmp_path, monkeypatch, tag, git, **kw):
+    run = tmt.Run(_settings(tmp_path, upstream_tag=tag, **kw))
+    assert run.resolve_release() is None
+    (run.work / "upstream" / ".git").mkdir(parents=True)
+    monkeypatch.setattr(run, "sh", git)
+    return run
+
+
+def test_a_vendored_sources_tree_is_checked_and_not_initialised(tmp_path, monkeypatch):
+    r = tmt.upstream_release("v0.6.4-tf.0")
+    assert r.sources[0] == "tree"
+    git = _Git(r.commit, f"040000 tree {r.sources[1]}\tsources\n")
+    run = _cloning(tmp_path, monkeypatch, r.tag, git)
+    assert run.phase_upstream_clone().startswith(f"{r.tag} at {r.commit[:12]}")
+    assert not any("submodule" in c for c in git.calls)
+    assert run.ctx["upstreamCommit"] == r.commit
+
+
+def test_a_sources_submodule_is_initialised_and_checked(tmp_path, monkeypatch):
+    r = tmt.upstream_release("v0.6.9-tf.0")
+    git = _Git(r.commit, f"160000 commit {r.sources[1]}\tsources\n", r.sources[1])
+    run = _cloning(tmp_path, monkeypatch, r.tag, git)
+    run.phase_upstream_clone()
+    assert any("submodule" in c for c in git.calls)
+
+
+@pytest.mark.parametrize(
+    "ls_tree",
+    [
+        # the other release's shape and object
+        "160000 commit 325794a6ffe1c89bac41a0180c991e681eb70bc8\tsources\n",
+        # the right object recorded as the wrong kind
+        "160000 commit bd0fb105f2a60ed807e02e112de4d71b1473de75\tsources\n",
+        "040000 tree " + "f" * 40 + "\tsources\n",
+        "",
+    ],
+)
+def test_sources_other_than_the_releases_pin_are_refused(
+    tmp_path, monkeypatch, ls_tree
+):
+    r = tmt.upstream_release("v0.6.4-tf.0")
+    run = _cloning(tmp_path, monkeypatch, r.tag, _Git(r.commit, ls_tree))
+    with pytest.raises(tmt.PhaseFailed, match="not the pinned tree"):
+        run.phase_upstream_clone()
+
+
+def test_a_clone_is_held_to_its_own_releases_commit(tmp_path, monkeypatch):
+    old, new = (tmt.upstream_release(t) for t in ("v0.6.4-tf.0", "v0.6.9-tf.0"))
+    git = _Git(new.commit, f"040000 tree {old.sources[1]}\tsources\n")
+    run = _cloning(tmp_path, monkeypatch, old.tag, git)
+    with pytest.raises(tmt.PhaseFailed, match="the tag has moved"):
+        run.phase_upstream_clone()
+
+
+def test_the_clone_asks_git_for_the_resolved_release(tmp_path, monkeypatch):
+    r = tmt.upstream_release("v0.6.4-tf.0")
+    git = _Git(r.commit, f"040000 tree {r.sources[1]}\tsources\n")
+    run = tmt.Run(_settings(tmp_path, upstream_tag="rotate"))
+    run.ctx["upstreamTag"] = r.tag  # resolved from the run's record, not the request
+    assert run.resolve_release() is None
+    (run.work / "upstream" / ".git").mkdir(parents=True)
+    monkeypatch.setattr(run, "sh", git)
+    (run.work / "upstream" / ".git").rmdir()
+    run.phase_upstream_clone()
+    clone = next(c for c in git.calls if c[:2] == ["git", "clone"])
+    assert clone[clone.index("--branch") + 1] == r.tag
+
+
+def test_execute_refuses_a_tag_other_than_the_one_its_run_recorded(tmp_path):
+    run = _Scripted(_settings(tmp_path, upstream_tag="v0.6.9-tf.0"))
+    run.ctx["upstreamTag"] = "v0.6.4-tf.0"
+    assert run.execute() == 2
+    assert run.calls == []
+
+
+def test_execute_records_the_rotated_release_and_reports_it(tmp_path):
+    run = _Scripted(_settings(tmp_path, upstream_tag="rotate"))
+    assert run.execute() == 0
+    week = tmt.rotated_upstream_tag(datetime.now(timezone.utc).date())
+    assert run.ctx["upstreamTag"] == week
+    assert json.loads((tmp_path / "result.json").read_text())["upstreamTag"] == week
+    assert f"upstream {week} " in (tmp_path / "summary.txt").read_text()
+
+
+def test_a_reap_tears_down_on_the_release_the_dead_run_recorded(tmp_path, monkeypatch):
+    """The reaper passes ``rotate`` in a later week; the mirrored context wins."""
+    s3 = _FakeS3(
+        {
+            MIRROR_PREFIX + tmt.MIRROR_CONTEXT: _mirrored_context(
+                upstreamTag="v0.6.4-tf.0"
+            )
+        }
+    )
+    run = _mirrored(
+        tmp_path, s3, resume=True, teardown_only=True, upstream_tag="rotate"
+    )
+    seen = []
+
+    def restore():
+        seen.append(run.upstream.tag)
+        return []
+
+    monkeypatch.setattr(run, "restore_for_teardown", restore)
+    monkeypatch.setattr(
+        run, "emergency_teardown", lambda: run.ctx.__setitem__("leftovers", [])
+    )
+    assert run.teardown_only() == 0
+    assert seen == ["v0.6.4-tf.0"]
+
+
+def test_a_teardown_on_another_explicit_release_is_refused(tmp_path, monkeypatch):
+    s3 = _FakeS3(
+        {
+            MIRROR_PREFIX + tmt.MIRROR_CONTEXT: _mirrored_context(
+                upstreamTag="v0.6.4-tf.0"
+            )
+        }
+    )
+    run = _mirrored(
+        tmp_path, s3, resume=True, teardown_only=True, upstream_tag="v0.6.9-tf.0"
+    )
+    calls = []
+    monkeypatch.setattr(run, "restore_for_teardown", lambda: calls.append("restore"))
+    monkeypatch.setattr(run, "emergency_teardown", lambda: calls.append("teardown"))
+    assert run.teardown_only() == 2
+    assert calls == []
+
+
+# -- the Region's API Gateway CloudWatch role (#1996, #2009) ---------------------------
+
+ROLE = "arn:aws:iam::123456789012:role/idpo1-upstream/idpo1-api-apigw-cloudwatch"
+OTHER_ROLE = "arn:aws:iam::123456789012:role/some-other-logging-role"
+
+
+def _iam_missing_role_code():
+    """The error code IAM's GetRole reports a missing role with, from botocore's
+    service model rather than from memory."""
+    import botocore.session
+
+    op = (
+        botocore.session.get_session()
+        .get_service_model("iam")
+        .operation_model("GetRole")
+    )
+    codes = [
+        e.metadata["error"]["code"]
+        for e in op.error_shapes
+        if e.name == "NoSuchEntityException"
+    ]
+    assert codes, "botocore no longer models GetRole's missing-role error"
+    return codes[0]
+
+
+def _account_field():
+    import botocore.session
+
+    op = (
+        botocore.session.get_session()
+        .get_service_model("apigateway")
+        .operation_model("GetAccount")
+    )
+    assert "cloudwatchRoleArn" in op.output_shape.members
+    return "cloudwatchRoleArn"
+
+
+class _ApiGatewayAccount:
+    """``get_account``, answering each call with the next value of ``settings``."""
+
+    def __init__(self, *settings):
+        self.settings = list(settings)
+
+    def get_account(self):
+        value = self.settings.pop(0) if len(self.settings) > 1 else self.settings[0]
+        if isinstance(value, Exception):
+            raise value
+        return {_account_field(): value} if value else {}
+
+
+class _IamRoles:
+    def __init__(self, existing=(), denied=False):
+        self.existing, self.denied = set(existing), denied
+        self.asked = []
+
+    def get_role(self, RoleName):  # noqa: N803 - boto3 casing
+        from botocore.exceptions import ClientError
+
+        self.asked.append(RoleName)
+        if self.denied:
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "GetRole")
+        if RoleName not in self.existing:
+            raise ClientError({"Error": {"Code": _iam_missing_role_code()}}, "GetRole")
+        return {"Role": {"RoleName": RoleName}}
+
+
+def test_the_role_name_is_the_last_segment_of_a_pathed_arn():
+    assert tmt.iam_role_name(ROLE) == "idpo1-api-apigw-cloudwatch"
+    assert tmt.iam_role_name(OTHER_ROLE) == "some-other-logging-role"
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "exists", "needle"),
+    [
+        (ROLE, "", None, "cleared"),
+        (ROLE, OTHER_ROLE, True, "changed"),
+        (ROLE, ROLE, False, "deleted that role"),
+        (ROLE, ROLE, None, "could not read"),
+    ],
+)
+def test_what_the_old_destroy_did_to_the_role_is_reported(
+    before, after, exists, needle
+):
+    (problem,) = tmt.api_gateway_role_problems(before, after, exists)
+    assert needle in problem and before in problem
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "exists"),
+    [(ROLE, ROLE, True), ("", "", None), ("", ROLE, True)],
+)
+def test_a_role_the_destroy_left_alone_is_not_reported(before, after, exists):
+    assert tmt.api_gateway_role_problems(before, after, exists) == []
+
+
+@pytest.mark.parametrize(
+    ("start", "start_exists", "now", "now_exists", "needle"),
+    [
+        (OTHER_ROLE, True, ROLE, False, "no longer exists"),  # the sweep took it
+        ("", None, ROLE, False, "no longer exists"),
+        (ROLE, True, ROLE, False, "no longer exists"),  # named at the start, now gone
+        (OTHER_ROLE, False, ROLE, False, "no longer exists"),  # dangling elsewhere
+        (OTHER_ROLE, True, ROLE, None, "could not read"),  # unreadable is not a pass
+        (ROLE, False, ROLE, None, "could not read"),
+        (ROLE, False, ROLE, False, None),  # the Region was already like this
+        (OTHER_ROLE, True, ROLE, True, None),
+        (OTHER_ROLE, True, "", None, None),
+    ],
+)
+def test_the_end_of_run_check_reports_a_setting_naming_a_deleted_role(
+    start, start_exists, now, now_exists, needle
+):
+    problems = tmt.api_gateway_role_left_problems(start, start_exists, now, now_exists)
+    if needle is None:
+        assert problems == []
+    else:
+        (problem,) = problems
+        assert needle in problem and now in problem
+
+
+def _role_run(tmp_path, apigateway, iam):
+    run = tmt.Run(_settings(tmp_path))
+    run._boto_cache.update(apigateway=apigateway, iam=iam)
+    return run
+
+
+@pytest.mark.parametrize(
+    ("existing", "denied", "exists"),
+    [((tmt.iam_role_name(ROLE),), False, True), ((), False, False), ((), True, None)],
+)
+def test_reading_the_setting_classifies_the_named_role(
+    tmp_path, existing, denied, exists
+):
+    iam = _IamRoles(existing, denied)
+    run = _role_run(tmp_path, _ApiGatewayAccount(ROLE), iam)
+    assert run.api_gateway_role() == {"arn": ROLE, "exists": exists}
+    assert iam.asked == [tmt.iam_role_name(ROLE)]
+
+
+def test_an_unset_setting_reads_as_empty_without_asking_iam(tmp_path):
+    iam = _IamRoles()
+    run = _role_run(tmp_path, _ApiGatewayAccount(""), iam)
+    assert run.api_gateway_role() == {"arn": "", "exists": None}
+    assert iam.asked == []
+
+
+def _preflighting(tmp_path, monkeypatch, apigateway):
+    class _Iam(_IamRoles):
+        def get_account_summary(self):
+            return {"SummaryMap": {"RolesQuota": 5000, "Roles": 10}}
+
+    run = _role_run(tmp_path, apigateway, _Iam([tmt.iam_role_name(OTHER_ROLE)]))
+    monkeypatch.setattr(run, "identity_problems", lambda: [])
+    run._account = "123456789012"
+    monkeypatch.setattr(
+        run, "terraform_capture", lambda *a: '{"terraform_version": "1.17.1"}'
+    )
+    monkeypatch.setattr(run, "existing_matches", lambda: [])
+    return run
+
+
+def test_preflight_records_the_setting_before_anything_is_deployed(
+    tmp_path, monkeypatch
+):
+    run = _preflighting(tmp_path, monkeypatch, _ApiGatewayAccount(OTHER_ROLE, ROLE))
+    run.phase_preflight()
+    assert run.ctx["apiGatewayRoleAtStart"] == {"arn": OTHER_ROLE, "exists": True}
+    run.phase_preflight()  # a resumed run's preflight keeps the first answer
+    assert run.ctx["apiGatewayRoleAtStart"]["arn"] == OTHER_ROLE
+
+
+def test_preflight_refuses_when_the_setting_cannot_be_read(tmp_path, monkeypatch):
+    run = _preflighting(
+        tmp_path, monkeypatch, _ApiGatewayAccount(RuntimeError("AccessDenied"))
+    )
+    with pytest.raises(tmt.PhaseFailed, match="API Gateway account settings"):
+        run.phase_preflight()
+    assert run.preflight_passed is False
+
+
+def _old_destroying(tmp_path, monkeypatch, apigateway):
+    run = _role_run(tmp_path, apigateway, _IamRoles([tmt.iam_role_name(ROLE)]))
+    order = []
+    monkeypatch.setattr(run, "old_state", lambda: {})
+    monkeypatch.setattr(run, "save", lambda: order.append("save"))
+    monkeypatch.setattr(
+        run, "terraform", lambda d, *a, **k: order.append(f"terraform {a[0]}")
+    )
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: "")
+    return run, order
+
+
+def test_the_setting_is_recorded_before_the_old_destroy_runs(tmp_path, monkeypatch):
+    run, order = _old_destroying(tmp_path, monkeypatch, _ApiGatewayAccount(ROLE, ""))
+    run.phase_old_destroy()
+    assert run.ctx["apiGatewayRoleBeforeOldDestroy"] == ROLE
+    assert order == ["save", "terraform apply"]
+    run.phase_old_destroy()  # a retried destroy keeps the first attempt's value
+    assert run.ctx["apiGatewayRoleBeforeOldDestroy"] == ROLE
+
+
+def test_an_unreadable_setting_is_recorded_as_unknown_and_the_destroy_runs(
+    tmp_path, monkeypatch
+):
+    run, order = _old_destroying(
+        tmp_path, monkeypatch, _ApiGatewayAccount(RuntimeError("Throttling"))
+    )
+    run.phase_old_destroy()
+    assert run.ctx["apiGatewayRoleBeforeOldDestroy"] is None
+    assert "terraform apply" in order
+
+
+def _verifying(tmp_path, monkeypatch, apigateway, iam, **ctx):
+    run = _role_run(tmp_path, apigateway, iam)
+
+    class _Ok:
+        def head_bucket(self, **k):
+            return {}
+
+        def describe_table(self, **k):
+            return {}
+
+    run._boto_cache.update(s3=_Ok(), dynamodb=_Ok())
+    run.ctx.update(new={}, snapshotTargets={"buckets": ["b"], "tables": ["t"]}, **ctx)
+    monkeypatch.setattr(run, "check_users", lambda handles, findings: None)
+    return run
+
+
+def test_verify_after_old_destroy_fails_when_the_destroy_cleared_the_role(
+    tmp_path, monkeypatch
+):
+    run = _verifying(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(""),
+        _IamRoles([tmt.iam_role_name(ROLE)]),
+        apiGatewayRoleBeforeOldDestroy=ROLE,
+    )
+    with pytest.raises(tmt.PhaseFailed, match="cleared the Region's API Gateway"):
+        run.phase_verify_after_old_destroy()
+
+
+def test_verify_after_old_destroy_fails_when_the_named_role_is_gone(
+    tmp_path, monkeypatch
+):
+    run = _verifying(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(ROLE),
+        _IamRoles(),
+        apiGatewayRoleBeforeOldDestroy=ROLE,
+    )
+    with pytest.raises(tmt.PhaseFailed, match="deleted that role"):
+        run.phase_verify_after_old_destroy()
+
+
+def test_verify_after_old_destroy_passes_when_the_role_survived(tmp_path, monkeypatch):
+    run = _verifying(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(ROLE),
+        _IamRoles([tmt.iam_role_name(ROLE)]),
+        apiGatewayRoleBeforeOldDestroy=ROLE,
+    )
+    assert ROLE in run.phase_verify_after_old_destroy()
+
+
+@pytest.mark.parametrize("ctx", [{}, {"apiGatewayRoleBeforeOldDestroy": None}])
+def test_verify_after_old_destroy_fails_when_nothing_was_recorded(
+    tmp_path, monkeypatch, ctx
+):
+    run = _verifying(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(ROLE),
+        _IamRoles([tmt.iam_role_name(ROLE)]),
+        **ctx,
+    )
+    with pytest.raises(tmt.PhaseFailed, match="not recorded before the old destroy"):
+        run.phase_verify_after_old_destroy()
+
+
+def _leftover_checking(tmp_path, monkeypatch, apigateway, iam, start):
+    run = _role_run(tmp_path, apigateway, iam)
+    monkeypatch.setattr(tmt.Sweeper, "inventory", lambda self: [])
+    if start is not None:
+        run.ctx["apiGatewayRoleAtStart"] = start
+    return run
+
+
+def test_leftover_check_reports_a_setting_left_naming_a_swept_role(
+    tmp_path, monkeypatch
+):
+    run = _leftover_checking(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(ROLE),
+        _IamRoles(),
+        {"arn": OTHER_ROLE, "exists": True},
+    )
+    assert run.phase_leftover_check() == "nothing left"
+    assert run.ctx["leftovers"] == []  # a finding, so a reap does not retry it
+    (finding,) = run.ctx["findings"]
+    assert finding.startswith("leftover-check: ") and ROLE in finding
+
+
+def test_leftover_check_reports_an_unreadable_setting(tmp_path, monkeypatch):
+    run = _leftover_checking(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(RuntimeError("Throttling")),
+        _IamRoles(),
+        {"arn": OTHER_ROLE, "exists": True},
+    )
+    run.phase_leftover_check()
+    (finding,) = run.ctx["findings"]
+    assert "cannot read the API Gateway account settings" in finding
+
+
+@pytest.mark.parametrize(
+    ("setting", "existing", "start"),
+    [
+        (ROLE, [tmt.iam_role_name(ROLE)], {"arn": OTHER_ROLE, "exists": True}),
+        (ROLE, [], {"arn": ROLE, "exists": False}),
+        (ROLE, [], None),  # a run from before the start was recorded
+    ],
+)
+def test_leftover_check_is_quiet_when_the_run_broke_nothing(
+    tmp_path, monkeypatch, setting, existing, start
+):
+    run = _leftover_checking(
+        tmp_path, monkeypatch, _ApiGatewayAccount(setting), _IamRoles(existing), start
+    )
+    run.phase_leftover_check()
+    assert run.ctx["findings"] == []
+
+
+@pytest.mark.parametrize("weeks", range(len(tmt.UPSTREAM_RELEASES)))
+def test_no_tag_takes_the_recorded_release_else_the_newest(weeks):
+    """Every week of a rotation cycle, so "no tag" cannot pass by rotating."""
+    day = _monday() + timedelta(days=7 * weeks)
+    assert tmt.resolve_upstream_tag(None, None, day) == (tmt.UPSTREAM_TAG, None)
+    for stored in (r.tag for r in tmt.UPSTREAM_RELEASES):
+        assert tmt.resolve_upstream_tag(None, stored, day) == (stored, None)
+
+
+def test_an_explicit_commit_overrides_the_releases_pin(tmp_path, monkeypatch):
+    r = tmt.upstream_release("v0.6.4-tf.0")
+    other = "a" * 40
+    git = _Git(other, f"040000 tree {r.sources[1]}\tsources\n")
+    run = _cloning(tmp_path, monkeypatch, r.tag, git, upstream_commit=other)
+    assert run.phase_upstream_clone().startswith(f"{r.tag} at {other[:12]}")
+    run = _cloning(tmp_path / "b", monkeypatch, r.tag, _Git(r.commit, git.ls_tree))
+    run.s.upstream_commit = other
+    with pytest.raises(tmt.PhaseFailed, match="the tag has moved"):
+        run.phase_upstream_clone()
+
+
+def test_a_submodule_checked_out_elsewhere_is_refused(tmp_path, monkeypatch):
+    r = tmt.upstream_release("v0.6.9-tf.0")
+    git = _Git(r.commit, f"160000 commit {r.sources[1]}\tsources\n", "b" * 40)
+    run = _cloning(tmp_path, monkeypatch, r.tag, git)
+    with pytest.raises(tmt.PhaseFailed, match="sources/ checked out"):
+        run.phase_upstream_clone()
+
+
+def test_verify_after_old_destroy_keeps_earlier_findings_beside_a_healthy_role(
+    tmp_path, monkeypatch
+):
+    run = _verifying(
+        tmp_path,
+        monkeypatch,
+        _ApiGatewayAccount(ROLE),
+        _IamRoles([tmt.iam_role_name(ROLE)]),
+        apiGatewayRoleBeforeOldDestroy=ROLE,
+    )
+
+    class _Gone:
+        def head_bucket(self, **k):
+            raise RuntimeError("404")
+
+    run._boto_cache["s3"] = _Gone()
+    with pytest.raises(tmt.PhaseFailed, match="adopted bucket b is gone"):
+        run.phase_verify_after_old_destroy()
+
+
+class _WritableAccount(_ApiGatewayAccount):
+    """``get_account`` as above; ``update_account`` records the value, or raises
+    ``refuse`` for a role (``refuse_clear`` too for ``""``), as a missing
+    ``iam:PassRole`` would: clearing the setting passes no role."""
+
+    def __init__(self, setting, refuse=None, refuse_clear=False):
+        super().__init__(setting)
+        self.refuse, self.refuse_clear, self.updates = refuse, refuse_clear, []
+
+    def update_account(self, patchOperations):  # noqa: N803 - boto3 casing
+        (op,) = patchOperations
+        assert (op["op"], op["path"]) == ("replace", "/cloudwatchRoleArn")
+        if self.refuse and (op["value"] or self.refuse_clear):
+            self.attempts = [*getattr(self, "attempts", []), op["value"]]
+            raise self.refuse
+        self.updates.append(op["value"])
+        self.settings = [op["value"]]
+
+
+#: The role upstream's deploy creates for the old deployment ``idpo1``: carries the
+#: run's old name, so the sweep selects it.
+SWEPT_ROLE = (
+    "arn:aws:iam::123456789012:role/idpo1-upstream/idpo1-x-api-apigw-cloudwatch"
+)
+
+
+def _sweeping(tmp_path, monkeypatch, account, start):
+    run = tmt.Run(_settings(tmp_path, old_name="idpo1", new_name="idp-m1"))
+    iam = _IamRoles([tmt.iam_role_name(SWEPT_ROLE), tmt.iam_role_name(OTHER_ROLE)])
+    run._boto_cache.update(apigateway=account, iam=iam)
+    if start is not None:
+        run.ctx["apiGatewayRoleAtStart"] = start
+    swept = []
+
+    def sweep(self):
+        swept.extend(
+            r for r in [tmt.iam_role_name(SWEPT_ROLE)] if self.owned(r, "roles")
+        )
+        return list(swept), []
+
+    monkeypatch.setattr(tmt.Sweeper, "sweep", sweep)
+    return run, swept
+
+
+def test_the_sweep_first_sets_the_regions_role_back_to_its_start(tmp_path, monkeypatch):
+    account = _WritableAccount(SWEPT_ROLE)
+    run, swept = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    assert account.updates == [OTHER_ROLE]
+    assert swept == [tmt.iam_role_name(SWEPT_ROLE)]
+    assert run.ctx["findings"] == []
+
+
+@pytest.mark.parametrize(
+    "start", [{"arn": "", "exists": None}, {"arn": OTHER_ROLE, "exists": False}]
+)
+def test_a_region_that_started_without_a_working_role_is_left_without_one(
+    tmp_path, monkeypatch, start
+):
+    account = _WritableAccount(SWEPT_ROLE)
+    run, _ = _sweeping(tmp_path, monkeypatch, account, start)
+    run.phase_sweep()
+    assert account.updates == [""]
+
+
+def test_a_refused_restore_clears_the_setting_and_names_the_value(
+    tmp_path, monkeypatch
+):
+    """The build deletes every role under the run's boundary, so keeping the run's
+    role would leave the setting naming a deleted role minutes later."""
+    account = _WritableAccount(
+        SWEPT_ROLE, refuse=RuntimeError("AccessDenied: PassRole")
+    )
+    run, swept = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    assert account.attempts == [OTHER_ROLE] and account.updates == [""]
+    assert swept == [tmt.iam_role_name(SWEPT_ROLE)]
+    (finding,) = run.ctx["findings"]
+    assert "now unset" in finding and "update-account" in finding
+    assert f"value={OTHER_ROLE}" in finding
+
+
+def test_a_setting_that_can_be_neither_restored_nor_cleared_is_reported(
+    tmp_path, monkeypatch
+):
+    account = _WritableAccount(
+        SWEPT_ROLE, refuse=RuntimeError("AccessDenied"), refuse_clear=True
+    )
+    run, _ = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    assert account.attempts == [OTHER_ROLE, ""] and account.updates == []
+    (finding,) = run.ctx["findings"]
+    assert f"still names {tmt.iam_role_name(SWEPT_ROLE)}" in finding
+    assert f"value={OTHER_ROLE}" in finding
+
+
+def test_a_start_role_of_unknown_existence_is_restored_not_cleared(
+    tmp_path, monkeypatch
+):
+    account = _WritableAccount(SWEPT_ROLE)
+    run, _ = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": None}
+    )
+    run.phase_sweep()
+    assert account.updates == [OTHER_ROLE]
+    assert run.ctx["findings"] == []
+
+
+def test_a_start_recorded_after_upstreams_deploy_is_not_restored(tmp_path, monkeypatch):
+    """A context from before the start was recorded at preflight records the
+    run's own role, which the sweep then deletes: that says nothing about the
+    Region before the run, so the setting is cleared."""
+    account = _WritableAccount(SWEPT_ROLE)
+    run, _ = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": SWEPT_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    assert account.updates == [""]
+
+
+@pytest.mark.parametrize(
+    ("setting", "start"),
+    [
+        (OTHER_ROLE, {"arn": OTHER_ROLE, "exists": True}),  # not the run's role
+        ("", {"arn": OTHER_ROLE, "exists": True}),
+        (SWEPT_ROLE, None),  # a run from before the start was recorded
+    ],
+)
+def test_the_sweep_leaves_a_setting_it_would_not_break_alone(
+    tmp_path, monkeypatch, setting, start
+):
+    account = _WritableAccount(setting)
+    run, _ = _sweeping(tmp_path, monkeypatch, account, start)
+    run.phase_sweep()
+    assert account.updates == []
+
+
+def test_a_sweep_that_cannot_read_the_setting_reports_it_and_sweeps(
+    tmp_path, monkeypatch
+):
+    account = _WritableAccount(RuntimeError("Throttling"))
+    run, swept = _sweeping(
+        tmp_path, monkeypatch, account, {"arn": OTHER_ROLE, "exists": True}
+    )
+    run.phase_sweep()
+    (finding,) = run.ctx["findings"]
+    assert "cannot read the API Gateway account settings" in finding
+    assert swept == [tmt.iam_role_name(SWEPT_ROLE)]
+
+
+# -- the mcp-datasets variant ----------------------------------------------------
+
+_EXAMPLE_MAIN = """
+resource "aws_s3_bucket" "input_bucket" {
+  bucket = "x-{y}"
+}
+
+module "genai_idp_accelerator" {
+  source = "../.."
+
+  # A comment with a brace: {
+  api = {
+    enabled = true
+    label   = "not a } brace"
+    knowledge_base = {
+      enabled = var.create_knowledge_base
+    }
+    enable_test_studio = var.enable_test_studio
+  }
+
+  rbac = var.rbac
+}
+"""
+
+
+def test_the_variant_turns_mcp_on_and_the_base_run_keeps_it_off():
+    base = tmt.upstream_tfvars("gitf2", "run1", "us-west-2")
+    variant = tmt.upstream_tfvars(
+        "gitf2", "run1", "us-west-2", tmt.MCP_DATASETS_VARIANT
+    )
+    assert "enable_mcp                  = false" in base
+    assert "enable_mcp                  = true" in variant
+    assert base.replace("= false\n", "") != variant.replace("= true\n", "")
+
+
+def test_the_datasets_override_restates_the_api_argument_with_both_flags():
+    text = tmt.datasets_override(_EXAMPLE_MAIN)
+    assert text.count('module "genai_idp_accelerator" {') == 1
+    # The example's own api expression is kept whole, with the two flags inside it.
+    api = text.split("api = ", 1)[1]
+    assert 'label   = "not a } brace"' in api
+    assert "enable_test_studio = var.enable_test_studio" in api
+    assert "enable_w2_dataset  = true" in api and "enable_fcc_dataset = true" in api
+    # Nothing outside the api argument is restated (an override replaces whole
+    # arguments, so restating rbac or source would be harmless but is not wanted).
+    assert "rbac" not in text and "source" not in text
+    # The braces balance: the override is one module block holding one object.
+    body = text[text.index("module") :]
+    assert tmt._block_end(body, body.index("{")) == len(body.rstrip())
+
+
+@pytest.mark.parametrize(
+    "main_tf, reason",
+    [
+        ('module "other" {\n  api = {}\n}\n', "no module"),
+        ('module "genai_idp_accelerator" {\n  api = local.api\n}\n', "literal"),
+        (
+            'module "genai_idp_accelerator" {\n  api = {\n    enable_w2_dataset = true\n  }\n}\n',
+            "already sets",
+        ),
+        ('module "genai_idp_accelerator" {\n  api = {\n', "unclosed"),
+    ],
+)
+def test_the_datasets_override_refuses_a_layout_it_cannot_read(main_tf, reason):
+    with pytest.raises(ValueError, match=reason):
+        tmt.datasets_override(main_tf)
+
+
+def _rc(address, tf_type, actions=("delete",)):
+    return {
+        "address": address,
+        "type": tf_type,
+        "mode": "managed",
+        "change": {"actions": list(actions)},
+    }
+
+
+_MCP = tmt.FEATURE_DESTROY_TARGETS[0]
+
+
+def test_the_guides_targeted_destroy_is_accepted():
+    plan = {
+        "resource_changes": [
+            _rc(f"{_MCP}.aws_cloudformation_stack.agentcore_gateway[0]", "x")
+            | {"type": "aws_cloudformation_stack"},
+            _rc(
+                f"{_MCP}.aws_cognito_resource_server.mcp[0]",
+                "aws_cognito_resource_server",
+            ),
+            _rc(
+                f"{_MCP}.aws_lambda_function.agentcore_mcp_handler[0]",
+                "aws_lambda_function",
+            ),
+            _rc(
+                f"{_MCP}.aws_cognito_user_pool_client.mcp_client[0]",
+                "aws_cognito_user_pool_client",
+            ),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[2], "aws_cloudformation_stack"),
+            _rc(
+                "module.x.aws_lambda_function.unrelated_dependent",
+                "aws_lambda_function",
+            ),
+            _rc("data.aws_region.current", "aws_region", ("read",)) | {"mode": "data"},
+            _rc("module.x.aws_s3_bucket.kept", "aws_s3_bucket", ("no-op",)),
+        ]
+    }
+    assert tmt.feature_destroy_problems(plan) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Data the migration keeps.
+        _rc("module.x.aws_s3_bucket.test_sets", "aws_s3_bucket"),
+        _rc("module.x.aws_dynamodb_table.tracking", "aws_dynamodb_table"),
+        _rc("aws_cognito_user_pool.user_pool", "aws_cognito_user_pool"),
+        _rc("module.x.aws_cognito_user.admin", "aws_cognito_user"),
+        # A setting of a kept bucket or table.
+        _rc("module.x.aws_s3_bucket_policy.p", "aws_s3_bucket_policy"),
+        _rc("module.x.aws_dynamodb_table_item.i", "aws_dynamodb_table_item"),
+        # A stack the guide does not name, and a resource server outside MCP.
+        _rc("module.x.aws_cloudformation_stack.other[0]", "aws_cloudformation_stack"),
+        _rc("module.x.aws_cognito_resource_server.r", "aws_cognito_resource_server"),
+        # Anything but a delete.
+        _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack", ("create",)),
+        _rc(
+            f"{_MCP}.aws_lambda_function.f", "aws_lambda_function", ("delete", "create")
+        ),
+    ],
+)
+def test_a_targeted_destroy_beyond_the_guide_is_refused(change):
+    ok = _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack")
+    problems = tmt.feature_destroy_problems({"resource_changes": [ok, change]})
+    assert len(problems) == 1 and problems[0].startswith(change["address"])
+
+
+def test_a_targeted_destroy_that_deletes_nothing_is_refused():
+    assert tmt.feature_destroy_problems({"resource_changes": []}) == [
+        "the targeted destroy deletes nothing"
+    ]
+
+
+def test_the_dataset_keys_are_the_ones_both_deployers_write():
+    """Read from this repository's deployers, which the new deployment runs: the
+    verify phase's no-re-download check is about these keys."""
+    for test_set, prefix in tmt.DATASETS:
+        name = {"fake-w2": "w2", "realkie-fcc-verified": "fcc"}[test_set]
+        source = (
+            tmt.REPO_ROOT / "src" / "lambda" / f"{name}_dataset_deployer" / "index.py"
+        ).read_text()
+        assert re.search(
+            rf"^TEST_SET_ID = ['\"]{re.escape(test_set)}['\"]", source, re.M
+        )
+        assert re.search(
+            rf"^DATASET_PREFIX = ['\"]{re.escape(prefix)}['\"]", source, re.M
+        )
+
+
+def test_the_resource_server_identifier_is_the_modules():
+    template = (tmt.REPO_ROOT / "template.yaml").read_text()
+    block = template.split("  MCPResourceServer:\n", 1)[1].split("\n\n", 1)[0]
+    assert f"Identifier: {tmt.MCP_RESOURCE_SERVER}" in block
+
+
+def test_the_procedure_runs_before_plan_and_the_base_run_skips_it(tmp_path):
+    assert tmt.PHASES.index("pre-plan-features") < tmt.PHASES.index("migrate-plan")
+    assert tmt.PHASES.index("pre-plan-features") < tmt.PHASES.index("migrate-freeze")
+    run = tmt.Run(_settings(tmp_path))
+    assert run.phase_pre_plan_features() == "nothing to do for the base variant"
+    findings = []
+    assert run.verify_features(findings) == "" and findings == []
+
+
+def test_a_resumed_run_of_another_variant_is_refused():
+    recorded = {"oldName": "gitf2", "newName": "gitfnew2", "variant": "mcp-datasets"}
+    assert tmt.stored_name_problems(recorded, "gitf2", "gitfnew2", None, "base")
+    assert not tmt.stored_name_problems(
+        recorded, "gitf2", "gitfnew2", None, "mcp-datasets"
+    )
+    # A run recorded before variants existed was the base one.
+    old = {"oldName": "gitf2", "newName": "gitfnew2"}
+    assert not tmt.stored_name_problems(old, "gitf2", "gitfnew2", None, "base")
+    assert tmt.stored_name_problems(old, "gitf2", "gitfnew2", None, "mcp-datasets")
+    # A fresh work directory has recorded nothing.
+    assert not tmt.stored_name_problems({"runId": "x"}, "a", "b", None, "mcp-datasets")
+
+
+def test_the_variant_is_a_flag_and_the_makefile_passes_it():
+    argv = ["--old-name", "gitf2", "--new-name", "gitfnew2"]
+    argv += ["--terraform-module-url", "https://example.com/m.zip"]
+    argv += ["--terraform-bin", "/bin/true"]
+    assert tmt.parse_args(argv).variant == "base"
+    assert (
+        tmt.parse_args(argv + ["--variant", "mcp-datasets"]).variant == "mcp-datasets"
+    )
+    makefile = (tmt.REPO_ROOT / "Makefile").read_text()
+    assert (
+        "$(if $(VARIANT),--variant $(VARIANT),)"
+        in makefile.split("_TFMIG_ARGS =", 1)[1].split("\n\n", 1)[0]
+    )
+
+
+class _Gateways(_FakeClients):
+    def __init__(self):
+        super().__init__()
+        self.gateways = [
+            {"gatewayId": "g1", "name": "gitf2-abc-api-analytics-gateway"},
+            {"gatewayId": "g2", "name": "gitfnew2-analytics-gateway"},
+            {"gatewayId": "g3", "name": "someone-analytics-gateway"},
+        ]
+
+    def get_paginator(self, name):
+        if name == "list_gateways":
+            return _Pages("items", self.gateways)
+        if name == "list_gateway_targets":
+            return _Pages("items", [{"targetId": "t"}])
+        return super().get_paginator(name)
+
+    def list_buckets(self):
+        return {"Buckets": []}
+
+    def delete_gateway_target(self, gatewayIdentifier, targetId):
+        self.deleted.append(f"{gatewayIdentifier}/{targetId}")
+
+    def delete_gateway(self, gatewayIdentifier):
+        self.deleted.append(gatewayIdentifier)
+
+
+def test_the_variants_sweep_deletes_only_the_runs_gateways(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path, variant=tmt.MCP_DATASETS_VARIANT))
+    fake = _Gateways()
+    monkeypatch.setattr(run, "boto", fake)
+    deleted, errors = tmt.Sweeper(run, {}).sweep()
+    assert errors == []
+    assert fake.deleted == ["g1/t", "g1", "g2/t", "g2"]
+    # The base variant never lists gateways.
+    base = tmt.Run(_settings(tmp_path / "b"))
+    monkeypatch.setattr(base, "boto", fake)
+    assert tmt.Sweeper(base, {})._gateways() == []
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "variant, boundary, expected",
+    [
+        ("base", None, None),
+        ("mcp-datasets", None, "EnableMCP=true"),
+        ("base", "arn:b", "PermissionsBoundaryArn=arn:b"),
+        ("mcp-datasets", "arn:b", "PermissionsBoundaryArn=arn:b,EnableMCP=true"),
+    ],
+)
+def test_the_plan_phase_passes_the_variants_parameters(
+    tmp_path, monkeypatch, variant, boundary, expected
+):
+    run = tmt.Run(
+        _settings(tmp_path, variant=variant, upstream_permissions_boundary_arn=boundary)
+    )
+    seen = {}
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: "{}")
+    monkeypatch.setattr(run, "secrets", lambda: {"users": [{"username": "u"}]})
+
+    def migrate(phase, *args):
+        seen["args"] = list(args)
+        raise _Stop
+
+    monkeypatch.setattr(run, "migrate", migrate)
+    with pytest.raises(_Stop):
+        run.phase_migrate_plan()
+    args = seen["args"]
+    if expected is None:
+        assert "--parameters" not in args
+    else:
+        assert args[args.index("--parameters") + 1] == expected
+
+
+def test_the_variants_preflight_needs_pip3(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path, variant=tmt.MCP_DATASETS_VARIANT))
+    monkeypatch.setattr(run, "identity_problems", lambda: [])
+    monkeypatch.setattr(tmt.shutil, "which", lambda name: None)
+    with pytest.raises(tmt.PhaseFailed, match="pip3"):
+        run.phase_preflight()
+
+
+class _Control:
+    class exceptions:
+        class ValidationException(Exception):
+            pass
+
+    def __init__(self, busy):
+        self.busy, self.calls = busy, 0
+
+    def get_paginator(self, name):
+        return _Pages("items", [])
+
+    def delete_gateway(self, gatewayIdentifier):
+        self.calls += 1
+        if self.calls <= self.busy:
+            raise self.exceptions.ValidationException("targets still deleting")
+
+
+def test_a_gateway_delete_retries_while_its_targets_go_and_then_gives_up(monkeypatch):
+    monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
+    control = _Control(busy=2)
+    tmt.delete_gateway(control, "g", timeout=60)
+    assert control.calls == 3
+    with pytest.raises(_Control.exceptions.ValidationException):
+        tmt.delete_gateway(_Control(busy=10**6), "g", timeout=0)
+
+
+# -- the variant's phase bodies -------------------------------------------------
+
+_GATEWAY_STACK = f"{_MCP}.aws_cloudformation_stack.agentcore_gateway[0]"
+
+
+def _feature_state(with_datasets=False, env=None):
+    def resource(module, rtype, name, attrs):
+        return {
+            "mode": "managed",
+            "module": module,
+            "type": rtype,
+            "name": name,
+            "instances": [{"index_key": 0, "attributes": attrs}],
+        }
+
+    api = f"{tmt.UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    resources = [
+        resource(
+            _MCP,
+            "aws_cloudformation_stack",
+            "agentcore_gateway",
+            {"id": "arn:gw-stack", "name": "gw", "outputs": {"GatewayId": "gw-1"}},
+        )
+    ]
+    if with_datasets:
+        for name in ("w2_dataset", "fcc_dataset"):
+            resource_ = resource(
+                api,
+                "aws_cloudformation_stack",
+                name,
+                {"id": f"arn:{name}", "name": name},
+            )
+            resources.append(resource_)
+        resources.append(
+            resource(
+                api,
+                "aws_lambda_function",
+                "w2_dataset_deployer",
+                {
+                    "environment": [
+                        {
+                            "variables": env
+                            or {"TEST_SET_BUCKET": "tsb", "TRACKING_TABLE": "tt"}
+                        }
+                    ]
+                },
+            )
+        )
+    return {"resources": resources}
+
+
+class _NotFound(Exception):
+    pass
+
+
+class _FeatureClients:
+    """Cognito, CloudFormation and AgentCore, as the phase reads them."""
+
+    class exceptions:
+        ResourceNotFoundException = _NotFound
+
+    def __init__(self, gateway_left=False, server_left=False, gateways=1):
+        self.gateway_left, self.server_left = gateway_left, server_left
+        self.server_reads, self.gateways = 0, gateways
+
+    def __call__(self, service):
+        return self
+
+    def describe_resource_server(self, UserPoolId, Identifier):
+        self.server_reads += 1
+        if self.server_reads > 1 and not self.server_left:
+            raise _NotFound(Identifier)
+        return {}
+
+    def describe_stacks(self, StackName):
+        raise RuntimeError("Stack does not exist")
+
+    def get_gateway(self, gatewayIdentifier):
+        if not self.gateway_left:
+            raise _NotFound("ResourceNotFoundException")
+        return {}
+
+    def get_paginator(self, name):
+        items = [{"name": "gitfnew2-analytics-gateway"}] * self.gateways
+        return _Pages("items", items)
+
+
+def _feature_run(tmp_path, monkeypatch, plan, variant="mcp", clients=None, **kw):
+    run = tmt.Run(_settings(tmp_path, variant=variant))
+    run.ctx["old"] = {"user_pool_id": "pool-1"}
+    states = [_feature_state(variant == "mcp-datasets", **kw), {"resources": []}]
+    calls = []
+    monkeypatch.setattr(run, "old_state", lambda: states[0] if not calls else states[1])
+    monkeypatch.setattr(run, "terraform", lambda d, *args, log: calls.append(args[0]))
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: json.dumps(plan))
+    monkeypatch.setattr(run, "boto", clients or _FeatureClients())
+    return run, calls
+
+
+_CLEAN = {"resource_changes": [_rc(_GATEWAY_STACK, "aws_cloudformation_stack")]}
+
+
+def test_the_mcp_procedure_applies_a_clean_targeted_destroy(tmp_path, monkeypatch):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN)
+    assert "gateway" in run.phase_pre_plan_features()
+    assert calls == ["plan", "apply"]
+
+
+def test_a_targeted_destroy_beyond_the_guide_is_never_applied(tmp_path, monkeypatch):
+    plan = {
+        "resource_changes": _CLEAN["resource_changes"]
+        + [_rc("module.x.aws_s3_bucket.input", "aws_s3_bucket")]
+    }
+    run, calls = _feature_run(tmp_path, monkeypatch, plan)
+    with pytest.raises(tmt.PhaseFailed, match="beyond what the guide allows"):
+        run.phase_pre_plan_features()
+    assert calls == ["plan"]
+
+
+@pytest.mark.parametrize(
+    "clients, finding",
+    [
+        (_FeatureClients(gateway_left=True), "gateway gw-1 still exists"),
+        (_FeatureClients(server_left=True), "still in the pool"),
+    ],
+)
+def test_what_the_destroy_left_behind_is_a_finding(
+    tmp_path, monkeypatch, clients, finding
+):
+    run, _ = _feature_run(tmp_path, monkeypatch, _CLEAN, clients=clients)
+    with pytest.raises(tmt.PhaseFailed, match=finding):
+        run.phase_pre_plan_features()
+
+
+def test_an_old_state_without_the_variants_stacks_is_refused(tmp_path, monkeypatch):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN, variant="mcp-datasets")
+    monkeypatch.setattr(run, "old_state", lambda: _feature_state(False))
+    with pytest.raises(tmt.PhaseFailed, match="not the ones the variant"):
+        run.phase_pre_plan_features()
+    assert calls == []
+
+
+def _snapshot(record=True, objects=True, version="1.0", lm="t0"):
+    return {
+        t: {
+            "record": {"datasetVersion": version} if record else None,
+            "objects": {f"{p}input/a.png": ["e", lm]} if objects else {},
+        }
+        for t, p in tmt.DATASETS
+    }
+
+
+def test_datasets_that_never_deployed_stop_the_procedure_before_any_destroy(
+    tmp_path, monkeypatch
+):
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN, variant="mcp-datasets")
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: _snapshot(objects=False))
+    with pytest.raises(tmt.PhaseFailed, match="did not deploy"):
+        run.phase_pre_plan_features()
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"TEST_SET_BUCKET": "tsb", "TRACKING_TABLE": "tt"},
+        {"TESTSET_BUCKET": "tsb", "TRACKING_TABLE": "tt"},
+    ],
+)
+def test_the_dataset_location_is_read_under_either_bucket_name(tmp_path, env):
+    run = tmt.Run(_settings(tmp_path))
+    insts = tmt.state_instances(_feature_state(True, env=env))
+    assert run.dataset_location(insts) == ("tsb", "tt")
+    with pytest.raises(tmt.PhaseFailed, match="names no test-set bucket"):
+        run.dataset_location(tmt.state_instances(_feature_state(True, env={"X": "y"})))
+
+
+@pytest.mark.parametrize("gateways, ok", [(1, True), (0, False), (2, False)])
+def test_verify_wants_exactly_one_new_gateway(tmp_path, monkeypatch, gateways, ok):
+    run = tmt.Run(_settings(tmp_path, variant="mcp"))
+    monkeypatch.setattr(run, "boto", _FeatureClients(gateways=gateways))
+    findings = []
+    run.verify_features(findings)
+    assert (findings == []) is ok
+
+
+@pytest.mark.parametrize(
+    "after, finding",
+    [
+        (_snapshot(), None),
+        (_snapshot(lm="t1"), "1 rewritten"),
+        (_snapshot(objects=False), "1 objects missing"),
+        (_snapshot(version="2.0"), "version changed"),
+        (_snapshot(record=False), "record is gone"),
+    ],
+)
+def test_verify_wants_the_datasets_kept_without_a_download(
+    tmp_path, monkeypatch, after, finding
+):
+    run = tmt.Run(_settings(tmp_path, variant="mcp-datasets"))
+    monkeypatch.setattr(run, "boto", _FeatureClients())
+    (tmp_path / "datasets-before.json").write_text(json.dumps(_snapshot()))
+    run.ctx["datasets"] = {"bucket": "tsb", "table": "tt"}
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: after)
+    findings = []
+    run.verify_features(findings)
+    if finding is None:
+        assert findings == []
+    else:
+        assert any(finding in f for f in findings), findings
+
+
+def test_verify_calls_the_variants_checks():
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(tmt.Run.phase_verify)))
+    called = {
+        n.func.attr
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    assert "verify_features" in called
+
+
+@pytest.mark.parametrize("variant, written", [("mcp", False), ("mcp-datasets", True)])
+def test_only_the_datasets_variant_writes_the_override(tmp_path, variant, written):
+    run = tmt.Run(_settings(tmp_path, variant=variant))
+    run.old_dir.mkdir(parents=True)
+    (run.old_dir / "main.tf").write_text(_EXAMPLE_MAIN)
+    run.prepare_old_root()
+    override = run.old_dir / tmt.DATASETS_OVERRIDE_FILE
+    assert override.exists() is written
+    if written:
+        assert "enable_w2_dataset  = true" in override.read_text()
+    assert ("enable_mcp                  = true") in (
+        run.old_dir / "terraform.tfvars"
+    ).read_text()
+
+
+def test_the_destroy_targets_only_what_the_variant_deployed(tmp_path, monkeypatch):
+    seen = []
+    run, calls = _feature_run(tmp_path, monkeypatch, _CLEAN)
+
+    def terraform(d, *args, log):
+        calls.append(args[0])
+        seen.append(args)
+
+    monkeypatch.setattr(run, "terraform", terraform)
+    run.phase_pre_plan_features()
+    assert [a for a in seen[0] if a.startswith("-target=")] == [f"-target={_MCP}"]
+
+
+def test_a_dataset_changed_by_the_destroy_is_a_finding(tmp_path, monkeypatch):
+    plan = {
+        "resource_changes": [
+            _rc(_GATEWAY_STACK, "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[2], "aws_cloudformation_stack"),
+        ]
+    }
+    run, _ = _feature_run(tmp_path, monkeypatch, plan, variant="mcp-datasets")
+    snaps = [_snapshot(), _snapshot(objects=False)]
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: snaps.pop(0))
+    with pytest.raises(tmt.PhaseFailed, match="dataset fake-w2 changed"):
+        run.phase_pre_plan_features()
+    # Unchanged datasets pass.
+    run, _ = _feature_run(tmp_path / "b", monkeypatch, plan, variant="mcp-datasets")
+    monkeypatch.setattr(run, "dataset_snapshot", lambda b, t: _snapshot())
+    assert "datasets unchanged" in run.phase_pre_plan_features()

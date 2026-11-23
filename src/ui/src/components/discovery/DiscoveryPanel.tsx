@@ -48,6 +48,11 @@ import PdfPageSelector from './PdfPageSelector';
 import type { PageRange } from './PdfPageSelector';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 import { useFormatters } from '../../i18n/format';
+import { useIntl } from 'react-intl';
+import { isGroupWithReplace, normalizePolicyGroup, policyGroupMessages, policyGroupProblem, uploadGroupVariables } from './policyGroup';
+import PolicyGroupField from './PolicyGroupField';
+import PolicyGroupChangeField from './PolicyGroupChangeField';
+import usePolicyGroupChange from '../../hooks/use-policy-group-change';
 
 const client = generateClient();
 
@@ -131,6 +136,13 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
   const [saveMode, setSaveMode] = useState<'augment' | 'replace'>('augment');
   const replaceOnActive = isReplaceOnActive(saveMode, selectedVersion?.value, versions);
+  // Policy Discovery only: uploads naming the same group append to one policy class.
+  const [policyGroup, setPolicyGroup] = useState('');
+  const policyGroupError = discoveryType === 'rules' ? policyGroupProblem(policyGroup) : null;
+  const groupWithReplace = discoveryType === 'rules' && isGroupWithReplace(policyGroup, saveMode);
+  // How the upload changes an existing group: add, replace its rules, or supersede chosen rules.
+  const groupChange = usePolicyGroupChange({ enabled: discoveryType === 'rules', version: selectedVersion?.value, policyGroup });
+  const intl = useIntl();
   const [showCreateVersionModal, setShowCreateVersionModal] = useState(false);
   const [, setTick] = useState(0); // Force re-render for elapsed time
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -403,6 +415,9 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       setError(REPLACE_ON_ACTIVE_MESSAGE);
       return;
     }
+    if (policyGroupError || groupWithReplace || groupChange.problem) {
+      return;
+    }
 
     setIsUploading(true);
     setUploadStatus([]);
@@ -444,6 +459,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
           pageLabels: pageLabelStrings,
           discoveryType,
           saveMode,
+          ...uploadGroupVariables(discoveryType, policyGroup, groupChange.variables),
         },
       });
 
@@ -479,6 +495,10 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       setUploadPhase('Refreshing jobs list...');
       await loadDiscoveryJobs();
       setUploadPhase('');
+      // A replace or supersede is one decision about one upload; the next upload starts from Add.
+      groupChange.setMode('append');
+      groupChange.setSupersededRules([]);
+      groupChange.refresh();
     } catch (err) {
       console.error('Error in overall upload process:', err);
       setError(`Upload process failed: ${(err as Error).message}`);
@@ -856,6 +876,21 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
             </Alert>
           )}
 
+          {discoveryType === 'rules' && <PolicyGroupField value={policyGroup} onChange={setPolicyGroup} disabled={isUploading} />}
+          {groupWithReplace && <Alert type="error">{intl.formatMessage(policyGroupMessages.replaceWithGroup)}</Alert>}
+          {discoveryType === 'rules' && normalizePolicyGroup(policyGroup) && !policyGroupError && !groupWithReplace && (
+            <PolicyGroupChangeField
+              lookup={groupChange.lookup}
+              loading={groupChange.loading}
+              loadError={groupChange.loadError}
+              mode={groupChange.mode}
+              onModeChange={groupChange.setMode}
+              supersededRules={groupChange.supersededRules}
+              onSupersededRulesChange={groupChange.setSupersededRules}
+              disabled={isUploading}
+            />
+          )}
+
           <ColumnLayout columns={2}>
             <FormField label="Document File" description="Select the document to analyze">
               <input
@@ -1017,6 +1052,9 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
                 !selectedVersion ||
                 selectedVersion.value === 'default' ||
                 replaceOnActive ||
+                !!policyGroupError ||
+                groupWithReplace ||
+                !!groupChange.problem ||
                 isUploading ||
                 isValidatingJson
               }

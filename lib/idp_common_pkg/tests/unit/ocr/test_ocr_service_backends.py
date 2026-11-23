@@ -568,15 +568,54 @@ class TestProcessImageFileDirect:
         assert page_data["confidenceAvailable"] is False
         assert_uris_were_written(result, s3_writes)
 
-    def test_bedrock_max_tokens_is_left_unset_so_the_client_resolves_the_model_max(
+    @pytest.mark.parametrize(
+        ("ocr_overrides", "sent"),
+        [
+            ({}, 10000),
+            ({"max_tokens": ""}, None),
+            ({"max_tokens": "2048"}, 2048),
+        ],
+        ids=["absent-takes-the-shipped-10000", "empty-is-unset", "explicit"],
+    )
+    @pytest.mark.parametrize(
+        "call_site", ["image_file_direct", "page_with_image", "image_bytes"]
+    )
+    def test_bedrock_max_tokens_comes_from_ocr_max_tokens(
+        self, s3_writes, real_resize, call_site, ocr_overrides, sent
+    ):
+        """Every Bedrock OCR call sends `ocr.max_tokens` (#2048).
+
+        The setting ships at 10000, which caps Nova 2 Lite (64,000 output tokens)
+        at what it was requested at before its limit was recorded. An empty value
+        is sent as `None`, which the client turns into the model's maximum:
+        that is load-bearing rather than an omission, because Bedrock's own
+        default-when-omitted truncates long pages mid-transcription.
+        """
+        service = make_service(config=bedrock_config_dict(**ocr_overrides))
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = bedrock_reply()
+        mock_bedrock.extract_text_from_response.return_value = "t"
+
+        with patch.object(service_module, "bedrock", mock_bedrock):
+            if call_site == "image_file_direct":
+                service._process_image_file_direct("out", "doc", PNG_BYTES)
+            elif call_site == "page_with_image":
+                service._process_page_with_image(0, JPEG_BYTES, "out", "doc")
+            else:
+                assert service._ocr_image_bytes(PNG_BYTES) == "t"
+
+        kwargs = mock_bedrock.invoke_model.call_args.kwargs
+        assert "max_tokens" in kwargs
+        assert kwargs["max_tokens"] == sent
+        assert kwargs["context"] == "OCR"
+
+    def test_deprecated_bedrock_config_without_max_tokens_still_sends_none(
         self, s3_writes, real_resize
     ):
-        """`max_tokens=None` is load-bearing, not an omission.
-
-        Bedrock's own default-when-omitted truncates long pages mid-transcription,
-        which reads downstream as a page that simply ended early.
-        """
-        service = make_service(config=bedrock_config_dict())
+        """A caller passing the old `bedrock_config` dict keeps the model maximum."""
+        service = make_service(
+            region="us-east-1", backend="bedrock", bedrock_config=dict(BEDROCK_CONFIG)
+        )
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.return_value = bedrock_reply()
         mock_bedrock.extract_text_from_response.return_value = "t"
@@ -584,11 +623,7 @@ class TestProcessImageFileDirect:
         with patch.object(service_module, "bedrock", mock_bedrock):
             service._process_image_file_direct("out", "doc", PNG_BYTES)
 
-        kwargs = mock_bedrock.invoke_model.call_args.kwargs
-        assert "max_tokens" in kwargs
-        assert kwargs["max_tokens"] is None
-        assert kwargs["temperature"] == 0.0
-        assert kwargs["context"] == "OCR"
+        assert mock_bedrock.invoke_model.call_args.kwargs["max_tokens"] is None
 
     def test_bedrock_hook_blocks_become_the_raw_artifact_with_real_confidence(
         self, s3_writes, real_resize

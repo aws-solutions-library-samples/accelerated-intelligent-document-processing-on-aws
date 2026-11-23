@@ -20,11 +20,13 @@ from idp_common.assessment.degradation import (
     degrade_section_to_no_confidence,
     record_no_confidence_in_result,
 )
+from idp_common.decision_model import DecisionModelError
 from idp_common.docs_service import create_document_service
 from idp_common.lambda_deadline import lambda_deadline_scope, set_lambda_deadline_epoch
 from idp_common.models import Document, Status
 from idp_common.utils import (
     calculate_lambda_metering,
+    failure_metering,
     merge_metering_data,
 )
 from idp_common.utils.transient_errors import (
@@ -83,6 +85,14 @@ def is_throttling_exception(exception):
         bool: True if the exception is throttling-related, False otherwise
     """
     from botocore.exceptions import ClientError
+
+    # A decision-model failure carries its client's own retry verdict, which
+    # is_transient_error reads. Its message is the decider's error text, which can
+    # hold a throttling keyword, so matching it here would re-raise a failure the
+    # client called permanent under a name no Retry lists, failing the document
+    # instead of degrading the section (#2112).
+    if isinstance(exception, DecisionModelError):
+        return False
 
     if isinstance(exception, ClientError):
         error_code = exception.response.get("Error", {}).get("Code", "")
@@ -388,6 +398,11 @@ def _handle(event, context):
                 f"failing the document."
             )
             updated_document = document
+            # A call that failed after Bedrock billed it (a reply withheld by stop
+            # reason) carries that usage on the exception.
+            updated_document.metering = merge_metering_data(
+                updated_document.metering, failure_metering(e)
+            )
             issue = degrade_section_to_no_confidence(updated_document, section_id, e)
             logger.warning(f"Recorded assessment ProcessingIssue: {issue.code}")
             # And in the section's extraction result, which the Processing Report

@@ -778,24 +778,29 @@ class TestValidateMaxTokens:
         assert result["valid"] is True
         assert len(result["errors"]) == 0
 
-    def test_nova2_models_have_10k_limit(self):
-        """Test that Nova 2 models have 10,000 token limit.
+    def test_nova2_lite_has_64k_limit(self):
+        """Nova 2 Lite's model card gives 64K max output, not Nova's 10,000 (#2048).
 
         (Uses classification — extraction no longer carries a max_tokens knob.)
         """
-        config = {
-            "classification": {
-                "model": "us.amazon.nova-2-lite-v1:0",
-                "max_tokens": 11000,  # Exceeds limit (10,000)
+
+        def validate(max_tokens):
+            config = {
+                "classification": {
+                    "model": "us.amazon.nova-2-lite-v1:0",
+                    "max_tokens": max_tokens,
+                }
             }
-        }
+            result = {"valid": True, "errors": [], "warnings": []}
+            _validate_max_tokens(config, result)
+            return result
 
-        result = {"valid": True, "errors": [], "warnings": []}
-        _validate_max_tokens(config, result)
-
-        assert result["valid"] is False
-        assert len(result["errors"]) == 1
-        assert "10,000" in result["errors"][0]
+        # Above the first-generation Nova cap, within Nova 2 Lite's.
+        assert validate(11000)["valid"] is True
+        over = validate(64001)
+        assert over["valid"] is False
+        assert len(over["errors"]) == 1
+        assert "exceeds model limit (64,000)" in over["errors"][0]
 
 
 class TestValidateAgenticOpenAI:

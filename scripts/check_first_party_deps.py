@@ -88,6 +88,7 @@ RETIRED_NAMES = {
 TRUSTED_URL_FRAGMENTS = (
     "accelerated-intelligent-document-processing-on-aws",
     "genaiic-idp-accelerator",
+    "proserve/genaiid/reusable-assets/idp-accelerator",
 )
 
 # Downgrades a foreign-checkout finding to a note. Same variable the pytest-side

@@ -50,6 +50,17 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "idp-terraform.json"
 POINTER_NAME = "idp-terraform-latest.json"
+VERSIONS_INDEX_NAME = "idp-terraform-versions.json"
+#: Format of the versions index; bumped only for an incompatible change.
+VERSIONS_INDEX_SCHEMA = 1
+#: How many times a conditional write of the versions index is retried after
+#: another publish changed it between the read and the write.
+VERSIONS_INDEX_ATTEMPTS = 8
+#: A release version. Its index entry is immutable once written; any other
+#: version (``0.6.16.dev1``, ``0.7.0rc1``) is a pre-release that may be
+#: republished with different contents.
+RELEASE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 # Template variants ``publish --headless`` / ``--govcloud`` produce, each
 # published as its own module beside the standard one.
 VARIANTS = ("headless", "govcloud")
@@ -95,6 +106,20 @@ def module_zip_key(prefix: str, version: str, variant: Optional[str] = None) -> 
 
 def pointer_key(prefix: str, variant: Optional[str] = None) -> str:
     return f"{prefix}/terraform/{_stem(variant)}-latest.json"
+
+
+def versions_index_key(prefix: str, variant: Optional[str] = None) -> str:
+    return f"{prefix}/terraform/{_stem(variant)}-versions.json"
+
+
+def versions_index_url_for_pointer(pointer_url: str) -> str:
+    """The versions index beside a latest pointer (same bucket, same variant)."""
+    base, sep, name = pointer_url.rpartition("/")
+    if not sep or not name.endswith("-latest.json"):
+        raise IDPConfigurationError(
+            f"cannot derive a versions index URL from {pointer_url}"
+        )
+    return f"{base}/{name.removesuffix('-latest.json')}-versions.json"
 
 
 def variant_template_key(prefix: str, variant: Optional[str] = None) -> str:
@@ -231,7 +256,8 @@ def translator_command(
     by ``TemplateURL`` into ``nested_cache``. The same template labels the
     deployment, at ``version``. ``previous_manifest`` is the path of the
     previous release's ``idp-terraform.json``, from which the translator writes
-    ``moved`` blocks for resources whose address changed.
+    ``moved`` blocks for resources whose address changed. The checkout's
+    ``template.yaml`` supplies the scanner suppressions carried into the module.
     """
     translator = Path(source_dir) / "terraform" / "translator"
     if not (translator / "idp_tf" / "cli.py").is_file():
@@ -267,6 +293,11 @@ def translator_command(
     ]
     if previous_manifest:
         cmd += ["--previous-manifest", previous_manifest]
+    # The published template has lost its comments, so the scanner suppressions
+    # the module carries are read from the source template it was packaged from.
+    source_template = Path(source_dir) / "template.yaml"
+    if source_template.is_file():
+        cmd += ["--suppressions-source", str(source_template)]
     return cmd, env
 
 
@@ -336,22 +367,309 @@ def translate_published_template(
     return out
 
 
-def _put(s3, bucket: str, key: str, body: bytes, content_type: str, public: bool):
+def _put(
+    s3,
+    bucket: str,
+    key: str,
+    body: bytes,
+    content_type: str,
+    public: bool,
+    **conditions: str,
+):
+    """Upload one object. ``conditions`` (``IfMatch`` / ``IfNoneMatch``) are
+    passed to every attempt, including the retry without an ACL."""
     kwargs = {"Bucket": bucket, "Key": key, "Body": body, "ContentType": content_type}
+    kwargs.update(conditions)
     if not public:
         s3.put_object(**kwargs)
         return
     try:
         s3.put_object(**kwargs, ACL="public-read")
     except Exception as e:  # noqa: BLE001 - only the ownership refusal is retried
-        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-        if code not in (
+        if _error_code(e) not in (
             "AccessControlListNotSupported",
             "InvalidBucketAclWithObjectOwnership",
         ):
             raise
         # BucketOwnerEnforced: anonymous read, if any, comes from the bucket policy.
         s3.put_object(**kwargs)
+
+
+def _make_public(s3, bucket: str, key: str) -> None:
+    """Apply ``public-read`` to an object a public publish left as it was.
+
+    A bucket that refuses ACLs (BucketOwnerEnforced) gets its anonymous read,
+    if any, from the bucket policy, as in :func:`_put`.
+    """
+    try:
+        s3.put_object_acl(Bucket=bucket, Key=key, ACL="public-read")
+    except Exception as e:  # noqa: BLE001 - only the ownership refusal is expected
+        if _error_code(e) not in (
+            "AccessControlListNotSupported",
+            "InvalidBucketAclWithObjectOwnership",
+        ):
+            raise
+
+
+# ---------------------------------------------------------------------------
+# The versions index (publish)
+# ---------------------------------------------------------------------------
+
+
+def is_release_version(version: str) -> bool:
+    return bool(RELEASE_VERSION_RE.fullmatch(version))
+
+
+def _version_sort_key(version: str) -> Tuple[Tuple[int, ...], str]:
+    """Numeric order of the leading ``X.Y.Z``, then the full string."""
+    m = re.match(r"^(\d+(?:\.\d+)*)", version)
+    nums = tuple(int(p) for p in m.group(1).split(".")) if m else ()
+    return nums, version
+
+
+def build_index_entry(
+    version: str,
+    module_key: str,
+    sha256: str,
+    release_date: str,
+) -> Dict[str, str]:
+    return {
+        "version": version,
+        "moduleKey": module_key,
+        "sha256": sha256,
+        "releaseDate": release_date,
+    }
+
+
+def empty_versions_index() -> Dict[str, Any]:
+    return {"schemaVersion": VERSIONS_INDEX_SCHEMA, "versions": []}
+
+
+def check_versions_index(index: Any, where: str) -> Dict[str, Any]:
+    """The index if it has the shape this SDK writes, else an error naming it."""
+    if (
+        not isinstance(index, dict)
+        or not isinstance(index.get("versions"), list)
+        or not all(
+            isinstance(e, dict) and isinstance(e.get("version"), str)
+            for e in index["versions"]
+        )
+    ):
+        raise IDPStackError(f"the Terraform versions index {where} is malformed")
+    schema = index.get("schemaVersion")
+    if schema != VERSIONS_INDEX_SCHEMA:
+        raise IDPStackError(
+            f"the Terraform versions index {where} has schemaVersion {schema!r}; "
+            f"this SDK reads and writes {VERSIONS_INDEX_SCHEMA}"
+        )
+    return index
+
+
+def merge_index_entry(
+    index: Dict[str, Any], entry: Dict[str, str], where: str = ""
+) -> Optional[Dict[str, Any]]:
+    """``index`` with ``entry`` added, or ``None`` when it is already there.
+
+    Never drops another version's entry. A release version
+    (:data:`RELEASE_VERSION_RE`) whose entry records a different checksum is
+    refused: its zip is meant to be immutable. A pre-release version's entry is
+    replaced, because a development build republishes the same version.
+    """
+    versions = [dict(e) for e in index["versions"]]
+    for i, existing in enumerate(versions):
+        if existing["version"] != entry["version"]:
+            continue
+        if existing.get("sha256") == entry["sha256"]:
+            return None
+        if is_release_version(entry["version"]):
+            raise IDPStackError(
+                f"version {entry['version']} is already published{where} with "
+                f"sha256 {existing.get('sha256')}, and this module's is "
+                f"{entry['sha256']}. A release version's module is immutable: "
+                "publish it as a new version, or as a pre-release version "
+                "(for example X.Y.Z.dev1) while iterating."
+            )
+        versions[i] = dict(entry)
+        break
+    else:
+        versions.append(dict(entry))
+    versions.sort(key=lambda e: _version_sort_key(e["version"]))
+    return {**index, "schemaVersion": VERSIONS_INDEX_SCHEMA, "versions": versions}
+
+
+def read_versions_index(
+    s3, bucket: str, key: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """``(index, ETag)``, or ``(None, None)`` when there is no index yet."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+    except Exception as e:  # noqa: BLE001 - only an absent index is expected
+        if _error_code(e) in ("NoSuchKey", "404"):
+            return None, None
+        raise IDPStackError(
+            f"cannot read the Terraform versions index s3://{bucket}/{key}: {e}"
+        ) from e
+    where = f"s3://{bucket}/{key}"
+    try:
+        index = json.loads(resp["Body"].read())
+    except ValueError as e:
+        raise IDPStackError(f"the Terraform versions index {where} is not JSON") from e
+    return check_versions_index(index, where), resp["ETag"]
+
+
+def discover_published_modules(
+    s3, bucket: str, prefix: str, variant: Optional[str] = None
+) -> List[Dict[str, str]]:
+    """Index entries for the modules already under ``<prefix>/<version>/``.
+
+    Used once, when a bucket's index is created, so releases published before
+    the index existed are listed in it. A version directory counts only when it
+    holds that version's ``.zip.sha256`` with a well-formed digest; its release
+    date is that file's last-modified date.
+    """
+    found: List[Dict[str, str]] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/", Delimiter="/"):
+        for common in page.get("CommonPrefixes") or []:
+            version = common["Prefix"][len(prefix) + 1 :].rstrip("/")
+            if not version or version == "terraform":
+                continue
+            zip_key = module_zip_key(prefix, version, variant)
+            try:
+                resp = s3.get_object(Bucket=bucket, Key=f"{zip_key}.sha256")
+            except Exception as e:  # noqa: BLE001 - only an absent file is expected
+                if _error_code(e) in ("NoSuchKey", "404"):
+                    continue
+                raise IDPStackError(
+                    f"cannot read s3://{bucket}/{zip_key}.sha256: {e}"
+                ) from e
+            text = resp["Body"].read().decode("utf-8", "replace").split()
+            digest = text[0].lower() if text else ""
+            if not _SHA256_HEX_RE.match(digest):
+                logger.warning("skipping %s.sha256: no SHA-256 digest in it", zip_key)
+                continue
+            found.append(
+                build_index_entry(
+                    version, zip_key, digest, resp["LastModified"].date().isoformat()
+                )
+            )
+    return found
+
+
+def _supports_conditional_put(s3) -> bool:
+    members = s3.meta.service_model.operation_model("PutObject").input_shape.members
+    return "IfMatch" in members and "IfNoneMatch" in members
+
+
+#: Error codes meaning another writer changed the index between our read and
+#: our write: a failed precondition, a concurrent conditional write, or the
+#: object we read being deleted.
+_INDEX_RACE_CODES = frozenset(
+    {"PreconditionFailed", "412", "ConditionalRequestConflict", "409", "NoSuchKey"}
+)
+
+
+def update_versions_index(
+    s3,
+    *,
+    bucket: str,
+    key: str,
+    entry: Dict[str, str],
+    public: bool = False,
+    attempts: int = VERSIONS_INDEX_ATTEMPTS,
+    seed: Callable[[], List[Dict[str, str]]] = lambda: [],
+) -> Dict[str, Any]:
+    """Add ``entry`` to the index at ``key`` and return the index written.
+
+    Read, merge, then write conditionally on the ETag read (``If-Match``), or on
+    there being no object (``If-None-Match: *``) when there was none, so a
+    concurrent publish that wrote in between is never overwritten: the write
+    fails, and the merge is redone on what that publish wrote.
+
+    ``seed`` supplies the entries a newly created index starts from (the
+    releases already in the bucket); it is not called when an index exists.
+    """
+    if not _supports_conditional_put(s3):
+        raise IDPConfigurationError(
+            "updating the Terraform versions index needs S3 conditional writes "
+            "(If-Match), which this botocore does not have; upgrade boto3"
+        )
+    where = f" in s3://{bucket}/{key}"
+    for _ in range(attempts):
+        index, etag = read_versions_index(s3, bucket, key)
+        base = index
+        if base is None:
+            base = empty_versions_index()
+            for old in seed():
+                if old["version"] != entry["version"]:
+                    base["versions"].append(old)
+        merged = merge_index_entry(base, entry, where)
+        if merged is None:
+            # Already recorded with this checksum; nothing to write, but a
+            # public publish must still leave the index readable.
+            if public and index is not None:
+                _make_public(s3, bucket, key)
+            return base
+        condition = {"IfMatch": etag} if etag else {"IfNoneMatch": "*"}
+        body = (json.dumps(merged, indent=2) + "\n").encode()
+        try:
+            _put(s3, bucket, key, body, "application/json", public, **condition)
+        except Exception as e:  # noqa: BLE001 - only a lost race is retried
+            if _error_code(e) in _INDEX_RACE_CODES:
+                logger.info("versions index %s changed while updating; retrying", key)
+                continue
+            raise
+        return merged
+    raise IDPStackError(
+        f"could not update the Terraform versions index s3://{bucket}/{key}: it "
+        f"changed under every one of {attempts} attempts"
+    )
+
+
+def _put_release_zip(
+    s3, bucket: str, key: str, data: bytes, digest: str, public: bool
+) -> None:
+    """Write a release version's zip only if no object is at its key, or the
+    object there already has these bytes.
+
+    This is the point that makes a release immutable: the index check before it
+    sees only what the index records, while this write holds against a zip some
+    other publish wrote (concurrently, or with an SDK that kept no index, or one
+    that stopped before its index write).
+    """
+    for _ in range(VERSIONS_INDEX_ATTEMPTS):
+        try:
+            _put(s3, bucket, key, data, "application/zip", public, IfNoneMatch="*")
+            return
+        except Exception as e:  # noqa: BLE001 - only an existing object is handled
+            code = _error_code(e)
+            if code in ("ConditionalRequestConflict", "409"):
+                continue  # a concurrent write to the key is in flight
+            if code not in ("PreconditionFailed", "412"):
+                raise
+        try:
+            existing = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except Exception as e:  # noqa: BLE001 - a deleted object is retried
+            if _error_code(e) in ("NoSuchKey", "404"):
+                continue  # deleted since the write was refused; try again
+            raise IDPStackError(f"cannot read s3://{bucket}/{key}: {e}") from e
+        actual = hashlib.sha256(existing).hexdigest()
+        if actual == digest:
+            # The same bytes are already there. A public publish still makes
+            # them public, as rewriting them would have.
+            if public:
+                _make_public(s3, bucket, key)
+            return
+        raise IDPStackError(
+            f"s3://{bucket}/{key} already holds a module with sha256 {actual}, and "
+            f"this module's is {digest}. A release version's module is immutable: "
+            "publish it as a new version, or as a pre-release version "
+            "(for example X.Y.Z.dev1) while iterating."
+        )
+    raise IDPStackError(
+        f"could not write s3://{bucket}/{key}: concurrent writes or deletes "
+        f"conflicted under every one of {VERSIONS_INDEX_ATTEMPTS} attempts"
+    )
 
 
 def upload_module(
@@ -364,18 +682,54 @@ def upload_module(
     version: str,
     public: bool = False,
     variant: Optional[str] = None,
+    release_date: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Zip and upload the module, its checksum and the latest pointer, under
-    the variant's names when ``variant`` is given.
+    """Zip and upload the module, its checksum, the versions index entry and
+    the latest pointer, under the variant's names when ``variant`` is given.
 
-    Returns ``{"moduleUrl", "sha256", "pointerUrl", "version"}``.
+    A release version already in the index with a different checksum is refused
+    before anything is written (see :func:`merge_index_entry`), and its zip is
+    written only if its key is empty or already holds these bytes
+    (:func:`_put_release_zip`), so a zip another publish wrote is never
+    replaced. The index is written before the pointer, so the pointer never
+    names a version the index lacks. ``release_date`` defaults to today (UTC).
+
+    Returns ``{"moduleUrl", "sha256", "pointerUrl", "versionsIndexUrl",
+    "version"}``.
     """
+    if not _supports_conditional_put(s3):
+        raise IDPConfigurationError(
+            "publishing the Terraform module needs S3 conditional writes "
+            "(If-Match and If-None-Match on PutObject), which this botocore does "
+            "not have; upgrade boto3 and botocore"
+        )
     data = deterministic_module_zip(module_dir)
     digest = hashlib.sha256(data).hexdigest()
     zip_key = module_zip_key(prefix, version, variant)
     zip_name = zip_key.rsplit("/", 1)[1]
     module_url = s3_https_url(region, bucket, zip_key)
-    _put(s3, bucket, zip_key, data, "application/zip", public)
+    index_key = versions_index_key(prefix, variant)
+    if release_date is None:
+        import datetime
+
+        release_date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    entry = build_index_entry(version, zip_key, digest, release_date)
+    # Refuse an immutable version the index already records with other bytes,
+    # before anything is written. The release zip's own conditional write below
+    # is what holds against a zip the index does not know about, and the
+    # index's conditional write holds against a concurrent index update.
+    existing, _ = read_versions_index(s3, bucket, index_key)
+    seeded: List[Dict[str, str]] = []
+    if existing is None:
+        # No index yet: the releases already in the bucket become its first
+        # entries, and are held to the same immutability rule.
+        seeded = discover_published_modules(s3, bucket, prefix, variant)
+        existing = {**empty_versions_index(), "versions": seeded}
+    merge_index_entry(existing, entry, f" in s3://{bucket}/{prefix}")
+    if is_release_version(version):
+        _put_release_zip(s3, bucket, zip_key, data, digest, public)
+    else:
+        _put(s3, bucket, zip_key, data, "application/zip", public)
     _put(
         s3,
         bucket,
@@ -383,6 +737,14 @@ def upload_module(
         sha256_file_body(digest, zip_name).encode(),
         "text/plain",
         public,
+    )
+    update_versions_index(
+        s3,
+        bucket=bucket,
+        key=index_key,
+        entry=entry,
+        public=public,
+        seed=lambda: seeded,
     )
     ptr_key = pointer_key(prefix, variant)
     _put(
@@ -399,6 +761,7 @@ def upload_module(
         "moduleUrl": module_url,
         "sha256": digest,
         "pointerUrl": s3_https_url(region, bucket, ptr_key),
+        "versionsIndexUrl": s3_https_url(region, bucket, index_key),
         "version": version,
     }
 
@@ -437,17 +800,86 @@ def resolve_pointer(pointer: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     return url, sha if isinstance(sha, str) else None
 
 
+def resolve_index_version(index: Any, version: str, index_url: str) -> Tuple[str, str]:
+    """``(module URL, sha256)`` of ``version`` in a versions index read from
+    ``index_url``.
+
+    The URL is built from the entry's ``moduleKey`` in the index's own bucket,
+    so a replicated bucket's index names its own copy. An entry without a
+    well-formed checksum is refused: pinning a version means deploying the
+    bytes the index recorded, so there must be something to check them against.
+    """
+    check_versions_index(index, index_url)
+    parsed = parse_s3_https_url(index_url.removeprefix("s3::"))
+    if not parsed:
+        raise IDPConfigurationError(
+            f"the versions index URL is not an S3 URL: {index_url}"
+        )
+    region, bucket, _ = parsed
+    for entry in index["versions"]:
+        if entry["version"] != version:
+            continue
+        key, sha = entry.get("moduleKey"), entry.get("sha256")
+        if not isinstance(key, str) or not key:
+            raise IDPConfigurationError(
+                f"version {version} in {index_url} names no moduleKey"
+            )
+        if not isinstance(sha, str) or not _SHA256_HEX_RE.match(sha):
+            raise IDPConfigurationError(
+                f"version {version} in {index_url} has no valid sha256"
+            )
+        return s3_https_url(region, bucket, key), sha
+    listed = ", ".join(e["version"] for e in index["versions"]) or "none"
+    raise IDPConfigurationError(
+        f"Terraform module version {version} is not in {index_url} "
+        f"(published versions: {listed})"
+    )
+
+
+def resolve_module_source(
+    module_url: Optional[str],
+    pointer_url: Optional[str],
+    module_version: Optional[str] = None,
+    fetch: Callable[[str], bytes] = lambda url: fetch_url(url),
+) -> Tuple[str, Optional[str]]:
+    """``(module URL, expected sha256 or None)`` for a deploy.
+
+    ``module_url`` is used as given. Otherwise ``module_version`` is looked up
+    in the versions index beside ``pointer_url``, or, with no version, the
+    pointer itself names the newest module.
+    """
+    if module_url:
+        if module_version:
+            raise IDPConfigurationError(
+                "pass a module URL or a module version, not both"
+            )
+        return module_url, None
+    if not pointer_url:
+        raise IDPConfigurationError(
+            "no Terraform module URL: pass module_url or pointer_url"
+        )
+    if module_version:
+        index_url = versions_index_url_for_pointer(pointer_url)
+        try:
+            index = json.loads(fetch(index_url))
+        except ValueError as e:
+            raise IDPConfigurationError(f"{index_url} is not JSON") from e
+        return resolve_index_version(index, module_version, index_url)
+    return resolve_pointer(json.loads(fetch(pointer_url)))
+
+
 def load_module_manifest(
     module_url: str,
     expected_sha256: Optional[str] = None,
     s3_factory: Optional[Callable[[str], Any]] = None,
+    checksum_source: str = "its pointer",
 ) -> Dict[str, Any]:
     data = fetch_url(module_url, s3_factory)
     if expected_sha256:
         actual = hashlib.sha256(data).hexdigest()
         if actual != expected_sha256:
             raise IDPConfigurationError(
-                f"the module at {module_url} has sha256 {actual}, but its pointer "
+                f"the module at {module_url} has sha256 {actual}, but {checksum_source} "
                 f"says {expected_sha256}"
             )
     return manifest_from_zip(data)
@@ -564,7 +996,11 @@ def variable_specs(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _hcl_value(value: Any) -> str:
     """A tfvars value. JSON is valid HCL for strings, numbers and lists once
-    template sequences (``${``, ``%{``) are escaped."""
+    template sequences (``${``, ``%{``) are escaped. A non-empty object is spaced
+    as ``terraform fmt`` spaces one (``{ "k" : "v" }``), which is still JSON."""
+    if isinstance(value, dict) and value:
+        items = (f"{_hcl_value(str(k))} : {_hcl_value(v)}" for k, v in value.items())
+        return "{ " + ", ".join(items) + " }"
     text = json.dumps(value)
     return text.replace("${", "$${").replace("%{", "%%{")
 
@@ -573,10 +1009,20 @@ def _parse_hcl_value(text: str) -> Any:
     return json.loads(text.replace("$${", "${").replace("%%{", "%{"))
 
 
+def _aligned(pairs: List[Tuple[str, str]], indent: str = "") -> List[str]:
+    """``name = value`` lines with the ``=`` padded to one column.
+
+    ``terraform fmt`` aligns the ``=`` of consecutive single-line attributes, so
+    a file written this way passes ``fmt -check`` in a repository that gates on
+    it. Every caller passes values that fit on one line.
+    """
+    width = max((len(name) for name, _ in pairs), default=0)
+    return [f"{indent}{name.ljust(width)} = {value}" for name, value in pairs]
+
+
 def render_tfvars(values: Dict[str, Any]) -> str:
     lines = [ROOT_MARKER, "# Values for the variables declared in main.tf."]
-    for name in sorted(values):
-        lines.append(f"{name} = {_hcl_value(values[name])}")
+    lines += _aligned([(name, _hcl_value(values[name])) for name in sorted(values)])
     return "\n".join(lines) + "\n"
 
 
@@ -608,11 +1054,24 @@ def check_assume_role_arn(role_arn: Optional[str]) -> Optional[str]:
     return role_arn
 
 
-def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -> str:
+#: The module variable ``--tags`` sets, and the root variable of the same name.
+TAGS_VARIABLE = "tags"
+#: ``default_tags`` reaches every ``aws`` resource, the module's S3 objects among
+#: them, and S3 allows an object at most 10 tags (a stack allows 50).
+MAX_DEPLOYMENT_TAGS = 10
+
+
+def render_provider_blocks(
+    region: str, assume_role_arn: Optional[str] = None, default_tags: bool = False
+) -> str:
     """The ``aws`` and ``awscc`` provider blocks, both in ``region``, and both
     assuming ``assume_role_arn`` when it is given. The two must agree: the module
     creates resources through both, and a role on one alone splits the
     deployment across two identities.
+
+    With ``default_tags`` the ``aws`` block tags every resource it creates with
+    ``var.tags``. ``awscc`` has no ``default_tags``; the module merges the same
+    variable into each of its ``awscc`` resources instead.
 
     The two providers spell it differently, and the wrong spelling fails
     ``validate`` with "Unsupported block type": in ``hashicorp/aws`` it is a
@@ -620,12 +1079,18 @@ def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -
     object attribute (``assume_role = { role_arn = ... }``).
     """
     lines: List[str] = []
+    # Already as `terraform fmt` lays it out: it does not align `region`'s `=`
+    # with that of `assume_role = {`, whose value spans lines.
     for name, opener in (("aws", "  assume_role {"), ("awscc", "  assume_role = {")):
         lines.append(f'provider "{name}" {{')
         lines.append(f"  region = {json.dumps(region)}")
         if assume_role_arn:
             lines.append(opener)
             lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
+            lines.append("  }")
+        if default_tags and name == "aws":
+            lines.append("  default_tags {")
+            lines.append(f"    tags = var.{TAGS_VARIABLE}")
             lines.append("  }")
         lines.append("}")
         lines.append("")
@@ -671,7 +1136,11 @@ def set_assume_role(
         )
     new = (
         text[: match.start()]
-        + render_provider_blocks(recorded_region, assume_role_arn)
+        + render_provider_blocks(
+            recorded_region,
+            assume_role_arn,
+            default_tags="  default_tags {" in match.group("aws"),
+        )
         + "\n"
         + text[match.end() :]
     )
@@ -684,6 +1153,7 @@ def render_main_tf(
     values: Dict[str, Any],
     specs: Dict[str, Dict[str, Any]],
     assume_role_arn: Optional[str] = None,
+    tags: Optional[Dict[str, str]] = None,
 ) -> str:
     """Root configuration: providers in the region and ``module "idp"``.
 
@@ -692,6 +1162,11 @@ def render_main_tf(
     in the directory unless the user adds a backend in another file. With
     ``assume_role_arn`` both providers assume that role, so Terraform creates the
     deployment's resources as the role rather than as the caller.
+
+    With ``tags`` (non-empty), a ``tags`` variable is declared and given to the
+    module, which merges it into its ``awscc`` resources, and to the ``aws``
+    provider's ``default_tags``, which covers the rest. Without, the file is
+    what it was before the module had a tags input.
     """
     source = terraform_module_source(module_url)
     blocks = [
@@ -706,23 +1181,124 @@ def render_main_tf(
         "  }",
         "}",
         "",
-        render_provider_blocks(region, assume_role_arn),
+        render_provider_blocks(region, assume_role_arn, default_tags=bool(tags)),
     ]
     names = sorted(values)
+    if tags:
+        specs = {
+            **specs,
+            TAGS_VARIABLE: {"type": "map(string)", "sensitive": False},
+        }
+        names = sorted([*names, TAGS_VARIABLE])
     for name in names:
         spec = specs.get(name, {"type": "string", "sensitive": False})
-        blocks.append(f'variable "{name}" {{')
-        blocks.append(f"  type = {spec['type']}")
+        attributes = [("type", str(spec["type"]))]
         if spec.get("sensitive"):
-            blocks.append("  sensitive = true")
+            attributes.append(("sensitive", "true"))
+        blocks.append(f'variable "{name}" {{')
+        blocks += _aligned(attributes, "  ")
         blocks.append("}")
         blocks.append("")
     blocks.append('module "idp" {')
-    blocks.append(f"  source = {json.dumps(source)}")
-    for name in names:
-        blocks.append(f"  {name} = var.{name}")
+    blocks += _aligned(
+        [("source", json.dumps(source))] + [(name, f"var.{name}") for name in names],
+        "  ",
+    )
     blocks.append("}")
     return "\n".join(blocks) + "\n"
+
+
+#: Where a kept value came from, as the upgrade output names it.
+SOURCE_LABEL_STACK = "label stack"
+SOURCE_PARAMETERS_FILE = PARAMETERS_FILE
+SOURCE_TFVARS = "terraform.tfvars"
+
+
+class RootConfigValues(dict):
+    """The Terraform variable values :func:`write_root_config` wrote.
+
+    A plain ``dict`` of variable name to value (what the function always
+    returned), carrying how each parameter that was not passed got its value:
+
+    - ``kept``: CloudFormation name -> value kept from the deployment's record,
+      for every parameter not passed on this deploy;
+    - ``kept_from``: CloudFormation name -> where that value was read
+      (:data:`SOURCE_LABEL_STACK`, :data:`SOURCE_PARAMETERS_FILE` or
+      :data:`SOURCE_TFVARS`);
+    - ``recorded``: the CloudFormation names the label stack recorded, or
+      ``None`` when no label stack was read;
+    - ``upgrade``: whether an earlier deploy was found (a label stack or this
+      directory's own record);
+    - ``local``: whether this directory held a record of an earlier deploy;
+    - ``tags``: the deployment's tags as written (empty for none), and
+      ``tags_kept``: whether they are the previous deploy's, kept because none
+      were passed.
+    """
+
+    tags: Dict[str, str]
+    tags_kept: bool
+    kept: Dict[str, Any]
+    kept_from: Dict[str, str]
+    recorded: Optional[frozenset]
+    upgrade: bool
+    local: bool
+
+
+def label_parameter_values(stack: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """The deployment's effective parameter values its label stack records.
+
+    ``stack`` is a ``DescribeStacks`` entry for the deployment's label stack.
+    Terraform writes the label stack's parameters at every apply from the
+    module's variables, so they are the value in effect of every parameter,
+    passed or defaulted, by CloudFormation name; ``NoEcho`` parameters are not
+    among them. ``None`` when there is no stack or it carries no parameters.
+    """
+    if not stack or "Parameters" not in stack:
+        return None
+    return {
+        p["ParameterKey"]: p.get("ParameterValue", "")
+        for p in stack.get("Parameters") or []
+        if "ParameterKey" in p
+    }
+
+
+def _refuse_changed_creation_fixed(
+    parameters: Dict[str, str],
+    effective: Dict[str, Any],
+    known: Dict[str, Any],
+) -> None:
+    """Refuse a ``CustomerManagedKmsKeyArn`` whose passed value differs from
+    the value the deployment has (empty when it has none), as the
+    CloudFormation deploy does (``guard_creation_fixed_parameters``).
+
+    Terraform has no rollback, so this is what keeps a changed key from being
+    applied part-way before the template's check refuses it. It is the only
+    creation-fixed parameter checked here: ``ExternalIdPEmailMutable`` is
+    derived by ``terraform_migrate`` from the user pool a migration adopts, so
+    the value a deployment "was created with" is not the module default there.
+    """
+    from idp_sdk._core.stack import guard_creation_fixed_parameters
+
+    given: Dict[str, str] = {}
+    current: Dict[str, str] = {}
+    for name in ("CustomerManagedKmsKeyArn",):
+        spec = known.get(name)
+        if spec is None or name not in parameters:
+            continue
+        given[name] = str(parameters[name])
+        value = effective.get(spec["variable"])
+        if value is not None:
+            current[name] = (
+                ("true" if value else "false")
+                if isinstance(value, bool)
+                else str(value)
+            )
+    try:
+        guard_creation_fixed_parameters(
+            given, stack_exists=True, current_params=current
+        )
+    except ValueError as e:
+        raise IDPConfigurationError(str(e)) from e
 
 
 def write_root_config(
@@ -735,20 +1311,48 @@ def write_root_config(
     parameters: Dict[str, str],
     manifest: Dict[str, Any],
     assume_role_arn: Optional[str] = None,
-) -> Dict[str, Any]:
+    recorded: Optional[Dict[str, str]] = None,
+    tags: Optional[Dict[str, str]] = None,
+) -> RootConfigValues:
     """Write ``main.tf`` and ``terraform.tfvars`` into ``directory``.
 
     ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
 
-    Refuses a ``main.tf`` that idp-cli did not write. On a later deploy the
-    values the previous deploy wrote are kept and the new ones applied over them:
-    those in ``idp-cli-parameters.json``, by CloudFormation parameter name, or,
-    without that file, those in the previous ``terraform.tfvars``. Only values that
-    were passed are ever written, never the defaults in effect, so a variable that
-    was never passed takes the module's default, which after an upgrade is the new
-    module's default. That differs from a CloudFormation update, which keeps the
-    previous value of every parameter it is not given. Returns the variable values
-    written.
+    ``tags`` replaces the deployment's tags, as a CloudFormation update given
+    tags replaces the stack's. An empty dict stops passing any: the ``aws``
+    resources lose them, but an ``awscc`` resource whose template sets no tags
+    is given ``null``, which the provider may read as "keep what is there", so
+    those may keep the tags they have. ``None`` keeps the tags this directory's
+    ``terraform.tfvars`` holds from the previous deploy, as a CloudFormation
+    update given none keeps the stack's. Refuses tags for a module that has no
+    tags input (its manifest has no ``tagsVariable``), and more than
+    :data:`MAX_DEPLOYMENT_TAGS`.
+
+    Refuses a ``main.tf`` that idp-cli did not write. A parameter that is not
+    passed keeps the value the deployment has, as a CloudFormation update keeps
+    the previous value of every parameter it is not given. The value is taken,
+    in order of precedence, from:
+
+    1. ``parameters`` (and ``admin_email``), the values passed on this deploy;
+    2. ``recorded``, the deployment's effective values by CloudFormation name as
+       its label stack records them (see :func:`label_parameter_values`). The
+       label stack lives with the deployment, so a second operator deploying
+       from a fresh directory against the same state reads the same values, and
+       it holds every parameter's value in effect, defaulted ones included, for
+       deployments made before idp-cli recorded them;
+    3. this directory's ``idp-cli-parameters.json`` (by CloudFormation name,
+       which is stable where a Terraform variable name may change), or without
+       that file the previous ``terraform.tfvars``. These are the only source
+       for ``NoEcho`` parameters, which the label stack leaves out.
+
+    A parameter none of these holds takes the module's default: a parameter new
+    in this module, or every parameter of a deployment whose record cannot be
+    read (no label stack, and a directory holding only the values passed, as
+    idp-cli wrote before it recorded the effective ones). :func:`parameter_report`
+    describes the outcome, and :func:`record_effective_parameters` writes every
+    value in effect into ``idp-cli-parameters.json`` once the deploy has applied.
+
+    Returns the variable values written, as a :class:`RootConfigValues`.
     """
     directory.mkdir(parents=True, exist_ok=True)
     main_tf = directory / "main.tf"
@@ -759,7 +1363,10 @@ def write_root_config(
             "overwrite it. Use another --terraform-dir, or remove the file."
         )
     specs = variable_specs(manifest)
+    known = manifest.get("parameters") or {}
     previous: Dict[str, Any] = {}
+    previous_tags: Dict[str, str] = {}
+    local_source = SOURCE_TFVARS
     if tfvars.exists():
         text = tfvars.read_text()
         if ROOT_MARKER not in text:
@@ -768,13 +1375,14 @@ def write_root_config(
                 "overwrite it."
             )
         previous_vars = parse_tfvars(text)
+        previous_tags = previous_vars.pop(TAGS_VARIABLE, None) or {}
         # Earlier values are remembered by CloudFormation parameter name, which
         # is stable; a Terraform variable name can change between module
         # versions, and keying on it would drop the value without a word.
         remembered = directory / PARAMETERS_FILE
         if remembered.exists():
+            local_source = SOURCE_PARAMETERS_FILE
             by_name = json.loads(remembered.read_text())
-            known = manifest.get("parameters") or {}
             previous = {"stack_name": previous_vars.get("stack_name")}
             for name, value in by_name.items():
                 if name in known:
@@ -798,13 +1406,44 @@ def write_root_config(
             f"{directory} holds the deployment {previous['stack_name']!r}, not "
             f"{stack_name!r}; use another --terraform-dir."
         )
-    values = dict(previous)
-    values.update(map_parameters(parameters, manifest))
+    from_label: Dict[str, Any] = {}
+    for name, text_value in sorted((recorded or {}).items()):
+        spec = known.get(name)
+        if spec is None:
+            logger.info(
+                "Parameter %s on the label stack is not in this module and was dropped",
+                name,
+            )
+            continue
+        try:
+            value = _convert(name, str(spec.get("type", "String")), text_value)
+        except IDPConfigurationError as e:
+            logger.warning("Ignoring the label stack's value of %s: %s", name, e)
+            continue
+        variable = spec["variable"]
+        if variable in previous and previous[variable] != value:
+            logger.info(
+                "%s is %r on the label stack and %r in %s; keeping the label "
+                "stack's, the value the deployment last applied",
+                name,
+                text_value if not spec.get("sensitive") else "(sensitive)",
+                previous[variable] if not spec.get("sensitive") else "(sensitive)",
+                local_source,
+            )
+        from_label[variable] = value
+    values = RootConfigValues(previous)
+    values.update(from_label)
+    passed = map_parameters(parameters, manifest)
+    if recorded is not None or tfvars.exists():
+        _refuse_changed_creation_fixed(parameters, values, known)
+    values.update(passed)
     values["stack_name"] = stack_name
+    passed_names = set(parameters)
     if admin_email:
-        admin = (manifest.get("parameters") or {}).get("AdminEmail")
+        admin = known.get("AdminEmail")
         if admin:
             values[admin["variable"]] = admin_email
+            passed_names.add("AdminEmail")
         else:
             # The headless module has no Cognito and so no AdminEmail, as with
             # the headless CloudFormation template.
@@ -815,13 +1454,66 @@ def write_root_config(
         raise IDPConfigurationError(
             "required parameter(s) have no value: " + ", ".join(missing) + hint
         )
+    values.kept = {}
+    values.kept_from = {}
+    for name, spec in known.items():
+        variable = spec["variable"]
+        if name in passed_names or variable not in values:
+            continue
+        values.kept[name] = values[variable]
+        values.kept_from[name] = (
+            SOURCE_LABEL_STACK if variable in from_label else local_source
+        )
+    values.recorded = frozenset(recorded) if recorded is not None else None
+    values.local = tfvars.exists()
+    values.upgrade = recorded is not None or values.local
+    values.tags_kept = tags is None and bool(previous_tags)
+    values.tags = dict(previous_tags if tags is None else tags)
+    if values.tags and manifest.get("tagsVariable") != TAGS_VARIABLE:
+        where = (
+            "this directory's previous deploy has tags"
+            if values.tags_kept
+            else "tags were passed"
+        )
+        raise IDPConfigurationError(
+            f"{where}, and this module has no tags input (it was published "
+            "before the Terraform module accepted tags). Use a newer module, or "
+            f"deploy without tags: remove the tags line from {tfvars}, or pass "
+            "tags={} to the SDK."
+        )
+    if len(values.tags) > MAX_DEPLOYMENT_TAGS:
+        raise IDPConfigurationError(
+            f"{len(values.tags)} tags given; a Terraform deployment takes at most "
+            f"{MAX_DEPLOYMENT_TAGS}, because the aws provider's default_tags also "
+            "tag the module's S3 objects, which S3 limits to 10 tags each"
+        )
+    if values.tags_kept:
+        logger.info(
+            "Keeping the previous deploy's tags (%s); pass tags to replace them",
+            ", ".join(sorted(values.tags)),
+        )
     main_tf.write_text(
         render_main_tf(
-            region, module_url, values, specs, check_assume_role_arn(assume_role_arn)
+            region,
+            module_url,
+            values,
+            specs,
+            check_assume_role_arn(assume_role_arn),
+            tags=values.tags,
         )
     )
     # The values can include NoEcho parameters.
-    write_private(tfvars, render_tfvars(values))
+    tfvars_values = dict(values)
+    if values.tags:
+        tfvars_values[TAGS_VARIABLE] = values.tags
+    write_private(tfvars, render_tfvars(tfvars_values))
+    _write_parameters_file(directory, manifest, values)
+    return values
+
+
+def _write_parameters_file(
+    directory: Path, manifest: Dict[str, Any], values: Dict[str, Any]
+) -> None:
     by_variable = {
         spec["variable"]: name
         for name, spec in (manifest.get("parameters") or {}).items()
@@ -835,7 +1527,252 @@ def write_root_config(
         )
         + "\n",
     )
-    return values
+
+
+_VARIABLE_HEADER = re.compile(r'^variable "([^"]+)" \{$')
+# The module's `=` are aligned as `terraform fmt` aligns them, so padded.
+_DEFAULT_LINE = re.compile(r"^  default\s+= (.*)$")
+
+
+def module_variable_defaults(variables_tf: str) -> Dict[str, Any]:
+    """Terraform variable name -> default, from a ``variables.tf`` the
+    translator wrote.
+
+    Reads the shape ``Translator._variables`` writes: a top-level
+    ``variable "<name>" {`` block whose ``default = <value>`` line is indented
+    two spaces, the value a number, a quoted string or a list of quoted strings
+    (on one line, or one item per line closed by ``]``). A variable without a
+    default, or with one in any other shape, is left out, so a caller treats its
+    default as unknown rather than reading a wrong one.
+    """
+    out: Dict[str, Any] = {}
+    lines = variables_tf.splitlines()
+    i = 0
+    current: Optional[str] = None
+    while i < len(lines):
+        line = lines[i]
+        header = _VARIABLE_HEADER.match(line)
+        if header:
+            current = header.group(1)
+        elif line == "}":
+            current = None
+        elif current is not None:
+            default = _DEFAULT_LINE.match(line)
+            if default:
+                text = default.group(1)
+                if text == "[":
+                    items = []
+                    i += 1
+                    while i < len(lines) and lines[i] != "  ]":
+                        items.append(lines[i].strip().rstrip(","))
+                        i += 1
+                    text = "[" + ", ".join(items) + "]"
+                try:
+                    out[current] = _parse_hcl_value(text)
+                except ValueError:
+                    pass
+        i += 1
+    return out
+
+
+def read_module_defaults_from_dir(directory: Path) -> Optional[Dict[str, Any]]:
+    """The defaults of the ``idp`` module ``init`` installed in ``directory``,
+    or ``None`` when no module is installed there."""
+    modules_json = directory / ".terraform" / "modules" / "modules.json"
+    if not modules_json.is_file():
+        return None
+    try:
+        modules = json.loads(modules_json.read_text()).get("Modules", [])
+    except ValueError:
+        return None
+    for mod in modules:
+        if mod.get("Key") == "idp":
+            path = directory / mod["Dir"] / "variables.tf"
+            if path.is_file():
+                return module_variable_defaults(path.read_text())
+    return None
+
+
+#: A default :func:`parameter_report` could not read.
+_UNKNOWN = object()
+
+
+def _shown(spec: Dict[str, Any], value: Any) -> str:
+    if spec.get("sensitive"):
+        return "(sensitive)"
+    if isinstance(value, list):
+        return ",".join(str(v) for v in value)
+    return str(value)
+
+
+def parameter_report(
+    values: RootConfigValues,
+    manifest: Dict[str, Any],
+    new_defaults: Optional[Dict[str, Any]],
+    old_defaults: Optional[Dict[str, Any]] = None,
+) -> List[Tuple[int, str]]:
+    """``(logging level, line)`` pairs describing what an upgrade kept.
+
+    ``values`` is what :func:`write_root_config` returned; ``new_defaults`` and
+    ``old_defaults`` are :func:`read_module_defaults_from_dir` for the module
+    being deployed and the one installed before (``None`` when unknown). Lists:
+
+    - the values kept that differ from the new module's default (all kept
+      values when its defaults are unknown), and how many others were kept;
+    - the parameters that take the new module's default because no record of
+      the deployment holds them: those new in this module, and, when the
+      deployment's effective values could not be read (no label stack), a
+      warning naming every parameter whose default changed between the two
+      modules, which this deploy therefore changes.
+
+    Empty for a first deploy.
+    """
+    if not values.upgrade:
+        return []
+    known = manifest.get("parameters") or {}
+    out: List[Tuple[int, str]] = []
+    shown_kept = []
+    same = 0
+    for name in sorted(values.kept):
+        spec = known[name]
+        value = values.kept[name]
+        default = (new_defaults or {}).get(spec["variable"], _UNKNOWN)
+        if new_defaults is not None and default == value:
+            same += 1
+            continue
+        line = f"  {name} = {_shown(spec, value)} (from the {values.kept_from[name]}"
+        if default is not _UNKNOWN:
+            line += f"; this module's default is {_shown(spec, default)}"
+        shown_kept.append(line + ")")
+    if shown_kept or same:
+        header = (
+            f"Kept {len(values.kept)} parameter value(s) the deployment already "
+            "had and this deploy did not pass"
+        )
+        if new_defaults is not None:
+            header += (
+                f"; {same} equal this module's default, the others are:"
+                if shown_kept
+                else f"; all {same} equal this module's default."
+            )
+        else:
+            header += ":"
+        out.append((logging.INFO, header))
+        out.extend((logging.INFO, line) for line in shown_kept)
+
+    unset = {
+        name: spec
+        for name, spec in sorted(known.items())
+        if spec["variable"] not in values
+    }
+
+    def is_new(name: str, spec: Dict[str, Any]) -> bool:
+        if old_defaults is not None and spec["variable"] in old_defaults:
+            return False
+        if values.recorded is not None:
+            return name not in values.recorded and not spec.get("sensitive")
+        return old_defaults is not None
+
+    new = []
+    for name, spec in unset.items():
+        if is_new(name, spec):
+            default = (new_defaults or {}).get(spec["variable"], "?")
+            new.append(f"{name} = {_shown(spec, default)}")
+    if new:
+        out.append(
+            (
+                logging.INFO,
+                "New parameter(s) in this module, taking its default: "
+                + ", ".join(new),
+            )
+        )
+    if values.recorded is None:
+        changed = []
+        if old_defaults is not None and new_defaults is not None:
+            for name, spec in unset.items():
+                var = spec["variable"]
+                if (
+                    var in old_defaults
+                    and var in new_defaults
+                    and old_defaults[var] != new_defaults[var]
+                ):
+                    changed.append(
+                        f"  {name}: {_shown(spec, old_defaults[var])} -> "
+                        f"{_shown(spec, new_defaults[var])}"
+                    )
+        if changed:
+            out.append(
+                (
+                    logging.WARNING,
+                    "The deployment's settings could not be read from its label "
+                    f"stack, and {PARAMETERS_FILE} records only the parameters "
+                    "passed to earlier deploys, so the parameters below, never "
+                    "passed, take this module's default, which differs from the "
+                    "default they were deployed with. Pass the earlier value with "
+                    "--parameters to keep it:",
+                )
+            )
+            out.extend((logging.WARNING, line) for line in changed)
+        elif old_defaults is None and unset:
+            out.append(
+                (
+                    logging.WARNING,
+                    "No record of this deployment's settings was found for the "
+                    "parameters below: the label stack could not be read, this "
+                    "directory does not record them, and the defaults they were "
+                    "deployed with are unknown (no module is installed here). They "
+                    "take this module's default; pass any the deployment set "
+                    "differently with --parameters: " + ", ".join(unset),
+                )
+            )
+    # The label stack leaves NoEcho values out, so a directory with no record
+    # of its own (a second operator's) cannot know them.
+    sensitive_unset = [name for name, spec in unset.items() if spec.get("sensitive")]
+    if sensitive_unset and values.recorded is not None and not values.local:
+        out.append(
+            (
+                logging.WARNING,
+                "NoEcho parameter(s) are not recorded on the label stack and this "
+                "directory holds no value for them, so they take this module's "
+                "default; pass them again if the deployment set them: "
+                + ", ".join(sensitive_unset),
+            )
+        )
+    return out
+
+
+def effective_parameters(
+    values: Dict[str, Any],
+    manifest: Dict[str, Any],
+    defaults: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Every parameter's value in effect, by CloudFormation name: the value
+    written, or the module's default for a parameter with none."""
+    out = {}
+    for name, spec in (manifest.get("parameters") or {}).items():
+        variable = spec["variable"]
+        if variable in values:
+            out[name] = values[variable]
+        elif defaults is not None and variable in defaults:
+            out[name] = defaults[variable]
+    return out
+
+
+def record_effective_parameters(
+    directory: Path,
+    manifest: Dict[str, Any],
+    values: Dict[str, Any],
+    defaults: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Write every parameter's value in effect into ``idp-cli-parameters.json``,
+    defaulted ones included, so the next deploy from this directory keeps them
+    even where no label stack can be read. Returns what was written."""
+    by_name = effective_parameters(values, manifest, defaults)
+    write_private(
+        directory / PARAMETERS_FILE,
+        json.dumps(by_name, indent=2, sort_keys=True) + "\n",
+    )
+    return by_name
 
 
 # ---------------------------------------------------------------------------
@@ -990,14 +1927,27 @@ _BUCKET_TYPES = {"aws_s3_bucket": "bucket", "awscc_s3_bucket": "bucket_name"}
 
 
 def state_buckets(state: Dict[str, Any], exclude: Iterable[str] = ()) -> List[Dict]:
-    """Buckets in ``terraform show -json`` output, as the ``bucket_info`` dicts
+    """Buckets to empty before ``terraform destroy``, from ``terraform show
+    -json`` output, as the ``bucket_info`` dicts
     :meth:`StackDeployer._empty_buckets` takes. Entries in ``exclude`` (state
-    addresses) are left out."""
+    addresses) are left out.
+
+    A bucket with ``force_destroy`` set in state is left out too: destroy
+    empties it itself, when it deletes it, which is after everything that
+    depends on it. That matters for the custom-resource bridge buckets
+    (``cfn_bridge``, one per module), the only buckets the translator creates
+    with ``force_destroy``: each holds the physical ID of every custom
+    resource in its module, and every custom resource's Delete depends on it,
+    so emptying one beforehand sends each of those Deletes without the ID of
+    the resource it is meant to delete.
+    """
     skip = set(exclude)
     out = []
     for res in _state_resources(state):
         attr = _BUCKET_TYPES.get(res.get("type", ""))
         if res.get("mode") != "managed" or not attr or res.get("address") in skip:
+            continue
+        if (res.get("values") or {}).get("force_destroy") is True:
             continue
         name = (res.get("values") or {}).get(attr)
         if name:
@@ -1070,12 +2020,20 @@ def _api_gateway_account(vals: Dict[str, Any]) -> str:
     return f"{text} (CloudWatch Logs role {role})" if role else text
 
 
+def _kms_key(vals: Dict[str, Any]) -> str:
+    key = vals.get("key_id") or vals.get("id")
+    return f"KMS key {key}, which encrypts the retained buckets"
+
+
 #: Resources whose only identifier is not a name a reader can act on. The
 #: account-level API Gateway setting's id is the provider's or Cloud Control's
-#: identifier, which says nothing about what was kept.
+#: identifier, which says nothing about what was kept; a KMS key's id says
+#: nothing about why it was kept.
 _DISPLAY_NAMES = {
     "aws_api_gateway_account": _api_gateway_account,
     "awscc_apigateway_account": _api_gateway_account,
+    "aws_kms_key": _kms_key,
+    "awscc_kms_key": _kms_key,
 }
 
 
@@ -1209,6 +2167,349 @@ def service_log_groups(
 # ---------------------------------------------------------------------------
 # The binary
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Where the state is kept: local (the default) or an S3 backend
+# ---------------------------------------------------------------------------
+
+#: ``terraform_state`` values. ``local`` writes no backend, as before the option
+#: existed; ``s3`` writes :data:`BACKEND_FILE` naming a bucket idp-cli manages.
+STATE_LOCAL = "local"
+STATE_S3 = "s3"
+STATE_CHOICES = (STATE_LOCAL, STATE_S3)
+BACKEND_FILE = "backend.tf"
+#: The local state file Terraform writes with no backend configured.
+LOCAL_STATE_FILE = "terraform.tfstate"
+_BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
+
+
+def check_terraform_state(value: Optional[str]) -> str:
+    """``value`` normalised; ``None`` is :data:`STATE_LOCAL`."""
+    choice = (value or STATE_LOCAL).strip().lower()
+    if choice not in STATE_CHOICES:
+        raise IDPConfigurationError(
+            f"terraform_state must be one of {', '.join(STATE_CHOICES)}, not {value!r}"
+        )
+    return choice
+
+
+def state_bucket_name(account: str, region: str, stack_name: str) -> str:
+    """The deployment's state bucket: one per account, Region and deployment.
+
+    The stack name goes in the middle because it may end in a hyphen, which a
+    bucket name may not; a Region always ends in a digit. Lowercased, as S3
+    requires: two deployments whose names differ only in case share a bucket,
+    and their state objects are still apart, because :func:`state_key` keeps
+    the name's case.
+    """
+    name = f"idp-tf-{stack_name.lower()}-{account}-{region}"
+    if not _BUCKET_NAME.match(name):
+        raise IDPConfigurationError(
+            f"cannot name a state bucket for {stack_name!r} in {region}: {name!r} "
+            "is not a valid S3 bucket name (at most 63 characters of lowercase "
+            "letters, digits and hyphens)"
+        )
+    return name
+
+
+def state_key(stack_name: str) -> str:
+    return f"{stack_name}/{LOCAL_STATE_FILE}"
+
+
+def state_lock_table_name(stack_name: str) -> str:
+    """The DynamoDB table the backend locks the state with.
+
+    Not S3-native locking (``use_lockfile``): that needs Terraform or OpenTofu
+    1.10, and the oldest releases ``make terraform-check`` validates the module
+    with are 1.7. Two operators whose binaries chose different mechanisms would
+    not exclude each other, so every deploy uses the table.
+    """
+    return f"idp-tf-lock-{stack_name}"
+
+
+class StateBackend(dict):
+    """The S3 backend a deploy writes: ``bucket``, ``key``, ``region``,
+    ``dynamodb_table``, plus what :func:`ensure_state_backend` found
+    (``created_bucket``, ``created_table``, ``state_exists``)."""
+
+    @property
+    def bucket(self) -> str:
+        return self["bucket"]
+
+
+def render_backend_tf(backend: Dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            ROOT_MARKER,
+            "# Rewritten on every deploy with --terraform-state s3. The bucket and",
+            "# the lock table are kept when the deployment is deleted.",
+            "",
+            "terraform {",
+            '  backend "s3" {',
+            f"    bucket         = {json.dumps(backend['bucket'])}",
+            f"    key            = {json.dumps(backend['key'])}",
+            f"    region         = {json.dumps(backend['region'])}",
+            "    encrypt        = true",
+            f"    dynamodb_table = {json.dumps(backend['dynamodb_table'])}",
+            "  }",
+            "}",
+            "",
+        ]
+    )
+
+
+def state_bucket_policy(bucket: str, partition: str) -> Dict[str, Any]:
+    """Deny every request that is not over TLS: the state holds secrets in clear."""
+    arn = f"arn:{partition}:s3:::{bucket}"
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "DenyInsecureTransport",
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": "s3:*",
+                "Resource": [arn, f"{arn}/*"],
+                "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+            }
+        ],
+    }
+
+
+_PUBLIC_ACCESS_BLOCK = {
+    "BlockPublicAcls": True,
+    "IgnorePublicAcls": True,
+    "BlockPublicPolicy": True,
+    "RestrictPublicBuckets": True,
+}
+_SSE_S3 = {
+    "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
+}
+
+
+def _error_code(e: Exception) -> str:
+    return str(getattr(e, "response", {}).get("Error", {}).get("Code", ""))
+
+
+def check_backend_switch(directory: Path, terraform_state: str) -> None:
+    """Refuse a change of backend this increment cannot carry out.
+
+    Moving a local state into S3 (or back) is ``terraform init
+    -migrate-state``, which idp-cli does not run yet: with ``-input=false``
+    init refuses, and a deploy that wrote a new backend over an existing local
+    state would plan every resource as new. Also refuses to overwrite a
+    ``backend.tf`` idp-cli did not write.
+    """
+    backend_tf = directory / BACKEND_FILE
+    managed = backend_tf.is_file() and ROOT_MARKER in backend_tf.read_text()
+    if terraform_state == STATE_LOCAL:
+        if managed:
+            raise IDPConfigurationError(
+                f"{directory} keeps its Terraform state in S3 (see {backend_tf}); "
+                "pass --terraform-state s3 (terraform_state='s3') to deploy it. "
+                "Moving the state back to a local file is not supported."
+            )
+        return
+    if backend_tf.exists() and not managed:
+        raise IDPConfigurationError(
+            f"{backend_tf} exists and was not written by idp-cli; refusing to "
+            "overwrite it. Remove it, or deploy without --terraform-state s3 to "
+            "keep the backend it configures."
+        )
+    if not managed and (directory / LOCAL_STATE_FILE).exists():
+        raise IDPConfigurationError(
+            f"{directory} already has a local state ({LOCAL_STATE_FILE}). Moving "
+            "an existing local state into S3 is not supported yet; deploy this "
+            "directory without --terraform-state s3, or run `terraform init "
+            "-migrate-state` yourself after writing a backend."
+        )
+
+
+def ensure_state_backend(
+    region: str,
+    stack_name: str,
+    *,
+    s3: Any = None,
+    sts: Any = None,
+    dynamodb: Any = None,
+) -> StateBackend:
+    """Create the state bucket and lock table if missing; reuse them if present.
+
+    A new bucket gets a public access block, versioning, SSE-S3 default
+    encryption and a policy denying non-TLS requests. An existing bucket must
+    belong to the caller's account (a bucket of that name in another account is
+    refused, never written to); it is never recreated or emptied, and of those
+    four settings only the ones it lacks entirely are applied, which finishes a
+    creation an earlier deploy was interrupted in. A setting someone changed
+    (versioning suspended, a different policy) is left alone with a warning.
+    """
+    import boto3
+
+    sts = sts or boto3.client("sts", region_name=region)
+    s3 = s3 or boto3.client("s3", region_name=region)
+    dynamodb = dynamodb or boto3.client("dynamodb", region_name=region)
+
+    identity = sts.get_caller_identity()
+    account = identity["Account"]
+    partition = identity["Arn"].split(":")[1]
+    bucket = state_bucket_name(account, region, stack_name)
+    key = state_key(stack_name)
+    table = state_lock_table_name(stack_name)
+
+    created_bucket = False
+    try:
+        s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=account)
+    except Exception as e:  # botocore ClientError
+        code = _error_code(e)
+        if code not in ("404", "NoSuchBucket", "NotFound"):
+            raise IDPConfigurationError(
+                f"state bucket {bucket} exists but is not readable as a bucket of "
+                f"account {account} ({code or e}): it belongs to another account, "
+                "or these credentials lack s3:ListBucket on it. Nothing was "
+                "written to it."
+            ) from e
+        created_bucket = _create_state_bucket(s3, bucket, region)
+    _complete_state_bucket(s3, bucket, partition, account)
+    logger.info(
+        "%s Terraform state bucket %s",
+        "Created" if created_bucket else "Reusing",
+        bucket,
+    )
+
+    created_table = False
+    try:
+        dynamodb.describe_table(TableName=table)
+    except Exception as e:
+        if _error_code(e) != "ResourceNotFoundException":
+            raise
+        dynamodb.create_table(
+            TableName=table,
+            AttributeDefinitions=[{"AttributeName": "LockID", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "LockID", "KeyType": "HASH"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.get_waiter("table_exists").wait(TableName=table)
+        created_table = True
+        logger.info("Created Terraform state lock table %s", table)
+
+    state_exists = True
+    if created_bucket:
+        state_exists = False
+    else:
+        try:
+            s3.head_object(Bucket=bucket, Key=key, ExpectedBucketOwner=account)
+        except Exception as e:
+            if _error_code(e) not in ("404", "NoSuchKey", "NotFound"):
+                raise
+            state_exists = False
+    return StateBackend(
+        bucket=bucket,
+        key=key,
+        region=region,
+        dynamodb_table=table,
+        created_bucket=created_bucket,
+        created_table=created_table,
+        state_exists=state_exists,
+    )
+
+
+def _create_state_bucket(s3: Any, bucket: str, region: str) -> bool:
+    """Create ``bucket``; ``False`` when it turned out to be the caller's already."""
+    kwargs: Dict[str, Any] = {"Bucket": bucket}
+    if region != "us-east-1":
+        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
+    try:
+        s3.create_bucket(**kwargs)
+    except Exception as e:
+        if _error_code(e) == "BucketAlreadyOwnedByYou":
+            return False
+        if _error_code(e) == "BucketAlreadyExists":
+            raise IDPConfigurationError(
+                f"state bucket name {bucket} is taken by another account; "
+                "nothing was written to it"
+            ) from e
+        raise
+    s3.get_waiter("bucket_exists").wait(Bucket=bucket)
+    return True
+
+
+def _complete_state_bucket(s3: Any, bucket: str, partition: str, account: str) -> None:
+    """Apply each protective setting the bucket lacks entirely; warn on a changed one.
+
+    Every call names the expected owner, so none can reach a bucket that changed
+    hands after :func:`ensure_state_backend` checked it.
+    """
+    own = {"Bucket": bucket, "ExpectedBucketOwner": account}
+    try:
+        pab = s3.get_public_access_block(**own)
+    except Exception as e:
+        if _error_code(e) != "NoSuchPublicAccessBlockConfiguration":
+            raise
+        s3.put_public_access_block(
+            **own, PublicAccessBlockConfiguration=_PUBLIC_ACCESS_BLOCK
+        )
+        pab = None
+
+    if pab is not None:
+        off = sorted(
+            k
+            for k in _PUBLIC_ACCESS_BLOCK
+            if not pab.get("PublicAccessBlockConfiguration", {}).get(k)
+        )
+        if off:
+            logger.warning(
+                "State bucket %s's public access block has %s off; it was left "
+                "as it is",
+                bucket,
+                ", ".join(off),
+            )
+
+    status = s3.get_bucket_versioning(**own).get("Status")
+    if status is None:
+        s3.put_bucket_versioning(**own, VersioningConfiguration={"Status": "Enabled"})
+    elif status != "Enabled":
+        logger.warning(
+            "Versioning on state bucket %s is %s; a lost or corrupted state "
+            "cannot be recovered from an earlier version",
+            bucket,
+            status,
+        )
+
+    try:
+        s3.get_bucket_encryption(**own)
+    except Exception as e:
+        if _error_code(e) != "ServerSideEncryptionConfigurationNotFoundError":
+            raise
+        s3.put_bucket_encryption(**own, ServerSideEncryptionConfiguration=_SSE_S3)
+
+    try:
+        policy = json.loads(s3.get_bucket_policy(**own)["Policy"])
+    except Exception as e:
+        if _error_code(e) != "NoSuchBucketPolicy":
+            raise
+        s3.put_bucket_policy(
+            **own, Policy=json.dumps(state_bucket_policy(bucket, partition))
+        )
+        return
+    if not any(
+        s.get("Effect") == "Deny"
+        and "false"
+        == str(
+            (s.get("Condition") or {}).get("Bool", {}).get("aws:SecureTransport", "")
+        ).lower()
+        for s in policy.get("Statement") or []
+    ):
+        logger.warning(
+            "State bucket %s has a bucket policy without a deny on non-TLS "
+            "requests; it was left as it is",
+            bucket,
+        )
+
+
+def write_backend_tf(directory: Path, backend: Dict[str, Any]) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / BACKEND_FILE).write_text(render_backend_tf(backend))
 
 
 #: What ``terraform state list`` (and OpenTofu's) prints when no state exists yet.

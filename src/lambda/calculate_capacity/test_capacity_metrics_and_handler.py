@@ -1062,6 +1062,8 @@ def hours(**by_hour):
             "extractionTokensPerHour": 0,
             "assessmentTokensPerHour": 0,
             "summarizationTokensPerHour": 0,
+            "evaluationTokensPerHour": 0,
+            "evaluationComparisonsPerHour": 0,
             "documentType": "No processing scheduled",
         }
         entry.update(by_hour.get(str(hour), {}))
@@ -1168,18 +1170,20 @@ STEP_TOKEN_KEYS = breakdown_step_token_keys()
 
 
 @pytest.mark.unit
-def test_the_derived_step_token_key_set_is_the_five_pipeline_stages():
+def test_the_derived_step_token_key_set_is_the_five_pipeline_stages_and_evaluation():
     """Closes the universe the parametrised test below runs over.
 
     Written out as literals rather than derived a second way, because an empty or
     short derivation makes that test collect fewer cases — and a parametrisation
     with no cases is reported as nothing at all, which reads like a pass. This
-    fails instead, and it also catches a sixth stage being added to the
-    initialiser without being required.
+    fails instead, and it also catches another stage being added to the
+    initialiser without being required. Evaluation's judge tokens are the sixth
+    key; escalation has none, because its tokens are a share of extraction's.
     """
     assert STEP_TOKEN_KEYS == [
         "assessmentTokensPerHour",
         "classificationTokensPerHour",
+        "evaluationTokensPerHour",
         "extractionTokensPerHour",
         "ocrTokensPerHour",
         "summarizationTokensPerHour",
@@ -1452,12 +1456,11 @@ def test_every_matching_metering_key_in_a_document_is_counted(tracking):
 
     The key format is `{context}/bedrock/{model_id}`, and `merge_metering_data` sums
     repeats of one key rather than adding another, so several matching keys on one
-    document means the step invoked Bedrock under more than one context or model. Two
-    shapes in this repository produce exactly that for extraction: a per-class model
-    override, and an escalation, which records under `ExtractionEscalation` (and
-    under `Extraction-Escalation` in Simple-mode rows from earlier releases) — a key
-    distinct from `Extraction` that also satisfies the planner's
-    `"extraction" in key` filter. Here 3 and 5 calls are 8 requests for the document.
+    document means the step invoked Bedrock under more than one context or model. A
+    per-class model override produces exactly that for extraction. (An escalation,
+    recorded under `ExtractionEscalation`, also contains "extraction" but is its own
+    demand line and is excluded from this one; see the escalation tests in
+    `test_capacity_arithmetic.py`.) Here 3 and 5 calls are 8 requests for the document.
     Stopping at the first match would count 3, understating the RPM requirement — the
     direction that reports a quota as sufficient when it is not.
 

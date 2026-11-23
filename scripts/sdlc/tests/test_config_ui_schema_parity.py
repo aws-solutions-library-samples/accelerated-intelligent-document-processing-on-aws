@@ -694,6 +694,46 @@ def test_the_reasoning_effort_picklist_default_is_the_one_the_code_substitutes()
     )
 
 
+def _config_class_owning(path: str) -> type:
+    """The pydantic model whose field the dotted UI-schema ``path`` names.
+
+    Walks ``IDPConfig`` one segment at a time. A segment the config does not
+    declare fails here, naming it, rather than quietly dropping the control out of
+    the check that uses this.
+    """
+    cls = _models.IDPConfig
+    parts = path.split(".")
+    for index, part in enumerate(parts):
+        field = cls.model_fields.get(part)
+        assert field is not None, (
+            f"{path}: {cls.__name__} declares no field {part!r}, so the UI control "
+            "cannot be matched to the config it edits"
+        )
+        if index == len(parts) - 1:
+            return cls
+        candidates = [field.annotation, *typing.get_args(field.annotation)]
+        nested = [
+            c
+            for c in candidates
+            if isinstance(c, type) and issubclass(c, _models.BaseModel)
+        ]
+        assert nested, f"{path}: {cls.__name__}.{part} is not a nested config model"
+        cls = nested[0]
+    return cls
+
+
+def _clearing_substitutes_the_default(path: str) -> bool:
+    """Whether an empty value at ``path`` is replaced by DEFAULT_CLASSIFICATION_MODEL.
+
+    That substitution is ``default_empty_model``, a validator on the LLM call
+    configs. A model field on a config without it (the embeddings labeler's, whose
+    empty value means its own Region default) falls back to something else, so the
+    help naming the classification default would be wrong there.
+    """
+    owner = _config_class_owning(path)
+    return "default_empty_model" in owner.__pydantic_decorators__.field_validators
+
+
 def test_the_model_field_help_names_the_default_the_code_falls_back_to():
     """Clearing a call's model substitutes a model, so the help must name that one.
 
@@ -709,7 +749,15 @@ def test_the_model_field_help_names_the_default_the_code_falls_back_to():
     wrong answer in the editor.
     """
     default = _models.DEFAULT_CLASSIFICATION_MODEL
-    controls = _classification_controls("model")
+    controls = {
+        path: control
+        for path, control in _classification_controls("model").items()
+        if _clearing_substitutes_the_default(path)
+    }
+    assert controls, (
+        "no classification model control resolves to a config field that carries "
+        "default_empty_model, so this check would pass by reading nothing"
+    )
     silent = sorted(
         path
         for path, control in controls.items()

@@ -33,6 +33,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from idp_common.config.merge_utils import load_system_defaults_file
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NUVEEN = REPO_ROOT / "scripts/sdlc/config/nuveen.yaml"
 DEFAULTS = (
@@ -90,7 +92,7 @@ def test_the_prompt_still_lets_a_class_description_win(nuveen_class):
     behaviour that produced "expected 532 fund items, got 193", with the
     description still sitting there looking like it does something.
     """
-    prompt = _page_prompt(yaml.safe_load(DEFAULTS.read_text())["classification"])
+    prompt = _page_prompt(load_system_defaults_file(DEFAULTS.name)["classification"])
     assert "PRECEDENCE:" in prompt
     assert "boundary or page-ordering instructions" in prompt, (
         "the PRECEDENCE clause no longer promotes a document type's own boundary "

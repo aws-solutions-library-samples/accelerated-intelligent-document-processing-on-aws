@@ -17,10 +17,13 @@ Classification methods:
   across the entire document packet at once.
 """
 
+import copy
+import dataclasses
 import functools
 import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -33,12 +36,16 @@ from botocore.exceptions import ClientError
 
 from idp_common import bedrock, image, s3, utils
 from idp_common.classification.class_confidence import (
+    add_confidence_key_to_output_format,
     append_class_confidence_block,
     resolve_class_and_confidence,
     resolve_top_k,
 )
 from idp_common.classification.decision_model_labeler import (
     DecisionModelSectionLabeler,
+)
+from idp_common.classification.embeddings_labeler import (
+    EmbeddingSectionLabeler,
 )
 from idp_common.classification.models import (
     ClassificationResult,
@@ -47,6 +54,12 @@ from idp_common.classification.models import (
     DocumentType,
     PageClassification,
     Segment,
+)
+from idp_common.classification.page_order import (
+    PAGE_ORDER_ISSUE_CODE,
+    PAGE_ORDER_PRINTED,
+    PageOrderPlan,
+    plan_printed_page_order,
 )
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
@@ -65,7 +78,6 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_PAGE_CONTENT_REGEX,
 )
 from idp_common.config.schema_utils import deref_schema
-from idp_common.decision_model import DecisionModelError
 from idp_common.document_image_placeholder import (
     check_document_image_placeholder,
     section_prompt_can_be_sent,
@@ -114,6 +126,11 @@ STAGE_CALL_PATH = {
     STAGE_SPLITTING: "split_then_classify.splitting.llm",
     STAGE_SECTION_CLASSIFICATION: "split_then_classify.section_classification.llm",
 }
+
+
+def _numeric_id(page_id: str) -> float:
+    """Sort key for page IDs: numeric where they are numbers, last otherwise."""
+    return int(page_id) if str(page_id).isdigit() else float("inf")
 
 
 def _stage_llm(classification: Any, stage: str) -> Any:
@@ -257,7 +274,31 @@ def compose_class_confidence_prompt(
             mode,
             f" (top {top_k} candidates)" if top_k else "",
         )
-    return composed
+    # The shipped prompts end by asking for "the exact JSON format specified in
+    # <output-format>", and a model that follows that example literally leaves
+    # out a key the example does not show (GitHub #2039). So a shipped output
+    # format gains the key; an operator's own is left as written, and a reply
+    # that omits the key is recorded as a processing issue instead.
+    if "<class-confidence>" in task_prompt:
+        # The operator wrote their own confidence instruction, which may ask for
+        # a different key than the mode's; adding the mode's key to the example
+        # would contradict it.
+        return composed
+    if stage == STAGE_SECTION_CLASSIFICATION:
+        shipped_path: tuple = (
+            "split_then_classify",
+            "section_classification",
+            "llm",
+            "task_prompt",
+        )
+    else:
+        shipped_path = ("combined", "packet" if packet else "page", "task_prompt")
+    return add_confidence_key_to_output_format(
+        composed,
+        shipped_classification_prompt(*shipped_path),
+        mode,
+        per_segment=packet,
+    )
 
 
 def shipped_classification_prompt(*path: str) -> str:
@@ -303,6 +344,13 @@ def classification_task_prompt_as_sent(
 # guards explicitly while ``serialize_processing_issues`` truncates nothing.
 _MAX_ISSUE_DETAIL_CHARS = 500
 _MAX_ISSUE_DETAILS = 3
+
+# The one classification issue whose text names sections across the whole
+# document (``_record_missing_confidence_issue``), so it is the one that has to
+# bound itself rather than rely on a section's page count.
+MISSING_CONFIDENCE_CODE = "classification_confidence_missing"
+_MAX_SECTIONS_NAMED = 20
+_MAX_IDS_IN_DETAILS = 100
 
 
 @dataclass
@@ -411,10 +459,12 @@ def _is_content_filter_block(error: BaseException) -> bool:
 
 def _content_filter_detail(error: BaseException) -> str:
     """The issue text for a classification reply a content filter withheld."""
+    from idp_common.utils.bedrock_utils import content_block_wording
+
+    blocker, remedy = content_block_wording(error, "classification model")
     return (
-        "Amazon Bedrock's content filter withheld the classification model's "
-        f"reply ({type(error).__name__}: {error}). Review the page(s), or use a "
-        "different classification model"
+        f"{blocker[0].upper()}{blocker[1:]} the classification model's "
+        f"reply ({type(error).__name__}: {error}). Review the page(s), or {remedy}"
     )
 
 
@@ -506,8 +556,14 @@ class _TransientCallFailure:
             for future in self._futures:
                 future.cancel()
 
-    def raise_first(self) -> None:
-        """Raise the first transient failure as ``TransientError``, if there was one."""
+    def raise_first(self, metering: Dict[str, Any]) -> None:
+        """Raise the first transient failure as ``TransientError``, if there was one.
+
+        ``metering`` is the usage of the pool's calls that completed. It goes onto
+        the raised error with the failed call's own (``utils.failure_metering``),
+        so the classification handler can record what the failed attempt spent
+        before the step is retried (#2122).
+        """
         if self.first is None:
             return
         where, exc = self.first
@@ -516,7 +572,13 @@ class _TransientCallFailure:
             "classification step is retried",
             self.count,
         )
-        reraise_if_transient(exc, where=where)
+        reraise_if_transient(
+            exc,
+            where=where,
+            metering=utils.merge_metering_data(
+                copy.deepcopy(metering), utils.failure_metering(exc)
+            ),
+        )
 
 
 class UnusablePacketReply(ValueError):
@@ -695,6 +757,9 @@ class ClassificationService:
                 document_shape.sectionSplitting,
             )
             self.max_pages_for_classification = "ALL"
+        # Whether the model sees the pages in scan order or in the order their
+        # printed page numbers give (GitHub #623). See classification/page_order.py.
+        self.page_order = document_shape.pageOrder
 
         # The page-reading call's granularity: the combined call's under
         # combined, the splitting call's under split_then_classify. Section
@@ -988,7 +1053,13 @@ class ClassificationService:
         # sectionSplitting "disabled", whose one section is always "1".
         rebuilt = original_document.sections[0]
         for sample_section in classified_document.sections:
-            rebuilt.processing_issues.extend(sample_section.processing_issues or [])
+            # Every page is unscored here by design (above), so a sample reply
+            # that omitted its score is not what left this section unscored.
+            rebuilt.processing_issues.extend(
+                pi
+                for pi in (sample_section.processing_issues or [])
+                if getattr(pi, "code", None) != MISSING_CONFIDENCE_CODE
+            )
         # Transfer metering data from classified document to original document
         if classified_document.metering:
             original_document.metering = utils.merge_metering_data(
@@ -1405,6 +1476,11 @@ class ClassificationService:
                                 page_result = self._content_filtered_page_result(
                                     page_id, document.pages.get(page_id), e
                                 )
+                                # A reply withheld by stop reason was billed; its
+                                # usage rides on the exception.
+                                combined_metering = utils.merge_metering_data(
+                                    combined_metering, utils.failure_metering(e)
+                                )
                                 all_page_results.append(page_result)
                                 # The section builder writes the page's
                                 # declared fields from all_page_results.
@@ -1489,6 +1565,24 @@ class ClassificationService:
             # recorded somewhere a user sees it — the section that contains the
             # page. Runs after splitting for exactly that reason.
             self._record_unclassified_page_issues(document, all_page_results)
+            self._record_missing_confidence_issue(
+                document,
+                {
+                    str(result.page_id): str(
+                        (result.classification.metadata or {}).get(CLASS_BEFORE_PIN_KEY)
+                        or result.classification.doc_type
+                    )
+                    for result in all_page_results
+                    if (result.classification.metadata or {}).get("confidence_missing")
+                },
+                {
+                    str(result.page_id): (result.classification.metadata or {}).get(
+                        CLASS_BEFORE_PIN_KEY
+                    )
+                    or result.classification.doc_type
+                    for result in all_page_results
+                },
+            )
 
             # Update document status and metering
             document = self._update_document_status(document)
@@ -3026,6 +3120,16 @@ class ClassificationService:
             }
             if validation_error:
                 metadata["validation_error"] = validation_error
+            elif (
+                confidence is None
+                and doc_type
+                and doc_type != UNCLASSIFIED_CLASS
+                and self._class_confidence_requested(self.STAGE_CLASSIFICATION)
+            ):
+                # The model's own class, asked for a score and given none that
+                # could be read (GitHub #2039); _record_missing_confidence_issue
+                # reports it once sections exist.
+                metadata["confidence_missing"] = True
             # Travels in metadata alongside document_boundary so the cache and
             # the section builders carry it, and is copied onto the declared
             # Page.classification_reason field by _classify_pages_multimodal.
@@ -3300,7 +3404,7 @@ class ClassificationService:
             Dictionary with response and metering data
         """
         try:
-            return bedrock.invoke_model(
+            response = bedrock.invoke_model(
                 model_id=config["model_id"],
                 system_prompt=config["system_prompt"],
                 content=content,
@@ -3328,6 +3432,14 @@ class ClassificationService:
             # names; this is the class.
             _annotate_image_refusal(exc, content, config)
             raise
+        # A reply the content filter or a guardrail withheld arrives as a 200
+        # whose text is empty, cut short, or the guardrail's own message. Raised
+        # as a block, so every classification path handles it as it handles a
+        # blocked ValidationException rather than reading that text as a class.
+        from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+        raise_if_output_withheld(response)
+        return response
 
     def _create_unclassified_result(
         self,
@@ -3981,6 +4093,21 @@ class ClassificationService:
             document = self._update_document_status(document)
             return document
 
+        if self.page_order == PAGE_ORDER_PRINTED and len(document.pages) > 1:
+            return self._classify_in_printed_page_order(
+                document, forced_class=forced_class
+            )
+        return self._dispatch_classification(document, forced_class=forced_class)
+
+    def _dispatch_classification(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
+        """Run the configured strategy over ``document``'s pages in page-ID order.
+
+        The part of :meth:`classify_document` that calls the model, split out so
+        :meth:`_classify_in_printed_page_order` can run it over a re-keyed view of
+        the document without either path knowing about the other.
+        """
         # Check for limited page classification
         # "ALL" means use all pages, otherwise parse as int
         max_pages_str = str(self.max_pages_for_classification).upper()
@@ -4051,6 +4178,351 @@ class ClassificationService:
             return self.packet_classify_document(document, forced_class=forced_class)
 
         return self._classify_pages_multimodal(document, forced_class=forced_class)
+
+    # ── Printed page order (classification.document_shape.pageOrder) ─────────
+
+    def _read_page_texts_for_order(
+        self, document: Document
+    ) -> Dict[str, Optional[str]]:
+        """Each page's OCR text, as the page-number reader needs it.
+
+        The text OCR already wrote (``parsed_text_uri``); no model is called. A
+        page with no text URI, or whose text cannot be read, maps to ``None``,
+        which the reader reports as a page with no text. A transient read error is
+        raised instead, so the step is retried rather than classified in a
+        different order from the one a retry would choose.
+        """
+
+        def read(page: Any) -> Optional[str]:
+            if not page.parsed_text_uri:
+                return None
+            try:
+                return s3.get_text_content(page.parsed_text_uri)
+            except Exception as e:
+                reraise_if_transient(e, f"reading page {page.page_id} text")
+                logger.warning(
+                    "Page %s text could not be read for printed-page ordering: %s",
+                    page.page_id,
+                    e,
+                )
+                return None
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                page_id: executor.submit(read, page)
+                for page_id, page in document.pages.items()
+            }
+            return {page_id: future.result() for page_id, future in futures.items()}
+
+    def _classify_in_printed_page_order(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
+        """Classify ``document`` with its pages in printed-page-number order.
+
+        The page numbers are read from the OCR text by
+        :func:`~idp_common.classification.page_order.plan_printed_page_order`.
+        When they cannot be trusted for the whole document, the pages are
+        classified in scan order exactly as with ``pageOrder: scan``, and a
+        warning issue on the first section says why.
+
+        When they can, and the printed order differs from the scan order, the
+        pages are classified through a **view** of the document whose page *i* is
+        the *i*-th printed page, with page ID ``str(i)``. Every path below
+        :meth:`classify_document` orders pages by integer page ID and the packet
+        path reads a model's ordinals as page IDs, so a view keyed this way is the
+        one input they all handle unchanged. The result is then mapped back onto
+        ``document``: pages keep their own IDs, every section's ``page_ids`` name
+        the original pages (ascending, as any other section's are), and the page
+        references in classification's processing issues, errors and failure
+        metadata are rewritten to the original IDs. Sections are ordered and
+        numbered by their first original page, as in scan order. So everything
+        downstream —
+        extraction, assessment, the page viewer, evaluation — sees the same page
+        IDs it would have seen without the setting; what changed is which pages
+        were grouped into which section.
+
+        ``document.metadata["page_order"]`` records the outcome either way.
+        """
+        scan_ids = sorted(document.pages, key=_numeric_id)
+        plan = plan_printed_page_order(
+            scan_ids, self._read_page_texts_for_order(document)
+        )
+
+        if plan.order is None:
+            logger.warning(
+                "pageOrder is %s but the pages of document %s keep their scan "
+                "order: %s",
+                PAGE_ORDER_PRINTED,
+                document.id,
+                plan.reason,
+            )
+            result = self._dispatch_classification(document, forced_class=forced_class)
+            self._record_page_order_not_applied(result, plan)
+            result.metadata = result.metadata or {}
+            result.metadata["page_order"] = {
+                "setting": PAGE_ORDER_PRINTED,
+                "applied": False,
+                "reason_code": plan.reason_code,
+                "reason": plan.reason,
+            }
+            return result
+
+        if plan.order == scan_ids:
+            logger.info(
+                "Printed page numbers of document %s already run in scan order",
+                document.id,
+            )
+            result = self._dispatch_classification(document, forced_class=forced_class)
+            result.metadata = result.metadata or {}
+            result.metadata["page_order"] = {
+                "setting": PAGE_ORDER_PRINTED,
+                "applied": True,
+                "reordered": False,
+            }
+            return result
+
+        logger.info(
+            "Classifying document %s in printed page order; scan page IDs in "
+            "printed order: %s",
+            document.id,
+            ", ".join(plan.order),
+        )
+        # Issues already on the document's sections name original pages; only
+        # those classification writes during this run name the view's.
+        carried = {
+            id(issue)
+            for section in document.sections or []
+            for issue in section.processing_issues or []
+        }
+        view = self._printed_order_view(document, plan.order)
+        errors_before = len(view.errors)
+        result: Optional[Document] = None
+        try:
+            result = self._dispatch_classification(view, forced_class=forced_class)
+        finally:
+            # Mapped back on failure too, so the errors and failure metadata the
+            # handler reads before re-raising name the original pages.
+            self._merge_printed_order_view(
+                document,
+                result or view,
+                plan.order,
+                errors_before,
+                carried,
+                renumber=result is not None,
+            )
+        document.metadata["page_order"] = {
+            "setting": PAGE_ORDER_PRINTED,
+            "applied": True,
+            "reordered": True,
+            "printed_order": list(plan.order),
+        }
+        return document
+
+    @staticmethod
+    def _printed_order_view(document: Document, order: List[str]) -> Document:
+        """A shallow copy of ``document`` whose page ``str(i)`` is ``order[i-1]``.
+
+        Pages are copied (so the copy can carry its own ``page_id``) but share
+        their URIs with the originals; anything classification writes onto a page
+        is copied back by :meth:`_merge_printed_order_view`. Existing sections are
+        carried in under the view's IDs, so a path that leaves them untouched
+        hands them back unchanged.
+        """
+        to_view = {pid: str(i) for i, pid in enumerate(order, start=1)}
+        view = copy.copy(document)
+        view.pages = {}
+        for original_id in order:
+            page = copy.copy(document.pages[original_id])
+            page.page_id = to_view[original_id]
+            view.pages[page.page_id] = page
+        view.sections = []
+        for section in document.sections or []:
+            carried = copy.copy(section)
+            carried.page_ids = [to_view.get(str(p), str(p)) for p in section.page_ids]
+            view.sections.append(carried)
+        view.errors = list(document.errors)
+        view.metadata = dict(document.metadata or {})
+        return view
+
+    def _merge_printed_order_view(
+        self,
+        document: Document,
+        view: Document,
+        order: List[str],
+        errors_before: int,
+        carried: Set[int],
+        renumber: bool = True,
+    ) -> None:
+        """Copy a classified view's results back onto ``document``, by original ID.
+
+        ``carried`` holds the ``id()`` of every processing issue the document had
+        before classification ran; those already name original pages and are left
+        alone. With ``renumber`` (a completed run), sections are put in order of
+        their first original page and numbered from 1, as a scan-order run numbers
+        them: evaluation pairs sections by ``section_id``, so a document whose
+        grouping is unchanged must get the same IDs either way. A run that raised
+        leaves the sections as they were.
+        """
+        to_original = {str(i): pid for i, pid in enumerate(order, start=1)}
+
+        for view_id, view_page in view.pages.items():
+            original_id = to_original.get(view_id)
+            if original_id is None or original_id not in document.pages:
+                continue
+            state = dict(vars(view_page))
+            state["page_id"] = original_id
+            vars(document.pages[original_id]).update(state)
+
+        for section in view.sections or []:
+            section.page_ids = sorted(
+                (to_original.get(str(p), str(p)) for p in section.page_ids),
+                key=_numeric_id,
+            )
+            for issue in section.processing_issues or []:
+                if id(issue) not in carried:
+                    self._translate_issue_pages(issue, to_original)
+        sections = list(view.sections or [])
+        if renumber:
+            sections.sort(
+                key=lambda sec: min(
+                    (_numeric_id(p) for p in sec.page_ids), default=float("inf")
+                )
+            )
+            for number, section in enumerate(sections, start=1):
+                old_id, new_id = section.section_id, str(number)
+                section.section_id = new_id
+                for issue in section.processing_issues or []:
+                    if id(issue) not in carried and issue.section_id == old_id:
+                        issue.section_id = new_id
+        document.sections = sections
+
+        document.errors = list(view.errors[:errors_before]) + [
+            self._translate_page_refs(error, to_original)
+            for error in view.errors[errors_before:]
+        ]
+
+        metadata = dict(view.metadata or {})
+        failed = metadata.get("failed_page_exceptions")
+        if isinstance(failed, dict):
+            metadata["failed_page_exceptions"] = {
+                to_original.get(str(k), k): v for k, v in failed.items()
+            }
+        document.metadata = metadata
+
+        for f in dataclasses.fields(Document):
+            if f.name not in ("pages", "sections", "errors", "metadata"):
+                setattr(document, f.name, getattr(view, f.name))
+
+        # Offsets are relative to the document's pages, so they are recomputed on
+        # the original IDs rather than carried over from the view.
+        self._calculate_and_store_page_indices(document)
+
+    #: A page range and a single page, as classification's own messages write them.
+    _PAGE_REFS = (r"\bpages (?P<lo>\d+)-(?P<hi>\d+)\b", r"\bpage (?P<one>\d+)(?!\d)")
+
+    @classmethod
+    def _translate_page_refs(
+        cls,
+        text: str,
+        to_original: Dict[str, str],
+        listed: Optional[Tuple[str, str]] = None,
+    ) -> str:
+        """Rewrite the view's page IDs in ``text`` to the original ones, in one pass.
+
+        Translates ``page N`` and ``pages N-M`` (a range of view IDs becomes the
+        list of original IDs it covers), plus, when ``listed`` is given as
+        ``(view_list, original_list)``, the exact comma-separated page list an
+        issue recorder embedded after ``(`` or ``pages ``. One pass, so a
+        rewritten reference is never rewritten again.
+        """
+        if not isinstance(text, str) or not text:
+            return text
+        alternatives = list(cls._PAGE_REFS)
+        if listed:
+            alternatives.append(
+                r"(?:(?<=\()|(?<=pages ))(?P<list>"
+                + re.escape(listed[0])
+                + r")(?![\d,\-])"
+            )
+        pattern = re.compile("|".join(alternatives))
+
+        def substitute(match: "re.Match[str]") -> str:
+            if match.group("lo") is not None:
+                lo, hi = int(match.group("lo")), int(match.group("hi"))
+                covered = [str(i) for i in range(lo, hi + 1)]
+                if lo > hi or not all(p in to_original for p in covered):
+                    return match.group(0)
+                ids = sorted((to_original[p] for p in covered), key=_numeric_id)
+                return "pages " + ", ".join(ids)
+            if match.group("one") is not None:
+                one = match.group("one")
+                return "page " + to_original.get(one, one)
+            assert listed is not None
+            return listed[1]
+
+        return pattern.sub(substitute, text)
+
+    @classmethod
+    def _translate_issue_pages(
+        cls, issue: ProcessingIssue, to_original: Dict[str, str]
+    ) -> None:
+        """Rewrite an issue written during the view's run to the original page IDs."""
+        details = dict(issue.details or {})
+        listed: Optional[Tuple[str, str]] = None
+        view_ids = details.get("page_ids")
+        if isinstance(view_ids, list) and view_ids:
+            original_ids = sorted(
+                (to_original.get(str(p), str(p)) for p in view_ids), key=_numeric_id
+            )
+            listed = (", ".join(str(p) for p in view_ids), ", ".join(original_ids))
+            details["page_ids"] = original_ids
+            issue.details = details
+        issue.message = cls._translate_page_refs(issue.message, to_original, listed)
+        issue.root_cause = cls._translate_page_refs(
+            issue.root_cause, to_original, listed
+        )
+
+    def _record_page_order_not_applied(
+        self, document: Document, plan: PageOrderPlan
+    ) -> None:
+        """Say, on the first section, why the printed page numbers were not used.
+
+        On a section because ``ProcessingIssues`` is a Section field (see
+        :meth:`_record_unclassified_page_issues`); on the first one because the
+        reason concerns the whole document's page order rather than any section.
+        The pages it names are in ``details["problem_page_ids"]`` rather than
+        ``page_ids``, because they need not be in this section.
+        """
+        if not document.sections:
+            return
+        section = document.sections[0]
+        issue = ProcessingIssue(
+            stage="classification",
+            severity="warning",
+            code="classification_page_order_not_applied",
+            message=(
+                "Pages were classified in scan order, not in the order of their "
+                f"printed page numbers, because {plan.reason}. Sections were "
+                "formed from the scan order, as they are with pageOrder 'scan'."
+            ),
+            root_cause=(
+                f"classification.document_shape.pageOrder is {PAGE_ORDER_PRINTED}; "
+                f"reason: {plan.reason_code}"
+            ),
+            section_id=section.section_id,
+            details={
+                "reason_code": plan.reason_code,
+                "problem_page_ids": list(plan.problem_page_ids),
+            },
+        )
+        section.processing_issues = [
+            pi
+            for pi in (section.processing_issues or [])
+            if not (
+                getattr(pi, "stage", None) == "classification"
+                and getattr(pi, "code", None) == PAGE_ORDER_ISSUE_CODE
+            )
+        ] + [issue]
 
     def classify_pages(self, pages: Dict[str, Dict[str, Any]]) -> ClassificationResult:
         """
@@ -5210,6 +5682,17 @@ class ClassificationService:
                     doc_class=doc_type,
                     confidence=confidence,
                     candidates=candidates,
+                    # A splitting reply reports no class and is never asked for a
+                    # score; a forced class is the operator's, not the model's.
+                    unscored_reply_pages=(
+                        {pid: str(doc_type) for pid in page_ids}
+                        if require_class
+                        and not forced_class
+                        and doc_type
+                        and confidence is None
+                        and self._class_confidence_requested(self.STAGE_CLASSIFICATION)
+                        else {}
+                    ),
                 )
             )
 
@@ -5779,12 +6262,15 @@ class ClassificationService:
                 # ProcessResults, with an error no retrier matches; raised, the
                 # classification step is retried and the windows still pending
                 # are never sent (#2034).
+                # ``metering`` already holds this window's received replies and
+                # every earlier window's, so the attempt's spend travels with it.
                 reraise_if_transient(
                     e,
                     where=(
                         f"Packet window {window_label} "
                         f"(pages {window_page_ids[0]}-{window_page_ids[-1]})"
                     ),
+                    metering=metering,
                 )
                 # A deterministic failure in one window does not discard the
                 # others' boundaries.
@@ -5815,6 +6301,30 @@ class ClassificationService:
         # for a class nobody chose for it.
         if self._document_shape().sectionSplitting.lower() != "disabled":
             merged = self._place_pages_no_segment_holds(merged, answered)
+        # Merging rebuilds segments from per-page verdicts, so the record is
+        # carried by page. An overlapping page takes the earliest window's
+        # answer, as the merge does, so a page a later window scored is not
+        # listed because an earlier one did not, and vice versa.
+        verdict: Dict[str, Optional[str]] = {}
+        for segments in window_segments:
+            for segment in segments:
+                for pid in segment.page_ids:
+                    verdict.setdefault(pid, segment.unscored_reply_pages.get(pid))
+        for segment in merged:
+            segment.unscored_reply_pages = (
+                {
+                    pid: cls
+                    for pid in segment.page_ids
+                    if (cls := verdict.get(pid)) is not None
+                }
+                if segment.confidence is None
+                else {}
+            )
+            # A page the model placed in no segment joined this one and shares
+            # its (missing) score, so it is unscored for the same reason.
+            if segment.unscored_reply_pages:
+                for pid in segment.filled_page_ids:
+                    segment.unscored_reply_pages.setdefault(pid, str(segment.doc_class))
         return merged, metering, errors
 
     @staticmethod
@@ -5931,6 +6441,126 @@ class ClassificationService:
             )
             for index, segment in enumerate(segments)
         ]
+
+    def _class_confidence_requested(self, stage: str) -> bool:
+        """Whether the call for ``stage`` asks the model for a class confidence."""
+        return _stage_llm(self.config.classification, stage).confidence.mode != "off"
+
+    @staticmethod
+    def _record_missing_confidence_issue(
+        document: Document,
+        unscored_reply_pages: Dict[str, str],
+        reported_classes: Optional[Dict[str, Optional[str]]] = None,
+    ) -> None:
+        """Record one warning naming the sections the model left unscored.
+
+        ``confidence.mode`` asked the model for a confidence, its reply gave none
+        that could be read, and the section is stored with no score (GitHub
+        #2039) — which confidence-based review routing then has nothing to act
+        on. Without this the gap was a log line. ``unscored_reply_pages`` maps
+        each page some reply left unscored to the class that reply gave it,
+        entered where the reply was parsed, so a forced, fallback or
+        decision-model class never appears in it.
+
+        A section is listed only when at least one of its pages
+        was left unscored by a reply that gave it the section's own class, and
+        none of its unscored pages was reported with another class
+        (``reported_classes``, every page's class as the model gave it). The
+        last test keeps a section unscored by this service's own logic out:
+        under ``sectionSplitting: disabled`` a relabelled page is unscored
+        whatever the model said, so its section would be unscored even if every
+        reply had carried a score.
+
+        **One issue per document**, listing the sections, because the cause is
+        the model and the prompt rather than anything about one section: a
+        model that ignores the request usually ignores it for every segment of
+        the call, and one row per section would repeat the same sentence. It is
+        attached to the first listed section, because a document-level issue is
+        counted in ``ProcessingIssueCount`` but has no text anywhere a user reads
+        (``_record_unclassified_page_issues``). Naming sections across the whole
+        document makes this the one classification issue not bounded by a
+        section's page count, so the message names at most
+        ``_MAX_SECTIONS_NAMED`` and ``details`` holds at most
+        ``_MAX_IDS_IN_DETAILS`` ids per list, with the full counts beside them.
+        """
+        code = MISSING_CONFIDENCE_CODE
+        for section in document.sections or []:
+            section.processing_issues = [
+                pi
+                for pi in (section.processing_issues or [])
+                if not (
+                    getattr(pi, "stage", None) == "classification"
+                    and getattr(pi, "code", None) == code
+                )
+            ]
+        if not unscored_reply_pages:
+            return
+        listed: List[Any] = []
+        pages: List[str] = []
+        # No separate test of section.confidence: a section's score is its
+        # pages' minimum with None absorbing, so a scored section has no
+        # unscored page below and is never listed.
+        for section in document.sections or []:
+            own: List[str] = []
+            for pid in (str(p) for p in section.page_ids):
+                page = document.pages.get(pid)
+                if page is None or page.confidence is not None:
+                    continue
+                reported = (reported_classes or {}).get(pid, section.classification)
+                if reported != section.classification:
+                    # Unscored by this service, not by the reply: a page the
+                    # sectionSplitting 'disabled' vote relabelled, so the
+                    # section would stay unscored whatever the model returned,
+                    # and the prompt is not what to fix.
+                    own = []
+                    break
+                if unscored_reply_pages.get(pid) == section.classification:
+                    own.append(pid)
+            if own:
+                listed.append(section)
+                pages.extend(own)
+        if not listed:
+            return
+        named = ", ".join(
+            f"{section.section_id} ({section.classification})"
+            for section in listed[:_MAX_SECTIONS_NAMED]
+        )
+        if len(listed) > _MAX_SECTIONS_NAMED:
+            named += f", and {len(listed) - _MAX_SECTIONS_NAMED} more"
+        shown_pages = ", ".join(pages[:_MAX_SECTIONS_NAMED])
+        if len(pages) > _MAX_SECTIONS_NAMED:
+            shown_pages += f", and {len(pages) - _MAX_SECTIONS_NAMED} more"
+        issue = ProcessingIssue(
+            stage="classification",
+            severity="warning",
+            # The constant by name rather than the local, so the benchmark harness's
+            # issue-code discovery reads it (it resolves module constants and
+            # literal-bound locals, not a local bound to a constant).
+            code=MISSING_CONFIDENCE_CODE,
+            message=(
+                f"Classification confidence was requested, but the model's reply "
+                f"gave none for {len(listed)} section(s): {named}. Their class is "
+                f"the model's answer; it has no score, so confidence-based review "
+                f"cannot act on it."
+            ),
+            root_cause=(
+                "the classification reply carried no usable 'candidates' or "
+                f"'confidence' key for pages {shown_pages}"
+            ),
+            section_id=listed[0].section_id,
+            details={
+                "section_ids": [s.section_id for s in listed[:_MAX_IDS_IN_DETAILS]],
+                "section_count": len(listed),
+                "page_ids": pages[:_MAX_IDS_IN_DETAILS],
+                "page_count": len(pages),
+            },
+        )
+        listed[0].processing_issues = list(listed[0].processing_issues) + [issue]
+        logger.warning(
+            "Recorded classification ProcessingIssue %s for section(s) %s",
+            code,
+            named,
+        )
 
     @staticmethod
     def _record_filled_page_issues(document: Document, segments: List[Segment]) -> None:
@@ -6078,6 +6708,15 @@ class ClassificationService:
             # _sections_from_segments.
             document = self._sections_from_segments(document, merged)
             self._record_filled_page_issues(document, merged)
+            self._record_missing_confidence_issue(
+                document,
+                {
+                    pid: cls
+                    for seg in merged
+                    for pid, cls in seg.unscored_reply_pages.items()
+                },
+                {str(pid): seg.doc_class for seg in merged for pid in seg.page_ids},
+            )
             document = self._update_document_status(document)
 
             logger.info(
@@ -6300,6 +6939,7 @@ class ClassificationService:
             seg.doc_class = fallback
             seg.confidence = None
             seg.candidates = []
+            seg.unscored_reply_pages = {}
         return segments, window_metering
 
     def _run_packet_window_call(
@@ -6515,6 +7155,9 @@ class ClassificationService:
             self.granularity,
         )
 
+        # The splitting calls' usage, once they have all returned: a transient
+        # failure in section classification raises it with its own (#2122).
+        splitting_metering: Dict[str, Any] = {}
         try:
             known = self._segments_from_document_shape(document)
             if known is not None:
@@ -6531,6 +7174,7 @@ class ClassificationService:
                 segments, metering, errors = known, {}, []
             else:
                 segments, metering, errors = self._detect_boundaries(document)
+            splitting_metering = metering
             document.metering = utils.merge_metering_data(document.metering, metering)
             document.errors.extend(errors)
 
@@ -6609,6 +7253,15 @@ class ClassificationService:
             document = self._sections_from_segments(document, segments)
             self._record_unclassified_page_issues(document, unlabeled_pages)
             self._record_filled_page_issues(document, segments)
+            self._record_missing_confidence_issue(
+                document,
+                {
+                    pid: cls
+                    for seg in segments
+                    for pid, cls in seg.unscored_reply_pages.items()
+                },
+                {str(pid): seg.doc_class for seg in segments for pid in seg.page_ids},
+            )
             document = self._update_document_status(document)
 
             logger.info(
@@ -6619,6 +7272,16 @@ class ClassificationService:
             )
 
         except Exception as e:
+            if is_transient_error(e):
+                # Not marked FAILED: the step is retried, and the handler records
+                # the attempt's usage without a failed status.
+                reraise_if_transient(
+                    e,
+                    where="split-then-classify",
+                    metering=utils.merge_metering_data(
+                        copy.deepcopy(splitting_metering), utils.failure_metering(e)
+                    ),
+                )
             error_msg = f"Error in split-then-classify: {str(e)}"
             document = self._update_document_status(
                 document, success=False, error_message=error_msg
@@ -6800,7 +7463,14 @@ class ClassificationService:
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
-        transient.raise_first()
+                        # A reply withheld by stop reason was billed; its usage
+                        # rides on the exception (empty for any other error).
+                        metering.update(
+                            utils.merge_metering_data(
+                                metering, utils.failure_metering(e)
+                            )
+                        )
+        transient.raise_first(metering)
 
         if not verdicts:
             return [], metering, errors
@@ -6858,11 +7528,14 @@ class ClassificationService:
         section_cfg = (
             self.config.classification.split_then_classify.section_classification
         )
-        decision_labeler = (
-            DecisionModelSectionLabeler(self, section_cfg)
-            if section_cfg.method == "decision_model"
-            else None
-        )
+        # The non-LLM labelers share one contract (``label(...)`` returning the LLM
+        # path's tuple, calling ``llm_label`` only for a low-confidence answer), so
+        # one variable carries whichever the method selects.
+        decision_labeler: Optional[Any] = None
+        if section_cfg.method == "decision_model":
+            decision_labeler = DecisionModelSectionLabeler(self, section_cfg)
+        elif section_cfg.method == "embeddings":
+            decision_labeler = EmbeddingSectionLabeler(self, section_cfg)
         # Checked once, before the pool: a refusal inside a segment's call would be
         # recorded as that segment's failure and the document would carry on with
         # every section unclassified. Only when the prompt can be sent: the
@@ -6879,7 +7552,21 @@ class ClassificationService:
         issues: Dict[int, Dict[str, str]] = {}
         lock = threading.Lock()
 
+        # Segments whose LLM labelling reply carried no usable confidence
+        # although one was asked for. Recorded where the reply is read, because
+        # a decision-model label that did not escalate is unscored by design.
+        llm_unscored: Set[int] = set()
+        requested = self._class_confidence_requested(self.STAGE_SECTION_CLASSIFICATION)
+
         def llm_label(index: int, page_ids: List[str]):
+            result = _llm_label(index, page_ids)
+            # (doc_type, confidence, candidates, reason, metering, invalid)
+            if requested and result[1] is None and not result[5]:
+                with lock:
+                    llm_unscored.add(index)
+            return result
+
+        def _llm_label(index: int, page_ids: List[str]):
             segment = segments[index]
             paged_text = self._format_paged_text(pages_content, page_ids)
             page_images = (
@@ -6919,6 +7606,15 @@ class ClassificationService:
             with lock:
                 segment.doc_class = doc_type
                 segment.confidence = confidence
+                segment.unscored_reply_pages = (
+                    {pid: str(doc_type) for pid in segment.page_ids}
+                    if index in llm_unscored
+                    and doc_type
+                    and doc_type != UNCLASSIFIED_CLASS
+                    and confidence is None
+                    and not invalid
+                    else {}
+                )
                 if invalid:
                     issues[index] = {"validation_error": invalid}
                 metering.update(utils.merge_metering_data(metering, call_metering))
@@ -6949,8 +7645,10 @@ class ClassificationService:
                     )
                     # A decision-model error reaching here is one its client did not
                     # report as retry_later (the labeler raises those as
-                    # TransientError), so its cause chain is not consulted.
-                    if is_transient_error(e) and not isinstance(e, DecisionModelError):
+                    # TransientError), and is_transient_error takes the client's
+                    # verdict rather than its cause chain, as the assessment step
+                    # does (#2112).
+                    if is_transient_error(e):
                         # Raised after the pool, so the step is retried (#2034).
                         transient.record(where, e)
                         continue
@@ -6974,6 +7672,12 @@ class ClassificationService:
                             issues[index] = {
                                 "error": f"{where}: {_content_filter_detail(e)}"
                             }
+                            # A reply withheld by stop reason was billed.
+                            metering.update(
+                                utils.merge_metering_data(
+                                    metering, utils.failure_metering(e)
+                                )
+                            )
                         continue
                     error_msg = (
                         f"Section classification failed for segment {index + 1} "
@@ -6983,7 +7687,14 @@ class ClassificationService:
                     with lock:
                         errors.append(error_msg)
                         issues[index] = {"error": error_msg}
-        transient.raise_first()
+        # Calls no section's result carries (the embeddings method's references,
+        # and the embedding calls of a section that then failed) are collected
+        # here, after every section has finished or failed, so a failed or retried
+        # section cannot take their cost with it.
+        take_shared = getattr(decision_labeler, "take_unreported_metering", None)
+        if take_shared is not None:
+            metering = utils.merge_metering_data(metering, take_shared())
+        transient.raise_first(metering)
 
         logger.info(
             "Section classification labeled %d/%d segment(s)",

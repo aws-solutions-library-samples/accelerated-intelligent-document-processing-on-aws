@@ -28,7 +28,7 @@ def _doc_item(object_key, status="COMPLETED"):
         "PK": f"doc#{object_key}",
         "SK": "none",
         "ObjectKey": object_key,
-        "Status": status,
+        "ObjectStatus": status,
     }
 
 

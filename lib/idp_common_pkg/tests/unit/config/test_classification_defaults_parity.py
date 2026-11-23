@@ -55,7 +55,10 @@ from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
 from idp_common.config import models as config_models
-from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.merge_utils import (
+    load_system_defaults_file,
+    merge_config_with_defaults,
+)
 from idp_common.config.migrations.v08_to_v09 import (
     SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS,
 )
@@ -154,7 +157,9 @@ _METHOD_REACHING_OMITTED_BLOCK: Dict[str, Tuple[str, str]] = {
 
 
 def _shipped() -> Dict[str, Any]:
-    body = yaml.safe_load(_CLASSIFICATION_DEFAULTS.read_text())
+    # Prompts are `{_file: ...}` references in the YAML (#1652); read the file the
+    # way the defaults loader does so a prompt is a leaf, not a `_file` key.
+    body = load_system_defaults_file(_CLASSIFICATION_DEFAULTS.name)
     assert isinstance(body, dict) and "classification" in body, (
         f"{_CLASSIFICATION_DEFAULTS.name} does not hold a `classification:` block, so "
         "this gate would compare nothing"

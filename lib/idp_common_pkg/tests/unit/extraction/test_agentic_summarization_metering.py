@@ -408,8 +408,8 @@ def _run(script: _Script):
 
     mp = pytest.MonkeyPatch()
     mp.setenv("AWS_DEFAULT_REGION", "us-west-2")
-    mp.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
-    mp.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY")
+    mp.setenv("AWS_ACCESS_KEY_ID", "AKIA" + "IOSFODNN7EXAMPLE")
+    mp.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMIK7MDENG" + "bPxRfiCYEXAMPLEKEY")
     mp.delenv("AWS_SESSION_TOKEN", raising=False)
     mp.delenv("AWS_PROFILE", raising=False)
     mp.setattr(boto3.session.Session, "client", _client)

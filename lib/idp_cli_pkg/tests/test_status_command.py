@@ -173,8 +173,11 @@ class TestStatusCommandSearch:
                 ["status", "--stack-name", "test-stack", "--batch-id", "batch-123"],
             )
 
-            # Verify search was called multiple times (once per status)
-            assert mock_tracking_searcher.search_by_pk_and_status.call_count == 5
+            # One search over every status (#2195): a per-status list missed every
+            # step status, so a document mid-pipeline was not found.
+            mock_tracking_searcher.search_by_pk_and_status.assert_called_once_with(
+                pk="batch-123", object_status=None
+            )
 
     def test_status_with_batch_id_no_results(
         self, runner, mock_batch_processor, mock_tracking_searcher
@@ -534,3 +537,133 @@ class TestStatusCommandIntegration:
         mock_tracking_searcher.search_by_pk_and_status.assert_called_once()
         mock_tracking_searcher.calculate_timing_statistics.assert_called_once()
         mock_tracking_searcher.display_timing_statistics.assert_called_once()
+
+
+class TestStatusJsonStdoutIsPureJson:
+    """`status --batch-id ... --format json` puts nothing but the payload on stdout.
+
+    The searcher is real here and only its DynamoDB client is stubbed, because
+    the lines that broke `| jq` were printed by the searcher itself; a test that
+    mocks the searcher cannot see them (#2199).
+    """
+
+    def test_the_searchers_progress_lines_go_to_stderr(
+        self, runner, mock_batch_processor
+    ):
+        import json
+
+        from idp_cli.search_tracking_table import TrackingTableSearcher
+
+        dynamodb = Mock()
+        dynamodb.scan.return_value = {
+            "Items": [
+                {
+                    "PK": {"S": "doc#batch-123/doc1.pdf"},
+                    "ObjectKey": {"S": "batch-123/doc1.pdf"},
+                    "ObjectStatus": {"S": "COMPLETED"},
+                }
+            ]
+        }
+
+        def offline_init(self, stack_name, region=None):
+            self.stack_name = stack_name
+            self.region = region
+            self.dynamodb = dynamodb
+            self.table_name = "test-table"
+
+        with patch.object(TrackingTableSearcher, "__init__", offline_init):
+            result = runner.invoke(
+                cli,
+                [
+                    "status",
+                    "--stack-name",
+                    "test-stack",
+                    "--batch-id",
+                    "batch-123",
+                    "--format",
+                    "json",
+                ],
+            )
+
+        dynamodb.scan.assert_called_once()
+        payload = json.loads(result.stdout)
+        assert isinstance(payload, dict)
+        assert "Searching tracking table" in result.stderr
+        assert "Found 1 matching documents" in result.stderr
+
+
+class TestStatusGetTimeJson:
+    """`status --get-time --format json` emits the timing statistics as JSON.
+
+    The searcher is real and only its DynamoDB client is stubbed, so the
+    statistics are computed by the code under test rather than handed in.
+    """
+
+    @staticmethod
+    def _invoke(runner, extra_args):
+        from idp_cli.search_tracking_table import TrackingTableSearcher
+
+        dynamodb = Mock()
+        dynamodb.scan.return_value = {
+            "Items": [
+                {
+                    "PK": {"S": "doc#batch-123/doc1.pdf"},
+                    "ObjectKey": {"S": "batch-123/doc1.pdf"},
+                    "ObjectStatus": {"S": "COMPLETED"},
+                    "QueuedTime": {"S": "2026-01-01T00:00:00+00:00"},
+                    "WorkflowStartTime": {"S": "2026-01-01T00:00:10+00:00"},
+                    "CompletionTime": {"S": "2026-01-01T00:01:10+00:00"},
+                },
+                {
+                    "PK": {"S": "doc#batch-123/doc2.pdf"},
+                    "ObjectKey": {"S": "batch-123/doc2.pdf"},
+                    "ObjectStatus": {"S": "COMPLETED"},
+                    "QueuedTime": {"S": "2026-01-01T00:00:00+00:00"},
+                    "WorkflowStartTime": {"S": "2026-01-01T00:00:20+00:00"},
+                    "CompletionTime": {"S": "2026-01-01T00:02:20+00:00"},
+                },
+            ]
+        }
+
+        def offline_init(self, stack_name, region=None):
+            self.stack_name = stack_name
+            self.region = region
+            self.dynamodb = dynamodb
+            self.table_name = "test-table"
+
+        with patch.object(TrackingTableSearcher, "__init__", offline_init):
+            return runner.invoke(
+                cli,
+                [
+                    "status",
+                    "--stack-name",
+                    "test-stack",
+                    "--batch-id",
+                    "batch-123",
+                    "--get-time",
+                    *extra_args,
+                ],
+            )
+
+    def test_json_format_emits_the_timing_statistics(self, runner):
+        import json
+
+        result = self._invoke(runner, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["success"] is True
+        assert payload["valid_count"] == 2
+        # 60s and 120s from WorkflowStartTime to CompletionTime.
+        assert payload["processing_time"]["average"] == 90.0
+        assert payload["processing_time"]["max_key"] == "batch-123/doc2.pdf"
+        # 10s and 20s from QueuedTime to WorkflowStartTime.
+        assert payload["queue_time"]["average"] == 15.0
+        assert payload["total_time"]["total"] == 210.0
+
+    def test_table_format_still_renders_the_tables(self, runner):
+        result = self._invoke(runner, [])
+
+        assert result.exit_code == 0, result.output
+        assert "Timing Statistics:" in result.stdout
+        assert "Processing Time" in result.stdout

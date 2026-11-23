@@ -43,7 +43,16 @@ each document starts, with the LLM, and the decision model names each section.
 
 ### 1. Deploy a decision model on Lambda
 
-Deploy the Strands Decider's Lambda recipe in the account and region of your stack.
+The quickest way is to install the
+[Decision Model: Strands Decider](./extensions/decision-model-decider.md)
+extension from the **Extensions** catalog. It builds the Strands Decider's Lambda
+image in your account from pinned source and model commits, deploys it as
+`GENAIIDP-decider` with images enabled, and adds an inactive configuration profile,
+`decision-model-decider`, that selects it for section classification. Its stack's
+`DeciderEndpoint` output is the ARN for step 2.
+
+To deploy it yourself instead, deploy the Strands Decider's Lambda recipe in the
+account and region of your stack.
 Follow its [Lambda guide](https://github.com/strands-labs/strands-decider/tree/main/deploy/lambda)
 and deploy it **with images** (`-c vision=true`), because section classification
 works best on page images.
@@ -165,11 +174,18 @@ text is cut to fit `decision_model.max_input_tokens` before it is sent:
 **Text beyond the limit is cut and never read by the decision model.** A value or a
 class cue that appears only in the cut part is not seen: such a value scores low and
 goes to review, an empty field is not checked against that part, and a class cue
-there does not count. The cut falls at a line break where it can, and each cut is
-logged with the page and the number of characters dropped.
+there does not count. The cut falls at a line break when there is one near the end
+of the text that fits (within its last tenth); otherwise it falls mid-line, so a page
+of dense text with few line breaks, such as CJK text or one long OCR line, still
+keeps most of the limit's worth. Each cut is logged with the page and the number of
+characters dropped.
 
-A request whose text would be cut to nothing, because its question and images
-already fill the limit, is **not sent**: it fails like a refused request, so
+A request whose text would be cut to nothing or almost nothing, because its question
+and images already fill most of the limit, is **not sent**. That includes a section
+whose cut would keep only its `Page N:` lines, or under half of the text the limit
+allows besides them. A request whose question and images alone are over the limit is not
+sent either, in every `input` mode including `images`, and the error says so. Such a
+request fails like a refused request, so
 extraction confidence degrades the section to no confidence scores and section
 classification labels the section `unclassified`. Answering it with no text would
 mean scoring an empty field, or picking a class, from no evidence. A limit that
@@ -178,10 +194,56 @@ saved.
 
 `max_input_tokens` counts the request's text, its images and its question (for
 classification, every class description) together. The count is an estimate from
-characters, because the model's tokenizer is not available to the pipeline, and it
-errs high. The default, 3584, is the 4,096-token window less 512 for the model's own
-prompt. Lower it if requests are still refused; raise it only for a model with a
-larger window. `input: images` sends no text and is not affected.
+characters, because the model's tokenizer is not available to the pipeline. It
+counts each digit, punctuation mark and non-ASCII character as a token, a letter
+inside a code that mixes letters and digits as three quarters of one, and other
+letters and spaces as half of one, with two exceptions for text the model's
+tokenizer splits finely. A run of letters that does not read as a word (a random
+code, a base64 chunk, a mixed-case token such as `kQzRbT`) counts three quarters a
+letter, like a code with digits. A CJK ideograph outside the first level of GB 2312
+and JIS X 0208, the characters of everyday Chinese and Japanese text, counts one and
+a half when it is in Big5's first level (common traditional Chinese characters),
+two and a half otherwise (rare surnames and name characters, GB 2312's second
+level), and three or four in the extension blocks, whose characters the tokenizer
+spells byte by byte. On statement tables, figures, serial numbers, letter-only codes, common CJK
+text and rare CJK characters the estimate is within about 10% of the Strands
+Decider model's own count or above it; on prose it is several times too high, so
+long prose is cut before it needs to be. Those exceptions raise the estimate of
+English prose by about 0.5%, of simplified Chinese and Japanese prose by nothing,
+of Japanese names with rare kanji by 2 to 7%, and of traditional Chinese prose by
+about 6 to 12%, so such text keeps nearly all the room it had. The default, 3584, is the 4,096-token window less 512 for the model's own
+prompt, and it is also the largest value used: a larger one would let dense text
+overflow the window, so it is capped at 3584 with a warning in the logs. Lower it if
+requests are still refused.
+
+Dense text is counted closely enough to fit. Against the
+Strands Decider extension's model in November 2026, at the default
+`max_input_tokens` of 3584, extraction confidence and section classification
+requests over a page of a markdown statement table, of figures, of 17-character
+serial numbers, of CJK, of prose, of random letter codes (mixed-case, base64-like
+and capital-letter) and of rare CJK characters (GB 2312's second level, rare
+surnames and name characters) fit the 4,096-token window in every `input`
+mode. A text this dense is cut shorter than prose: a confidence request keeps
+about 3,800 characters of such a table, about 4,300 of serial numbers, about 5,100
+of mixed-case codes and about 1,600 of rare CJK characters.
+
+⚠️ **Some scripts are still undercounted, and a request over a page of them can be
+refused.** Half-width katakana (common in Japanese bank-transfer payee names) cost
+about 1.6 tokens a character against an estimate of one, so a Japanese transfer
+statement can come to about 1.2 times its estimate; rare Hangul syllables, emoji,
+Ethiopic script and full-width Latin letters are undercounted too, measured with
+the model's tokenizer. Over a page of such text, extraction confidence with
+`input: text` or `both` can overflow the window at the default `max_input_tokens`;
+keep extraction confidence at the default `input: images` for such documents, or
+lower `max_input_tokens`.
+
+To check these figures against the decision model you deployed, for example after
+changing its model, run `make stacktest-decision-window` from a checkout: it sends
+the largest request each step builds at the default limit, in every `input` mode,
+over several kinds of dense page text, and reports the model's own token count
+beside the estimate. See [Testing](testing.md).
+`input: images` sends no text, so nothing is cut, but the question and images are
+still checked against the limit.
 
 ## What you get
 
@@ -207,8 +269,11 @@ A configuration that selects a decision model uses only the decision model:
   never opened, fails the step with a transient error, which the state machine
   retries.
 - **Any other call that does not complete fails its section.** That includes a
-  read timeout and a dropped connection, because the invocation may still be
-  running and billing.
+  read timeout, a dropped connection and a Lambda reply that names no error type
+  (a bare HTTP 5xx or 429), because the invocation may still be running and
+  billing. For decision-model confidence the same failures leave the section
+  without confidence scores rather than retrying the assessment step, and only a
+  request that never ran retries it.
 - **Nothing falls back to the LLM on an error.** `low_confidence: llm` applies only
   to answers below `min_confidence`.
 

@@ -32,6 +32,7 @@ from idp_common.ocr.document_converter import (
     DocumentConverter,
     UnsupportedLegacyFormatError,
 )
+from idp_common.ocr.file_types import routed_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,8 @@ class OcrService:
                         "model_id": self.config.ocr.model_id,
                         "system_prompt": self.config.ocr.system_prompt,
                         "task_prompt": self.config.ocr.task_prompt,
+                        # None => use the model's maximum output.
+                        "max_tokens": self.config.ocr.max_tokens,
                     }
                 else:
                     self.bedrock_config = None
@@ -337,6 +340,14 @@ class OcrService:
         # Initialize document converter for non-PDF formats
         self.document_converter = DocumentConverter(dpi=self.dpi or DEFAULT_DPI)
 
+        # The exceptions behind the entries ``process_document`` writes into
+        # ``document.errors``, in the order they were recorded. The errors list
+        # holds only their text, and text cannot say whether a failure was a
+        # throttle, a read timeout or a bare HTTP 5xx, so the OCR Lambda reads
+        # these to report a transient failure as ``TransientError`` (the name
+        # OCRStep's retrier lists) instead of a document failure.
+        self.failure_causes: List[BaseException] = []
+
     def process_document(self, document: Document) -> Document:
         """
         Process a document with OCR and update the Document model.
@@ -349,6 +360,7 @@ class OcrService:
             Updated Document object with OCR results
         """
         t0 = time.time()
+        self.failure_causes = []
 
         # Get the document from S3
         try:
@@ -365,6 +377,7 @@ class OcrService:
             stack_trace = traceback.format_exc()
             logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
             document.errors.append(f"{error_msg} (see logs for full trace)")
+            self.failure_causes.append(e)
             document.status = Status.FAILED
             return document
 
@@ -412,6 +425,7 @@ class OcrService:
                         stack_trace = traceback.format_exc()
                         logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
                         document.errors.append(f"{error_msg} (see logs for full trace)")
+                        self.failure_causes.append(e)
             else:
                 # Process PDF/image documents
                 is_pdf = file_type == "pdf"
@@ -523,6 +537,7 @@ class OcrService:
                                     document.errors.append(
                                         f"{error_msg} (see logs for full trace)"
                                     )
+                                    self.failure_causes.append(e)
                         finally:
                             memory_monitor_shutdown.set()
 
@@ -571,6 +586,7 @@ class OcrService:
             stack_trace = traceback.format_exc()
             logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
             document.errors.append(f"{error_msg} (see logs for full trace)")
+            self.failure_causes.append(e)
             document.status = Status.FAILED
 
         t2 = time.time()
@@ -874,9 +890,10 @@ class OcrService:
                 temperature=0.0,
                 top_p=0.1,
                 top_k=5,
-                # None => Bedrock client resolves the model's max output tokens
-                # (model_config_limits.yaml); Bedrock's default-when-omitted truncates.
-                max_tokens=None,
+                # ocr.max_tokens; None => Bedrock client resolves the model's max
+                # output tokens (model_config_limits.yaml); Bedrock's
+                # default-when-omitted truncates.
+                max_tokens=self.bedrock_config.get("max_tokens"),
                 reasoning_effort=getattr(self.config.ocr, "reasoning_effort", None)
                 if hasattr(self, "config")
                 else None,
@@ -1152,9 +1169,10 @@ class OcrService:
                 temperature=0.0,
                 top_p=0.1,
                 top_k=5,
-                # None => Bedrock client resolves the model's max output tokens
-                # (model_config_limits.yaml); Bedrock's default-when-omitted truncates.
-                max_tokens=None,
+                # ocr.max_tokens; None => Bedrock client resolves the model's max
+                # output tokens (model_config_limits.yaml); Bedrock's
+                # default-when-omitted truncates.
+                max_tokens=self.bedrock_config.get("max_tokens"),
                 reasoning_effort=getattr(self.config.ocr, "reasoning_effort", None)
                 if hasattr(self, "config")
                 else None,
@@ -2268,42 +2286,30 @@ class OcrService:
         Returns:
             File type string
         """
-        # Get file extension
-        ext = filename.lower().split(".")[-1] if "." in filename else ""
+        # Routed by extension first: idp_common.ocr.file_types holds that
+        # decision so a caller can ask it before an upload.
+        routed = routed_file_type(filename)
+        if routed is not None:
+            return routed
+        # Try to detect based on content
+        if content.startswith(b"%PDF"):
+            return "pdf"
+        elif content.startswith(b"PK"):
+            # Could be Excel or Word (both are ZIP-based)
+            if b"xl/" in content[:1000]:
+                return "xlsx"
+            elif b"word/" in content[:1000]:
+                return "docx"
 
-        # Check for specific document types
-        if ext == "txt":
+        # Default to treating as text if we can decode it
+        try:
+            content.decode("utf-8")
             return "txt"
-        elif ext == "csv":
-            return "csv"
-        elif ext in ["xlsx", "xls"]:
-            return "xlsx"
-        elif ext in ["docx", "doc"]:
-            return "docx"
-        elif ext in ["pdf"]:
-            return "pdf"
-        elif ext in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp"]:
-            return ext
-        else:
-            # Try to detect based on content
-            if content.startswith(b"%PDF"):
-                return "pdf"
-            elif content.startswith(b"PK"):
-                # Could be Excel or Word (both are ZIP-based)
-                if b"xl/" in content[:1000]:
-                    return "xlsx"
-                elif b"word/" in content[:1000]:
-                    return "docx"
+        except UnicodeDecodeError:
+            pass
 
-            # Default to treating as text if we can decode it
-            try:
-                content.decode("utf-8")
-                return "txt"
-            except UnicodeDecodeError:
-                pass
-
-            # Default to PDF for unknown binary files
-            return "pdf"
+        # Default to PDF for unknown binary files
+        return "pdf"
 
     def _textract_client_for_embedded_images(self):
         """A Textract client for OCR'ing an image embedded in a converted document.
@@ -2372,9 +2378,10 @@ class OcrService:
                     temperature=0.0,
                     top_p=0.1,
                     top_k=5,
-                    # None => Bedrock client resolves the model's max output tokens
-                    # (model_config_limits.yaml); Bedrock's default-when-omitted truncates.
-                    max_tokens=None,
+                    # ocr.max_tokens; None => Bedrock client resolves the model's
+                    # max output tokens (model_config_limits.yaml); Bedrock's
+                    # default-when-omitted truncates.
+                    max_tokens=self.bedrock_config.get("max_tokens"),
                     reasoning_effort=getattr(self.config.ocr, "reasoning_effort", None)
                     if hasattr(self, "config")
                     else None,

@@ -896,13 +896,26 @@ class DiscoveryOperation:
             else:
                 status = "SUCCESS"
 
+            noise_keys = [
+                str(k) for k in getattr(raw_result, "noise_document_keys", [])
+            ]
             result = MultiDocDiscoveryResult(
                 status=status,
                 discovered_classes=discovered_classes,
                 reflection_report=raw_result.reflection_report,
                 total_documents=raw_result.total_documents,
                 total_clusters=raw_result.num_clusters,
-                noise_documents=raw_result.num_failed_embeddings,
+                # Noise and failed embeddings are different populations: a noise
+                # document was embedded and clustered into a cluster too small to
+                # keep, a failed one never reached clustering. The getattr
+                # defaults keep an idp_common that predates the noise fields
+                # from reporting embedding failures as noise.
+                noise_documents=len(noise_keys),
+                noise_document_keys=noise_keys,
+                failed_embeddings=raw_result.num_failed_embeddings,
+                failed_embedding_keys=[
+                    str(k) for k in getattr(raw_result, "failed_embedding_keys", [])
+                ],
                 config_version=save_version,
             )
 

@@ -116,6 +116,7 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+import deployment_key
 import pytest
 from repo_files import tracked_paths
 
@@ -147,7 +148,7 @@ CMK_TEMPLATES = [
     "nested/multi-doc-discovery/template.yaml",
 ]
 
-# Log groups exempt from rule 1. Both belong to Lambdas that run ONLY during a
+# Log groups exempt from rule 1. Each belongs to a Lambda that runs ONLY during a
 # CloudFormation stack operation.
 #
 # Why an unencrypted group is acceptable for this class: the function is invoked a
@@ -174,6 +175,13 @@ CUSTOM_RESOURCE_ONLY_EXEMPT: dict[str, set[str]] = {
         # to one stack operation and contains no document or end-user data, so the
         # exemption stands. See src/lambda/read_previous_idp_pattern/index.py.
         "ReadPreviousIDPPatternFunctionLogGroup",
+        # Custom::CustomerManagedKmsKeyCheck handler. Logs the request type and the
+        # CustomerManagedKmsKeyArn value with its verdict. It cannot use the key:
+        # CustomerManagedEncryptionKey depends on this check (so a refused change
+        # fails before a key is created), and a log group the check's function
+        # writes to cannot also wait for that key. See
+        # src/lambda/customer_managed_kms_key_check/index.py.
+        "CustomerManagedKmsKeyCheckFunctionLogGroup",
     },
 }
 
@@ -258,6 +266,12 @@ OUTSIDE_CMK_TEMPLATES: dict[str, tuple[str, set[str]]] = {
     "feature-platform/idp-data-generator/template.yaml": (
         "installable feature stack; all 5 log groups encrypted via "
         "Fn::ImportValue of the main stack's key ARN, not a parameter",
+        set(),
+    ),
+    "feature-platform/decision-model-decider/template.yaml": (
+        "installable feature stack; all 4 log groups (the decider function, its "
+        "image build and the two custom resources) encrypted via Fn::ImportValue "
+        "of the main stack's key ARN, not a parameter",
         set(),
     ),
     "feature-platform/seller-entitlement-service/template.yaml": (
@@ -849,6 +863,17 @@ def test_optional_key_nested_stacks_are_always_passed_the_key() -> None:
                 f"`{KEY_PARAMETER}: !GetAtt CustomerManagedEncryptionKey.Arn`."
             )
 
+            if deployment_key.is_deployment_key_arn(value):
+                # The supplied key under UseSuppliedKmsKey, else the stack's own
+                # key, which exists exactly when the parameter is empty: never
+                # absent, provided the conditions really are complementary.
+                problems = deployment_key.complementary(_load("template.yaml"))
+                assert not problems, (
+                    f"template.yaml: nested stack {lid} passes {KEY_PARAMETER} as "
+                    f"the deployment key, but {problems}, so the key can be absent "
+                    f"at deploy time."
+                )
+                continue
             target = _getatt_target(value)
             assert target is not None, (
                 f"template.yaml: nested stack {lid} passes {KEY_PARAMETER} as "
