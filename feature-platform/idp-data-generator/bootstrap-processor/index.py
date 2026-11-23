@@ -356,15 +356,18 @@ def _process_job(job_id, body):
     target_version = request.target_version or bootstrap_mod._default_version_name(
         schema
     )
-    bootstrap_mod.merge_class_into_version(
-        schema, target_version, config_manager=config_manager
-    )
-    _status(
-        job_id,
-        "IN_PROGRESS",
-        message=f"Config version '{target_version}' created (tier={tier})",
-        config_version=target_version,
-    )
+    if tier == "existing-config":
+        message = f"Using class '{request.class_name}' from '{request.config_version}'"
+    else:
+        try:
+            bootstrap_mod.merge_class_into_version(
+                schema, target_version, config_manager=config_manager
+            )
+        except bootstrap_mod.ProtectedProfileError as e:
+            _status(job_id, "FAILED", error=str(e))
+            return False
+        message = f"Config version '{target_version}' created (tier={tier})"
+    _status(job_id, "IN_PROGRESS", message=message, config_version=target_version)
 
     want_generation = request.doc_count > 0 and body.get("generateDocs", True)
 

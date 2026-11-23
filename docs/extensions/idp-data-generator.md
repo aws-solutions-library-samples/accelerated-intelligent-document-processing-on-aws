@@ -91,8 +91,10 @@ A self-contained extension stack that plugs into the host contract:
   Bedrock; `GET /jobs` lists in-flight jobs and `GET /jobs/{id}` returns one
   job's status.
 - **BootstrapProcessor** (SQS-driven Lambda) — authors/resolves the document
-  class schema, writes it into a configuration profile, and invokes the
-  AgentCore Runtime asynchronously.
+  class schema, writes it into the target configuration profile, and invokes the
+  AgentCore Runtime asynchronously. A job generating from a class already in a
+  profile writes nothing to that profile. A target of `default` or a stack-managed
+  profile is refused, and the job fails with the reason.
 - **AgentCore Runtime** (arm64 container) — runs the SEED pipeline
   (`seed-data` + the accelerator's `idp_common.synthesis` adapter), writes the
   test set to the host Test Set bucket, and records terminal job status in the
