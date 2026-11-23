@@ -203,6 +203,8 @@ def _string_at(text: str, start: int) -> Optional[tuple[str, int]]:
     end = position + 1
     while end < len(text):
         if text[end] == "\\":
+            # Skip the escaped character. After a backslash that ends the text,
+            # ``end`` is past it: the loop stops and the string counts as unclosed.
             end += 2
             continue
         if text[end] == '"':

@@ -13,6 +13,7 @@ from idp_common.decision_tables import sfeel
 from idp_common.decision_tables.dmn import (
     DMN_NAMESPACES,
     MAX_DMN_BYTES,
+    WRITABLE_VERSIONS,
     DmnImportError,
     read_decision_table,
     read_dmn,
@@ -174,6 +175,15 @@ class TestRoundTrip:
 
         assert "<dmndi:DMNDI>" in xml
         assert 'dmnElementRef="review-routing"' in xml
+
+    @pytest.mark.parametrize("version", WRITABLE_VERSIONS)
+    def test_every_writable_version_is_written_and_reads_back_as_itself(self, version):
+        # A version added to WRITABLE_VERSIONS needs its namespaces too: without
+        # them this write raises.
+        xml = write_decision_table(_table(), dmn_version=version)
+
+        assert read_dmn(xml).version == version
+        assert "<dmndi:DMNDI>" in xml
 
     def test_an_unknown_version_cannot_be_written(self):
         with pytest.raises(DecisionTableError, match="'1.1'"):

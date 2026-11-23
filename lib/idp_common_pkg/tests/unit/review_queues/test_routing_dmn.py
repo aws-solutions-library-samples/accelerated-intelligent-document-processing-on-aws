@@ -381,6 +381,9 @@ class TestExpressions:
             'field_value("a","any",)',
             'field_value("a" "any")',
             'field_value("a","b","any")',
+            # A backslash before the last quote escapes it: the string never closes.
+            'field_value("a\\")',
+            'field_value("a","any\\")',
             "policy_rule_verdict",
             "class_present",
             'class_present("W2","any")',

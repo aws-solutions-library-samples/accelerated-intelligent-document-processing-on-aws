@@ -112,7 +112,11 @@ REASON_UNPLANNED_FINALIZE = "unplanned_finalize"
 REASON_PLACEMENT_LIMIT = "placement_limit"
 REASON_EVALUATION_ERROR = "evaluation_error"
 
-# Why a document was placed in the Default queue instead of the queue a rule named.
+# Why a document was placed in the Default queue instead of the queue a rule named
+# (``RoutedBy.fallback_reason``). This is a different field from
+# ``RoutingDecision.reason`` above, and each is compared only with its own
+# constants; ``evaluation_error`` is a value of both. The values are stored on the
+# work item and listed in docs/review-routing.md.
 FALLBACK_QUEUE_MISSING = "queue_missing"
 FALLBACK_QUEUE_DISABLED = "queue_disabled"
 FALLBACK_EVALUATION_ERROR = "evaluation_error"
