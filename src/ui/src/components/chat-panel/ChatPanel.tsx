@@ -6,6 +6,7 @@ import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Button, Container, SpaceBetween, FormField, Alert, Select, StatusIndicator } from '@cloudscape-design/components';
 import type { SelectProps } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 import { sendChatDocumentMessage, onChatDocumentMessageUpdate } from '../../graphql/generated';
 import useConfiguration from '../../hooks/use-configuration';
@@ -57,6 +58,15 @@ interface ChatDocumentUpdate {
 /** Cloudscape StatusIndicator accepts a limited enum for `type`. */
 type StatusType = 'loading' | 'info' | 'error' | 'success';
 
+/**
+ * The error above the chat: text from the server or from a thrown error, kept as it arrives, or one
+ * of the panel's messages, formatted at render so it follows a language switch.
+ */
+type PanelError =
+  | string
+  | { message: TypedMessageDescriptor<NoMessageValues> }
+  | { message: TypedMessageDescriptor<{ readonly error: string }>; values: { readonly error: string } };
+
 /** Subscribable shape returned by Amplify's `client.graphql({ query: subscription })`. */
 interface GraphQLSubscribable {
   subscribe: (handlers: { next: (value: { data: Record<string, unknown> }) => void; error: (err: unknown) => void }) => {
@@ -66,6 +76,96 @@ interface GraphQLSubscribable {
 
 const client = generateClient();
 const logger = new ConsoleLogger('ChatWithDocument');
+
+const messages = defineMessages<{
+  title: NoMessageValues;
+  empty: NoMessageValues;
+  modelLabel: NoMessageValues;
+  modelDescription: { readonly profile: string };
+  modelDescriptionNoList: { readonly profile: string };
+  modelPlaceholder: NoMessageValues;
+  modelEmpty: NoMessageValues;
+  modelPending: NoMessageValues;
+  messageLabel: NoMessageValues;
+  send: NoMessageValues;
+  errorFallback: NoMessageValues;
+  connectionLost: NoMessageValues;
+  sendFailed: NoMessageValues;
+  accessDenied: { readonly error: string };
+}>({
+  title: {
+    id: 'documents.chat.title',
+    defaultMessage: 'Chat With the Document',
+    description: 'Heading of the chat panel on the document page.',
+  },
+  empty: {
+    id: 'documents.chat.empty',
+    defaultMessage: 'To start chatting to this document, enter your message below.',
+    description: 'Text of the document chat panel before the first message.',
+  },
+  modelLabel: {
+    id: 'documents.chat.model.label',
+    defaultMessage: 'Model',
+    description: 'Label of the model picker in the document chat panel.',
+  },
+  modelDescription: {
+    id: 'documents.chat.model.description',
+    defaultMessage: 'Default from configuration profile "{profile}". Choose a larger-context model if the document is very long.',
+    description: 'Hint under the chat model picker. {profile} is the name of the configuration profile that processed the document.',
+  },
+  modelDescriptionNoList: {
+    id: 'documents.chat.model.descriptionNoList',
+    defaultMessage: 'Default model from configuration profile "{profile}". (Model list not available — using configured default.)',
+    description:
+      'Hint beside the chat model name when the configuration lists no models. {profile} is the name of the configuration profile.',
+  },
+  modelPlaceholder: {
+    id: 'documents.chat.model.placeholder',
+    defaultMessage: 'Select a chat model',
+    description: 'Placeholder of the chat model picker.',
+  },
+  modelEmpty: {
+    id: 'documents.chat.model.empty',
+    defaultMessage: 'No models available',
+    description: 'Shown in the chat model picker when it has no models.',
+  },
+  modelPending: {
+    id: 'documents.chat.model.pending',
+    defaultMessage: '(pending)',
+    description: 'Shown in place of the chat model name while no default model is known yet.',
+  },
+  messageLabel: {
+    id: 'documents.chat.message.label',
+    defaultMessage: 'Your message',
+    description: 'Label of the text box in which the user types a message to the document chat.',
+  },
+  send: {
+    id: 'documents.chat.send',
+    defaultMessage: 'Send',
+    description: 'Button that sends the typed message to the document chat.',
+  },
+  errorFallback: {
+    id: 'documents.chat.errorFallback',
+    defaultMessage: 'An error occurred.',
+    description: 'Chat reply shown when the reply failed and the chat gave no reason.',
+  },
+  connectionLost: {
+    id: 'documents.chat.connectionLost',
+    defaultMessage: 'Chat connection lost. Please refresh the page.',
+    description: 'Error in the document chat panel when its live connection to the chat drops.',
+  },
+  sendFailed: {
+    id: 'documents.chat.sendFailed',
+    defaultMessage: 'Failed to send message. Please try again.',
+    description: 'Error in the document chat panel when a message could not be sent and gave no reason.',
+  },
+  accessDenied: {
+    id: 'documents.chat.accessDenied',
+    defaultMessage: 'Access denied: {error}.',
+    description:
+      'Error in the document chat panel when the user may not chat with the document. {error} is the reason the server gave, in English.',
+  },
+});
 
 /**
  * Generate a RFC-4122 v4 UUID. Uses the browser's crypto API when available
@@ -126,30 +226,87 @@ const statusToIndicatorType = (status?: string): StatusType => {
   }
 };
 
-/** Default human-readable status-pill labels when the processor doesn't send one. */
-const defaultStatusLabel = (status?: string): string => {
+/** The status-pill labels, one per status code the processor sends. */
+const statusMessages = defineMessages<{
+  queued: NoMessageValues;
+  loadingDocument: NoMessageValues;
+  callingModel: NoMessageValues;
+  streaming: NoMessageValues;
+  complete: NoMessageValues;
+  error: NoMessageValues;
+}>({
+  queued: {
+    id: 'documents.chat.status.queued',
+    defaultMessage: 'Queued…',
+    description: 'Status of a document chat request waiting to start.',
+  },
+  loadingDocument: {
+    id: 'documents.chat.status.loadingDocument',
+    defaultMessage: 'Loading document text…',
+    description: 'Status of a document chat request while the document text loads.',
+  },
+  callingModel: {
+    id: 'documents.chat.status.callingModel',
+    defaultMessage: 'Querying model…',
+    description: 'Status of a document chat request while the model is queried.',
+  },
+  streaming: {
+    id: 'documents.chat.status.streaming',
+    defaultMessage: 'Streaming response…',
+    description: 'Status of a document chat request while the reply streams in.',
+  },
+  complete: {
+    id: 'documents.chat.status.complete',
+    defaultMessage: 'Done',
+    description: 'Status of a document chat request whose reply is complete.',
+  },
+  error: {
+    id: 'documents.chat.status.error',
+    defaultMessage: 'Error',
+    description: 'Status of a document chat request that failed.',
+  },
+});
+
+/** The label in the UI's language; without `intl` the English source text. */
+const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: IntlShape): string =>
+  intl ? intl.formatMessage(message) : String(message.defaultMessage);
+
+/**
+ * Default human-readable status-pill labels when the processor doesn't send one, in the UI's
+ * language. An unknown status shows as it arrives.
+ */
+const defaultStatusLabel = (status?: string, intl?: IntlShape): string => {
   switch (status) {
     case 'QUEUED':
-      return 'Queued…';
+      return labelOf(statusMessages.queued, intl);
     case 'LOADING_DOCUMENT':
-      return 'Loading document text…';
+      return labelOf(statusMessages.loadingDocument, intl);
     case 'CALLING_MODEL':
-      return 'Querying model…';
+      return labelOf(statusMessages.callingModel, intl);
     case 'STREAMING':
-      return 'Streaming response…';
+      return labelOf(statusMessages.streaming, intl);
     case 'COMPLETE':
-      return 'Done';
+      return labelOf(statusMessages.complete, intl);
     case 'ERROR':
-      return 'Error';
+      return labelOf(statusMessages.error, intl);
     default:
       return status || '';
   }
 };
 
+/** The panel's error in the UI language. */
+const errorText = (error: PanelError, intl: IntlShape): string => {
+  if (typeof error === 'string') return error;
+  return 'values' in error ? intl.formatMessage(error.message, error.values) : intl.formatMessage(error.message);
+};
+
 const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): React.JSX.Element => {
-  const [error, setError] = useState<string | null>(null);
+  const intl = useIntl();
+  const [error, setError] = useState<PanelError | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [currentStatus, setCurrentStatus] = useState<{ status: string; label: string } | null>(null);
+  // The processor's status code, with the text it sent if any. Without that text the status's own
+  // label is worded at render, so it follows a language switch.
+  const [currentStatus, setCurrentStatus] = useState<{ status: string; label?: string } | null>(null);
   const [isWaiting, setIsWaiting] = useState(false);
   const { formatTime } = useFormatters();
 
@@ -240,13 +397,13 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
       if (method === 'assistant_status') {
         setCurrentStatus({
           status: statusCode,
-          label: text || defaultStatusLabel(statusCode),
+          label: text,
         });
         return;
       }
 
       if (method === 'assistant_stream') {
-        setCurrentStatus({ status: 'STREAMING', label: defaultStatusLabel('STREAMING') });
+        setCurrentStatus({ status: 'STREAMING' });
         setChatMessages((prev) => {
           const next = [...prev];
           const lastIdx = next.length - 1;
@@ -312,7 +469,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
           if (lastIdx >= 0 && next[lastIdx].role === 'ai' && next[lastIdx].isStreaming) {
             next[lastIdx] = {
               ...next[lastIdx],
-              content: text || 'An error occurred.',
+              content: text,
               isStreaming: false,
               type: 'error',
               dt: formatTime(new Date()),
@@ -321,13 +478,13 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
           }
           next.push({
             role: 'ai',
-            content: text || 'An error occurred.',
+            content: text,
             type: 'error',
             dt: formatTime(new Date()),
           });
           return next;
         });
-        setCurrentStatus({ status: 'ERROR', label: text || defaultStatusLabel('ERROR') });
+        setCurrentStatus({ status: 'ERROR', label: text });
         setIsWaiting(false);
         return;
       }
@@ -353,7 +510,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
       },
       error: (err: unknown) => {
         logger.error('chat-doc subscription error', err);
-        setError('Chat connection lost. Please refresh the page.');
+        setError({ message: messages.connectionLost });
       },
     });
     return () => {
@@ -384,7 +541,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
     if (textareaRef.current) textareaRef.current.value = '';
     setError(null);
     setIsWaiting(true);
-    setCurrentStatus({ status: 'QUEUED', label: defaultStatusLabel('QUEUED') });
+    setCurrentStatus({ status: 'QUEUED' });
 
     try {
       if (useHttpApiTransport && streamingAvailable) {
@@ -418,7 +575,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
         const knownAssistantKeys = await fetchAssistantKeys(client, sessionId);
         pollAbortRef.current?.abort();
         pollAbortRef.current = new AbortController();
-        setCurrentStatus({ status: 'CALLING_MODEL', label: defaultStatusLabel('CALLING_MODEL') });
+        setCurrentStatus({ status: 'CALLING_MODEL' });
         await client.graphql({
           query: sendChatDocumentMessage,
           variables: {
@@ -465,11 +622,12 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
       if ((err as { name?: string })?.name === 'AbortError') return;
       // Extract a useful error message.
       const gqlErr = err as { errors?: { message: string; errorType?: string }[]; message?: string };
-      let errorMessage = 'Failed to send message. Please try again.';
+      let errorMessage: PanelError = { message: messages.sendFailed };
       if (gqlErr.errors && gqlErr.errors.length > 0) {
         const firstError = gqlErr.errors[0];
         if (firstError.errorType === 'Unauthorized') {
-          errorMessage = `Access denied: ${firstError.message}.`;
+          // String(): an error without a message read "undefined" here before; ICU would print nothing.
+          errorMessage = { message: messages.accessDenied, values: { error: String(firstError.message) } };
         } else {
           errorMessage = firstError.message || errorMessage;
         }
@@ -487,10 +645,16 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
   return (
     <div id="chatDiv">
       <SpaceBetween size="l">
-        <Container header={<h2>Chat With the Document</h2>}>
+        <Container
+          header={
+            <h2>
+              <FormattedMessage {...messages.title} />
+            </h2>
+          }
+        >
           {error && (
             <Alert type="error" dismissible onDismiss={() => setError(null)}>
-              {error}
+              {errorText(error, intl)}
             </Alert>
           )}
 
@@ -517,7 +681,9 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
                           {post.type === 'error' ? (
                             // Error messages are plain text, not markdown — render verbatim so
                             // stack traces, raw JSON, and quoted model output aren't mangled.
-                            <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{post.content}</p>
+                            <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
+                              {post.content || <FormattedMessage {...messages.errorFallback} />}
+                            </p>
                           ) : (
                             <div className="chat-markdown">
                               <SafeMarkdown>{post.content || ''}</SafeMarkdown>
@@ -541,22 +707,26 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
               </div>
             ))
           ) : (
-            <p>To start chatting to this document, enter your message below.</p>
+            <p>
+              <FormattedMessage {...messages.empty} />
+            </p>
           )}
 
           {currentStatus && (
             <div style={{ margin: '6px 0' }}>
-              <StatusIndicator type={statusToIndicatorType(currentStatus.status)}>{currentStatus.label}</StatusIndicator>
+              <StatusIndicator type={statusToIndicatorType(currentStatus.status)}>
+                {currentStatus.label || defaultStatusLabel(currentStatus.status, intl)}
+              </StatusIndicator>
             </div>
           )}
 
           <SpaceBetween size="m">
             <FormField
-              label="Model"
+              label={intl.formatMessage(messages.modelLabel)}
               description={
                 modelOptions.length
-                  ? `Default from configuration profile "${configVersion}". Choose a larger-context model if the document is very long.`
-                  : `Default model from configuration profile "${configVersion}". (Model list not available — using configured default.)`
+                  ? intl.formatMessage(messages.modelDescription, { profile: configVersion })
+                  : intl.formatMessage(messages.modelDescriptionNoList, { profile: configVersion })
               }
             >
               {modelOptions.length > 0 ? (
@@ -564,15 +734,15 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
                   selectedOption={selectedOption}
                   onChange={({ detail }) => setSelectedModelId((detail.selectedOption.value as string) || '')}
                   options={modelOptions}
-                  placeholder="Select a chat model"
-                  empty="No models available"
+                  placeholder={intl.formatMessage(messages.modelPlaceholder)}
+                  empty={intl.formatMessage(messages.modelEmpty)}
                 />
               ) : (
-                <span>{defaultModelId || '(pending)'} </span>
+                <span>{defaultModelId || <FormattedMessage {...messages.modelPending} />} </span>
               )}
             </FormField>
 
-            <FormField label="Your message" {...({ style: { flex: 8 } } as Record<string, unknown>)}>
+            <FormField label={intl.formatMessage(messages.messageLabel)} {...({ style: { flex: 8 } } as Record<string, unknown>)}>
               <input
                 type="text"
                 name="postContent"
@@ -589,7 +759,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
             </FormField>
 
             <Button variant="primary" onClick={handlePromptSubmit} disabled={isWaiting}>
-              Send
+              <FormattedMessage {...messages.send} />
             </Button>
           </SpaceBetween>
         </Container>
