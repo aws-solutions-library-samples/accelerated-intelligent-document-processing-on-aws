@@ -1216,9 +1216,11 @@ def _load_valid_bedrock_models() -> set:
 # absent, each for its own reason:
 #
 # - ``classification.split_then_classify.section_classification.embeddings.model``
-#   and ``discovery.multi_document.embedding_model_id`` name embedding models,
-#   and pricing.yaml prices none: the shipped default ``us.cohere.embed-v4:0`` is
-#   not in it, so checking either would refuse the default configuration.
+#   and ``discovery.multi_document.embedding_model_id`` name embedding models.
+#   pricing.yaml prices the Cohere Embed v4 profiles the defaults resolve to, but
+#   both fields also take Titan Multimodal Embeddings, which the embeddings client
+#   supports and pricing.yaml does not list, so checking either would refuse a
+#   supported configuration.
 # - The per-class ``x-aws-idp-evaluation-model-name`` is the name of the Stickler
 #   model class the evaluator builds, not a Bedrock model.
 #

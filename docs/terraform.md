@@ -129,12 +129,14 @@ For a release version `<version>`, the files are:
 |---|---|
 | `<prefix>/<version>/terraform/idp-terraform-<version>.zip` | the module tree |
 | `<prefix>/<version>/terraform/idp-terraform-<version>.zip.sha256` | the SHA-256 checksum of the archive |
-| `<prefix>/terraform/idp-terraform-latest.json` | `{"version", "moduleUrl", "sha256"}` for the newest published module |
+| `<prefix>/terraform/idp-terraform-versions.json` | the [versions index](#the-versions-index): every published version, its object key, checksum and date |
+| `<prefix>/terraform/idp-terraform-latest.json` | `{"version", "moduleUrl", "sha256"}` for the most recently published module |
 
 The headless and GovCloud template variants, when a publish produces them, are
 published as modules of their own beside the standard one, with the variant in each
 name: `<prefix>/<version>/terraform/idp-terraform-<variant>-<version>.zip`, its
-`.zip.sha256`, and `<prefix>/terraform/idp-terraform-<variant>-latest.json`, where
+`.zip.sha256`, `<prefix>/terraform/idp-terraform-<variant>-versions.json` and
+`<prefix>/terraform/idp-terraform-<variant>-latest.json`, where
 `<variant>` is `headless` or `govcloud`. The headless module has no web UI, Cognito,
 agents or knowledge base, and so no `admin_email` variable; the GovCloud module keeps
 the UI, has no CloudFront resources, and serves the UI through API Gateway.
@@ -167,10 +169,12 @@ the `aws` and `awscc` providers your root configuration sets up (and the `time`
 provider, which needs no settings), as the example under
 [Your own root configuration](#your-own-root-configuration) shows.
 
-The published zip is the only form the module is distributed in. It has no Terraform
-Registry entry, and it cannot be used as a `git::` source, because the module is
-generated from the templates when a release is published and is not committed to
-the repository. Serving the zip from a private module registry has not been tested.
+The published zip is the only form the module is distributed in. It has no public
+Terraform Registry entry, and it cannot be used as a `git::` source, because the
+module is generated from the templates when a release is published and is not
+committed to the repository. To get `version` constraints in your own configuration,
+upload the zip to a private registry; see
+[Publishing the module to a private registry](#publishing-the-module-to-a-private-registry).
 
 A plain HTTPS module source is fetched without AWS credentials, so it works only for
 an object that is publicly readable. For a module you published to a private bucket,
@@ -211,6 +215,161 @@ module "idp" {
   # ...
 }
 ```
+
+### The versions index
+
+`idp-terraform-versions.json` lists every module version published to that bucket and
+prefix, so you can find an older release without knowing its URL. The latest pointer
+names only the most recent publish and is overwritten by the next one; the index keeps
+every entry. It looks like this:
+
+```json
+{
+  "schemaVersion": 1,
+  "versions": [
+    {
+      "version": "0.6.15",
+      "moduleKey": "artifacts/genai-idp/0.6.15/terraform/idp-terraform-0.6.15.zip",
+      "sha256": "<64 hexadecimal digits>",
+      "releaseDate": "2026-11-20"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `1`. A reader refuses any other value instead of guessing at it |
+| `versions` | one entry per version, ordered by the numeric `X.Y.Z` and then by the full version string, so `0.6.9` comes before `0.6.10` |
+| `version` | the version the module was published as |
+| `moduleKey` | the object key of that version's zip, in the same bucket as the index. The module URL is `https://s3.<region>.amazonaws.com/<bucket>/<moduleKey>` |
+| `sha256` | the SHA-256 of the zip, the same value as its `.zip.sha256` file |
+| `releaseDate` | the UTC date the entry was written: the release's publish date for a release version, the latest republish for a pre-release, and the last-modified date of the `.zip.sha256` file for an entry the first index was seeded with |
+
+Entries record an object key rather than a full URL, so an index copied to a
+replicated bucket points at that bucket's own copy of each zip. The index does not
+record a minimum `idp-cli` or SDK version. The module has no tested minimum, and a
+`deploy --terraform` from a newer CLI is how older modules are deployed today.
+
+A **release version** (`X.Y.Z`, such as `0.6.15`) is immutable. If you publish it a
+second time with a module whose checksum differs from the one in the index, the module
+publish is refused before any module object is written, so the zip, its checksum file,
+the index and the pointer stay as they were. The zip itself is also written
+conditionally (`If-None-Match: *`): if its key already holds different bytes, the
+publish is refused there, even when the index has no entry for the version (for
+example, a release published by an SDK that kept no index, or a publish that stopped
+after writing the zip). Republishing identical bytes succeeds. The module is published
+after the CloudFormation templates, so a refused republish has already replaced that
+version's templates under `<prefix>/<version>/`. Re-cut the release as a new version
+rather than republishing it. A
+**pre-release version** (anything else, such as `0.6.16.dev1`) can be republished
+with new contents, and its entry is replaced. Development builds work this way,
+because the source tree's `VERSION` stays the same across many builds.
+
+Publishing updates the index with an S3 conditional write. The write only succeeds if
+the object is still the one the publish read (`If-Match` on its ETag), or, for a new
+index, if no object exists yet (`If-None-Match: *`). If another publish changes the
+index in between, the write fails, and the publish reads the index again and retries,
+so two concurrent publishes cannot drop each other's entries. A publish that keeps
+losing that race gives up after a few attempts and reports it. Conditional writes
+need a botocore whose S3 `PutObject` has both `If-Match` and `If-None-Match`.
+botocore 1.35.99 and later have both; 1.35.5 has only `If-None-Match`. With an older one the module publish
+is refused before it writes anything. The index is written before the latest pointer, so the pointer never names a
+version the index lacks.
+
+The first publish to a bucket that has no index yet creates one. That first index
+also lists the versions already in the bucket, found from their `.zip.sha256` files
+under `<prefix>/<version>/terraform/`, with the date each file was last modified.
+
+### Pinning a version
+
+`idp-cli deploy --terraform` deploys the latest module by default. To deploy a
+specific published version instead, pass `--terraform-module-version`:
+
+```bash
+idp-cli deploy --terraform --terraform-module-version 0.6.15 \
+    --stack-name my-idp --admin-email you@example.com --region us-west-2
+```
+
+The CLI looks the version up in the Region's versions index (the headless or GovCloud
+index with `--headless` or `--govcloud`), downloads the zip at that entry's key, and
+refuses to continue if the zip's SHA-256 differs from the index entry. It writes
+nothing before that check. The check covers the copy the CLI downloads. `terraform init`
+then downloads the module from the same URL again and does not verify it, which is
+also true of the default latest-pointer deploy. To apply exactly the bytes you
+verified, use an extracted copy as the source, as in
+[Verifying the archive](#verifying-the-archive). `--terraform-module-version` cannot be combined with
+`--terraform-module-url` or with `--from-code`, which name the module themselves.
+In the SDK, pass `module_version` to `client.stack.deploy_terraform` together with
+`pointer_url`. The index is read from beside the pointer.
+
+From your own root configuration, take the `moduleKey` from the index and use its URL
+as the `source`, as described above. Publishing never replaces the zip at a release
+version's key with different bytes. Anyone with write access to the bucket still can,
+which is why the checksum is worth checking.
+
+### Publishing the module to a private registry
+
+A private module registry gives your configurations `version` constraints and
+upgrade tooling for this module, without a public listing. ⚠️ The recipes below
+follow the registries' documented upload interfaces and **have not been tested
+against a live registry**. Check them against your registry's documentation.
+
+The zip's root is the module root. It holds the root `.tf` files, `idp-terraform.json`,
+the nested modules under `modules/`, and Lambda archives under `zips/` that the module
+reads through `path.module`. Upload the whole tree unchanged, and do not repackage only
+the `.tf` files. Tag each upload with the version from the versions index, so a
+registry version always matches a published, checksummed zip:
+
+The download below assumes a publicly readable bucket. For a private one, copy the
+two objects with `aws s3 cp` instead.
+
+```bash
+version=0.6.15
+url="https://s3.us-west-2.amazonaws.com/<bucket>/artifacts/genai-idp/$version/terraform/idp-terraform-$version.zip"
+curl -fsSLO "$url" && curl -fsSLO "$url.sha256"
+sha256sum -c "idp-terraform-$version.zip.sha256"
+mkdir -p "$version/idp" && unzip -q "idp-terraform-$version.zip" -d "$version/idp"
+```
+
+**HCP Terraform or Terraform Enterprise.** Registries that publish through the API
+take a gzipped tarball of the module root. Create the module once (a `registry-modules`
+resource named, for example, `idp` with provider `aws`), then for each release create a
+module version and upload the tarball to the upload link the API returns:
+
+```bash
+tar -C "$version/idp" -czf "idp-$version.tar.gz" .
+# POST /api/v2/organizations/<org>/registry-modules/private/<org>/idp/aws/versions
+#   {"data": {"type": "registry-module-versions", "attributes": {"version": "0.6.15"}}}
+# then PUT the tarball to data.links.upload from that response:
+curl -fsS -X PUT --upload-file "idp-$version.tar.gz" "<upload link>"
+```
+
+```hcl
+module "idp" {
+  source  = "app.terraform.io/<org>/idp/aws"
+  version = "~> 0.6.15"
+  # ...
+}
+```
+
+**JFrog Artifactory.** With a Terraform module repository and the JFrog CLI configured
+for it (`jf terraform-config`), publish from inside the extracted module root:
+
+```bash
+cd "$version/idp"   # the directory name, idp, is the module name
+jf terraform publish --namespace <namespace> --provider aws --tag "$version"
+```
+
+The module is then addressed as `<artifactory-host>/<repository>__<namespace>/idp/aws`,
+with a `version` constraint. Before relying on it, check that the published version
+holds the nested `modules/` directories and `zips/` inside the one `idp` module, by
+running `terraform init` against it and listing `.terraform/modules/`. A packaging that
+splits them out or drops `zips/` gives a module that does not plan.
+
+Whichever registry you use, keep a copy of the `.zip.sha256` beside each version you
+upload. The registry stores the bytes you gave it, and the checksum is what ties them to
+the published release.
 
 ## Deploying
 

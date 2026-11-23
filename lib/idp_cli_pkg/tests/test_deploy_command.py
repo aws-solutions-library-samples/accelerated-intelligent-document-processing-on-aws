@@ -1983,6 +1983,7 @@ class TestTheCommandSurface:
             "no_validate_template",
             "terraform",
             "terraform_module_url",
+            "terraform_module_version",
             "terraform_dir",
             "terraform_bin",
             "terraform_assume_role_arn",

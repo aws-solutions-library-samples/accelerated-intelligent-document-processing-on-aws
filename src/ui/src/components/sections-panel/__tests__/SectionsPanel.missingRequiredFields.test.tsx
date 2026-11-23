@@ -9,7 +9,8 @@
 
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
+import { render } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ currentCredentials: {} }) }));
@@ -22,6 +23,12 @@ import { COLUMN_DEFINITIONS_MAIN } from '../../document-list/documents-table-con
 
 const missing = (name: string) => ({ attributeName: name, confidence: null, confidenceThreshold: null });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('Document Sections table', () => {
   it('has a Missing Required Fields column holding each section count', () => {
     render(
@@ -30,6 +37,7 @@ describe('Document Sections table', () => {
         documentItem={{ objectKey: 'd', objectStatus: 'COMPLETED' } as never}
         mergedConfig={{}}
       />,
+      { wrapper: English },
     );
     const headers = [...document.querySelectorAll('table thead th')].map((th) => (th.textContent ?? '').trim());
     const index = headers.indexOf('Missing Required Fields');
@@ -41,7 +49,9 @@ describe('Document Sections table', () => {
 
 describe('Document Details', () => {
   it('shows the stored count beside Confidence Alerts', () => {
-    render(<DocumentAttributes item={{ objectKey: 'd', sections: [], missingRequiredFieldCount: 4 } as never} versions={[]} />);
+    render(<DocumentAttributes item={{ objectKey: 'd', sections: [], missingRequiredFieldCount: 4 } as never} versions={[]} />, {
+      wrapper: English,
+    });
     const labels = [...document.querySelectorAll('[class*="key-label"]')];
     const label = labels.find((e) => e.textContent === 'Missing Required Fields')!;
     expect(label).toBeDefined();

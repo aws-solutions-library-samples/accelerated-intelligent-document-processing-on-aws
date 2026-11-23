@@ -16,10 +16,88 @@ import {
   Filler,
 } from 'chart.js';
 import { Bar, Line, Pie, Doughnut } from 'react-chartjs-2';
-import { useFormatters } from '../../i18n/format';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+import { formattingLocale, useFormatters } from '../../i18n/format';
 
 // Register Chart.js components
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, ArcElement, Filler);
+
+const messages = defineMessages<{
+  typeBar: NoMessageValues;
+  typeLine: NoMessageValues;
+  typePie: NoMessageValues;
+  typeDoughnut: NoMessageValues;
+  combinedData: NoMessageValues;
+  unknownLabel: NoMessageValues;
+  invalidData: NoMessageValues;
+  invalidLabels: NoMessageValues;
+  renderError: { readonly chartType: string };
+  debugInfo: NoMessageValues;
+  defaultTitle: NoMessageValues;
+  typePlaceholder: NoMessageValues;
+}>({
+  typeBar: {
+    id: 'agents.plot.type.bar',
+    defaultMessage: 'Bar Chart',
+    description: "Chart type option in the picker above an agent's chart.",
+  },
+  typeLine: {
+    id: 'agents.plot.type.line',
+    defaultMessage: 'Line Chart',
+    description: "Chart type option in the picker above an agent's chart.",
+  },
+  typePie: {
+    id: 'agents.plot.type.pie',
+    defaultMessage: 'Pie Chart',
+    description: "Chart type option in the picker above an agent's chart.",
+  },
+  typeDoughnut: {
+    id: 'agents.plot.type.doughnut',
+    defaultMessage: 'Doughnut Chart',
+    description: "Chart type option in the picker above an agent's chart.",
+  },
+  combinedData: {
+    id: 'agents.plot.combinedData',
+    defaultMessage: 'Combined Data',
+    description: 'Name of the one data series a pie or doughnut chart shows when it adds up several series that have no names.',
+  },
+  unknownLabel: {
+    id: 'agents.plot.unknownLabel',
+    defaultMessage: 'Unknown',
+    description: 'Tooltip of a pie or doughnut chart slice that has no label, when its value cannot be shown.',
+  },
+  invalidData: {
+    id: 'agents.plot.invalidData',
+    defaultMessage: 'Invalid chart data structure',
+    description: "Shown in place of an agent's chart when its data has no data series.",
+  },
+  invalidLabels: {
+    id: 'agents.plot.invalidLabels',
+    defaultMessage: 'Invalid or missing chart labels',
+    description: "Shown in place of an agent's chart when its data has no labels.",
+  },
+  renderError: {
+    id: 'agents.plot.renderError',
+    defaultMessage: 'Error rendering {chartType} chart',
+    description:
+      "Shown in place of an agent's chart when it cannot be drawn. {chartType} is the chart type code, in lower case and as is (for example bar or pie).",
+  },
+  debugInfo: {
+    id: 'agents.plot.debugInfo',
+    defaultMessage: 'Debug Information',
+    description: "Expandable section under a chart error that shows the chart's data and options.",
+  },
+  defaultTitle: {
+    id: 'agents.plot.defaultTitle',
+    defaultMessage: 'Chart',
+    description: "Heading of an agent's chart when the chart has no title.",
+  },
+  typePlaceholder: {
+    id: 'agents.plot.typePlaceholder',
+    defaultMessage: 'Select chart type',
+    description: "Placeholder of the chart type picker above an agent's chart.",
+  },
+});
 
 interface ChartDataset {
   data: number[];
@@ -51,18 +129,21 @@ interface ChartTypeOption {
 }
 
 const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element | null => {
+  const intl = useIntl();
   // Chart type options for the dropdown
   const chartTypeOptions: ChartTypeOption[] = [
-    { label: 'Bar Chart', value: 'bar' },
-    { label: 'Line Chart', value: 'line' },
-    { label: 'Pie Chart', value: 'pie' },
-    { label: 'Doughnut Chart', value: 'doughnut' },
+    { label: intl.formatMessage(messages.typeBar), value: 'bar' },
+    { label: intl.formatMessage(messages.typeLine), value: 'line' },
+    { label: intl.formatMessage(messages.typePie), value: 'pie' },
+    { label: intl.formatMessage(messages.typeDoughnut), value: 'doughnut' },
   ];
 
   // State to track the current chart type, initialized with the type from JSON
   const [currentChartType, setCurrentChartType] = useState<string | null>(null);
-  const [selectedOption, setSelectedOption] = useState<ChartTypeOption | null>(null);
-  const { formatPercent } = useFormatters();
+  // The selected option is kept by its value and looked up at render, so its label follows the UI language.
+  const [selectedValue, setSelectedValue] = useState<string | null>(null);
+  const selectedOption = chartTypeOptions.find((option) => option.value === selectedValue) ?? null;
+  const { formatPercent, locale } = useFormatters();
 
   // Initialize chart type when plotData changes
   useEffect(() => {
@@ -73,7 +154,7 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
 
       // Find the matching option for the Select component
       const matchingOption = chartTypeOptions.find((option) => option.value === initialType);
-      setSelectedOption(matchingOption || chartTypeOptions[0]);
+      setSelectedValue((matchingOption || chartTypeOptions[0]).value);
     }
   }, [plotData]);
 
@@ -86,7 +167,7 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
   // Handle chart type change from dropdown
   const handleChartTypeChange = ({ detail }: { detail: { selectedOption: { label?: string; value?: string } } }) => {
     setCurrentChartType(detail.selectedOption.value || null);
-    setSelectedOption(detail.selectedOption as ChartTypeOption);
+    setSelectedValue(detail.selectedOption.value || null);
   };
 
   // Prepare chart data with potential modifications for different chart types
@@ -131,7 +212,7 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
               'rgba(96, 125, 139, 1)',
             ],
             borderWidth: 1,
-            label: datasets.map((d) => d.label).join(' + ') || 'Combined Data',
+            label: datasets.map((d) => d.label).join(' + ') || intl.formatMessage(messages.combinedData),
           },
         ],
       };
@@ -196,6 +277,8 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
     const baseOptions: Record<string, unknown> = {
       responsive: true,
       maintainAspectRatio: false,
+      // Chart.js formats axis and tooltip numbers in this locale; under en it is undefined, the browser default, as before.
+      locale: formattingLocale(locale),
       ...originalOptions,
     };
 
@@ -249,7 +332,7 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
                   return `${label}: ${value} (${percentage})`;
                 } catch (error) {
                   console.error('Error in tooltip callback:', error);
-                  return (context.label as string) || 'Unknown';
+                  return (context.label as string) || intl.formatMessage(messages.unknownLabel);
                 }
               },
             },
@@ -284,7 +367,9 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
     if (!data || !data.datasets || !Array.isArray(data.datasets) || data.datasets.length === 0) {
       return (
         <div style={{ padding: '20px', textAlign: 'center', color: 'orange' }}>
-          <p>Invalid chart data structure</p>
+          <p>
+            <FormattedMessage {...messages.invalidData} />
+          </p>
         </div>
       );
     }
@@ -292,7 +377,9 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
     if (!data.labels || !Array.isArray(data.labels) || data.labels.length === 0) {
       return (
         <div style={{ padding: '20px', textAlign: 'center', color: 'orange' }}>
-          <p>Invalid or missing chart labels</p>
+          <p>
+            <FormattedMessage {...messages.invalidLabels} />
+          </p>
         </div>
       );
     }
@@ -334,10 +421,14 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
       console.error('Chart rendering error:', error);
       return (
         <div style={{ padding: '20px', textAlign: 'center', color: 'red' }}>
-          <p>Error rendering {currentChartType} chart</p>
+          <p>
+            <FormattedMessage {...messages.renderError} values={{ chartType: currentChartType }} />
+          </p>
           <p>{(error as Error).message}</p>
           <details style={{ marginTop: '10px', textAlign: 'left' }}>
-            <summary>Debug Information</summary>
+            <summary>
+              <FormattedMessage {...messages.debugInfo} />
+            </summary>
             <pre style={{ fontSize: '10px', maxHeight: '200px', overflow: 'auto' }}>
               {JSON.stringify({ data: chartData, options: chartOptions }, null, 2)}
             </pre>
@@ -350,7 +441,7 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
   const titleText = (typedPlotData.options as Record<string, unknown> | undefined)?.title as Record<string, unknown> | undefined;
 
   return (
-    <Container header={<Header variant="h3">{(titleText?.text as string) || 'Chart'}</Header>}>
+    <Container header={<Header variant="h3">{(titleText?.text as string) || <FormattedMessage {...messages.defaultTitle} />}</Header>}>
       <Box padding="m">
         <SpaceBetween direction="vertical" size="m">
           {/* Chart type selector */}
@@ -359,7 +450,7 @@ const PlotDisplay = ({ plotData = null }: PlotDisplayProps): React.JSX.Element |
               selectedOption={selectedOption}
               onChange={handleChartTypeChange}
               options={chartTypeOptions}
-              placeholder="Select chart type"
+              placeholder={intl.formatMessage(messages.typePlaceholder)}
               expandToViewport
             />
           </Box>

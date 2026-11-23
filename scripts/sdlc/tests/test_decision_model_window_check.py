@@ -563,6 +563,30 @@ def test_what_the_check_sends_is_pinned(caller_cases):
     assert sizes == {(IMAGE_MAX_SIDE, IMAGE_MAX_SIDE)}
 
 
+def test_the_letter_only_and_rare_cjk_shapes_are_sent_and_cut(caller_cases):
+    """The shapes #2212 weighs: each page is over the window, so every text
+    request carrying it is cut, and each is the shape its name says."""
+    from idp_common.decision_model import estimate_tokens
+    from idp_common.decision_model.wire import CONTEXT_WINDOW_TOKENS
+
+    shapes = ("mixedcase", "base64", "capscodes", "rarehanzi", "rarenames")
+    assert set(shapes) <= set(wc.DENSE_STYLES)
+    for style in shapes:
+        page = wc.dense_page(style, 1)
+        assert estimate_tokens(page) > CONTEXT_WINDOW_TOKENS, style
+        for case in caller_cases:
+            if f" {style} " in case.name and " text " in case.name:
+                assert 0 < len(wc._text(case.request["state"])) < len(page), case.name
+    letters = wc.dense_page("mixedcase", 1) + wc.dense_page("base64", 1)
+    assert not any(c.isdigit() for c in letters)
+    assert any(c.islower() for c in letters) and any(c.isupper() for c in letters)
+    capitals = wc.dense_page("capscodes", 1).replace("\n", " ").replace(" ", "")
+    assert capitals.isalpha() and capitals.isupper()
+    # Every character of rarehanzi is in GB 2312's second level (rows 0xD8-0xF7).
+    rare = wc.dense_page("rarehanzi", 1).replace("\n", "")
+    assert all(0xD8 <= c.encode("gb2312")[0] <= 0xF7 for c in rare)
+
+
 def test_the_probes_send_full_size_page_images(caller_cases):
     from idp_common.decision_model.wire import IMAGE_MAX_SIDE
 

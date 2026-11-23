@@ -47,7 +47,9 @@ model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
 covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
 the active strategy makes, the per-class model overrides, and the `model` a field
 evaluated with `LLM` names in its method-config. The two embedding fields are left
-out because `pricing.yaml` prices no embedding model, and
+out because they also take Titan Multimodal Embeddings, which the embeddings
+client supports and `pricing.yaml` does not price (it prices only the Cohere
+Embed v4 profiles), so checking them would refuse a supported configuration, and
 `tests/unit/config/test_model_id_catalog_coverage.py` fails on a model field in
 `IDPConfig` that is not checked by one of those routes and not one of the two. IDs are compared as written, because the
 Bedrock client routes and sends them unchanged. Like the rest of the check, it does

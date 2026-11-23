@@ -3,7 +3,6 @@
 
 """Stack operations for IDP SDK."""
 
-import json
 import logging
 from typing import Dict, List, Optional
 
@@ -277,6 +276,7 @@ class StackOperation:
         allow_replace_retained: bool = False,
         tags: Optional[Dict[str, str]] = None,
         terraform_state: str = "local",
+        module_version: Optional[str] = None,
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
 
@@ -311,6 +311,11 @@ class StackOperation:
                 Unknown names are refused.
             module_url: Module zip URL. Without it, ``pointer_url`` is read.
             pointer_url: URL of an ``idp-terraform-latest.json`` pointer.
+            module_version: A published module version (``X.Y.Z``) to deploy
+                instead of the newest. It is looked up in the
+                ``idp-terraform-versions.json`` index beside ``pointer_url``,
+                and the zip's sha256 is checked against the index entry before
+                anything is written. Cannot be combined with ``module_url``.
             terraform_dir: Root configuration directory.
             terraform_bin: ``terraform``, ``tofu`` or a path to either.
             assume_role_arn: An IAM role both providers assume (written into
@@ -379,15 +384,14 @@ class StackOperation:
                 "deploy it with `idp-cli deploy` (without --terraform) instead."
             )
 
-        sha = None
-        if not module_url:
-            if not pointer_url:
-                raise IDPConfigurationError(
-                    "no Terraform module URL: pass module_url or pointer_url"
-                )
-            pointer = json.loads(tf.fetch_url(pointer_url))
-            module_url, sha = tf.resolve_pointer(pointer)
-        manifest = tf.load_module_manifest(module_url, sha)
+        module_url, sha = tf.resolve_module_source(
+            module_url, pointer_url, module_version
+        )
+        manifest = tf.load_module_manifest(
+            module_url,
+            sha,
+            checksum_source="the versions index" if module_version else "its pointer",
+        )
         # The module installed before this deploy: a resource it retains that
         # the new module drops is deleted by the plan too.
         try:

@@ -13,6 +13,7 @@
 // dialog reports the failure, with Re-extract again.
 import React, { useMemo, useState } from 'react';
 import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
+import { FormattedMessage } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
@@ -131,7 +132,7 @@ const usePageClassBoard = (
           {error && <Alert type="error">{error}</Alert>}
           {thumbnailFailure && (
             <Alert type={thumbnailFailure === 'access-denied' ? 'warning' : 'error'} header="Page thumbnails unavailable">
-              {THUMBNAIL_FAILURE_MESSAGES[thumbnailFailure]}
+              <FormattedMessage {...THUMBNAIL_FAILURE_MESSAGES[thumbnailFailure]} />
             </Alert>
           )}
           {board.consequence}

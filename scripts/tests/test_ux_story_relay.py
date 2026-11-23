@@ -1940,14 +1940,14 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(
             "components/document-agents-layout/AgentQueryInput.tsx",
             "Delete query: What is in this document?",
-            source="`Delete query: ${displayText}`",
+            source="defaultMessage: 'Delete query: {query}'",
         ),
     ),
     "DeleteChatSession": (
         Shipped(
             "components/agent-chat/AgentChatHistoryDropdown.tsx",
             "Delete chat session: Where do I start?",
-            source="`Delete chat session: ${displayText}`",
+            source="defaultMessage: 'Delete chat session: {title}'",
         ),
     ),
     "DeleteConfigPrefixMapping": (Shipped(_MAPPINGS, "Delete"),),
@@ -2046,11 +2046,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "PauseCircuitBreaker": (
         Shipped(_BREAKER, "Pause processing"),
-        Shipped(_BREAKER, "Pause", source="confirmLabel: 'Pause'"),
+        Shipped(_BREAKER, "Pause", source="defaultMessage: 'Pause'"),
     ),
     "ProbeCircuitBreaker": (
         Shipped(_BREAKER, "Probe recovery"),
-        Shipped(_BREAKER, "Probe", source="confirmLabel: 'Probe'"),
+        Shipped(_BREAKER, "Probe", source="defaultMessage: 'Probe'"),
     ),
     "ProcessChanges": (
         Shipped(
@@ -2106,7 +2106,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "ResumeCircuitBreaker": (
         Shipped(_BREAKER, "Resume processing"),
-        Shipped(_BREAKER, "Resume", source="confirmLabel: 'Resume'"),
+        Shipped(_BREAKER, "Resume", source="defaultMessage: 'Resume'"),
     ),
     "RevokeMcpCredential": (
         Shipped(_MCP, "Revoke", source="'Revoke'", inside_dialog=True),

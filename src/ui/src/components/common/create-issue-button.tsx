@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
 import { ButtonDropdown } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import useDeploymentContext from '../../hooks/use-deployment-context';
 import { buildBugReportUrl, buildFeatureRequestUrl } from '../../utils/github-feedback';
@@ -22,6 +23,24 @@ interface CreateIssueButtonProps {
   variant?: 'normal' | 'icon' | 'inline-icon';
 }
 
+const messages = defineMessages<{ label: NoMessageValues; reportBug: NoMessageValues; requestFeature: NoMessageValues }>({
+  label: {
+    id: 'common.createIssueButton.label',
+    defaultMessage: 'Create GitHub issue',
+    description: 'Text and screen-reader label of the menu button under an Agent Chat answer that opens a pre-filled GitHub issue form.',
+  },
+  reportBug: {
+    id: 'common.createIssueButton.reportBug',
+    defaultMessage: 'Report a bug',
+    description: 'Item of the Create GitHub issue menu under an Agent Chat answer: opens a pre-filled GitHub bug report in a new tab.',
+  },
+  requestFeature: {
+    id: 'common.createIssueButton.requestFeature',
+    defaultMessage: 'Request a feature',
+    description: 'Item of the Create GitHub issue menu under an Agent Chat answer: opens a pre-filled GitHub feature request in a new tab.',
+  },
+});
+
 /**
  * Small "Create GitHub issue" dropdown (Report a bug / Request a feature) that
  * pre-fills the GitHub issue forms with the current deployment's environment
@@ -29,6 +48,7 @@ interface CreateIssueButtonProps {
  * pre-filled form in a new tab; nothing is submitted automatically.
  */
 const CreateIssueButton = ({ findings, titleHint, variant = 'normal' }: CreateIssueButtonProps): React.JSX.Element => {
+  const intl = useIntl();
   const deploymentContext = useDeploymentContext();
 
   // The chat answer goes to the bug form's "Additional context", not its
@@ -44,13 +64,13 @@ const CreateIssueButton = ({ findings, titleHint, variant = 'normal' }: CreateIs
     <ButtonDropdown
       variant={variant}
       expandableGroups={false}
-      ariaLabel="Create GitHub issue"
+      ariaLabel={intl.formatMessage(messages.label)}
       items={[
-        { id: 'bug', text: 'Report a bug', iconName: 'bug', href: bugUrl, external: true },
-        { id: 'feature', text: 'Request a feature', iconName: 'suggestions', href: featureUrl, external: true },
+        { id: 'bug', text: intl.formatMessage(messages.reportBug), iconName: 'bug', href: bugUrl, external: true },
+        { id: 'feature', text: intl.formatMessage(messages.requestFeature), iconName: 'suggestions', href: featureUrl, external: true },
       ]}
     >
-      Create GitHub issue
+      <FormattedMessage {...messages.label} />
     </ButtonDropdown>
   );
 };

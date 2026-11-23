@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Alert, Box, ColumnLayout, Container, SpaceBetween, Header, StatusIndicator } from '@cloudscape-design/components';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
@@ -21,7 +21,7 @@ import { getDocumentMissingRequiredFieldCount, resolveMissingRequiredFieldCount 
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import { getMalwareScanView } from '../common/malware-scan';
 import type { ReviewRoutedBy } from '../common/map-document-attributes';
-import { renderObjectStatus } from '../common/object-status-renderer';
+import { renderObjectStatus, statusLabel } from '../common/object-status-renderer';
 import DocumentVersionsPanel from './DocumentVersionsPanel';
 import type { DocumentVersionDetail } from './DocumentVersionsPanel';
 import { DocumentVersionProvider } from '../../contexts/document-version';
@@ -40,6 +40,7 @@ import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
 import { useFormatters } from '../../i18n/format';
+import { formatStoredTime } from './stored-time';
 import type { CallerAttributeEntry } from '../common/caller-attributes';
 // Uncomment the line below to enable debugging
 
@@ -50,7 +51,7 @@ interface MappedDocument {
   completionTime?: string;
   duration?: string;
   configVersion?: string;
-  /** Where configVersion came from — see CONFIG_SOURCE_LABELS. */
+  /** Where configVersion came from — see configSourceMessages. */
   configSource?: string;
   /** The config prefix mapping that decided it, when one did. */
   configMappingPrefix?: string;
@@ -115,39 +116,213 @@ interface DocumentPanelProps {
 }
 
 /**
- * How each `ConfigSource` value reads to an operator. The raw values are the
- * wire/DB spelling (idp_common.config.prefix_mappings SOURCE_*); these are the
- * sentence fragments that answer "why this profile?".
+ * The `ConfigSource` values, in their wire/DB spelling (idp_common.config.prefix_mappings
+ * SOURCE_*). The Python test `scripts/tests/test_config_source_ui_parity.py` reads both lists
+ * from source and fails when they differ, in either direction.
  */
-const CONFIG_SOURCE_LABELS: Record<string, string> = {
-  'prefix-mapping': 'Assigned by prefix mapping',
-  metadata: 'Specified at upload',
-  'active-profile': 'Active profile',
-  'document-pin': 'Kept from the previous run',
-  'explicit-request': 'Chosen when reprocessing',
-  'internal-producer': 'Pinned by the submitting feature',
-  rejected: 'Refused at ingest',
-};
+type ConfigSourceValue =
+  | 'prefix-mapping'
+  | 'metadata'
+  | 'active-profile'
+  | 'document-pin'
+  | 'explicit-request'
+  | 'internal-producer'
+  | 'rejected';
 
-const logger = new ConsoleLogger('DocumentPanel');
+/**
+ * How each `ConfigSource` value reads to an operator: the sentence fragments that
+ * answer "why this profile?". Keyed by the stored value; a value missing here is shown
+ * as it is.
+ */
+const configSourceMessages = defineMessages<Record<ConfigSourceValue, NoMessageValues>>({
+  'prefix-mapping': {
+    id: 'documents.configSource.prefixMapping',
+    defaultMessage: 'Assigned by prefix mapping',
+    description: 'Why the document got its configuration profile: a prefix mapping assigned it.',
+  },
+  metadata: {
+    id: 'documents.configSource.metadata',
+    defaultMessage: 'Specified at upload',
+    description: 'Why the document got its configuration profile: the upload named it.',
+  },
+  'active-profile': {
+    id: 'documents.configSource.activeProfile',
+    defaultMessage: 'Active profile',
+    description: 'Why the document got its configuration profile: the active profile applied.',
+  },
+  'document-pin': {
+    id: 'documents.configSource.documentPin',
+    defaultMessage: 'Kept from the previous run',
+    description: 'Why the document got its configuration profile: it kept the one of its previous processing run.',
+  },
+  'explicit-request': {
+    id: 'documents.configSource.explicitRequest',
+    defaultMessage: 'Chosen when reprocessing',
+    description: 'Why the document got its configuration profile: a user chose it when reprocessing.',
+  },
+  'internal-producer': {
+    id: 'documents.configSource.internalProducer',
+    defaultMessage: 'Pinned by the submitting feature',
+    description: 'Why the document got its configuration profile: the feature that submitted the document pinned it.',
+  },
+  rejected: {
+    id: 'documents.configSource.rejected',
+    defaultMessage: 'Refused at ingest',
+    description: 'Why the document has no configuration profile: it was refused at ingest.',
+  },
+});
 
-const messages = defineMessages<{
+const isConfigSourceValue = (value: string): value is ConfigSourceValue => Object.hasOwn(configSourceMessages, value);
+
+const fieldLabels = defineMessages<{
+  documentId: NoMessageValues;
+  status: NoMessageValues;
+  submitted: NoMessageValues;
+  completed: NoMessageValues;
+  duration: NoMessageValues;
+  configProfile: NoMessageValues;
+  pageCount: NoMessageValues;
+  evaluation: NoMessageValues;
+  reviewStatus: NoMessageValues;
+  reviewOwner: NoMessageValues;
+  reviewCompletedBy: NoMessageValues;
+  skipReason: NoMessageValues;
+  confidenceAlerts: NoMessageValues;
+  missingRequiredFields: NoMessageValues;
+  summary: NoMessageValues;
+  malwareScan: NoMessageValues;
   reviewQueue: NoMessageValues;
   routingReason: NoMessageValues;
 }>({
+  documentId: {
+    id: 'documents.panel.field.documentId',
+    defaultMessage: 'Document ID',
+    description: 'Document Details field label for the object key of the document.',
+  },
+  status: {
+    id: 'documents.panel.field.status',
+    defaultMessage: 'Status',
+    description: 'Document Details field label for the processing status.',
+  },
+  submitted: {
+    id: 'documents.panel.field.submitted',
+    defaultMessage: 'Submitted',
+    description: 'Document Details field label for the time the document was submitted.',
+  },
+  completed: {
+    id: 'documents.panel.field.completed',
+    defaultMessage: 'Completed',
+    description: 'Document Details field label for the time processing completed.',
+  },
+  duration: {
+    id: 'documents.panel.field.duration',
+    defaultMessage: 'Duration',
+    description: 'Document Details field label for how long processing took.',
+  },
+  configProfile: {
+    id: 'documents.panel.field.configProfile',
+    defaultMessage: 'Config Profile',
+    description: 'Document Details field label for the configuration profile the document was processed with.',
+  },
+  pageCount: {
+    id: 'documents.panel.field.pageCount',
+    defaultMessage: 'Page Count',
+    description: 'Document Details field label for the number of pages.',
+  },
+  evaluation: {
+    id: 'documents.panel.field.evaluation',
+    defaultMessage: 'Evaluation',
+    description: 'Document Details field label for the evaluation status.',
+  },
+  reviewStatus: {
+    id: 'documents.panel.field.reviewStatus',
+    defaultMessage: 'Review Status',
+    description: 'Document Details field label for the human review status.',
+  },
+  reviewOwner: {
+    id: 'documents.panel.field.reviewOwner',
+    defaultMessage: 'Review Owner',
+    description: 'Document Details field label for the reviewer the review is assigned to.',
+  },
+  reviewCompletedBy: {
+    id: 'documents.panel.field.reviewCompletedBy',
+    defaultMessage: 'Review Completed By',
+    description: 'Document Details field label for the reviewer who finished the review.',
+  },
+  skipReason: {
+    id: 'documents.panel.field.skipReason',
+    defaultMessage: 'Skip Reason',
+    description: 'Document Details field label for why all reviews of the document were skipped.',
+  },
+  confidenceAlerts: {
+    id: 'documents.panel.field.confidenceAlerts',
+    defaultMessage: 'Confidence Alerts',
+    description: 'Document Details field label for the count of fields below the confidence threshold.',
+  },
+  missingRequiredFields: {
+    id: 'documents.panel.field.missingRequiredFields',
+    defaultMessage: 'Missing Required Fields',
+    description: 'Document Details field label for the count of required fields extraction left empty.',
+  },
+  summary: {
+    id: 'documents.panel.field.summary',
+    defaultMessage: 'Summary',
+    description: 'Document Details field label for whether a summary report exists.',
+  },
+  malwareScan: {
+    id: 'documents.panel.field.malwareScan',
+    defaultMessage: 'Malware scan',
+    description: 'Document Details field label for the malware-scan verdict.',
+  },
   reviewQueue: {
-    id: 'documentPanel.attributes.reviewQueue',
+    id: 'documents.panel.field.reviewQueue',
     defaultMessage: 'Review queue',
     description:
-      'Label of the document detail that names the review queue the document is, or was last, in. The routing rule that sent it there is shown under the name of the queue.',
+      'Document Details field label for the review queue the document is, or was last, in. The routing rule that sent it there is shown under the name of the queue.',
   },
   routingReason: {
-    id: 'documentPanel.attributes.routingReason',
+    id: 'documents.panel.field.routingReason',
     defaultMessage: 'Routing reason',
     description:
-      'Label of the document detail that shows the reason the routing rule gave for sending the document to its review queue, with the values the document had.',
+      'Document Details field label for the reason the routing rule gave for sending the document to its review queue, with the values the document had.',
   },
 });
+
+const messages = defineMessages<{
+  title: NoMessageValues;
+  summaryAvailable: NoMessageValues;
+  notApplicable: NoMessageValues;
+  malwareAlertThreat: NoMessageValues;
+  malwareAlertNotScanned: NoMessageValues;
+}>({
+  title: {
+    id: 'documents.panel.title',
+    defaultMessage: 'Document Details',
+    description: 'Heading of the panel that lists the fields of a document on its page.',
+  },
+  summaryAvailable: {
+    id: 'documents.panel.summaryAvailable',
+    defaultMessage: 'Available',
+    description: 'Value of the Summary field when the document has a summary report.',
+  },
+  notApplicable: {
+    id: 'documents.panel.notApplicable',
+    defaultMessage: 'N/A',
+    description: 'Value of a Document Details field with nothing to show, such as no summary or no evaluation.',
+  },
+  malwareAlertThreat: {
+    id: 'documents.panel.malwareAlert.threat',
+    defaultMessage: 'Malware detected — document quarantined',
+    description: 'Heading of the alert on a document the malware scan quarantined.',
+  },
+  malwareAlertNotScanned: {
+    id: 'documents.panel.malwareAlert.notScanned',
+    defaultMessage: 'Document was not malware-scanned',
+    description: 'Heading of the alert on a document refused because the malware scan could not scan it.',
+  },
+});
+
+const logger = new ConsoleLogger('DocumentPanel');
 
 // Detail-view polling cadence under the HTTP API transport (no subscriptions).
 const USE_POLLING = true;
@@ -208,15 +383,17 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
  * Document Details: four aligned columns, fewer on a narrow screen (`minColumnWidth`).
  */
 export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentAttributesProps): React.JSX.Element => {
+  const intl = useIntl();
+  const { formatDateTime } = useFormatters();
   const skipAll = isHitlSkippedStatus(item.hitlStatus) ? lastSkipAllReason(item.hitlReviewHistory) : null;
   return (
     <ColumnLayout columns={4} minColumnWidth={160} variant="text-grid">
-      <Field label="Document ID">{item.objectKey}</Field>
-      <Field label="Status">{renderObjectStatus(item.objectStatus)}</Field>
-      <Field label="Submitted">{item.initialEventTime}</Field>
-      <Field label="Completed">{item.completionTime}</Field>
-      <Field label="Duration">{item.duration}</Field>
-      <Field label="Config Profile">
+      <Field label={intl.formatMessage(fieldLabels.documentId)}>{item.objectKey}</Field>
+      <Field label={intl.formatMessage(fieldLabels.status)}>{renderObjectStatus(item.objectStatus, intl)}</Field>
+      <Field label={intl.formatMessage(fieldLabels.submitted)}>{formatStoredTime(item.initialEventTime, formatDateTime)}</Field>
+      <Field label={intl.formatMessage(fieldLabels.completed)}>{formatStoredTime(item.completionTime, formatDateTime)}</Field>
+      <Field label={intl.formatMessage(fieldLabels.duration)}>{item.duration}</Field>
+      <Field label={intl.formatMessage(fieldLabels.configProfile)}>
         {formatConfigVersionLink(item.configVersion, versions)}
         {/*
           WHERE that profile came from. There are several possible sources and
@@ -226,7 +403,7 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
         */}
         {item.configSource && (
           <Box fontSize="body-s" color="text-body-secondary">
-            {CONFIG_SOURCE_LABELS[item.configSource] ?? item.configSource}
+            {isConfigSourceValue(item.configSource) ? <FormattedMessage {...configSourceMessages[item.configSource]} /> : item.configSource}
             {item.configMappingPrefix ? ` (${item.configMappingPrefix})` : ''}
           </Box>
         )}
@@ -251,11 +428,13 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
           </Box>
         ))}
       </Field>
-      <Field label="Page Count">{item.pageCount || 0}</Field>
-      <Field label="Evaluation">{evaluationCell ?? (item.evaluationStatus || 'N/A')}</Field>
-      <Field label="Review Status">{renderHitlStatus(item)}</Field>
-      <Field label="Review Owner">{item.hitlReviewOwnerEmail || item.hitlReviewOwner || '-'}</Field>
-      <Field label="Review Completed By">{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</Field>
+      <Field label={intl.formatMessage(fieldLabels.pageCount)}>{item.pageCount || 0}</Field>
+      <Field label={intl.formatMessage(fieldLabels.evaluation)}>
+        {evaluationCell ?? (item.evaluationStatus || <FormattedMessage {...messages.notApplicable} />)}
+      </Field>
+      <Field label={intl.formatMessage(fieldLabels.reviewStatus)}>{renderHitlStatus(item, undefined, intl)}</Field>
+      <Field label={intl.formatMessage(fieldLabels.reviewOwner)}>{item.hitlReviewOwnerEmail || item.hitlReviewOwner || '-'}</Field>
+      <Field label={intl.formatMessage(fieldLabels.reviewCompletedBy)}>{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</Field>
       {/*
         Where routing sent the document, shown when it went to a queue: the queue, with
         the routing rule that sent it there under its name (in the words the review
@@ -265,7 +444,7 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
       {/* A Boolean, not the reason: an empty text would take a place in the grid. */}
       {!!item.reviewRoutedBy?.reason && <RoutingReasonField routedBy={item.reviewRoutedBy} />}
       {skipAll && (
-        <Field label="Skip Reason">
+        <Field label={intl.formatMessage(fieldLabels.skipReason)}>
           {skipAll.reason}
           {skipAll.note && (
             <Box variant="small" color="text-body-secondary">
@@ -274,13 +453,15 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
           )}
         </Field>
       )}
-      <Field label="Confidence Alerts">
+      <Field label={intl.formatMessage(fieldLabels.confidenceAlerts)}>
         <ConfidenceAlertsSection sections={item.sections} mergedConfig={item.mergedConfig} />
       </Field>
-      <Field label="Missing Required Fields">
+      <Field label={intl.formatMessage(fieldLabels.missingRequiredFields)}>
         <MissingRequiredFieldsCount count={item.missingRequiredFieldCount} sections={item.sections} />
       </Field>
-      <Field label="Summary">{item.summaryReportUri ? 'Available' : 'N/A'}</Field>
+      <Field label={intl.formatMessage(fieldLabels.summary)}>
+        <FormattedMessage {...(item.summaryReportUri ? messages.summaryAvailable : messages.notApplicable)} />
+      </Field>
       <MalwareScanAttribute item={item} />
       <CallerAttributesField entries={item.callerAttributes} />
     </ColumnLayout>
@@ -290,15 +471,11 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
 /**
  * The review queue the document is, or was last, in, with the routing rule that sent
  * it there under the name of the queue.
- *
- * useIntl lives here and in RoutingReasonField, which are rendered only for a document
- * that routing sent to a queue, so any other document renders without touching
- * react-intl (see CallerAttributesList).
  */
 const ReviewQueueField = ({ item }: { item: MappedDocument }): React.JSX.Element => {
   const intl = useIntl();
   return (
-    <Field label={intl.formatMessage(messages.reviewQueue)}>
+    <Field label={intl.formatMessage(fieldLabels.reviewQueue)}>
       {item.reviewQueueName || item.reviewQueue}
       {item.reviewRoutedBy && (
         <Box fontSize="body-s" color="text-body-secondary">
@@ -313,7 +490,7 @@ const ReviewQueueField = ({ item }: { item: MappedDocument }): React.JSX.Element
 const RoutingReasonField = ({ routedBy }: { routedBy: ReviewRoutedBy }): React.JSX.Element => {
   const intl = useIntl();
   return (
-    <Field label={intl.formatMessage(messages.routingReason)}>
+    <Field label={intl.formatMessage(fieldLabels.routingReason)}>
       <RoutedByReason routedBy={routedBy} />
     </Field>
   );
@@ -335,8 +512,6 @@ const attributeMessages = defineMessages<{ label: NoMessageValues }>({
  * are rendered as React text children, never as HTML.
  */
 const CallerAttributesList = ({ entries }: { entries: CallerAttributeEntry[] }): React.JSX.Element => {
-  // useIntl lives here rather than in CallerAttributesField so that a document with
-  // no attributes renders without touching react-intl at all, as it did before.
   const intl = useIntl();
   return (
     <Field label={intl.formatMessage(attributeMessages.label)}>
@@ -370,8 +545,9 @@ export const CallerAttributesField = ({ entries }: { entries?: CallerAttributeEn
  * there reading N/A on every deployment.
  */
 const MalwareScanAttribute = ({ item }: { item: MappedDocument }): React.JSX.Element | null => {
+  const intl = useIntl();
   const { formatDateTime } = useFormatters();
-  const scan = getMalwareScanView(item);
+  const scan = getMalwareScanView(item, intl);
   if (scan.outcome === 'none') return null;
 
   const statusType = {
@@ -382,7 +558,7 @@ const MalwareScanAttribute = ({ item }: { item: MappedDocument }): React.JSX.Ele
   }[scan.outcome];
 
   return (
-    <Field label="Malware scan">
+    <Field label={intl.formatMessage(fieldLabels.malwareScan)}>
       <StatusIndicator type={statusType}>{scan.label}</StatusIndicator>
       {scan.time ? (
         <Box fontSize="body-s" color="text-status-inactive">
@@ -402,13 +578,14 @@ const MalwareScanAttribute = ({ item }: { item: MappedDocument }): React.JSX.Ele
  * explain.
  */
 const MalwareScanAlert = ({ item }: { item: MappedDocument }): React.JSX.Element | null => {
-  const scan = getMalwareScanView(item);
+  const intl = useIntl();
+  const scan = getMalwareScanView(item, intl);
   if (!scan.refused) return null;
 
   return (
     <Alert
       type={scan.outcome === 'threat' ? 'error' : 'warning'}
-      header={scan.outcome === 'threat' ? 'Malware detected — document quarantined' : 'Document was not malware-scanned'}
+      header={intl.formatMessage(scan.outcome === 'threat' ? messages.malwareAlertThreat : messages.malwareAlertNotScanned)}
     >
       {scan.detail}
     </Alert>
@@ -422,6 +599,7 @@ export const DocumentPanel = ({
   onReprocess,
   onAbort,
 }: DocumentPanelProps): React.JSX.Element => {
+  const intl = useIntl();
   const { versions } = useConfigurationVersions();
   logger.debug('DocumentPanel item', item);
 
@@ -583,7 +761,8 @@ export const DocumentPanel = ({
         {/* First on the page: the bar's test helpers read the first Header. */}
         <DocumentPageHeader
           title={documentName(localItem.objectKey)}
-          status={localItem.objectStatus}
+          // An empty status stays empty: statusLabel would print Unknown for it.
+          status={localItem.objectStatus && statusLabel(localItem.objectStatus, intl)}
           objectKey={localItem.objectKey}
           actions={<ActionBar controls={actions.controls} />}
         />
@@ -592,7 +771,13 @@ export const DocumentPanel = ({
         {/* Hidden rather than unmounted behind Source, so Chat and the tables keep their state. */}
         <div data-testid="document-widgets" style={{ display: view === 'source' ? 'none' : undefined }}>
           <SpaceBetween size="l">
-            <Container header={<Header variant="h2">Document Details</Header>}>
+            <Container
+              header={
+                <Header variant="h2">
+                  <FormattedMessage {...messages.title} />
+                </Header>
+              }
+            >
               <SpaceBetween size="l">
                 {/* Above the attribute grid on purpose: for a refused document this
                     is the only explanation there is, since no workflow ran and the

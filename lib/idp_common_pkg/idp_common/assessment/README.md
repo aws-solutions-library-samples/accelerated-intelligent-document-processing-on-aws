@@ -237,8 +237,10 @@ cut is logged at info with the page and the characters dropped. **Text beyond
 the limit is cut and never read by the decision model**, so a value that appears
 only in the cut part is not seen: it scores low, and an empty field is not checked
 against that part. The counts are estimates: the package has no tokenizer, so
-`decision_model.estimate_tokens` counts one token per digit or non-ASCII character
-and one per two other characters, which errs high. A request with no text is sent
+`decision_model.estimate_tokens` weights each character by class (a digit,
+punctuation mark or non-ASCII character is a token; see the
+[decision_model README](../decision_model/README.md#fitting-the-window-max_input_tokens)),
+which keeps a dense table or a page of serial numbers inside the window. A request with no text is sent
 unchanged. A page whose text would be cut to nothing or to under half of its budget,
 because the question and image already fill most of the limit, is not sent:
 `fit_text` raises `DecisionModelRefused`, so the section degrades like any refusal

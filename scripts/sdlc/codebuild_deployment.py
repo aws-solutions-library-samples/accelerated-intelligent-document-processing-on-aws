@@ -6179,7 +6179,9 @@ def _terraform_retained_resources(terraform):
 def _sweep_terraform_retained(stack_name, retained, deployer=None):
     """Delete what the Terraform delete retained, as `--force-delete-all` does for
     a CloudFormation stack: tables, then log groups (plus those Lambda created on
-    its own under the stack's prefix), then buckets with the logging bucket last.
+    its own under the stack's prefix), then buckets with the logging bucket last,
+    then the KMS key that encrypted them (scheduled for deletion, the only way a
+    key goes), then this run's IAM roles.
 
     Returns the resources that could not be deleted, as strings.
     """
@@ -6220,6 +6222,19 @@ def _sweep_terraform_retained(stack_name, retained, deployer=None):
             deployer._empty_and_delete_bucket(bucket["physical_id"])
         except Exception as e:  # noqa: BLE001
             errors.append(f"S3 bucket {bucket['physical_id']}: {e}")
+    keys = retained_kms_keys(retained)
+    if keys:
+        # The same handling as the migration test's sweep: the minimum pending
+        # window, and a key already pending deletion counts as swept. Stdlib-only
+        # module, so importing it here costs nothing.
+        from terraform_migration_test import schedule_key_deletion
+
+        kms = boto3.client("kms", config=_THROTTLE_RETRY_CONFIG)
+        for key in keys:
+            try:
+                schedule_key_deletion(kms, key)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"KMS key {key}: {e}")
     for role in retained_iam_roles(stack_name, retained):
         try:
             _delete_retained_role(role)
@@ -6247,6 +6262,23 @@ def retained_iam_roles(stack_name, retained):
         ):
             out.append(name)
     return out
+
+
+#: Retained-resource types the sweep schedules for deletion from ``other``. The
+#: translator emits ``awscc_kms_key`` for the template's CustomerManagedEncryptionKey
+#: (DeletionPolicy Retain); the others are the same key under another provider.
+RETAINED_KMS_KEY_TYPES = ("awscc_kms_key", "aws_kms_key", "AWS::KMS::Key")
+
+
+def retained_kms_keys(retained):
+    """Key ids of the KMS keys in this run's retained set. Every one is this
+    run's: the set is read from this deployment's own state, and a key has no
+    name to share with another run."""
+    return [
+        str(other["physical_id"])
+        for other in (retained or {}).get("other") or []
+        if other.get("type") in RETAINED_KMS_KEY_TYPES and other.get("physical_id")
+    ]
 
 
 def _delete_retained_role(name):
@@ -6335,9 +6367,12 @@ def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 *
         for error in errors:
             print(f"[{stack_name}] ⚠️ retained resource not deleted: {error}")
             findings.append(f"retained resource not deleted: {error}")
-        swept_roles = set(retained_iam_roles(stack_name, retained))
+        swept = set(retained_iam_roles(stack_name, retained)) | set(
+            retained_kms_keys(retained)
+        )
         for other in retained.get("other") or []:
-            if str(other.get("physical_id") or "") in swept_roles:
+            # A swept resource that failed is already a finding, from `errors`.
+            if str(other.get("physical_id") or "") in swept:
                 continue
             # The categories the sweep cannot delete. Retained by design, but
             # this run created them and nothing else will remove them.
