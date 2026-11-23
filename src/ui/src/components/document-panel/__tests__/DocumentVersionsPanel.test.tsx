@@ -14,6 +14,7 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 
 // Mock the GraphQL client used by the panel. vi.mock is hoisted above module
 // init, and the panel calls generateClient() at import time, so the mock fn
@@ -63,6 +64,12 @@ const routeGraphql = ({ query }: { query: string }) => {
 const NEWER = '20250707T141530Z-b';
 const OLDER = '20250101T090000Z-a';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 /** A version row's ⋮ menu. */
 const rowMenu = (runId: string) =>
   createWrapper(document.body)
@@ -102,7 +109,7 @@ describe('DocumentVersionsPanel', () => {
   });
 
   it('lists versions newest-first with a Current badge', async () => {
-    render(<DocumentVersionsPanel objectKey="doc.pdf" />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     expect(screen.getByText('v1')).toBeInTheDocument();
     // The newest run (first row) is badged Current.
@@ -110,14 +117,14 @@ describe('DocumentVersionsPanel', () => {
   });
 
   it('does not show a Files column (internal pinned-object count, not user-meaningful)', async () => {
-    render(<DocumentVersionsPanel objectKey="doc.pdf" />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     expect(screen.getByText('Pages')).toBeInTheDocument();
     expect(screen.queryByText('Files')).not.toBeInTheDocument();
   });
 
   it('keeps every action in the row’s ⋮ menu, with no text in the Actions column', async () => {
-    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     expect(screen.queryByText(/^View$/)).not.toBeInTheDocument();
     // A non-admin viewer has View only.
@@ -126,7 +133,7 @@ describe('DocumentVersionsPanel', () => {
 
   it('calls onViewVersion with the run detail when View is clicked', async () => {
     const onViewVersion = vi.fn();
-    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={onViewVersion} />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={onViewVersion} />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
 
     // View on the older (non-current) row.
@@ -138,7 +145,7 @@ describe('DocumentVersionsPanel', () => {
 
   it('passes the section quality data through to the page (drives Low Confidence Fields / Status)', async () => {
     const onViewVersion = vi.fn();
-    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={onViewVersion} />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={onViewVersion} />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
 
     choose(OLDER, 'view');
@@ -157,7 +164,7 @@ describe('DocumentVersionsPanel', () => {
     // silently-breakable link in this chain: deleting the fields from
     // GetDocumentVersion.graphql raises no type error and would leave every
     // other test green while the historical view silently reverts to showing 0.
-    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
 
     choose(OLDER, 'view');
@@ -173,7 +180,9 @@ describe('DocumentVersionsPanel', () => {
   it('returns to current when the currently-viewed version row is actioned', async () => {
     const onViewVersion = vi.fn();
     // Viewing the newest run means its row shows "Viewing"; the older shows "View".
-    render(<DocumentVersionsPanel objectKey="doc.pdf" viewingRunId="20250101T090000Z-a" onViewVersion={onViewVersion} />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" viewingRunId="20250101T090000Z-a" onViewVersion={onViewVersion} />, {
+      wrapper: English,
+    });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     // The viewed row's item reads "Viewing", disabled; the other row's reads "View".
     expect(menuItems(OLDER)).toEqual([{ text: 'Viewing', disabled: true }]);
@@ -181,14 +190,14 @@ describe('DocumentVersionsPanel', () => {
   });
 
   it('hides delete for non-admins', async () => {
-    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     expect(menuItems(OLDER).map((i) => i.text)).not.toContain('Delete version');
   });
 
   it('shows the admin delete dropdown for admins', async () => {
     roleState.isAdmin = true;
-    render(<DocumentVersionsPanel objectKey="doc.pdf" />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     // Cloudscape ButtonDropdown surfaces the aria-label on more than one node,
     // so assert at least one delete affordance exists per version row.
@@ -199,7 +208,7 @@ describe('DocumentVersionsPanel', () => {
 
   it('offers an admin View and Delete version, Delete disabled on the current version', async () => {
     roleState.isAdmin = true;
-    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     expect(menuItems(OLDER)).toEqual([
       { text: 'View', disabled: false },
@@ -212,7 +221,7 @@ describe('DocumentVersionsPanel', () => {
   // a document reprocessed while its page was open finished with the old list shown
   // ("Version History (1)" beside a run that had already completed) until Refresh.
   it('reloads the list when the document finishes another run', async () => {
-    const { rerender } = render(<DocumentVersionsPanel objectKey="doc.pdf" completionTime="2025-01-01T09:00:00Z" />);
+    const { rerender } = render(<DocumentVersionsPanel objectKey="doc.pdf" completionTime="2025-01-01T09:00:00Z" />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
     const listCalls = () => mockGraphql.mock.calls.filter(([arg]) => String(arg.query).includes('listDocumentVersions')).length;
     expect(listCalls()).toBe(1);

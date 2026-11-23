@@ -21,6 +21,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 const { mockPresignBatch } = vi.hoisted(() => ({ mockPresignBatch: vi.fn() }));
 
@@ -47,11 +48,18 @@ const refused = (accessDenied: boolean) => ({
   accessDenied,
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderPanel = () =>
   render(
     <DocumentVersionProvider runId={null} files={[]}>
       <PagesPanel {...({ pages: PAGES, documentItem: DOC } as Record<string, unknown>)} />
     </DocumentVersionProvider>,
+    { wrapper: English },
   );
 
 describe('PagesPanel thumbnail failure reporting', () => {
