@@ -51,7 +51,12 @@ import { NEW_SESSION_NOTICE } from '../../components/agent-chat/session-opt-ins'
 const renderChat = async () => {
   const { default: useAgentChat } = await import('../use-agent-chat');
   const { AgentChatProvider, useAgentChatContext } = await import('../../contexts/agentChat');
-  const wrapper = ({ children }: { children: React.ReactNode }): React.JSX.Element => <AgentChatProvider>{children}</AgentChatProvider>;
+  const { IntlProvider } = await import('react-intl');
+  const wrapper = ({ children }: { children: React.ReactNode }): React.JSX.Element => (
+    <IntlProvider locale="en" defaultLocale="en">
+      <AgentChatProvider>{children}</AgentChatProvider>
+    </IntlProvider>
+  );
   return renderHook(() => ({ chat: useAgentChat(), ctx: useAgentChatContext() }), { wrapper });
 };
 

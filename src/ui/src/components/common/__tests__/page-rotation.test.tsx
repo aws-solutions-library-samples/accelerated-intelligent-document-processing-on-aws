@@ -21,6 +21,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 // Partial: only the transport is stubbed. `presignedUrlsNeedRefresh` is the real
 // one, because the viewer consults it on every page turn and a module mock that
@@ -276,8 +277,14 @@ describe('rotateOffset', () => {
   });
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 /** Render the viewer over one client-side page image (no presigning needed). */
-const renderViewer = () => render(<PageImageViewer pageIds={ONE_PAGE_IDS} documentPages={ONE_PAGE} />);
+const renderViewer = () => render(<PageImageViewer pageIds={ONE_PAGE_IDS} documentPages={ONE_PAGE} />, { wrapper: English });
 
 const pageImage = () => screen.getByAltText('Page 1');
 
@@ -345,7 +352,7 @@ describe('PageImageViewer rotation controls', () => {
     // parent that re-keys the viewer per page resets it along with zoom and
     // pan, and PageTextEditorModal does exactly that to re-seed `initialPage`.
     // So do not read this as a promise about every screen.
-    render(<PageImageViewer pageIds={TWO_PAGE_IDS} documentPages={TWO_PAGES} />);
+    render(<PageImageViewer pageIds={TWO_PAGE_IDS} documentPages={TWO_PAGES} />, { wrapper: English });
     await waitFor(() => expect(pageImage()).toBeInTheDocument());
 
     screen.getByRole('button', { name: 'Rotate right 90 degrees' }).click();
