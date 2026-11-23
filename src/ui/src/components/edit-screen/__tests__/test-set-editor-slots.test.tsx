@@ -79,7 +79,9 @@ const track = <T,>(read: Promise<T>): Promise<T> => {
  * instead of polling the screen with waitFor: waitFor gives up after one second of wall
  * time, and the first render of this file, which pays for the cold component tree, has
  * taken longer than that on a contended CI runner while the read was still in flight
- * (#2231). A read that starts while the earlier ones settle is waited for too.
+ * (#2231). A read that starts while the earlier ones settle is waited for too. Awaiting
+ * the tracked promises, rather than relying on act() draining the mocks' microtasks, is
+ * what keeps this correct if a mock ever resolves on a timer.
  */
 const shown = async (value: string) => {
   for (let settled = -1; settled !== reads.length; ) {
