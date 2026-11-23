@@ -40,7 +40,6 @@ import {
   type NoMessageValues,
   type TypedMessageDescriptor,
 } from 'react-intl';
-import { getErrorMessage } from '../../utils/errorUtils';
 import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
@@ -52,7 +51,7 @@ import { collapseKeysAbove, focusFieldNode } from './field-focus';
 import type { FieldFocusRequest } from './field-focus';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 import type { SectionEvaluation } from './use-section-evaluation';
-import { editScreenSharedMessages } from './edit-messages';
+import { editPageErrorText, editScreenSharedMessages } from './edit-messages';
 
 const logger = new ConsoleLogger('SectionEditor');
 
@@ -108,13 +107,13 @@ const messages = defineMessages<{
     id: 'editScreen.sectionEditor.loadFailed',
     defaultMessage: 'Failed to load ground truth: {error}',
     description:
-      "Error in the edit page's section editor when the open section's results could not be read. {error} is the server's error text, shown as is.",
+      "Error in the edit page's section editor when the open section's results could not be read. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language.",
   },
   saveFailed: {
     id: 'editScreen.sectionEditor.saveFailed',
     defaultMessage: 'Failed to save: {error}',
     description:
-      "Error in the edit page's section editor when the open section could not be saved. {error} is the server's error text, shown as is.",
+      "Error in the edit page's section editor when the open section could not be saved. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language.",
   },
   unsavedChanges: {
     id: 'editScreen.sectionEditor.unsavedChanges',
@@ -434,8 +433,8 @@ const SectionEditor = ({
   const [originalJson, setOriginalJson] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  // Held as the message and the server's text, and worded where it shows.
-  const [error, setError] = useState<{ message: TypedMessageDescriptor<ErrorText>; error: string } | null>(null);
+  // Held as the message and the error, and worded where it shows.
+  const [error, setError] = useState<{ message: TypedMessageDescriptor<ErrorText>; cause: unknown } | null>(null);
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
   // Canonical path of the field the reviewer last clicked, so it can be linked.
   const [selectedFieldPath, setSelectedFieldPath] = useState<string | null>(null);
@@ -480,7 +479,7 @@ const SectionEditor = ({
         if (onLoadedRef.current) onLoadedRef.current(selectedSection.sectionId, parsed);
       } catch (err) {
         logger.error('Error loading section:', err);
-        if (!cancelled) setError({ message: messages.loadFailed, error: getErrorMessage(err) });
+        if (!cancelled) setError({ message: messages.loadFailed, cause: err });
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -611,7 +610,7 @@ const SectionEditor = ({
       return true;
     } catch (err) {
       logger.error('Error saving section:', err);
-      setError({ message: messages.saveFailed, error: getErrorMessage(err) });
+      setError({ message: messages.saveFailed, cause: err });
       return false;
     } finally {
       setIsSaving(false);
@@ -993,7 +992,7 @@ const SectionEditor = ({
         {!body && headerExtras && headerExtras(ctx)}
         {error && (
           <Alert type="error">
-            <FormattedMessage {...error.message} values={{ error: error.error }} />
+            <FormattedMessage {...error.message} values={{ error: editPageErrorText(error.cause, intl) }} />
           </Alert>
         )}
         {body ?? panes}

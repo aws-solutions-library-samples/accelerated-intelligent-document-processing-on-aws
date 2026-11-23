@@ -5199,6 +5199,90 @@
     "defaultMessage": "Edit the document or view its source",
     "description": "Screen-reader name of the Edit | View switch, first in the edit page's action bar."
   },
+  "editScreen.directEdit.baselineCopying": {
+    "defaultMessage": "Copying {name} to the evaluation baseline. Its evaluation status shows when the copy is done.",
+    "description": "Notice after Use As Evaluation Baseline on a document's edit page started copying the document to the evaluation baseline. {name} is the document's file name."
+  },
+  "editScreen.directEdit.editRoleReason": {
+    "defaultMessage": "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.",
+    "description": "Why a document's edit page is read-only, as the reason its actions are unavailable and in its read-only notice: the user is not an Admin or an Author, nor a Reviewer who holds the document's review."
+  },
+  "editScreen.directEdit.failedBaseline": {
+    "defaultMessage": "Could not use {name} as the evaluation baseline: {error}",
+    "description": "Error on a document's edit page when Use As Evaluation Baseline failed. {name} is the document's file name; {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.directEdit.failedProcess": {
+    "defaultMessage": "Could not process the changes: {error}",
+    "description": "Error on a document's edit page when Process Changes failed. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.directEdit.failedReload": {
+    "defaultMessage": "Could not reload {name}: {error}",
+    "description": "Error on a document's edit page when Refresh could not read the document again. {name} is the document's file name; {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.directEdit.inReviewNotice": {
+    "defaultMessage": "This document is in a review queue. Edits are made in the queue.",
+    "description": "Read-only notice at the top of a document's edit page while the document is in a review queue."
+  },
+  "editScreen.directEdit.inReviewSaveRefused": {
+    "defaultMessage": "This document is now in a review queue, so it can't be edited here. Reload the page to work on it in its queue.",
+    "description": "Why the section editor of a document's edit page could not save, shown after \"Failed to save:\": the server refused the save because the document went into a review queue after the page opened."
+  },
+  "editScreen.directEdit.mirrorLagNotice": {
+    "defaultMessage": "View only. This document is marked as in a review queue, but its review item is missing or has finished. Reload in a moment.",
+    "description": "Read-only notice at the top of a document's edit page in the case the sentence describes."
+  },
+  "editScreen.directEdit.mirrorLagReason": {
+    "defaultMessage": "This document's review is being updated. Reload in a moment.",
+    "description": "Why the actions of a document's edit page are unavailable while the document is marked as in a review queue but its review item is missing or has finished."
+  },
+  "editScreen.directEdit.noResultToEdit": {
+    "defaultMessage": "This section has no result to edit",
+    "description": "Why the section editor of a document's edit page could not open a section, shown after \"Failed to load ground truth:\": the section has no extraction result."
+  },
+  "editScreen.directEdit.noResultToSave": {
+    "defaultMessage": "This section has no result to save",
+    "description": "Why the section editor of a document's edit page could not save a section, shown after \"Failed to save:\": the section has no extraction result to write the changes to."
+  },
+  "editScreen.directEdit.noSectionsToEdit": {
+    "defaultMessage": "This document has no sections to edit.",
+    "description": "Shown in the section editor's place on a document's edit page when the document has no sections."
+  },
+  "editScreen.directEdit.primaryHint": {
+    "defaultMessage": "Save your changes and process them: evaluation and summarization re-run; OCR, classification and extraction are not repeated.",
+    "description": "Hint of Process Changes in the action bar of a document's edit page: what it does."
+  },
+  "editScreen.directEdit.processOwnerReason": {
+    "defaultMessage": "{processChanges} needs an Admin, or the reviewer who holds this document's open review. Start the review first.",
+    "description": "Why Process Changes is unavailable on a document's edit page for a Reviewer who does not hold the document's open review. {processChanges} is the action's name, Process Changes."
+  },
+  "editScreen.directEdit.processRoleReason": {
+    "defaultMessage": "{processChanges} needs the Admin or Reviewer role.",
+    "description": "Why Process Changes is unavailable on a document's edit page: the user has neither the Admin nor the Reviewer role. {processChanges} is the action's name, Process Changes."
+  },
+  "editScreen.directEdit.processing": {
+    "defaultMessage": "Processing the changes to {name}: evaluation and summarization are re-running.",
+    "description": "Notice shown as a document's edit page closes after Process Changes was confirmed. {name} is the document's file name."
+  },
+  "editScreen.directEdit.processingNotice": {
+    "defaultMessage": "View only. This document is still processing; its results can be edited once processing finishes.",
+    "description": "Read-only notice at the top of a document's edit page while the document is still processing."
+  },
+  "editScreen.directEdit.regroupConsequence": {
+    "defaultMessage": "Moving pages rewrites this document's <b>section grouping</b>. The extracted field values are <b>kept</b> and the document is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document page's <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen's <b>{processChanges}</b> re-runs evaluation and summarization only.",
+    "description": "What saving a new page grouping does, in Edit Page Grouping opened from a document's edit page. <b>…</b> marks bold text. More Actions › Edit Page Grouping is a menu item and Save and Re-extract a button, both on the document's own page; {processChanges} is the edit page's action, Process Changes."
+  },
+  "editScreen.directEdit.regroupRoleReason": {
+    "defaultMessage": "Edit Page Grouping needs the Admin or Reviewer role.",
+    "description": "Why Edit Page Grouping is unavailable on a document's edit page: the user has neither the Admin nor the Reviewer role."
+  },
+  "editScreen.directEdit.saved": {
+    "defaultMessage": "Saved your changes to {name}.",
+    "description": "Notice after Save on a document's edit page saved the open section's changes. {name} is the document's file name."
+  },
+  "editScreen.directEdit.viewOnly": {
+    "defaultMessage": "View only. {reason}",
+    "description": "Read-only notice at the top of a document's edit page when the user's roles may not edit it. {reason} is a whole sentence saying which roles may."
+  },
   "editScreen.discard.body": {
     "defaultMessage": "The changes you made since the last save are lost. Anything already saved is kept.",
     "description": "Text of the dialog the edit page shows before an action, such as Cancel or Refresh, loses unsaved changes."
@@ -5303,6 +5387,206 @@
     "defaultMessage": "Discard your changes and reload?",
     "description": "Title of the dialog the edit page shows when Refresh would lose unsaved changes."
   },
+  "editScreen.productionItem.action.baseline": {
+    "defaultMessage": "use this document as the evaluation baseline",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Use As Evaluation Baseline failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.cancel": {
+    "defaultMessage": "leave the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Cancel failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.claim": {
+    "defaultMessage": "claim the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Claim failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.process": {
+    "defaultMessage": "process the changes",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Process Changes failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.refresh": {
+    "defaultMessage": "reload the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Refresh failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.regroup": {
+    "defaultMessage": "start editing the page grouping",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Edit Page Grouping could not open on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.save": {
+    "defaultMessage": "save your draft",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when a draft of a review queue item's section could not be saved."
+  },
+  "editScreen.productionItem.action.saveGrouping": {
+    "defaultMessage": "save the page grouping",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Edit Page Grouping could not save the page grouping of a review queue item's document."
+  },
+  "editScreen.productionItem.action.skip": {
+    "defaultMessage": "skip the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Skip failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.takeOver": {
+    "defaultMessage": "take over the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Take over failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.assignedElsewhere": {
+    "defaultMessage": "This item was just assigned to someone else",
+    "description": "Why the section editor of a review queue item's edit page could not save an Admin's edit, shown after \"Failed to save:\": another user was assigned the item first."
+  },
+  "editScreen.productionItem.assignedJustNow": {
+    "defaultMessage": "Assigned to {assignee} just now. Take over to edit it and process its changes.",
+    "description": "Read-only notice at the top of a review queue item's edit page for an Admin whose first edit found the item just assigned to another user. {assignee} is that user's e-mail address; Take over is the button beside the notice."
+  },
+  "editScreen.productionItem.assignedJustNowNoAssignee": {
+    "defaultMessage": "Assigned to another reviewer just now. Take over to edit it and process its changes.",
+    "description": "Read-only notice at the top of a review queue item's edit page for an Admin whose first edit found the item just assigned to another user, when that user is not known. Take over is the button beside the notice."
+  },
+  "editScreen.productionItem.assignedTakeOver": {
+    "defaultMessage": "Assigned to {assignee}. Take over to edit it and process its changes.",
+    "description": "Read-only notice at the top of a review queue item's edit page for an Admin when the item is assigned to another user. {assignee} is that user's e-mail address; Take over is the button beside the notice."
+  },
+  "editScreen.productionItem.baselineCopying": {
+    "defaultMessage": "Copying {name} to the evaluation baseline.",
+    "description": "Notice after Use As Evaluation Baseline on a review queue item's edit page started copying the document to the evaluation baseline. {name} is the file name of the item's document."
+  },
+  "editScreen.productionItem.claimToRegroup": {
+    "defaultMessage": "Claim this item first to change its page grouping",
+    "description": "Why Edit Page Grouping is unavailable to an Annotator on an unassigned review queue item's edit page: only the item's holder may change its page grouping."
+  },
+  "editScreen.productionItem.finalizeFailedNotice": {
+    "defaultMessage": "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Review Management.",
+    "description": "Read-only notice at the top of a review queue item's edit page when applying the review's corrections failed. Review Management is a page of the app."
+  },
+  "editScreen.productionItem.finished.complete": {
+    "defaultMessage": "This review is finished: the item is complete and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page once the item's review is complete."
+  },
+  "editScreen.productionItem.finished.finalizing": {
+    "defaultMessage": "This review is finished: it was submitted and its corrections are being applied.",
+    "description": "Read-only notice at the top of a review queue item's edit page while the submitted review's corrections are applied."
+  },
+  "editScreen.productionItem.finished.other": {
+    "defaultMessage": "This review is finished: the item is {state} and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page, for a finished state the page does not know. {state} is that state as stored, in lower case."
+  },
+  "editScreen.productionItem.finished.rejected": {
+    "defaultMessage": "This review is finished: the item is rejected and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page once the item was rejected."
+  },
+  "editScreen.productionItem.finished.withdrawn": {
+    "defaultMessage": "This review is finished: the item is withdrawn and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page once the item was withdrawn from review."
+  },
+  "editScreen.productionItem.holdingNotice": {
+    "defaultMessage": "This item is being prepared for review. It can be edited once it reaches its queue.",
+    "description": "Read-only notice at the top of a review queue item's edit page while the item is being prepared for review."
+  },
+  "editScreen.productionItem.latestEditsNotSaved": {
+    "defaultMessage": "Your latest edits could not be saved",
+    "description": "Why Process Changes failed on a review queue item's edit page, shown as the error inside the shared error sentence: the open section's latest edits could not be saved first."
+  },
+  "editScreen.productionItem.loading": {
+    "defaultMessage": "Loading the review item…",
+    "description": "Shown beside a spinner while the edit page reads a review queue item."
+  },
+  "editScreen.productionItem.locked.complete": {
+    "defaultMessage": "This item is complete",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item's review is complete."
+  },
+  "editScreen.productionItem.locked.finalizeFailed": {
+    "defaultMessage": "This item is finalize failed",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: applying the review's corrections failed. The English uses the state's name, Finalize failed."
+  },
+  "editScreen.productionItem.locked.finalizing": {
+    "defaultMessage": "This item is finalizing",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the review was submitted and its corrections are being applied."
+  },
+  "editScreen.productionItem.locked.holding": {
+    "defaultMessage": "This item is preparing",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item is being prepared for review."
+  },
+  "editScreen.productionItem.locked.other": {
+    "defaultMessage": "This item is {state}",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page, for a state the page does not know. {state} is that state as stored, in lower case."
+  },
+  "editScreen.productionItem.locked.rejected": {
+    "defaultMessage": "This item is rejected",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item was rejected."
+  },
+  "editScreen.productionItem.locked.withdrawn": {
+    "defaultMessage": "This item is withdrawn",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item was withdrawn from review."
+  },
+  "editScreen.productionItem.noResultToReview": {
+    "defaultMessage": "This section has no result to review",
+    "description": "Why the section editor of a review queue item's edit page could not open a section, shown after \"Failed to load ground truth:\": the section has neither a draft nor an extraction result."
+  },
+  "editScreen.productionItem.noSectionsToReview": {
+    "defaultMessage": "This item has no sections to review.",
+    "description": "Shown in the section editor's place on a review queue item's edit page when the item has no sections under review."
+  },
+  "editScreen.productionItem.notAssignedToYou": {
+    "defaultMessage": "This item is not assigned to you",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item is not assigned to the user."
+  },
+  "editScreen.productionItem.notAssignedYet": {
+    "defaultMessage": "Not assigned yet. Editing it, or choosing {processChanges}, assigns it to you.",
+    "description": "Notice at the top of an unassigned review queue item's edit page for an Admin. {processChanges} is the name of the page's action, Process Changes."
+  },
+  "editScreen.productionItem.primaryHint": {
+    "defaultMessage": "Apply your corrections and finish the review: evaluation and summarization re-run; OCR, classification and extraction are not repeated.",
+    "description": "Hint of Process Changes in the action bar of a review queue item's edit page: what it does."
+  },
+  "editScreen.productionItem.processing": {
+    "defaultMessage": "Processing the changes to {name}: your corrections are being applied.",
+    "description": "Notice shown as a review queue item's edit page closes after Process Changes finished the review. {name} is the file name of the item's document."
+  },
+  "editScreen.productionItem.regroupConsequence": {
+    "defaultMessage": "Moving pages rewrites this document's <b>section grouping</b>. The extracted values and your draft edits are <b>kept</b> with their sections, and the document finishes with this grouping when you choose <b>{processChanges}</b>. A section you remove takes its draft edits with it.",
+    "description": "What saving a new page grouping does, in Edit Page Grouping opened from a review queue item's edit page. <b>…</b> marks bold text; {processChanges} is the edit page's action, Process Changes."
+  },
+  "editScreen.productionItem.reviewNotComplete": {
+    "defaultMessage": "Available once the review is complete",
+    "description": "Why Summary and Use As Evaluation Baseline are unavailable on a review queue item's edit page: they are about the reviewed document."
+  },
+  "editScreen.productionItem.savingLatest": {
+    "defaultMessage": "Saving your latest edits…",
+    "description": "Why an action of a review queue item's edit page, such as Save, Skip or Process Changes, is unavailable while the latest edits are being saved."
+  },
+  "editScreen.productionItem.skipBody": {
+    "defaultMessage": "It goes back to its queue, unassigned and not finished. Your saved edits are kept for whoever picks it up next.",
+    "description": "Text of the dialog that Skip opens on a review queue item's edit page: what skipping the item does."
+  },
+  "editScreen.productionItem.skipHeader": {
+    "defaultMessage": "Skip this item",
+    "description": "Title of the dialog that Skip opens on a review queue item's edit page, which asks why the item is skipped."
+  },
+  "editScreen.productionItem.staleDraft": {
+    "defaultMessage": "Someone saved a newer draft of this section. It has been reloaded; reapply your last change.",
+    "description": "Error on a review queue item's edit page when a save found a newer draft of the open section, which the page then reloaded."
+  },
+  "editScreen.productionItem.takeOver": {
+    "defaultMessage": "Take over",
+    "description": "Button beside the read-only notice of a review queue item's edit page, for an Admin: it assigns the item, which another user holds, to the Admin."
+  },
+  "editScreen.productionItem.takenOver": {
+    "defaultMessage": "{name} is assigned to you. {assignee} was told.",
+    "description": "Notice after Take over on a review queue item's edit page assigned the item to the Admin. {name} is the file name of the item's document; {assignee} is the former assignee's e-mail address."
+  },
+  "editScreen.productionItem.takenOverNoAssignee": {
+    "defaultMessage": "{name} is assigned to you. The former assignee was told.",
+    "description": "Notice after Take over on a review queue item's edit page assigned the item to the Admin, when the former assignee is not known. {name} is the file name of the item's document."
+  },
+  "editScreen.productionItem.viewOnly": {
+    "defaultMessage": "View only.",
+    "description": "Read-only notice at the top of a review queue item's edit page when the user may not edit the item."
+  },
+  "editScreen.productionItem.viewOnlyAssigned": {
+    "defaultMessage": "View only. This item is assigned to {assignee}.",
+    "description": "Read-only notice at the top of a review queue item's edit page when the item is assigned to another user. {assignee} is that user's e-mail address."
+  },
+  "editScreen.productionItem.viewOnlyClaim": {
+    "defaultMessage": "View only. Claim this item to work on it; it is then assigned to you and shows in Home › Tasks.",
+    "description": "Read-only notice at the top of an unassigned review queue item's edit page, beside its Claim button. Home › Tasks is the page that lists the user's work, named by its breadcrumb trail."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
@@ -5373,7 +5657,7 @@
   },
   "editScreen.sectionEditor.loadFailed": {
     "defaultMessage": "Failed to load ground truth: {error}",
-    "description": "Error in the edit page's section editor when the open section's results could not be read. {error} is the server's error text, shown as is."
+    "description": "Error in the edit page's section editor when the open section's results could not be read. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
   },
   "editScreen.sectionEditor.loadingSection": {
     "defaultMessage": "Loading the section…",
@@ -5401,7 +5685,7 @@
   },
   "editScreen.sectionEditor.saveFailed": {
     "defaultMessage": "Failed to save: {error}",
-    "description": "Error in the edit page's section editor when the open section could not be saved. {error} is the server's error text, shown as is."
+    "description": "Error in the edit page's section editor when the open section could not be saved. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
   },
   "editScreen.sectionEditor.sectionAriaLabel": {
     "defaultMessage": "Section: {section}",
@@ -5439,6 +5723,10 @@
     "defaultMessage": "You have unsaved changes. Leave this document and discard them?",
     "description": "Confirmation the browser shows when the user follows a link in the app away from the edit page with unsaved edits in its section editor."
   },
+  "editScreen.shared.assignedTo": {
+    "defaultMessage": "Assigned to {assignee}",
+    "description": "Why an action of the edit page, such as Process Changes or Edit Page Grouping, is unavailable: the item is assigned to another user. {assignee} is that user's e-mail address."
+  },
   "editScreen.shared.backToDocuments": {
     "defaultMessage": "Back to Documents",
     "description": "Link after the edit page's or the document page's message about a missing or unreadable document, back to the Documents list."
@@ -5446,6 +5734,10 @@
   "editScreen.shared.backToTasks": {
     "defaultMessage": "Back to Tasks",
     "description": "Link after the edit page's message about a missing or unreadable document, back to Home › Tasks, for a user whose only role is Annotator."
+  },
+  "editScreen.shared.claimed": {
+    "defaultMessage": "Claimed {name}. It is in Home › Tasks.",
+    "description": "Notice after Claim on the edit page assigned the item to the user. {name} is the file name of the item's document; Home › Tasks is the page that lists the user's work, named by its breadcrumb trail."
   },
   "editScreen.shared.couldNotOpenDocument": {
     "defaultMessage": "Couldn't open this document",
@@ -5470,6 +5762,18 @@
   "editScreen.shared.loadingDocument": {
     "defaultMessage": "Loading document…",
     "description": "Shown beside a spinner while the edit page or the document page reads its document."
+  },
+  "editScreen.shared.noChangesToSave": {
+    "defaultMessage": "No changes to save",
+    "description": "Why Save, in the edit page's action bar, is unavailable: the open section has no unsaved changes."
+  },
+  "editScreen.shared.returnedToQueue": {
+    "defaultMessage": "{name} returned to the queue.",
+    "description": "Notice shown as the edit page closes after Skip gave the item back to its queue. {name} is the file name of the item's document."
+  },
+  "editScreen.shared.savingChanges": {
+    "defaultMessage": "Saving your changes…",
+    "description": "Why an action of the edit page's action bar, such as Save, Cancel, Refresh or Process Changes, is unavailable while the open section's changes are being saved."
   },
   "editScreen.shared.working": {
     "defaultMessage": "Working…",
