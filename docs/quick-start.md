@@ -100,7 +100,12 @@ ends the conversation.
 5. **Activate.** When you approve, the agent creates a configuration profile and
    **activates** it, then confirms it's ready. Upload a document from **Upload
    Documents** in the side navigation and it's processed with your new
-   configuration.
+   configuration. The new profile takes its **Review Routing** setting from
+   `default`, and a new stack has it on. A document the built-in routing rules
+   hold, such as one with a field under its confidence threshold, then waits in
+   the **Default** [review queue](review-queues.md) instead of completing. Review
+   it there, or turn Review Routing off in the profile (see
+   [The Review Routing switch](review-routing.md#the-review-routing-switch)).
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see

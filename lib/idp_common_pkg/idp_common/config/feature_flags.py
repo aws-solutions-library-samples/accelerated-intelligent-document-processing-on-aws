@@ -39,9 +39,9 @@ def policy_rule_validation_enabled(config: Any) -> bool:
 
     It runs when ``rule_validation.enabled`` is on **and** ``policy_classes`` holds
     at least one policy: with no policies there is nothing to validate, so the
-    stage is skipped. ``config`` is an ``IDPConfig`` or its dict form; ``None`` is
-    False. A dict with no ``rule_validation.enabled`` reads as the model default,
-    which is on.
+    stage is skipped. ``config`` is an ``IDPConfig`` or its dict form. ``None`` is
+    False, because no configuration holds no policies. A dict with no
+    ``rule_validation.enabled`` reads as the model default, which is on.
     """
     if config is None:
         return False
@@ -74,7 +74,9 @@ def confidence_enabled(config: Any) -> bool:
     ``extraction.confidence.mode``: it is off when the mode is ``off``, and when a
     configuration written before the mode existed set ``enabled: false``. The
     dict form is read by the same rule, so a dict with ``mode: off`` is False. A
-    configuration that sets neither is True, which is the model default.
+    configuration that sets neither is True, which is the model default, and so is
+    ``None``. Each flag in this module answers ``None`` with its own default: on
+    here, off for Review Routing and for policy rule validation.
     """
     confidence = _read(_read(config, "extraction"), "confidence")
     if not flag_is_true(_read(confidence, "enabled"), default=True):
