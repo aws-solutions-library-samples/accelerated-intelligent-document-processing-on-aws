@@ -4943,8 +4943,12 @@ Resources:
       # checkov:skip=CKV_AWS_163: "ECR scanning controlled by parameter for environment-specific deployment requirements"
       ImageScanningConfiguration:
         ScanOnPush: !If [IsECRImageScanningEnabled, true, false]
-      # Keeps two complete versions plus slack. A version is one image per entry
-      # in DockerBuildRun's ExpectedImages, and a rollback reuses the previous
+      # Keeps exactly two complete versions, and fewer after a rebuild of a
+      # version already here (its overwritten tags leave untagged digests that
+      # still count). A version is one image per entry
+      # in DockerBuildRun's ExpectedImages (which equals the set the buildspec
+      # pushes; patterns/unified/tests/test_expected_images_match_the_buildspec.py
+      # checks it), and a rollback reuses the previous
       # version's images only while all of them are still here (#1824), so the
       # count must be at least twice that list's length.
       # scripts/tests/test_docker_build_run_wiring.py checks it.
@@ -5299,9 +5303,11 @@ Resources:
         - "processresults-function"
         - "summarization-function"
         - "evaluation-function"
+        - "test-execution-aggregation-function"
         - "rule-validation-function"
         - "rule-validation-orchestration-function"
         - "mlflow-logger-function"
+        - "rule-validation-policy-classification-function"
 
   EcrRepositoryCleanup:
     Type: Custom::ECRRepositoryCleanup

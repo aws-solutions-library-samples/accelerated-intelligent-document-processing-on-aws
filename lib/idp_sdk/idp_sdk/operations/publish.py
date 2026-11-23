@@ -368,6 +368,7 @@ class PublishOperation:
                 terraform_module_url=terraform_info.get("moduleUrl"),
                 terraform_module_sha256=terraform_info.get("sha256"),
                 terraform_pointer_url=terraform_info.get("pointerUrl"),
+                terraform_versions_index_url=terraform_info.get("versionsIndexUrl"),
                 terraform_variant_modules=terraform_variants,
                 template_path=template_path,
                 template_url=template_url,
@@ -409,10 +410,18 @@ class PublishOperation:
 
             <prefix>/<version>/terraform/idp-terraform-<version>.zip
             <prefix>/<version>/terraform/idp-terraform-<version>.zip.sha256
+            <prefix>/terraform/idp-terraform-versions.json
             <prefix>/terraform/idp-terraform-latest.json
 
-        A variant (``headless`` or ``govcloud``) is named in all three keys:
-        ``idp-terraform-<variant>-<version>.zip`` and
+        The versions index lists every published version with its immutable
+        key, checksum and date. A release version (``X.Y.Z``) whose index entry
+        or existing zip has a different checksum is refused before any module
+        object is written (the templates :meth:`build` uploaded are already
+        replaced by then); a pre-release version (``X.Y.Z.dev1``) is replaced.
+
+        A variant (``headless`` or ``govcloud``) is named in every key:
+        ``idp-terraform-<variant>-<version>.zip``,
+        ``idp-terraform-<variant>-versions.json`` and
         ``idp-terraform-<variant>-latest.json``.
 
         Args:
@@ -427,7 +436,8 @@ class PublishOperation:
                 ``govcloud``.
 
         Returns:
-            ``{"moduleUrl", "sha256", "pointerUrl", "version"}``; ``moduleUrl``
+            ``{"moduleUrl", "sha256", "pointerUrl", "versionsIndexUrl",
+            "version"}``; ``moduleUrl``
             is an HTTPS S3 URL ending ``.zip``, usable as a module source.
 
         Raises:

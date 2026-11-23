@@ -50,6 +50,17 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "idp-terraform.json"
 POINTER_NAME = "idp-terraform-latest.json"
+VERSIONS_INDEX_NAME = "idp-terraform-versions.json"
+#: Format of the versions index; bumped only for an incompatible change.
+VERSIONS_INDEX_SCHEMA = 1
+#: How many times a conditional write of the versions index is retried after
+#: another publish changed it between the read and the write.
+VERSIONS_INDEX_ATTEMPTS = 8
+#: A release version. Its index entry is immutable once written; any other
+#: version (``0.6.16.dev1``, ``0.7.0rc1``) is a pre-release that may be
+#: republished with different contents.
+RELEASE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 # Template variants ``publish --headless`` / ``--govcloud`` produce, each
 # published as its own module beside the standard one.
 VARIANTS = ("headless", "govcloud")
@@ -95,6 +106,20 @@ def module_zip_key(prefix: str, version: str, variant: Optional[str] = None) -> 
 
 def pointer_key(prefix: str, variant: Optional[str] = None) -> str:
     return f"{prefix}/terraform/{_stem(variant)}-latest.json"
+
+
+def versions_index_key(prefix: str, variant: Optional[str] = None) -> str:
+    return f"{prefix}/terraform/{_stem(variant)}-versions.json"
+
+
+def versions_index_url_for_pointer(pointer_url: str) -> str:
+    """The versions index beside a latest pointer (same bucket, same variant)."""
+    base, sep, name = pointer_url.rpartition("/")
+    if not sep or not name.endswith("-latest.json"):
+        raise IDPConfigurationError(
+            f"cannot derive a versions index URL from {pointer_url}"
+        )
+    return f"{base}/{name.removesuffix('-latest.json')}-versions.json"
 
 
 def variant_template_key(prefix: str, variant: Optional[str] = None) -> str:
@@ -342,22 +367,309 @@ def translate_published_template(
     return out
 
 
-def _put(s3, bucket: str, key: str, body: bytes, content_type: str, public: bool):
+def _put(
+    s3,
+    bucket: str,
+    key: str,
+    body: bytes,
+    content_type: str,
+    public: bool,
+    **conditions: str,
+):
+    """Upload one object. ``conditions`` (``IfMatch`` / ``IfNoneMatch``) are
+    passed to every attempt, including the retry without an ACL."""
     kwargs = {"Bucket": bucket, "Key": key, "Body": body, "ContentType": content_type}
+    kwargs.update(conditions)
     if not public:
         s3.put_object(**kwargs)
         return
     try:
         s3.put_object(**kwargs, ACL="public-read")
     except Exception as e:  # noqa: BLE001 - only the ownership refusal is retried
-        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-        if code not in (
+        if _error_code(e) not in (
             "AccessControlListNotSupported",
             "InvalidBucketAclWithObjectOwnership",
         ):
             raise
         # BucketOwnerEnforced: anonymous read, if any, comes from the bucket policy.
         s3.put_object(**kwargs)
+
+
+def _make_public(s3, bucket: str, key: str) -> None:
+    """Apply ``public-read`` to an object a public publish left as it was.
+
+    A bucket that refuses ACLs (BucketOwnerEnforced) gets its anonymous read,
+    if any, from the bucket policy, as in :func:`_put`.
+    """
+    try:
+        s3.put_object_acl(Bucket=bucket, Key=key, ACL="public-read")
+    except Exception as e:  # noqa: BLE001 - only the ownership refusal is expected
+        if _error_code(e) not in (
+            "AccessControlListNotSupported",
+            "InvalidBucketAclWithObjectOwnership",
+        ):
+            raise
+
+
+# ---------------------------------------------------------------------------
+# The versions index (publish)
+# ---------------------------------------------------------------------------
+
+
+def is_release_version(version: str) -> bool:
+    return bool(RELEASE_VERSION_RE.fullmatch(version))
+
+
+def _version_sort_key(version: str) -> Tuple[Tuple[int, ...], str]:
+    """Numeric order of the leading ``X.Y.Z``, then the full string."""
+    m = re.match(r"^(\d+(?:\.\d+)*)", version)
+    nums = tuple(int(p) for p in m.group(1).split(".")) if m else ()
+    return nums, version
+
+
+def build_index_entry(
+    version: str,
+    module_key: str,
+    sha256: str,
+    release_date: str,
+) -> Dict[str, str]:
+    return {
+        "version": version,
+        "moduleKey": module_key,
+        "sha256": sha256,
+        "releaseDate": release_date,
+    }
+
+
+def empty_versions_index() -> Dict[str, Any]:
+    return {"schemaVersion": VERSIONS_INDEX_SCHEMA, "versions": []}
+
+
+def check_versions_index(index: Any, where: str) -> Dict[str, Any]:
+    """The index if it has the shape this SDK writes, else an error naming it."""
+    if (
+        not isinstance(index, dict)
+        or not isinstance(index.get("versions"), list)
+        or not all(
+            isinstance(e, dict) and isinstance(e.get("version"), str)
+            for e in index["versions"]
+        )
+    ):
+        raise IDPStackError(f"the Terraform versions index {where} is malformed")
+    schema = index.get("schemaVersion")
+    if schema != VERSIONS_INDEX_SCHEMA:
+        raise IDPStackError(
+            f"the Terraform versions index {where} has schemaVersion {schema!r}; "
+            f"this SDK reads and writes {VERSIONS_INDEX_SCHEMA}"
+        )
+    return index
+
+
+def merge_index_entry(
+    index: Dict[str, Any], entry: Dict[str, str], where: str = ""
+) -> Optional[Dict[str, Any]]:
+    """``index`` with ``entry`` added, or ``None`` when it is already there.
+
+    Never drops another version's entry. A release version
+    (:data:`RELEASE_VERSION_RE`) whose entry records a different checksum is
+    refused: its zip is meant to be immutable. A pre-release version's entry is
+    replaced, because a development build republishes the same version.
+    """
+    versions = [dict(e) for e in index["versions"]]
+    for i, existing in enumerate(versions):
+        if existing["version"] != entry["version"]:
+            continue
+        if existing.get("sha256") == entry["sha256"]:
+            return None
+        if is_release_version(entry["version"]):
+            raise IDPStackError(
+                f"version {entry['version']} is already published{where} with "
+                f"sha256 {existing.get('sha256')}, and this module's is "
+                f"{entry['sha256']}. A release version's module is immutable: "
+                "publish it as a new version, or as a pre-release version "
+                "(for example X.Y.Z.dev1) while iterating."
+            )
+        versions[i] = dict(entry)
+        break
+    else:
+        versions.append(dict(entry))
+    versions.sort(key=lambda e: _version_sort_key(e["version"]))
+    return {**index, "schemaVersion": VERSIONS_INDEX_SCHEMA, "versions": versions}
+
+
+def read_versions_index(
+    s3, bucket: str, key: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """``(index, ETag)``, or ``(None, None)`` when there is no index yet."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+    except Exception as e:  # noqa: BLE001 - only an absent index is expected
+        if _error_code(e) in ("NoSuchKey", "404"):
+            return None, None
+        raise IDPStackError(
+            f"cannot read the Terraform versions index s3://{bucket}/{key}: {e}"
+        ) from e
+    where = f"s3://{bucket}/{key}"
+    try:
+        index = json.loads(resp["Body"].read())
+    except ValueError as e:
+        raise IDPStackError(f"the Terraform versions index {where} is not JSON") from e
+    return check_versions_index(index, where), resp["ETag"]
+
+
+def discover_published_modules(
+    s3, bucket: str, prefix: str, variant: Optional[str] = None
+) -> List[Dict[str, str]]:
+    """Index entries for the modules already under ``<prefix>/<version>/``.
+
+    Used once, when a bucket's index is created, so releases published before
+    the index existed are listed in it. A version directory counts only when it
+    holds that version's ``.zip.sha256`` with a well-formed digest; its release
+    date is that file's last-modified date.
+    """
+    found: List[Dict[str, str]] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/", Delimiter="/"):
+        for common in page.get("CommonPrefixes") or []:
+            version = common["Prefix"][len(prefix) + 1 :].rstrip("/")
+            if not version or version == "terraform":
+                continue
+            zip_key = module_zip_key(prefix, version, variant)
+            try:
+                resp = s3.get_object(Bucket=bucket, Key=f"{zip_key}.sha256")
+            except Exception as e:  # noqa: BLE001 - only an absent file is expected
+                if _error_code(e) in ("NoSuchKey", "404"):
+                    continue
+                raise IDPStackError(
+                    f"cannot read s3://{bucket}/{zip_key}.sha256: {e}"
+                ) from e
+            text = resp["Body"].read().decode("utf-8", "replace").split()
+            digest = text[0].lower() if text else ""
+            if not _SHA256_HEX_RE.match(digest):
+                logger.warning("skipping %s.sha256: no SHA-256 digest in it", zip_key)
+                continue
+            found.append(
+                build_index_entry(
+                    version, zip_key, digest, resp["LastModified"].date().isoformat()
+                )
+            )
+    return found
+
+
+def _supports_conditional_put(s3) -> bool:
+    members = s3.meta.service_model.operation_model("PutObject").input_shape.members
+    return "IfMatch" in members and "IfNoneMatch" in members
+
+
+#: Error codes meaning another writer changed the index between our read and
+#: our write: a failed precondition, a concurrent conditional write, or the
+#: object we read being deleted.
+_INDEX_RACE_CODES = frozenset(
+    {"PreconditionFailed", "412", "ConditionalRequestConflict", "409", "NoSuchKey"}
+)
+
+
+def update_versions_index(
+    s3,
+    *,
+    bucket: str,
+    key: str,
+    entry: Dict[str, str],
+    public: bool = False,
+    attempts: int = VERSIONS_INDEX_ATTEMPTS,
+    seed: Callable[[], List[Dict[str, str]]] = lambda: [],
+) -> Dict[str, Any]:
+    """Add ``entry`` to the index at ``key`` and return the index written.
+
+    Read, merge, then write conditionally on the ETag read (``If-Match``), or on
+    there being no object (``If-None-Match: *``) when there was none, so a
+    concurrent publish that wrote in between is never overwritten: the write
+    fails, and the merge is redone on what that publish wrote.
+
+    ``seed`` supplies the entries a newly created index starts from (the
+    releases already in the bucket); it is not called when an index exists.
+    """
+    if not _supports_conditional_put(s3):
+        raise IDPConfigurationError(
+            "updating the Terraform versions index needs S3 conditional writes "
+            "(If-Match), which this botocore does not have; upgrade boto3"
+        )
+    where = f" in s3://{bucket}/{key}"
+    for _ in range(attempts):
+        index, etag = read_versions_index(s3, bucket, key)
+        base = index
+        if base is None:
+            base = empty_versions_index()
+            for old in seed():
+                if old["version"] != entry["version"]:
+                    base["versions"].append(old)
+        merged = merge_index_entry(base, entry, where)
+        if merged is None:
+            # Already recorded with this checksum; nothing to write, but a
+            # public publish must still leave the index readable.
+            if public and index is not None:
+                _make_public(s3, bucket, key)
+            return base
+        condition = {"IfMatch": etag} if etag else {"IfNoneMatch": "*"}
+        body = (json.dumps(merged, indent=2) + "\n").encode()
+        try:
+            _put(s3, bucket, key, body, "application/json", public, **condition)
+        except Exception as e:  # noqa: BLE001 - only a lost race is retried
+            if _error_code(e) in _INDEX_RACE_CODES:
+                logger.info("versions index %s changed while updating; retrying", key)
+                continue
+            raise
+        return merged
+    raise IDPStackError(
+        f"could not update the Terraform versions index s3://{bucket}/{key}: it "
+        f"changed under every one of {attempts} attempts"
+    )
+
+
+def _put_release_zip(
+    s3, bucket: str, key: str, data: bytes, digest: str, public: bool
+) -> None:
+    """Write a release version's zip only if no object is at its key, or the
+    object there already has these bytes.
+
+    This is the point that makes a release immutable: the index check before it
+    sees only what the index records, while this write holds against a zip some
+    other publish wrote (concurrently, or with an SDK that kept no index, or one
+    that stopped before its index write).
+    """
+    for _ in range(VERSIONS_INDEX_ATTEMPTS):
+        try:
+            _put(s3, bucket, key, data, "application/zip", public, IfNoneMatch="*")
+            return
+        except Exception as e:  # noqa: BLE001 - only an existing object is handled
+            code = _error_code(e)
+            if code in ("ConditionalRequestConflict", "409"):
+                continue  # a concurrent write to the key is in flight
+            if code not in ("PreconditionFailed", "412"):
+                raise
+        try:
+            existing = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except Exception as e:  # noqa: BLE001 - a deleted object is retried
+            if _error_code(e) in ("NoSuchKey", "404"):
+                continue  # deleted since the write was refused; try again
+            raise IDPStackError(f"cannot read s3://{bucket}/{key}: {e}") from e
+        actual = hashlib.sha256(existing).hexdigest()
+        if actual == digest:
+            # The same bytes are already there. A public publish still makes
+            # them public, as rewriting them would have.
+            if public:
+                _make_public(s3, bucket, key)
+            return
+        raise IDPStackError(
+            f"s3://{bucket}/{key} already holds a module with sha256 {actual}, and "
+            f"this module's is {digest}. A release version's module is immutable: "
+            "publish it as a new version, or as a pre-release version "
+            "(for example X.Y.Z.dev1) while iterating."
+        )
+    raise IDPStackError(
+        f"could not write s3://{bucket}/{key}: concurrent writes or deletes "
+        f"conflicted under every one of {VERSIONS_INDEX_ATTEMPTS} attempts"
+    )
 
 
 def upload_module(
@@ -370,18 +682,54 @@ def upload_module(
     version: str,
     public: bool = False,
     variant: Optional[str] = None,
+    release_date: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Zip and upload the module, its checksum and the latest pointer, under
-    the variant's names when ``variant`` is given.
+    """Zip and upload the module, its checksum, the versions index entry and
+    the latest pointer, under the variant's names when ``variant`` is given.
 
-    Returns ``{"moduleUrl", "sha256", "pointerUrl", "version"}``.
+    A release version already in the index with a different checksum is refused
+    before anything is written (see :func:`merge_index_entry`), and its zip is
+    written only if its key is empty or already holds these bytes
+    (:func:`_put_release_zip`), so a zip another publish wrote is never
+    replaced. The index is written before the pointer, so the pointer never
+    names a version the index lacks. ``release_date`` defaults to today (UTC).
+
+    Returns ``{"moduleUrl", "sha256", "pointerUrl", "versionsIndexUrl",
+    "version"}``.
     """
+    if not _supports_conditional_put(s3):
+        raise IDPConfigurationError(
+            "publishing the Terraform module needs S3 conditional writes "
+            "(If-Match and If-None-Match on PutObject), which this botocore does "
+            "not have; upgrade boto3 and botocore"
+        )
     data = deterministic_module_zip(module_dir)
     digest = hashlib.sha256(data).hexdigest()
     zip_key = module_zip_key(prefix, version, variant)
     zip_name = zip_key.rsplit("/", 1)[1]
     module_url = s3_https_url(region, bucket, zip_key)
-    _put(s3, bucket, zip_key, data, "application/zip", public)
+    index_key = versions_index_key(prefix, variant)
+    if release_date is None:
+        import datetime
+
+        release_date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    entry = build_index_entry(version, zip_key, digest, release_date)
+    # Refuse an immutable version the index already records with other bytes,
+    # before anything is written. The release zip's own conditional write below
+    # is what holds against a zip the index does not know about, and the
+    # index's conditional write holds against a concurrent index update.
+    existing, _ = read_versions_index(s3, bucket, index_key)
+    seeded: List[Dict[str, str]] = []
+    if existing is None:
+        # No index yet: the releases already in the bucket become its first
+        # entries, and are held to the same immutability rule.
+        seeded = discover_published_modules(s3, bucket, prefix, variant)
+        existing = {**empty_versions_index(), "versions": seeded}
+    merge_index_entry(existing, entry, f" in s3://{bucket}/{prefix}")
+    if is_release_version(version):
+        _put_release_zip(s3, bucket, zip_key, data, digest, public)
+    else:
+        _put(s3, bucket, zip_key, data, "application/zip", public)
     _put(
         s3,
         bucket,
@@ -389,6 +737,14 @@ def upload_module(
         sha256_file_body(digest, zip_name).encode(),
         "text/plain",
         public,
+    )
+    update_versions_index(
+        s3,
+        bucket=bucket,
+        key=index_key,
+        entry=entry,
+        public=public,
+        seed=lambda: seeded,
     )
     ptr_key = pointer_key(prefix, variant)
     _put(
@@ -405,6 +761,7 @@ def upload_module(
         "moduleUrl": module_url,
         "sha256": digest,
         "pointerUrl": s3_https_url(region, bucket, ptr_key),
+        "versionsIndexUrl": s3_https_url(region, bucket, index_key),
         "version": version,
     }
 
@@ -443,17 +800,86 @@ def resolve_pointer(pointer: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     return url, sha if isinstance(sha, str) else None
 
 
+def resolve_index_version(index: Any, version: str, index_url: str) -> Tuple[str, str]:
+    """``(module URL, sha256)`` of ``version`` in a versions index read from
+    ``index_url``.
+
+    The URL is built from the entry's ``moduleKey`` in the index's own bucket,
+    so a replicated bucket's index names its own copy. An entry without a
+    well-formed checksum is refused: pinning a version means deploying the
+    bytes the index recorded, so there must be something to check them against.
+    """
+    check_versions_index(index, index_url)
+    parsed = parse_s3_https_url(index_url.removeprefix("s3::"))
+    if not parsed:
+        raise IDPConfigurationError(
+            f"the versions index URL is not an S3 URL: {index_url}"
+        )
+    region, bucket, _ = parsed
+    for entry in index["versions"]:
+        if entry["version"] != version:
+            continue
+        key, sha = entry.get("moduleKey"), entry.get("sha256")
+        if not isinstance(key, str) or not key:
+            raise IDPConfigurationError(
+                f"version {version} in {index_url} names no moduleKey"
+            )
+        if not isinstance(sha, str) or not _SHA256_HEX_RE.match(sha):
+            raise IDPConfigurationError(
+                f"version {version} in {index_url} has no valid sha256"
+            )
+        return s3_https_url(region, bucket, key), sha
+    listed = ", ".join(e["version"] for e in index["versions"]) or "none"
+    raise IDPConfigurationError(
+        f"Terraform module version {version} is not in {index_url} "
+        f"(published versions: {listed})"
+    )
+
+
+def resolve_module_source(
+    module_url: Optional[str],
+    pointer_url: Optional[str],
+    module_version: Optional[str] = None,
+    fetch: Callable[[str], bytes] = lambda url: fetch_url(url),
+) -> Tuple[str, Optional[str]]:
+    """``(module URL, expected sha256 or None)`` for a deploy.
+
+    ``module_url`` is used as given. Otherwise ``module_version`` is looked up
+    in the versions index beside ``pointer_url``, or, with no version, the
+    pointer itself names the newest module.
+    """
+    if module_url:
+        if module_version:
+            raise IDPConfigurationError(
+                "pass a module URL or a module version, not both"
+            )
+        return module_url, None
+    if not pointer_url:
+        raise IDPConfigurationError(
+            "no Terraform module URL: pass module_url or pointer_url"
+        )
+    if module_version:
+        index_url = versions_index_url_for_pointer(pointer_url)
+        try:
+            index = json.loads(fetch(index_url))
+        except ValueError as e:
+            raise IDPConfigurationError(f"{index_url} is not JSON") from e
+        return resolve_index_version(index, module_version, index_url)
+    return resolve_pointer(json.loads(fetch(pointer_url)))
+
+
 def load_module_manifest(
     module_url: str,
     expected_sha256: Optional[str] = None,
     s3_factory: Optional[Callable[[str], Any]] = None,
+    checksum_source: str = "its pointer",
 ) -> Dict[str, Any]:
     data = fetch_url(module_url, s3_factory)
     if expected_sha256:
         actual = hashlib.sha256(data).hexdigest()
         if actual != expected_sha256:
             raise IDPConfigurationError(
-                f"the module at {module_url} has sha256 {actual}, but its pointer "
+                f"the module at {module_url} has sha256 {actual}, but {checksum_source} "
                 f"says {expected_sha256}"
             )
     return manifest_from_zip(data)
