@@ -45,7 +45,7 @@ const VERSION_CONTEXT = {
 vi.mock('../../contexts/document-version', () => ({ useDocumentVersion: () => VERSION_CONTEXT }));
 
 import { THUMBNAIL_FAILURE_MESSAGES, usePageThumbnails } from '../use-page-thumbnails';
-import { FILE_ACCESS_DENIED_MESSAGE } from '../utils/graphql-error';
+import { fileAccessMessages } from '../utils/graphql-error';
 
 interface PresignCall {
   query: string;
@@ -146,7 +146,7 @@ describe('usePageThumbnails', () => {
     const { result } = renderHook(() => usePageThumbnails(PAGES));
 
     await waitFor(() => expect(result.current.failure).toBe('access-denied'));
-    expect(THUMBNAIL_FAILURE_MESSAGES['access-denied']).toBe(FILE_ACCESS_DENIED_MESSAGE);
+    expect(THUMBNAIL_FAILURE_MESSAGES['access-denied']).toBe(fileAccessMessages.denied);
     // The urls map is still fully populated with nulls rather than empty: the
     // caller needs "asked and refused" to stay distinct from "never asked".
     expect(Object.keys(result.current.urls)).toHaveLength(PAGES.length);

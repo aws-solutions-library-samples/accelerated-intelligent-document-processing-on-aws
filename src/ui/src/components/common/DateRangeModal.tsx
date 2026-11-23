@@ -2,9 +2,38 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState } from 'react';
 import { Modal, Box, SpaceBetween, Button, Alert } from '@cloudscape-design/components';
-import { useIntl } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import DateRangeFields, { lastDaysRange, toIsoRange, validateDateRange } from './DateRangeFields';
 import type { DateRangeValue } from './DateRangeFields';
+
+const messages = defineMessages<{
+  title: NoMessageValues;
+  cancel: NoMessageValues;
+  apply: NoMessageValues;
+  note: NoMessageValues;
+}>({
+  title: {
+    id: 'common.dateRangeModal.title',
+    defaultMessage: 'Select custom date range',
+    description: 'Title of the dialog that picks a custom date range for a list.',
+  },
+  cancel: {
+    id: 'common.dateRangeModal.cancel',
+    defaultMessage: 'Cancel',
+    description: 'Button that closes the custom date range dialog without applying a range.',
+  },
+  apply: {
+    id: 'common.dateRangeModal.apply',
+    defaultMessage: 'Apply',
+    description: 'Button that applies the custom date range.',
+  },
+  note: {
+    id: 'common.dateRangeModal.note',
+    defaultMessage:
+      'Documents are queried server-side for custom date ranges. Results are paginated for performance. All times are in UTC.',
+    description: 'Note under the date and time fields of the custom date range dialog.',
+  },
+});
 
 interface DateRangeModalProps {
   visible: boolean;
@@ -29,15 +58,15 @@ const DateRangeModal = ({ visible, onDismiss, onApply }: DateRangeModalProps): R
     <Modal
       visible={visible}
       onDismiss={onDismiss}
-      header="Select custom date range"
+      header={intl.formatMessage(messages.title)}
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
             <Button variant="link" onClick={onDismiss}>
-              Cancel
+              <FormattedMessage {...messages.cancel} />
             </Button>
             <Button variant="primary" onClick={handleApply}>
-              Apply
+              <FormattedMessage {...messages.apply} />
             </Button>
           </SpaceBetween>
         </Box>
@@ -48,7 +77,7 @@ const DateRangeModal = ({ visible, onDismiss, onApply }: DateRangeModalProps): R
         {error && <Alert type="error">{error}</Alert>}
         <DateRangeFields value={range} onChange={setRange} />
         <Box variant="small" color="text-body-secondary">
-          Documents are queried server-side for custom date ranges. Results are paginated for performance. All times are in UTC.
+          <FormattedMessage {...messages.note} />
         </Box>
       </SpaceBetween>
     </Modal>
