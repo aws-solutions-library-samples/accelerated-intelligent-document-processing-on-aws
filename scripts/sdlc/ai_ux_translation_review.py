@@ -766,7 +766,7 @@ class ScreenReview:
                 f"| {entry.get('screenshots', '')} | "
                 f"{audit if 'socket_audit' in entry else ''} |"
             )
-        lines += _problem_lines(self.record["locales"])
+        lines += _problem_lines(self.record["locales"], self.scrub.field)
         page = "\n".join(lines) + "\n"
         for report in self.reports:
             page += "\n" + translation_prompt.report_markdown(
@@ -775,20 +775,26 @@ class ScreenReview:
         return page
 
 
-def _problem_lines(entries: Sequence[Mapping[str, Any]]) -> list[str]:
+def _problem_lines(
+    entries: Sequence[Mapping[str, Any]], redact: Callable[[str], str]
+) -> list[str]:
     """Under the page's table: why each locale was not reviewed, with the last
-    error its session left, if any. An unreadable report says why in its section."""
+    error its session left, if any. An unreadable report says why in its section.
+
+    Each text is redacted before ``section.sanitize``, never after: sanitising puts
+    a zero-width space after an ``@`` or before a ``$``, and a user name or password
+    split that way no longer matches the redactor that scrubs the page.
+    """
     lines: list[str] = []
     for entry in entries:
         if entry["status"] in ("reviewed", "unreadable"):
             continue
         text = f"- {entry['locale']}: {entry['status'].replace('_', ' ')}"
-        detail = section.sanitize(entry.get("detail"), ERROR_CHARS)
+        detail = section.sanitize(redact(entry.get("detail") or ""), ERROR_CHARS)
         if detail:
             text += f": {detail}"
-        error = section.sanitize(
-            entry.get("session", {}).get("last_error"), ERROR_CHARS
-        )
+        error = entry.get("session", {}).get("last_error") or ""
+        error = section.sanitize(redact(error), ERROR_CHARS)
         if error:
             text += f". claude's last error: {error}"
         lines.append(text)

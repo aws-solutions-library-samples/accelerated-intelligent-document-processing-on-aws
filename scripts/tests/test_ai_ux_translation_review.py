@@ -466,7 +466,26 @@ def test_a_failed_session_keeps_claudes_last_error_line_redacted(
     assert "fr-CA: claude's last error: User: " in printed
     for text in (error, page, printed, (out / review.RUN_FILE).read_text("utf-8")):
         for secret in (ARN, ACCOUNT, LOGIN):
-            assert secret not in text
+            assert secret not in text.replace("\u200b", "")
+
+
+@pytest.mark.unit
+def test_why_a_locale_was_not_reviewed_is_redacted_before_it_is_sanitised(
+    tmp_path: Path, runtime: FakeRuntime
+) -> None:
+    # sanitize puts a zero-width space after the login's "@", so a login redacted
+    # only after it would reach the page split, and unmatched.
+    runtime.failing["set_locale fr-CA"] = signin.SignInError(
+        f"the UI did not switch to fr-CA for {LOGIN} ({SECRET})"
+    )
+    _, _, out = _run(tmp_path, runtime, "--locale", "fr-CA")
+    page = (out / review.FINDINGS_MD).read_text(encoding="utf-8")
+    line = next(line for line in page.splitlines() if line.startswith("- fr-CA:"))
+    assert line.startswith(
+        "- fr-CA: locale unavailable: the UI did not switch to fr-CA"
+    )
+    for secret in (LOGIN, SECRET):
+        assert secret not in page.replace("\u200b", "")
 
 
 @pytest.mark.unit
