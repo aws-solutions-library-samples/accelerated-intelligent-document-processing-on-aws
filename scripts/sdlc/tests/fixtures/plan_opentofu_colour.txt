@@ -1,0 +1,36 @@
+[0m[1mmodule.idp.terraform_data.c: Refreshing state... [id=113edc4f-772f-8e25-b8cf-967fb75f2702][0m
+[0m[1mmodule.idp.terraform_data.b[0]: Refreshing state... [id=a024e764-79b2-2ca2-7d3f-dcc508b6b5c9][0m
+[0m[1mmodule.idp.terraform_data.a: Refreshing state... [id=d25892b4-6135-9aee-bd8b-85d8eaaa013e][0m
+
+OpenTofu used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  [33m~[0m update in-place (current -> planned)[0m
+  [31m-[0m destroy[0m
+[31m-[0m/[32m+[0m destroy and then create replacement[0m
+
+OpenTofu will perform the following actions:
+
+[1m  # module.idp.terraform_data.a[0m must be [1m[31mreplaced[0m
+[0m[31m-[0m/[32m+[0m[0m resource "terraform_data" "a" {
+      [33m~[0m[0m id               = "d25892b4-6135-9aee-bd8b-85d8eaaa013e" -> (known after apply)
+      [33m~[0m[0m triggers_replace = [
+          [31m-[0m[0m "1",
+          [32m+[0m[0m "2",
+        ]
+    }
+
+[1m  # module.idp.terraform_data.b[0][0m will be [1m[31mdestroyed[0m
+  # (because index [0] is out of range for count)
+[0m  [31m-[0m[0m resource "terraform_data" "b" {
+      [31m-[0m[0m id = "a024e764-79b2-2ca2-7d3f-dcc508b6b5c9" [90m-> null[0m[0m
+    }
+
+[1m  # module.idp.terraform_data.c[0m will be updated in-place
+[0m  [33m~[0m[0m resource "terraform_data" "c" {
+        id     = "113edc4f-772f-8e25-b8cf-967fb75f2702"
+      [33m~[0m[0m input  = "1" [33m->[0m[0m "2"
+      [33m~[0m[0m output = "1" -> (known after apply)
+    }
+
+[1mPlan:[0m 1 to add, 1 to change, 2 to destroy.
+[0m

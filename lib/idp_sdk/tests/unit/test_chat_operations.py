@@ -110,6 +110,37 @@ class TestChatProcessorSetupEnv:
             assert processor._env_ready is True
 
     @patch("idp_sdk._core.chat_processor.StackInfo")
+    def test_with_no_region_the_agents_get_the_region_boto3_resolves(
+        self, mock_stack_info_cls, monkeypatch
+    ):
+        """The Region the stack lookup's client used, not a fresh session's.
+
+        A fresh `boto3.Session()` ignores a Region given to
+        `boto3.setup_default_session`, which the stack lookup honours, so the
+        agents would call another Region's tables and models.
+        """
+        import os
+
+        import boto3
+
+        from idp_sdk._core.chat_processor import ChatProcessor
+
+        mock_info = MagicMock()
+        mock_info.get_resources.return_value = {}
+        mock_info._get_stack_outputs.return_value = {}
+        mock_info.cfn.get_paginator.return_value.paginate.return_value = []
+        mock_stack_info_cls.return_value = mock_info
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        boto3.setup_default_session(region_name="eu-central-1")
+
+        with patch.dict(os.environ, os.environ.copy(), clear=True):
+            ChatProcessor(stack_name="IDP")._setup_env()
+
+            assert os.environ.get("AWS_REGION") == "eu-central-1"
+            assert os.environ.get("BEDROCK_REGION") == "eu-central-1"
+
+    @patch("idp_sdk._core.chat_processor.StackInfo")
     def test_setup_env_cached(self, mock_stack_info_cls):
         from idp_sdk._core.chat_processor import ChatProcessor
 

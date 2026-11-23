@@ -154,6 +154,29 @@ class TestSynthesizeShaping:
             with pytest.raises(RuntimeError):
                 engine.synthesize(job)
 
+    def test_a_generator_under_another_module_name_is_not_available(self, monkeypatch):
+        """Only ``seed_data`` counts as the generator.
+
+        ``synthesize`` imports ``Generator`` from ``seed_data`` by name, so a
+        module with a ``Generator`` attribute importable under a different name
+        (the pre-release ``doc_gen_agent``) must not make the probe report the
+        generator available: the run would then raise ImportError mid-job.
+        """
+        legacy = types.ModuleType("doc_gen_agent")
+        legacy.Generator = object
+        monkeypatch.setitem(sys.modules, "doc_gen_agent", legacy)
+        # None in sys.modules makes ``import seed_data`` raise ImportError.
+        monkeypatch.setitem(sys.modules, "seed_data", None)
+
+        available, reason = engine.generator_available()
+
+        assert available is False
+        assert "seed_data" in reason
+
+    def test_seed_data_with_generator_is_available(self, monkeypatch):
+        _install_fake_seed_data(monkeypatch, [])
+        assert engine.generator_available() == (True, "")
+
     def test_generator_is_given_an_html_renderer(self, tmp_path, monkeypatch):
         """The adapter names SEED's PDF backend instead of taking SEED's default.
 

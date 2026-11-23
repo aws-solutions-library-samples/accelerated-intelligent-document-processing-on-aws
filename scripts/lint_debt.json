@@ -62,6 +62,18 @@
         "lintFindings": 44,
         "unformatted": 3
       }
+    },
+    "solution-profile/schema/v1/validate_profile.py": {
+      "turnsOff": "ruff lint AND format for the vendored reference validator of the Solution Profile contract",
+      "premise": "vendored_contract_hash_pinned",
+      "reason": "A copy of the contract's reference validator, kept byte-for-byte so that every producer and consumer of a profile applies the same rules. It is written to a 120-column style, so `ruff format` would rewrite it, and a reformatted copy is no longer the reference validator. It has no lint findings today; the exclusion is for formatting, and lint goes with it because a scope entry covers both.",
+      "ratchet": "non-vacuity + premise (solution-profile/schema/README.md must pin the file's sha256 and the file must match it; scripts/tests/test_solution_profile.py asserts the same pin)",
+      "ratchetGap": "none for edits: any change to the file breaks the pin. A new upstream version of the contract is re-copied and re-pinned by hand.",
+      "shields": {
+        "files": 1,
+        "lintFindings": 0,
+        "unformatted": 1
+      }
     }
   },
   "lintDebt": {
@@ -104,9 +116,6 @@
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py": {
       "F841": 1,
       "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
-      "E722": 1
     },
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py": {
       "I001": 1
@@ -222,7 +231,6 @@
       "I001": 1
     },
     "src/lambda/docsplit_testset_deployer/index.py": {
-      "F541": 1,
       "I001": 1
     },
     "src/lambda/external_idp_group_mapping/test_index.py": {
@@ -318,7 +326,6 @@
     }
   },
   "formatDebt": [
-    "lib/idp_common_pkg/idp_common/bedrock/client.py",
     "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
     "lib/idp_common_pkg/idp_common/config/constants.py",
     "lib/idp_common_pkg/idp_common/image/__init__.py",
@@ -471,13 +478,12 @@
     "src/lambda/user_management/test_scan_pagination.py",
     "src/lambda/user_sync/index.py",
     "src/lambda/w2_dataset_deployer/index.py",
-    "src/lambda/workflow_tracker/conftest.py",
     "src/lambda/workflow_tracker/test_decrement_floor_and_idempotency.py",
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 71,
-    "lintFindings": 172,
-    "formatDebtFiles": 156
+    "lintDebtFiles": 70,
+    "lintFindings": 170,
+    "formatDebtFiles": 154
   }
 }

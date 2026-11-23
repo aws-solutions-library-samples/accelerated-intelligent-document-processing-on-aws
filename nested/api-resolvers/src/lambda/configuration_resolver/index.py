@@ -26,7 +26,9 @@ from idp_common.config.hook_reachability import InertGatingHookError
 from idp_common.config.migrations import migrate_config
 from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, PricingConfig
 from idp_common.config.prefix_mappings import (
+    DEFAULT_HISTORY_PAGE,
     DEFAULT_PRECEDENCE,
+    MAX_HISTORY_PAGE,
     PRECEDENCE_VALUES,
     PrefixMappingConflict,
     PrefixMappingStore,
@@ -132,6 +134,10 @@ _OPERATION_REQUIRED_GROUPS = {
     # of a longest-prefix rule is actively misleading — you cannot tell which
     # mapping wins when some of them are hidden from you.
     "listConfigPrefixMappings": {"Admin"},
+    # The change history, Admin-only on the same grounds as the list it explains:
+    # every record carries a whole mapping entry before and after, so it is the
+    # routing policy plus who set it, including for mappings since deleted.
+    "listConfigPrefixMappingHistory": {"Admin"},
     # Tenant declarations: Admin-only on the same grounds as mapping CRUD. A
     # declaration decides which prefixes and profiles a scoped user may be
     # confined to, and the list is the deployment's isolation policy.
@@ -540,7 +546,12 @@ def handler(event, context):
             )
         elif operation == "deleteConfigPrefixMapping":
             return handle_delete_prefix_mapping(
-                manager, event["arguments"].get("prefix") or ""
+                manager, event["arguments"].get("prefix") or "", caller["email"]
+            )
+        elif operation == "listConfigPrefixMappingHistory":
+            # Admin-only and unfiltered, like the list it explains.
+            return handle_list_prefix_mapping_history(
+                manager, event.get("arguments") or {}
             )
         elif operation == "listTenants":
             return handle_list_tenants(manager)
@@ -1750,7 +1761,7 @@ def handle_put_prefix_mapping(manager, args, actor):
         }
 
 
-def handle_delete_prefix_mapping(manager, prefix):
+def handle_delete_prefix_mapping(manager, prefix, actor=None):
     """Remove one mapping.
 
     Deliberately does not unpin a revision the mapping pinned — a test run may have
@@ -1758,7 +1769,7 @@ def handle_delete_prefix_mapping(manager, prefix):
     PrefixMappingStore.delete.
     """
     try:
-        if not _prefix_mapping_store(manager).delete(prefix):
+        if not _prefix_mapping_store(manager).delete(prefix, actor=actor):
             return {
                 "success": False,
                 "error": {
@@ -1776,6 +1787,64 @@ def handle_delete_prefix_mapping(manager, prefix):
             "error": {
                 "type": "Error",
                 "message": f"Failed to delete mapping: {str(e)}",
+            },
+        }
+
+
+def _optional_positive_int(args, name, *, ceiling=None):
+    """``args[name]`` as a positive int, ``None`` when absent, else ``ValueError``."""
+    value = args.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive whole number")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a positive whole number") from None
+    if number < 1 or (ceiling is not None and number > ceiling):
+        bound = f" no greater than {ceiling}" if ceiling is not None else ""
+        raise ValueError(f"{name} must be a positive whole number{bound}")
+    return number
+
+
+def handle_list_prefix_mapping_history(manager, args):
+    """The append-only change log for config prefix mappings, newest first.
+
+    ``prefix`` narrows it to one mapping's changes, including after that mapping
+    was deleted. ``before`` is the cursor a previous page returned as
+    ``nextBefore``. See ``PrefixMappingStore.history``.
+    """
+    try:
+        limit = _optional_positive_int(args, "limit", ceiling=MAX_HISTORY_PAGE)
+        before = _optional_positive_int(args, "before")
+    except ValueError as e:
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
+    prefix = args.get("prefix")
+    if prefix is not None and not isinstance(prefix, str):
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": "prefix must be a string"},
+        }
+    try:
+        page = _prefix_mapping_store(manager).history(
+            prefix or None, limit=limit or DEFAULT_HISTORY_PAGE, before=before
+        )
+        return {
+            "success": True,
+            "entries": page["entries"],
+            "nextBefore": page["nextBefore"],
+        }
+    except Exception as e:
+        logger.error(f"Error reading the configuration prefix mapping history: {e}")
+        return {
+            "success": False,
+            "error": {
+                "type": "Error",
+                "message": "Failed to read the mapping history",
             },
         }
 

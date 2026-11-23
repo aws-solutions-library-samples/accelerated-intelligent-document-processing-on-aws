@@ -935,6 +935,19 @@ Different Bedrock models implement these parameters with varying defaults, namin
     from the `ValidationException` and retries once.
 
 - **Nova models**:
+  - Limits differ within the family, so `model_config_limits.yaml` gives the
+    members whose Bedrock model card names a different window their own entry
+    ahead of the family pattern: Nova 2 Lite (`nova-2-lite`, every geo, global
+    and service-tier id) has a 1,000,000-token input window and 64,000 output
+    tokens, Nova Micro 128,000 input and 10,000 output, and Nova Pro, Nova Lite,
+    Nova Premier and any other Nova 2 id 300,000 input and 10,000 output. Nova 2
+    Pro has no Bedrock model card, so it keeps the conservative family values.
+    Because the client requests the model maximum when `max_tokens` is unset, a
+    Nova 2 Lite call with no cap asks for 64,000 output tokens, and Bedrock holds
+    that amount of the tokens-per-minute quota until the request finishes. The
+    system defaults therefore set `max_tokens: 10000` for the short-reply steps
+    that use Nova 2 Lite (the three classification calls, `ocr.max_tokens` and
+    `evaluation.llm_method.max_tokens`).
   - Default values: temperature=0.7, topP=0.9, topK≈50 (moderately constrained)
   - Parameters use camelCase: `temperature`, `topP`, `topK`
   - Implementation: `topK` is placed in `additionalModelRequestFields.inferenceConfig`
@@ -1060,6 +1073,27 @@ The BedrockClient automatically handles common failure scenarios:
   `tests/unit/bedrock/test_retry_ladder_bounds.py` drives a real `bedrock-runtime`
   client with only urllib3's `urlopen` replaced, so the exception is the one botocore
   itself raises (#1706).
+- An HTTP 500, 502, 503 or 504 reply is retried whatever error code it carries, on
+  both `_invoke_with_retry` and `_generate_embedding_with_retry`. That includes the
+  bare status botocore uses as the code when a reply names no error type (`"500"`,
+  message `"Internal Server Error"`), which used to be logged as "Non-retryable
+  Bedrock error" and fail the call on its first attempt (#2036). A 501 or a 4xx is
+  still not retried on these two ladders; the bedrock-mantle path keeps its own rule
+  and retries any status of 500 or above. Each retry is logged as a server error and
+  counts in `BedrockThrottles` (or `BedrockEmbeddingThrottles`) like any retryable
+  error. The category metric goes by the code first: a 503 counts in
+  `BedrockServiceUnavailable`, the circuit breaker's default trigger, unless its code
+  names another category (a throttle carrying a 503 counts as `BedrockThrottling`).
+  The rule is `model_utils.http_server_error_status`. The agentic retry decorators
+  in `utils/bedrock_utils.py` apply it to Bedrock model calls only, and only under
+  their default vocabulary; `utils.transient_errors` uses only its bare-status half
+  (see the [utils README](../utils/README.md)). The Z3 rule translator has its own
+  retry list and does not use it.
+- A 429 reply that names no error type (botocore's code `"429"`, typically a front
+  end throttling the request) is retried by the same rule, and is logged and counted
+  as throttling (`BedrockThrottling`). Only the bare code counts: a 429 carrying a
+  named code is judged by the name, so `ThrottlingException` is retried and
+  `ModelNotReadyException`, which neither ladder lists, is not (#2112).
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
 - A retry frees the attempt it replaces before it starts. Every ladder here

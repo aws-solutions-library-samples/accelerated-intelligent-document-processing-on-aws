@@ -13,10 +13,17 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 vi.mock('../CircuitBreakerBadge', () => ({ default: () => <span /> }));
 
 import { DocumentViewSelector, DocumentsCommonHeader, type MappedDocument } from '../documents-table-config';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const row = (objectKey: string, overrides: Partial<MappedDocument> = {}): MappedDocument =>
   ({ objectKey, objectStatus: 'COMPLETED', evaluationStatus: 'NOT_EVALUATED', ...overrides }) as MappedDocument;
@@ -36,6 +43,7 @@ describe('DocumentsCommonHeader download menu', () => {
         downloadToExcel={downloadToExcel}
         onDownloadSelected={onDownloadSelected}
       />,
+      { wrapper: English },
     );
 
     openDownloadMenu();
@@ -55,6 +63,7 @@ describe('DocumentsCommonHeader download menu', () => {
         downloadToExcel={downloadToExcel}
         onDownloadSelected={onDownloadSelected}
       />,
+      { wrapper: English },
     );
 
     openDownloadMenu();
@@ -82,6 +91,7 @@ describe('DocumentsCommonHeader download menu', () => {
         downloadToExcel={downloadToExcel}
         onDownloadSelected={onDownloadSelected}
       />,
+      { wrapper: English },
     );
 
     openDownloadMenu();
@@ -121,6 +131,7 @@ describe('DocumentsCommonHeader destructive actions', () => {
         onAbort={onAbort}
         destructiveDisabledReason="Managed by their test run"
       />,
+      { wrapper: English },
     );
 
     for (const name of actionNames) {
@@ -134,7 +145,7 @@ describe('DocumentsCommonHeader destructive actions', () => {
   });
 
   it('surfaces the reason as the tooltip instead of hiding the buttons', () => {
-    render(<DocumentsCommonHeader {...props} destructiveDisabledReason="Managed by their test run" />);
+    render(<DocumentsCommonHeader {...props} destructiveDisabledReason="Managed by their test run" />, { wrapper: English });
 
     for (const name of actionNames) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
@@ -144,7 +155,7 @@ describe('DocumentsCommonHeader destructive actions', () => {
 
   it('leaves the actions live for a selection in the production view', () => {
     const onDelete = vi.fn();
-    render(<DocumentsCommonHeader {...props} onDelete={onDelete} destructiveDisabledReason={null} />);
+    render(<DocumentsCommonHeader {...props} onDelete={onDelete} destructiveDisabledReason={null} />, { wrapper: English });
 
     const button = screen.getByRole('button', { name: /^delete$/i });
     expect(button).not.toBeDisabled();
@@ -156,7 +167,7 @@ describe('DocumentsCommonHeader destructive actions', () => {
 describe('DocumentViewSelector', () => {
   it('reports the selected partition and reflects the current one', () => {
     const setDocumentView = vi.fn();
-    render(<DocumentViewSelector documentView="PRODUCTION" setDocumentView={setDocumentView} />);
+    render(<DocumentViewSelector documentView="PRODUCTION" setDocumentView={setDocumentView} />, { wrapper: English });
 
     fireEvent.click(screen.getByText('Test Studio'));
     expect(setDocumentView).toHaveBeenCalledWith('TEST');
@@ -164,7 +175,7 @@ describe('DocumentViewSelector', () => {
 
   it('switches back to the production partition', () => {
     const setDocumentView = vi.fn();
-    render(<DocumentViewSelector documentView="TEST" setDocumentView={setDocumentView} />);
+    render(<DocumentViewSelector documentView="TEST" setDocumentView={setDocumentView} />, { wrapper: English });
 
     fireEvent.click(screen.getByText('Production'));
     expect(setDocumentView).toHaveBeenCalledWith('PRODUCTION');
@@ -172,7 +183,7 @@ describe('DocumentViewSelector', () => {
 
   it('holds both segments while a load is in flight', () => {
     const setDocumentView = vi.fn();
-    render(<DocumentViewSelector documentView="PRODUCTION" setDocumentView={setDocumentView} disabled />);
+    render(<DocumentViewSelector documentView="PRODUCTION" setDocumentView={setDocumentView} disabled />, { wrapper: English });
 
     fireEvent.click(screen.getByText('Test Studio'));
     expect(setDocumentView).not.toHaveBeenCalled();
@@ -190,12 +201,14 @@ describe('DocumentsCommonHeader reprocess guard', () => {
   const reprocessButton = () => screen.getByRole('button', { name: 'Reprocess' });
 
   it('is enabled for an ordinary selection', () => {
-    render(<DocumentsCommonHeader selectedItems={[row('a.pdf')]} onReprocess={vi.fn()} />);
+    render(<DocumentsCommonHeader selectedItems={[row('a.pdf')]} onReprocess={vi.fn()} />, { wrapper: English });
     expect(reprocessButton()).not.toBeDisabled();
   });
 
   it.each(['QUARANTINED', 'MALWARE_SCAN_FAILED'])('is disabled for a %s document', (status) => {
-    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: status })]} onReprocess={vi.fn()} />);
+    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: status })]} onReprocess={vi.fn()} />, {
+      wrapper: English,
+    });
     expect(reprocessButton()).toBeDisabled();
   });
 
@@ -208,6 +221,7 @@ describe('DocumentsCommonHeader reprocess guard', () => {
         selectedItems={[row('clean.pdf'), row('infected.pdf', { objectStatus: 'QUARANTINED' })]}
         onReprocess={vi.fn()}
       />,
+      { wrapper: English },
     );
     expect(reprocessButton()).toBeDisabled();
   });
@@ -220,7 +234,9 @@ describe('DocumentsCommonHeader reprocess guard', () => {
     // arriving verdict would then find the row no longer MALWARE_SCANNING, fail
     // its compare-and-set, and be read as an at-least-once duplicate — dropping
     // a THREATS_FOUND at INFO.
-    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
+    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />, {
+      wrapper: English,
+    });
     expect(reprocessButton()).toBeDisabled();
   });
 
@@ -229,14 +245,18 @@ describe('DocumentsCommonHeader reprocess guard', () => {
     // whereas a refusal needs the file deleted or replaced. Telling someone to
     // delete a file that becomes reprocessable in two minutes is how a tooltip
     // stops being read.
-    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
+    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />, {
+      wrapper: English,
+    });
     const tooltip = reprocessButton().closest('span[title]');
     expect(tooltip?.getAttribute('title')).toContain('still being scanned');
     expect(tooltip?.getAttribute('title')).not.toContain('refused by malware scanning');
   });
 
   it('explains why, rather than just going grey', () => {
-    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: 'QUARANTINED' })]} onReprocess={vi.fn()} />);
+    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: 'QUARANTINED' })]} onReprocess={vi.fn()} />, {
+      wrapper: English,
+    });
     const tooltip = reprocessButton().closest('span[title]');
     expect(tooltip?.getAttribute('title')).toContain('refused by malware scanning');
   });

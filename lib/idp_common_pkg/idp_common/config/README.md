@@ -40,12 +40,16 @@ model_id = idp_config.extraction.model
 
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
-IDs, max-token limits, required prompt placeholders, schema-field warnings, and
+IDs, max-token limits, required prompt placeholders, schema-field warnings, a
+warning when `classification.fallback_class` is neither `unclassified` nor a
+configured class, and
 model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
 covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
 the active strategy makes, the per-class model overrides, and the `model` a field
 evaluated with `LLM` names in its method-config. The two embedding fields are left
-out because `pricing.yaml` prices no embedding model, and
+out because they also take Titan Multimodal Embeddings, which the embeddings
+client supports and `pricing.yaml` does not price (it prices only the Cohere
+Embed v4 profiles), so checking them would refuse a supported configuration, and
 `tests/unit/config/test_model_id_catalog_coverage.py` fails on a model field in
 `IDPConfig` that is not checked by one of those routes and not one of the two. IDs are compared as written, because the
 Bedrock client routes and sends them unchanged. Like the rest of the check, it does
@@ -245,8 +249,34 @@ to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model
 profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
 translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
 `idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
-the deploy-time swap gives the call's stored siblings. A model key absent from the
-data, rather than cleared, still takes the field default, the US id.
+the deploy-time swap gives the call's stored siblings.
+
+A model key **absent** from the data, rather than cleared, resolves the same way,
+and not for classification only. Every configuration model whose field declares a
+`us.` profile (extraction, summarization, chat, the three classification calls, the
+agents, rule validation's fact extraction, orchestrator and Z3 blocks, evaluation's
+LLM judge, and discovery) inherits `RegionalModelDefaults`, a `mode="before"`
+validator that fills each such absent key with `regional_field_default(<declared
+id>)`. That reaches a stack whenever the stored configuration does not carry the
+key: BDA mode's system defaults ship no chat, classification or extraction model,
+and the Z3 blocks ship none at all. Three properties to rely on:
+
+- A key the input carries is never translated, an explicit `us.` id included, so
+  a stored value the deploy-time swap already rewrote, or one a user chose, is
+  kept as written.
+- `model_fields[...].default` stays the US id, so the parity tests above still
+  compare the declaration with the YAML.
+- A Region with no row in `idp_common.regional_models.REGIONAL_DEFAULT_MODELS`
+  gets the US id unchanged: GovCloud (`us-gov-*`), Asia Pacific and every other
+  Region the deploy-time swap also leaves alone. The swap has no mapping for
+  those, so there is no regional profile to choose.
+
+`tests/unit/config/test_regional_field_defaults.py` finds every such field by
+reading the declarations, asserts its class inherits the mixin and its default is
+in `FALLBACK_MODEL_IDS`, and checks the resolved id per field across US, EU,
+Canada, GovCloud and Asia Pacific Regions against the regional table. The
+evaluation comparator's own fallback for a missing `model` goes through
+`regional_field_default` too.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
@@ -570,12 +600,13 @@ Four decisions worth knowing before changing this code:
   `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
   profile with history raises `RevisionNotRecordedError`.
 - **Resolving against `default` is recorded as a revision, by the deployment.**
-  `get_merged_configuration` resolves every profile against `default`. A pinned
-  read builds `IDPConfig` from the revision body without that resolution, so for a
-  profile with revision history the two differ whenever `default` holds a value
-  the model's own default does not (#1782). For such a profile a read applies the
-  resolution in memory and writes nothing, because whether its process may write
-  revisions depends on IAM grants the code cannot see.
+  `get_merged_configuration` resolves every profile against `default`, the head
+  and a pinned revision alike (`_resolve_against_default`, #1955). A revision's
+  stored body does not carry the values that fills in, so for a profile with
+  revision history the body Revision History shows differs from what documents
+  run whenever `default` fills something in (#1782). For such a profile a read
+  applies the resolution in memory and writes nothing, because whether its
+  process may write revisions depends on IAM grants the code cannot see.
   `record_resolution_against_default(profile)` saves the resolution as a revision
   (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) and publishes
   it, and its one caller is the stack-deployment custom resource
@@ -651,8 +682,23 @@ Lambda passes `document.config_revision`, which the queue processor pins at queu
 time, so a save made mid-flight cannot change the configuration under an in-flight
 document.
 
-Two deliberate choices:
+Three deliberate choices:
 
+- **A pinned revision is resolved against `default` exactly as the head is.**
+  `_load_revision_config()` and the head path both call
+  `_resolve_against_default()`: start from the current `default` profile and let
+  every key the stored configuration holds override it. A key it holds wins even
+  when empty, so a revision that stored `max_tokens: null` (one saved before the
+  10000-token defaults that left the cap empty) keeps requesting the model's maximum, on the
+  pinned read and on the head alike; a key it lacks, typically one a later release
+  added, takes `default`'s value — including the stack Region's model id that the
+  deployment stored in `default` for an absent model key — rather than the
+  model's own default. The same guards apply: `default` unreadable, or a merge
+  that fails a cross-field validator, returns the revision validated on its own.
+  Nothing is written, and `get_revision()` still returns the body as stored.
+  `restore_revision()` saves the resolved form, so the restored head runs what a
+  document pinned to that revision runs. A setting a revision lacks therefore
+  follows later changes to `default`; one it holds never does.
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
   enter a comparison. The one exception is below.
@@ -665,8 +711,8 @@ Two deliberate choices:
   conversion is **in memory only; the stored body is never rewritten**, because a
   revision is an immutable record of the configuration that actually ran. Callers
   that construct an `IDPConfig` from the result (`_load_revision_config()`,
-  `restore_revision()`) convert again through its validator, which is a no-op: the
-  chain is idempotent. What depends on this is shape agreement between the surfaces
+  `restore_revision()`) convert again before resolving it against `default`, which
+  is a no-op: the chain is idempotent. What depends on this is shape agreement between the surfaces
   that serve one revision — `get_revision()` behind `idp-cli config-download
   --config-revision`, the Revision History and Compare views, and a pinned run.
 - **No "published revision" branch on the unpinned path.** The head always holds
@@ -808,7 +854,7 @@ Two halves, deliberately separate, and the split is what makes the rule testable
 
 | Half | What it is |
 |---|---|
-| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites |
+| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites, and an append-only change log beside it (below) |
 | `resolve_config_assignment()` | The decision. **No boto3, no environment** — its only seams are three injected callables (`active_profile`, `published_revision`, `profile_exists`), all lazy because each costs a DynamoDB read on a per-document path |
 
 Lives here rather than in a Lambda for the reason `config_scope` does: the rule runs
@@ -845,8 +891,9 @@ land on every queued document, not on the admin who caused it.
 
 ⚠️ **`profile_exists` is the only existence check, and a pinned revision gets none.**
 `unresolvable` is set in that branch alone; `_resolve_revision` returns a pinned
-revision as given, with no lookup. So a mapping whose profile has been deleted falls
-back and is reported, while a mapping whose pinned *revision* has been deleted or has
+revision as given, with no lookup. So a mapping whose profile does not exist **refuses
+the document** (`rejected` and `unresolvable` both set, whatever the metadata says),
+while a mapping whose pinned *revision* has been deleted or has
 expired resolves cleanly at ingest and raises in
 `ConfigurationManager._load_revision_config` downstream. That is the intended trade —
 the per-document cost of a second lookup against a failure that surfaces loudly anyway —
@@ -860,6 +907,29 @@ unconditionally — so swallowing a throttle would turn one admin's write into "
 mapping list is now exactly this one entry", silently deleting every other mapping,
 and report success. Read failures are handled by the **caller**, which knows whether
 it is on the ingest path (fall open, emit a metric) or the admin path (refuse).
+
+### The change log
+
+Every `put` and `delete` appends one record, in the **same `TransactWriteItems`** as the
+aggregate update, so a change and its record land together or not at all. Each record
+is its own item, `ConfigPrefixMapHistory#<12-digit seq>`, holding `Seq`, `Timestamp`,
+`Actor` (byte-bounded like the entry's actor strings) and `Changes` — one element per
+changed prefix with `action` and the normalized entry `before` and `after`, derived by
+`describe_changes` from the two entry lists rather than told by the caller. The
+sequence lives on its own head item, `ConfigPrefixMapHistory#__head`, advanced under a
+condition in the same transaction, so recreating the aggregate by hand cannot make a
+later record collide with an earlier one; each record is `Put` with
+`attribute_not_exists`, which is what makes the log append-only in code. Neither key
+matches `begins_with(Configuration, "Config#")`.
+
+The count is **uncapped**, deliberately: the log is not on the aggregate, so it does not
+grow the item ingest reads or approach the 400 KB bound, and each record is bounded by
+two entries' worth of fields. `history(prefix=None, limit, before)` reads it newest first
+by `BatchGetItem` over descending sequence numbers — no `Scan` — and examines at most
+`MAX_HISTORY_EXAMINED` records per call, so a filtered read of a long log returns a
+short page and a `nextBefore` cursor rather than reading everything. A cancelled
+transaction is retried only when every cancellation reason is a lost condition; any
+other reason is raised as itself. A direct write to the table records nothing.
 
 ⚠️ **A revision carried across a profile change reads a configuration nobody asked
 for.** Revision numbers are per profile, so when the resolved profile differs from the
@@ -876,7 +946,25 @@ apply — failing open means a transient DynamoDB error bypasses every `reject` 
 in the deployment. It is still the right call, because the alternative is halting
 document ingest for the whole deployment when a *routing* table is unreadable, and
 every one of those objects processed under the active profile before this feature
-existed. The metric is alarmed so the window is visible rather than silent.
+existed. The metric is alarmed so the window is visible rather than silent, and
+`queue_sender` records a warning `ProcessingIssue` (`config_prefix_mapping_lookup_failed`,
+stage `ingest`) on each document processed in the window. It is a **document-level**
+issue — `Document.processing_issues`, persisted as the tracking row's top-level
+`ProcessingIssues` by `serialize_issue_list` — because the row is created before any
+section exists. Its `root_cause` is the error's type and AWS error code, never the
+message, which can carry a role ARN.
+
+### Only named internal producers are exempt
+
+Rule 1 applies only when `submission_source` is in `INTERNAL_SUBMISSION_SOURCES`
+(`test-studio`, `pii-anonymizer`), compared exactly by `is_internal_producer`. Any other
+value is an ordinary upload: it is mapped and adjudicated like one, and
+`tenants.ingest_rejection_reason` treats it as external too. The set is the exact values
+the two writers in this repository stamp (`src/lambda/test_file_copier` and the PII
+anonymizer hook), so a new producer must be added there deliberately. A browser cannot
+set the key at all, because the upload resolver's presigned-POST policy names every
+field it accepts; a principal with direct `s3:PutObject` on the Input bucket can, and is
+trusted because it already chooses the key.
 
 Note the asymmetry in `upload_resolver`: the **routing** read fails open, the **scope**
 read fails closed. They answer different questions — an unreadable mapping means a
@@ -1058,9 +1146,10 @@ convenience wrapper take an optional `region`, which is passed to the DynamoDB
 resource they build and, through `ConfigRevisionStore`, to the S3 client used for
 revision history.
 
-`region=None` means "let boto3 resolve it" — `AWS_REGION`, then
-`AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
-a Lambda, where the runtime always sets `AWS_REGION`, and it is why these classes
+`region=None` means "let boto3 resolve it" — `AWS_DEFAULT_REGION`, then the
+profile (boto3 does not read `AWS_REGION`, and does not take the Region from
+instance metadata). That is the right value inside a Lambda, where the runtime
+sets both `AWS_REGION` and `AWS_DEFAULT_REGION`, and it is why these classes
 worked for years without the parameter.
 
 **An out-of-region caller must pass it.** A DynamoDB table name is not

@@ -6,6 +6,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../api/client-shim';
 import {
   listConfigPrefixMappings,
+  listConfigPrefixMappingHistory,
   putConfigPrefixMapping,
   deleteConfigPrefixMapping,
   resolveConfigPrefixMapping,
@@ -42,6 +43,50 @@ export interface ConfigPrefixMapping {
   updatedAt?: string | null;
   updatedBy?: string | null;
 }
+
+/** One change to one mapping, from the append-only change log. */
+export interface ConfigPrefixMappingHistoryEntry {
+  /** Position in the log; strictly increasing, and what the next page is fetched before. */
+  seq: number;
+  timestamp?: string | null;
+  actor?: string | null;
+  prefix: string;
+  /** 'create' | 'update' | 'delete'. */
+  action: string;
+  /** Null for a create. */
+  before?: Partial<ConfigPrefixMapping> | null;
+  /** Null for a delete. */
+  after?: Partial<ConfigPrefixMapping> | null;
+}
+
+export interface ConfigPrefixMappingHistoryPage {
+  entries: ConfigPrefixMappingHistoryEntry[];
+  /** Pass as `before` for the next page; null when the log is exhausted. */
+  nextBefore: number | null;
+}
+
+/**
+ * One page of the change log, newest first. A standalone function rather than
+ * hook state because the history panel owns its own paging and filter, and its
+ * failures must not paint over the mapping table's error banner. Throws with the
+ * server's message on a refusal (empty when it gave none), so the panel can show it.
+ */
+export const fetchMappingHistory = async (prefix?: string | null, before?: number | null): Promise<ConfigPrefixMappingHistoryPage> => {
+  const result = await client.graphql({
+    query: listConfigPrefixMappingHistory,
+    variables: { prefix: prefix || undefined, before: before ?? undefined },
+  });
+  const response = result.data.listConfigPrefixMappingHistory;
+  if (!response?.success) {
+    // The server's message when it gave one; otherwise an empty message, so the
+    // panel shows its own translated fallback rather than an English literal.
+    throw new Error(response?.error?.message ?? '');
+  }
+  return {
+    entries: (response.entries ?? []).filter(Boolean) as ConfigPrefixMappingHistoryEntry[],
+    nextBefore: response.nextBefore ?? null,
+  };
+};
 
 /** What an object at a given key would process under. A dry run. */
 export interface ConfigAssignmentPreview {

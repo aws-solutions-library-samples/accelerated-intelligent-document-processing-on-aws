@@ -318,28 +318,28 @@ it is instrumented: five metrics in the stack's own namespace (`<StackName>`). T
 | `PrefixMappingConflict` | A mapping and the upload's own metadata disagreed, and one of them won | `Winner` (`prefix-mapping` or `metadata`) |
 | `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document at ingest | none |
 | `PrefixMappingLookupFailed` | The mapping set could not be read | none |
-| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that no longer exists | none |
+| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that does not exist, and the document was refused | none |
 
 All five publish only on the event, so no data means it has not happened.
 
 ⚠️ **Two of these do not mean quite what their names suggest, and both differences
 matter when you build a graph on them.** `PrefixMappingApplied` is published whenever a
 mapping *matched the key* — which includes the case where the conflict mode handed the
-decision to the upload's own metadata, and the case where the mapped profile turned out
-to be missing. So it counts documents a mapping was consulted for, not documents a
-mapping decided. For the latter, subtract both `PrefixMappingConflict` filtered to
-`Winner=metadata` and `PrefixMappingUnresolvable`. And `PrefixMappingConflict` is published
-only when the document *proceeded*: a refusal returns before it, so a refused document
-publishes `PrefixMappingRejected` alone and appears in neither of the other two. Summing
+decision to the upload's own metadata. So it counts documents a mapping was consulted
+for, not documents a mapping decided. For the latter, subtract `PrefixMappingConflict`
+filtered to `Winner=metadata`. And `PrefixMappingConflict` is published only when the
+document *proceeded*: a refusal returns before it, so a document refused by a "Refuse the
+conflict" mapping publishes `PrefixMappingRejected` alone, and one refused because its
+mapping names a missing profile publishes `PrefixMappingUnresolvable` alone. Summing
 conflicts to count disagreements therefore undercounts by exactly the refusals.
 
 **Three of the five are alarmed**, with different thresholds for different reasons.
 `PrefixMappingLookupFailed` and `PrefixMappingUnresolvable` alarm on the **first**
-occurrence: both mean documents are being processed under something *other* than what an
-admin configured, and neither is visible anywhere else — the documents succeed, report
-success, and carry extraction from the wrong configuration. This is the same shape as
-the stale-output purge above, a quiet failure whose only signal has to be a metric,
-because the document's own status is green. `PrefixMappingRejected` alarms on **volume**
+occurrence. The first means documents are being processed with no mapping applied: they
+succeed and report success, and the only per-document trace is a warning processing
+issue (`config_prefix_mapping_lookup_failed`), which is why the metric is what an
+operator is alerted by. The second means every document arriving at a mapped prefix is
+being refused until the mapping or its profile is fixed. `PrefixMappingRejected` alarms on **volume**
 instead, covered below.
 
 `PrefixMappingLookupFailed` is quiet by construction, because resolution deliberately
@@ -374,9 +374,9 @@ scope **even when a mapping was going to win**, which is why such an upload gets
 rather than silently having its choice overridden. Nothing is emitted for it, because
 nothing degraded: the refusal is the control working.
 
-`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that has
-been deleted. The document still processes — under the profile its upload named, or the
-active one — and the log line names which mapping is stale.
+`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that does
+not exist. The document is refused and recorded as Failed, with a reason naming the
+mapping's prefix and the missing profile, and the log line names which mapping is stale.
 `putConfigPrefixMapping` refuses a mapping naming something that does not exist, so this
 is always a *later* deletion rather than a typo at creation.
 
@@ -727,6 +727,53 @@ only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
 - **`idp-cli deploy --log-level` has no CLI default.** Omit it to get the template
   default on a new stack or to preserve the current value on an update. Passing
   `--log-level INFO` is honoured; it used to be silently treated as "unset".
+
+### `ManageApiGatewayAccountSettings` — one deployment per Region owns the API Gateway logging role
+
+API Gateway writes REST API stage logs (the access log and the `ERROR`-level
+execution log above) through a CloudWatch role named in the API Gateway
+**account settings**. That is one setting per AWS account and Region, not per
+API, and API Gateway refuses to create a stage with access logging until it is
+set. So at `LogLevel` `INFO` or `DEBUG` a deployment creates an IAM role with the
+`AmazonAPIGatewayPushToCloudWatchLogs` managed policy and points the Region's
+setting at it (`ApiGatewayCloudWatchRole` and `ApiGatewayAccount` in
+`nested/api-resolvers/template.yaml`). At `WARN` or `ERROR` it creates neither and
+the parameter has no effect.
+
+Every deployment that does this points the setting at its **own** role, so two
+deployments in one Region overwrite each other's setting. Logging keeps working,
+because every role grants the same policy, but the Region's logging then depends
+on whichever deployment wrote last, and a Terraform deployment reports the other
+deployment's write as drift on every plan and sets it back on every apply.
+
+The `ManageApiGatewayAccountSettings` parameter (default `true`) decides whether a
+deployment manages the setting. With `true` it behaves as described above. With
+`false` it creates neither the role nor the setting; its stage still has access
+and execution logging configured, and it uses whatever role the Region already
+has. Nothing else in the stack uses that role.
+
+- **Let one deployment per Region manage it**, and deploy every other deployment
+  in that Region with `ManageApiGatewayAccountSettings=false`. The default keeps
+  an existing stack unchanged on update.
+- **A `false` deployment needs the setting to exist already.** At `INFO` or
+  `DEBUG`, if the Region has no API Gateway CloudWatch role set, creating its API
+  stage fails with *CloudWatch Logs role ARN must be set in account settings to
+  enable logging*. Deploy the managing deployment first, or set the role yourself
+  (API Gateway console, **Settings**, or `aws apigateway update-account`).
+- **Deleting the managing deployment leaves the setting working.** Both the role
+  and the setting are retained on stack deletion (`DeletionPolicy: Retain`), and
+  so on switching a stack from `true` to `false`, so the setting keeps naming the
+  retained role and the remaining deployments keep logging. What breaks logging
+  for everyone in the Region is deleting that retained role afterwards.
+- **To hand ownership to another deployment**, update that deployment to
+  `ManageApiGatewayAccountSettings=true` (it creates its own role and points the
+  setting at it), then update or delete the old owner. Only after the setting
+  names the new owner's role is it safe to delete the old owner's retained role.
+  Check which role the setting names with `aws apigateway get-account`.
+
+The same parameter exists in the Terraform module as the variable
+`manage_api_gateway_account_settings`; `idp-cli deploy` takes it as
+`--parameters ManageApiGatewayAccountSettings=false`.
 
 ## X-Ray Tracing
 

@@ -38,6 +38,8 @@ export default defineConfig({
               slug: "references",
             },
             { label: "Hands-on Workshops", slug: "workshops" },
+            { label: "Solution Profile", slug: "solution-profile" },
+            { label: "Fit Check", slug: "fit-check" },
           ],
         },
         {
@@ -201,6 +203,10 @@ export default defineConfig({
                   slug: "extensions/auto-optimizer",
                 },
                 {
+                  label: "Decision Model: Strands Decider",
+                  slug: "extensions/decision-model-decider",
+                },
+                {
                   label: "IDP Monitor",
                   slug: "extensions/idp-monitor",
                 },
@@ -225,6 +231,10 @@ export default defineConfig({
                   slug: "extensions/sample-health-insurance-review",
                 },
               ],
+            },
+            {
+              label: "Document Attributes",
+              slug: "document-attributes",
             },
             {
               label: "Document Versions",
@@ -269,6 +279,7 @@ export default defineConfig({
           items: [
             { label: "Threat Model", slug: "threat-model" },
             { label: "Malware Scanning", slug: "malware-scanning" },
+            { label: "Customer Managed KMS Key", slug: "customer-managed-kms-key" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",

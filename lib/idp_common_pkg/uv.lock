@@ -4,10 +4,10 @@ requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'darwin'",
     "python_full_version >= '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "(python_full_version >= '3.13' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.13' and sys_platform != 'darwin' and sys_platform != 'linux')",
+    "python_full_version >= '3.13' and ((platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux'))",
     "python_full_version < '3.13' and sys_platform == 'darwin'",
     "python_full_version < '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "(python_full_version < '3.13' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.13' and sys_platform != 'darwin' and sys_platform != 'linux')",
+    "python_full_version < '3.13' and ((platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux'))",
 ]
 
 [[package]]
@@ -182,15 +182,15 @@ wheels = [
 
 [[package]]
 name = "aws-lambda-powertools"
-version = "3.25.0"
+version = "3.41.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/ac/683ec02ceb4cc05bbb4bbef84f719508d02f9648de5d3055a25c133cfd14/aws_lambda_powertools-3.25.0.tar.gz", hash = "sha256:5d9c4bdfad1de7976e4ccf26410725aba17c47f081c84311eb2da16a00f75efb", size = 770414, upload-time = "2026-03-04T11:02:23.732Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/f5/596817cd2beeeb42ed5fe3e5a21bcacff2f57eef1a7aafb05b73a0f43247/aws_lambda_powertools-3.41.0.tar.gz", hash = "sha256:d3b899f851eae0e31100d8586a4d232b845e0d9319311ae33e766c77c17952ff", size = 845911, upload-time = "2026-11-18T12:13:20.1Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a7/89/e7ef654154454c4ce45a535308895336a5540972e1608808446b0ab0cbb7/aws_lambda_powertools-3.25.0-py3-none-any.whl", hash = "sha256:295467bfbc546b7b6a26d298cedcd06b04eb2cf96eb32e138126a47d761b7de1", size = 917936, upload-time = "2026-03-04T11:02:21.675Z" },
+    { url = "https://files.pythonhosted.org/packages/87/45/519d0eb86c3f2aa586c68cbefe6765b19bdd51573936f91df4d86ec0edf5/aws_lambda_powertools-3.41.0-py3-none-any.whl", hash = "sha256:1a3a2cef8a7e6e4d460d48a2ed16ae9b0b12bd574697f23d03d14119951d8deb", size = 1023021, upload-time = "2026-11-18T12:13:18.294Z" },
 ]
 
 [[package]]
@@ -339,7 +339,7 @@ name = "build"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "(os_name == 'nt' and platform_machine != 'aarch64' and sys_platform == 'linux') or (os_name == 'nt' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "colorama", marker = "os_name == 'nt'" },
     { name = "packaging" },
     { name = "pyproject-hooks" },
 ]
@@ -593,7 +593,7 @@ wheels = [
 
 [[package]]
 name = "datamodel-code-generator"
-version = "0.83.0"
+version = "0.98.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -606,9 +606,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cf/ad/bd0c954c4c4671e586b340059139ead38570ba916a237086e245982ab14d/datamodel_code_generator-0.83.0.tar.gz", hash = "sha256:30d841e31b82095c4ef11f3dbfc99525f559a146250b9e685e2a2e4a196ca0a1", size = 3074761, upload-time = "2026-09-24T08:56:40.622Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/cc/75d461bbd554636023f6cbb3a9c1c390b943609e31db8951486468d1264e/datamodel_code_generator-0.98.0.tar.gz", hash = "sha256:97fc04435e5c4272d9814f06e8bf952ebaccc678ef6a0ca5f61671ae30bcfaf4", size = 10729828, upload-time = "2026-11-18T16:56:51.228Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3a/4e/4a0231a7d3d4043cd27a746a50be87bc7637463023d7db9991610cd5fe56/datamodel_code_generator-0.83.0-py3-none-any.whl", hash = "sha256:371d80be360b2a57bc48462169553af57fa30225c0264ad85ae5f0d59b9d143a", size = 751087, upload-time = "2026-09-24T08:56:38.791Z" },
+    { url = "https://files.pythonhosted.org/packages/58/a7/975c5feec2a10e4111fb4501ce47ff783882075be4ef9feceafcfef9982c/datamodel_code_generator-0.98.0-py3-none-any.whl", hash = "sha256:95033e5bf0966c8db064bbe0269fcf6eb3fcea03c3fbdb4bec9becd02214fdac", size = 2536151, upload-time = "2026-11-18T16:56:48.527Z" },
 ]
 
 [[package]]
@@ -1020,8 +1020,8 @@ requires-dist = [
     { name = "amazon-textract-textractor", extras = ["pandas"], marker = "extra == 'ocr'", specifier = "==1.9.2" },
     { name = "amazon-textract-textractor", extras = ["pandas"], marker = "extra == 'test'", specifier = "==1.9.2" },
     { name = "anyio", specifier = ">=4.14.2" },
-    { name = "aws-lambda-powertools", marker = "extra == 'agentic-extraction'", specifier = ">=3.2.0" },
-    { name = "aws-lambda-powertools", marker = "extra == 'assessment'", specifier = ">=3.2.0" },
+    { name = "aws-lambda-powertools", marker = "extra == 'agentic-extraction'", specifier = ">=3.35.0" },
+    { name = "aws-lambda-powertools", marker = "extra == 'assessment'", specifier = ">=3.35.0" },
     { name = "aws-xray-sdk", marker = "extra == 'docs-service'", specifier = ">=2.14.0" },
     { name = "aws-xray-sdk", marker = "extra == 'test'", specifier = ">=2.14.0" },
     { name = "bedrock-agentcore", marker = "python_full_version >= '3.10' and extra == 'agents'", specifier = ">=1.6.1,<1.9.0" },
@@ -1030,8 +1030,8 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.86,<1.43.0" },
     { name = "build", marker = "extra == 'test'", specifier = "==1.3.0" },
     { name = "chardet", marker = "extra == 'code-intel'", specifier = ">=5.0.0" },
-    { name = "datamodel-code-generator", marker = "extra == 'agentic-extraction'", specifier = ">=0.81.0" },
-    { name = "datamodel-code-generator", marker = "extra == 'test'", specifier = ">=0.81.0" },
+    { name = "datamodel-code-generator", marker = "extra == 'agentic-extraction'", specifier = ">=0.84.0" },
+    { name = "datamodel-code-generator", marker = "extra == 'test'", specifier = ">=0.84.0" },
     { name = "deepdiff", specifier = ">=6.0.0" },
     { name = "deepdiff", marker = "extra == 'test'", specifier = ">=6.0.0" },
     { name = "email-validator", marker = "extra == 'agentic-extraction'", specifier = ">=2.3.0" },
@@ -1534,7 +1534,7 @@ dependencies = [
     { name = "nbformat" },
     { name = "packaging" },
     { name = "prometheus-client" },
-    { name = "pywinpty", marker = "(os_name == 'nt' and platform_machine != 'aarch64' and sys_platform == 'linux') or (os_name == 'nt' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pywinpty", marker = "os_name == 'nt'" },
     { name = "pyzmq" },
     { name = "send2trash" },
     { name = "terminado" },
@@ -1552,7 +1552,7 @@ name = "jupyter-server-terminals"
 version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywinpty", marker = "(os_name == 'nt' and platform_machine != 'aarch64' and sys_platform == 'linux') or (os_name == 'nt' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pywinpty", marker = "os_name == 'nt'" },
     { name = "terminado" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f4/a7/bcd0a9b0cbba88986fe944aaaf91bfda603e5a50bda8ed15123f381a3b2f/jupyter_server_terminals-0.5.4.tar.gz", hash = "sha256:bbda128ed41d0be9020349f9f1f2a4ab9952a73ed5f5ac9f1419794761fb87f5", size = 31770, upload-time = "2026-01-14T16:53:20.213Z" }
@@ -3341,7 +3341,7 @@ version = "0.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ptyprocess", marker = "os_name != 'nt'" },
-    { name = "pywinpty", marker = "(os_name == 'nt' and platform_machine != 'aarch64' and sys_platform == 'linux') or (os_name == 'nt' and sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pywinpty", marker = "os_name == 'nt'" },
     { name = "tornado" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8a/11/965c6fd8e5cc254f1fe142d547387da17a8ebfd75a3455f637c663fb38a0/terminado-0.18.1.tar.gz", hash = "sha256:de09f2c4b85de4765f7714688fff57d3e75bad1f909b589fde880460c753fd2e", size = 32701, upload-time = "2024-03-12T14:34:39.026Z" }

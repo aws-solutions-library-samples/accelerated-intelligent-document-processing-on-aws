@@ -1,0 +1,8 @@
+{# Appended to the packet task prompt when confidence.mode is topk. Each "segments" item must
+gain a "candidates" array of {"class", "probability"}; {TOP_K_CANDIDATES} is the count. #}
+<class-confidence> Each object in your "segments" array MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for THAT segment, most likely first, each with the probability that it is the correct type.
+"candidates": [
+  {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
+  {"class": "<next most likely type>", "probability": <number between 0.0 and 1.0>}
+]
+Rules: 1. Every "class" value must be one of the types listed in <document-types>. 2. The first candidate must be the same type you report in that segment's "type". 3. The probabilities for a segment must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type". 4. Score each segment independently and honestly. A short segment, or one whose evidence is thin, should not look as certain as a clearly-identified multi-page document. </class-confidence>

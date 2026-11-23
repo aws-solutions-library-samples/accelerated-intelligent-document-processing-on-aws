@@ -12,6 +12,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from idp_common.api_adapter import (  # type: ignore
+    ReportedServerError,
     ResourceAccessDenied,
     ResourceNotFound,
 )
@@ -80,7 +81,7 @@ from idp_common.review_queues.testset_summaries import (  # type: ignore
     list_baseline_sections,
     summarize_document,
 )
-from idp_common.s3 import find_matching_files  # type: ignore
+from idp_common.s3 import find_matching_files, parse_modified_after  # type: ignore
 from idp_common.testset_label_jobs import (  # type: ignore
     drafting_run_ids,
     legacy_drafting_run,
@@ -546,6 +547,26 @@ def _dispatch(event, context):
         raise Exception(f"Unknown field: {field_name}")
 
 
+def _put_new_test_set_row(item, test_set_id):
+    """Write a new set's metadata row, refusing an id that already has one.
+
+    The id is derived from the name, so two names can share it ("My Set" and
+    "my-set"). An unconditional put would replace the existing set's record,
+    status, description and label state included, while its documents stayed
+    in S3 under the same prefix. Every create path goes through here so the
+    refusal is the same everywhere: a ``ValueError``, which the API reports as
+    a bad argument rather than a server fault.
+    """
+    try:
+        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
+    except Exception as e:
+        if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
+            "ConditionalCheckFailed" in str(e)
+        ):
+            raise ValueError(f"A test set with id '{test_set_id}' already exists")
+        raise
+
+
 def add_test_set_from_upload(args):
     logger.info(f"Adding test set from zip upload: {args}")
 
@@ -629,7 +650,9 @@ def add_test_set_from_upload(args):
 
     # Don't set fileCount for uploads - will be added after zip processing
 
-    db_client.put_item(item)
+    # Before the URL is returned: a refused id must not leave the caller holding a
+    # URL that uploads into the existing set's folder.
+    _put_new_test_set_row(item, test_set_id)
     logger.info(f"Created test set {test_set_id} in tracking table with QUEUED status")
 
     logger.info(
@@ -661,6 +684,10 @@ def add_test_set(args):
     if description and not validate_description(description):
         raise ValueError("Description cannot exceed 500 characters")
 
+    # Before the row is written: the copier parses this the same way, and a value
+    # it cannot read would otherwise leave a queued set that fails with no files.
+    parse_modified_after(args.get("modifiedAfter"))
+
     # Generate test set ID with name format, replace spaces with dashes
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
@@ -686,7 +713,8 @@ def add_test_set(args):
     if document_class_type:
         item["documentClassType"] = document_class_type
 
-    db_client.put_item(item)
+    # Before the copy is queued, so a refused id copies nothing into that set.
+    _put_new_test_set_row(item, test_set_id)
     logger.info(f"Created test set {test_set_id} in tracking table")
 
     # Send file copying job to SQS queue
@@ -799,16 +827,7 @@ def create_empty_test_set(args):
     if document_class_type:
         item["documentClassType"] = document_class_type
 
-    # Conditional so a name that derives to an existing id is refused rather than
-    # silently replacing that set's record.
-    try:
-        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
-    except Exception as e:
-        if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
-            "ConditionalCheckFailed" in str(e)
-        ):
-            raise ValueError(f"A test set with id '{test_set_id}' already exists")
-        raise
+    _put_new_test_set_row(item, test_set_id)
     # After the row: a marker without a row is a stray folder discovery ignores,
     # while a row without a marker is reaped on the next getTestSets.
     _write_keep_marker(test_set_id)
@@ -833,6 +852,35 @@ def create_empty_test_set(args):
 MAX_KEYS_PER_ADD = 500
 
 
+def _mark_test_set_updating(table, test_set_id):
+    """Move a COMPLETED set to UPDATING for an append, refusing any other status.
+
+    Conditional because the caller's COMPLETED check is a read: a delete or another
+    append that took the set since then must not have its row turned back into one
+    with files arriving. A refusal is a ``ValueError``, as the read's is.
+    """
+    try:
+        table.update_item(
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            UpdateExpression=(
+                "SET #status = :status, statusUpdatedAt = :now REMOVE lastAddResult"
+            ),
+            ConditionExpression="#status = :completed",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":status": "UPDATING",
+                ":completed": "COMPLETED",
+                ":now": datetime.utcnow().isoformat() + "Z",
+            },
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        raise ValueError(
+            f"Test set '{test_set_id}' is no longer in COMPLETED status"
+        ) from None
+
+
 def _begin_test_set_append(test_set_id):
     """Look up a COMPLETED test set and mark it UPDATING for an append job.
 
@@ -852,17 +900,7 @@ def _begin_test_set_append(test_set_id):
 
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
-    table.update_item(
-        Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression=(
-            "SET #status = :status, statusUpdatedAt = :now REMOVE lastAddResult"
-        ),
-        ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={
-            ":status": "UPDATING",
-            ":now": datetime.utcnow().isoformat() + "Z",
-        },
-    )
+    _mark_test_set_updating(table, test_set_id)
     return item, tracking_table
 
 
@@ -892,6 +930,10 @@ def add_documents_to_test_set(args):
     test_set_id = args["testSetId"]
     file_pattern = args["filePattern"]
     bucket_type = args["bucketType"]
+
+    # Before the set is claimed for the append, so a cutoff the copier cannot
+    # read is a 400 here rather than a set marked UPDATING and then failed.
+    parse_modified_after(args.get("modifiedAfter"))
 
     item, tracking_table = _begin_test_set_append(test_set_id)
 
@@ -1105,17 +1147,7 @@ def add_documents_to_test_set_from_upload(args):
     # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
-    table.update_item(
-        Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        UpdateExpression=(
-            "SET #status = :status, statusUpdatedAt = :now REMOVE lastAddResult"
-        ),
-        ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={
-            ":status": "UPDATING",
-            ":now": datetime.utcnow().isoformat() + "Z",
-        },
-    )
+    _mark_test_set_updating(table, test_set_id)
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
 
@@ -1410,20 +1442,42 @@ def _claim_publish_attempt(test_set_id, client_token):
     return existing, None
 
 
+def _parse_utc_timestamp(value):
+    """An ISO-8601 timestamp read from a record, as an aware UTC datetime, or ``None``.
+
+    Writers of these records do not agree on a form. The resolver and the dataset
+    deployers write ``utcnow().isoformat() + "Z"``; the extensions write
+    ``now(timezone.utc).isoformat()``, with or without ``+00:00`` swapped for ``Z``; a
+    folder discovered in S3 takes its object's ``LastModified.isoformat()``, which
+    carries ``+00:00``. A stamp with no offset at all is read as UTC, which is what
+    every naive writer here meant. Comparing an aware value with a naive one raises
+    ``TypeError``, so every age check goes through this helper rather than
+    ``fromisoformat`` directly. (``fromisoformat`` reads a trailing ``Z`` itself from
+    Python 3.11; this function runs on 3.12.) ``None`` for anything missing or unreadable; what that
+    means is the caller's decision.
+    """
+    if not value:
+        return None
+    try:
+        stamped = datetime.fromisoformat(str(value).strip())
+        if stamped.tzinfo is None:
+            return stamped.replace(tzinfo=timezone.utc)
+        # Inside the try: an offset that carries the instant past year 9999 in UTC
+        # raises OverflowError here.
+        return stamped.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
 def _claim_age_seconds(claimed_at):
     """Seconds since a claim was taken, or ``None`` if that cannot be determined.
 
     ``None`` means "treat as abandoned": an unparseable or missing timestamp is a claim
     nothing can reason about, and leaving it in place would lock the token out permanently.
     """
-    if not claimed_at:
+    stamped = _parse_utc_timestamp(claimed_at)
+    if stamped is None:
         return None
-    try:
-        stamped = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if stamped.tzinfo is None:
-        stamped = stamped.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - stamped).total_seconds()
 
 
@@ -4273,14 +4327,10 @@ def _label_job_is_stale(job):
     aged" as "fresh" let that record (which names no documents, so covers the whole
     set) block re-grouping every document for good (#1746).
     """
-    created = str(job.get("createdAt") or "")
-    if not created:
+    started = _parse_utc_timestamp(job.get("createdAt"))
+    if started is None:
         return True
-    try:
-        started = datetime.fromisoformat(created.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    age_hours = (datetime.now(started.tzinfo) - started).total_seconds() / 3600.0
+    age_hours = (datetime.now(timezone.utc) - started).total_seconds() / 3600.0
     return age_hours >= STALE_LABEL_JOB_HOURS
 
 
@@ -5442,68 +5492,217 @@ def update_test_set(args):
     }
 
 
+#: Written by ``deleteTestSets`` while it removes a set's files. Deliberately not an
+#: in-progress status: a delete that stopped partway leaves the row here, and deleting
+#: the set again must be allowed.
+DELETING_TEST_SET_STATUS = "DELETING"
+
+
+def _claim_test_set_for_deletion(test_set_id):
+    """Mark a set DELETING, refusing one whose contents a job is still writing.
+
+    One conditional write, so the check and the claim cannot be separated: a
+    copier, generator or dataset deployer that holds the row in an in-progress
+    status keeps it, and the delete is refused rather than run underneath it.
+    Holding the row while the files go is also what stops ``getTestSets`` from
+    registering the half-deleted folder as a new upload.
+
+    Returns True when a row was claimed and False when there is no row. Raises
+    ``ValueError`` (a 400) for a set that is in progress.
+    """
+    in_progress = sorted(IN_FLUX_TEST_SET_STATUSES)
+    busy = [f":busy{i}" for i in range(len(in_progress))]
+    values = dict(zip(busy, in_progress))
+    values[":deleting"] = DELETING_TEST_SET_STATUS
+    values[":queued"] = "QUEUED"
+    values[":now"] = datetime.utcnow().isoformat() + "Z"
+    key = {"PK": f"testset#{test_set_id}", "SK": "metadata"}
+    try:
+        db_client.update_item(
+            key,
+            "SET #st = :deleting, statusUpdatedAt = :now",
+            expression_attribute_names={"#st": "status"},
+            expression_attribute_values=values,
+            return_values="NONE",
+            # The row the condition refused, so the message names the status that
+            # decided it rather than one a re-read sees after the job has moved on.
+            return_values_on_condition_check_failure="ALL_OLD",
+            # A busy row with no statusUpdatedAt (other than QUEUED, which is aged
+            # by createdAt) is one the reaper can never fail, written before the
+            # stamp existed; refusing it would make that set undeletable for good,
+            # so it is deleted as it was before this check.
+            condition_expression=(
+                f"attribute_exists(PK) AND (NOT (#st IN ({', '.join(busy)})) OR "
+                "(attribute_not_exists(statusUpdatedAt) AND #st <> :queued))"
+            ),
+        )
+        return True
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        # The refused item normally comes back on the error. Re-read only if it
+        # did not, so a missing item can never turn a busy set into "no row" and
+        # let its files be deleted.
+        row = e.item or db_client.get_item(key)
+    # No row exists when the condition failed on attribute_exists(PK).
+    if not row:
+        return False
+    raise ValueError(
+        f"Test set '{test_set_id}' is busy ({row.get('status')}); try again when "
+        "it has finished"
+    )
+
+
+class _ObjectsNotDeleted(RuntimeError):
+    """A partial delete, described in words fit for the caller (no AWS error text)."""
+
+
+def _delete_test_set_objects(test_set_bucket, test_set_id):
+    """Delete every object under the set's prefix; return how many were deleted.
+
+    Raises on the first failure, including keys ``DeleteObjects`` reports in its
+    ``Errors`` list: that call answers 200 when individual keys fail, so a caller
+    reading only exceptions would take a partial delete for a complete one.
+
+    Both APIs cap at 1000 keys per call (list_objects_v2 and delete_objects), so
+    both are looped: an unpaginated pass orphans every object past the first 1000.
+    """
+    deleted_count = 0
+    continuation_token = None
+    while True:
+        list_kwargs = {"Bucket": test_set_bucket, "Prefix": f"{test_set_id}/"}
+        if continuation_token:
+            list_kwargs["ContinuationToken"] = continuation_token
+        response = s3_client.list_objects_v2(**list_kwargs)
+
+        objects_to_delete = [
+            {"Key": key}
+            for key in (obj.get("Key") for obj in response.get("Contents", []))
+            if key
+        ]
+        for i in range(0, len(objects_to_delete), 1000):
+            batch = objects_to_delete[i : i + 1000]
+            result = s3_client.delete_objects(
+                Bucket=test_set_bucket, Delete={"Objects": batch}
+            )
+            errors = (result or {}).get("Errors") or []
+            deleted_count += len(batch) - len(errors)
+            if errors:
+                first = errors[0]
+                raise _ObjectsNotDeleted(
+                    f"{len(errors)} object(s) could not be deleted (first: "
+                    f"{first.get('Key')}: {first.get('Code')})"
+                )
+
+        if not response.get("IsTruncated"):
+            break
+        continuation_token = response.get("NextContinuationToken")
+        if not continuation_token:
+            # A truncated response without a token would loop forever.
+            raise _ObjectsNotDeleted(
+                "the listing was truncated without a continuation token after "
+                f"{deleted_count} objects"
+            )
+    return deleted_count
+
+
+def _record_failed_deletion(test_set_id, message):
+    """Leave the row in place as FAILED, saying why, so the set can be deleted again.
+
+    Conditional on DELETING: a writer that has since replaced the row keeps it.
+    """
+    try:
+        db_client.update_item(
+            {"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            "SET #st = :failed, #er = :error, statusUpdatedAt = :now",
+            expression_attribute_names={"#st": "status", "#er": "error"},
+            expression_attribute_values={
+                ":failed": "FAILED",
+                ":error": message,
+                ":deleting": DELETING_TEST_SET_STATUS,
+                ":now": datetime.utcnow().isoformat() + "Z",
+            },
+            return_values="NONE",
+            condition_expression="#st = :deleting",
+        )
+    except Exception as e:  # noqa: BLE001 - the caller reports the failure anyway
+        logger.warning(f"Could not record the failed delete of {test_set_id}: {e}")
+
+
 def delete_test_sets(args):
+    """Delete each set's files, then its row; refuse a set a job is still writing.
+
+    The row goes only after every object is gone. Deleting it first, or after a
+    partial failure, leaves a folder with no row, which ``getTestSets`` registers
+    as a user upload; a dataset deployer then finds its id taken and stops
+    refreshing the set.
+    """
     logger.info(f"Deleting test sets: {args['testSetIds']}")
 
     test_set_ids = args["testSetIds"]
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    refused = []
+    failed = []
 
     for test_set_id in test_set_ids:
-        # Delete files from test set bucket. Both APIs cap at 1000 keys per call
-        # (list_objects_v2 and delete_objects), so both must be looped: an
-        # unpaginated pass orphans every object past the first 1000, leaving files
-        # in the bucket after the DynamoDB record is gone. Test sets of a few
-        # thousand objects are routine.
         try:
-            deleted_count = 0
-            continuation_token = None
-            while True:
-                list_kwargs = {
-                    "Bucket": test_set_bucket,
-                    "Prefix": f"{test_set_id}/",
-                }
-                if continuation_token:
-                    list_kwargs["ContinuationToken"] = continuation_token
-                response = s3_client.list_objects_v2(**list_kwargs)
+            has_row = _claim_test_set_for_deletion(test_set_id)
+        except ValueError as e:
+            refused.append(str(e))
+            continue
 
-                objects_to_delete = [
-                    {"Key": key}
-                    for key in (obj.get("Key") for obj in response.get("Contents", []))
-                    if key
-                ]
-                for i in range(0, len(objects_to_delete), 1000):
-                    batch = objects_to_delete[i : i + 1000]
-                    s3_client.delete_objects(
-                        Bucket=test_set_bucket, Delete={"Objects": batch}
-                    )
-                    deleted_count += len(batch)
-
-                if not response.get("IsTruncated"):
-                    break
-                continuation_token = response.get("NextContinuationToken")
-                if not continuation_token:
-                    # A truncated response without a token would loop forever.
-                    logger.warning(
-                        f"Truncated listing without a continuation token for "
-                        f"test set {test_set_id}; stopping after {deleted_count} objects"
-                    )
-                    break
-
-            if deleted_count:
-                logger.info(f"Deleted {deleted_count} files for test set {test_set_id}")
-
+        try:
+            deleted_count = _delete_test_set_objects(test_set_bucket, test_set_id)
         except Exception as e:
-            logger.error(f"Failed to delete files for test set {test_set_id}: {str(e)}")
+            logger.error(f"Failed to delete files for test set {test_set_id}: {e}")
+            # Only text composed here reaches the caller; an AWS error's own text
+            # can name roles and resources (see ReportedServerError).
+            reason = (
+                str(e)
+                if isinstance(e, _ObjectsNotDeleted)
+                else "a storage request failed"
+            )
+            message = (
+                f"Deleting stopped partway: {reason}. Some documents may remain; "
+                "delete the set again."
+            )
+            if has_row:
+                _record_failed_deletion(test_set_id, message)
+            failed.append(f"Test set '{test_set_id}': {message}")
+            continue
 
-        # Delete tracking table record + drop the warm-container memo entry.
-        # An id could later be reused (test-set names are user-chosen), and a
-        # stale memo entry from a deleted namesake would occupy memory and
-        # produce spurious signature comparisons on the new set (the DDB
-        # signature-divergence check catches it, but popping is cleaner).
-        db_client.delete_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        if deleted_count:
+            logger.info(f"Deleted {deleted_count} files for test set {test_set_id}")
+
+        # Drop the warm-container memo entry too: an id could later be reused
+        # (test-set names are user-chosen), and a stale entry from a deleted
+        # namesake would produce spurious signature comparisons on the new set.
         _RECONCILE_MEMO.pop(test_set_id, None)
+        if not has_row:
+            continue
+        try:
+            # Conditional on our own claim, so a row another writer has put here
+            # since (a dataset deployer reclaiming its id) is not deleted with it.
+            db_client.delete_item(
+                {"PK": f"testset#{test_set_id}", "SK": "metadata"},
+                condition_expression="#st = :deleting",
+                expression_attribute_names={"#st": "status"},
+                expression_attribute_values={":deleting": DELETING_TEST_SET_STATUS},
+            )
+        except DynamoDBError as e:
+            if e.error_code != "ConditionalCheckFailedException":
+                raise
+            logger.warning(
+                f"Test set {test_set_id} was rewritten while its files were deleted; "
+                "leaving the new row in place"
+            )
 
-    logger.info(f"Deleted {len(test_set_ids)} test sets")
+    deleted = len(test_set_ids) - len(refused) - len(failed)
+    logger.info(f"Deleted {deleted} of {len(test_set_ids)} test sets")
+    if failed:
+        raise ReportedServerError(" ".join(failed + refused))
+    if refused:
+        raise ValueError(" ".join(refused))
     return True
 
 
@@ -6100,7 +6299,7 @@ def get_test_sets():
                         else None
                     )
 
-                    _create_test_set_tracking_entry(
+                    registered = _create_test_set_tracking_entry(
                         prefix,
                         prefix,  # Use prefix as name
                         validation_result["input_count"],
@@ -6111,6 +6310,10 @@ def get_test_sets():
                         label_state,
                         content_signature,
                     )
+                    if not registered:
+                        # A create took the id during this scan; its row, not this
+                        # discovery-shaped one, is what the next poll reports.
+                        continue
 
                     # Add to results
                     result.append(
@@ -6134,34 +6337,12 @@ def get_test_sets():
 
         # Check for deleted test sets (exist in DynamoDB but not in S3)
         # Only delete old FAILED test sets or any COMPLETED test sets
-        from datetime import datetime, timedelta
-
-        deleted_test_sets = []
-        cutoff_time = datetime.utcnow() - timedelta(
-            hours=1
-        )  # Only delete FAILED if older than 1 hour
-
-        for test_set_id in existing_test_sets:
-            test_set_item = existing_test_sets[test_set_id]
-            test_set_status = test_set_item.get("status")
-            created_at_str = test_set_item.get("createdAt", "")
-
-            # Parse creation time
-            try:
-                created_at = datetime.fromisoformat(
-                    created_at_str.replace("Z", "+00:00")
-                )
-            except:
-                continue  # Skip if can't parse date
-
-            # Only delete if S3 folder missing AND:
-            # - Status is COMPLETED (any time), OR
-            # - Status is FAILED and older than cutoff time
-            if test_set_id not in s3_test_sets and (
-                test_set_status == "COMPLETED"
-                or (test_set_status == "FAILED" and created_at < cutoff_time)
-            ):
-                deleted_test_sets.append(test_set_id)
+        deleted_test_sets = [
+            test_set_id
+            for test_set_id, test_set_item in existing_test_sets.items()
+            if test_set_id not in s3_test_sets
+            and _is_orphan_to_remove(test_set_id, test_set_item)
+        ]
 
         # Delete orphaned test sets from DynamoDB
         for test_set_id in deleted_test_sets:
@@ -6190,6 +6371,42 @@ def get_test_sets():
 
     logger.info(f"Returning {len(result)} test sets")
     return result
+
+
+# A FAILED set whose folder is missing is removed only once it is this old, so a set
+# that failed moments ago stays listed long enough for its error to be read.
+FAILED_ORPHAN_MIN_AGE_HOURS = 1
+
+
+def _is_orphan_to_remove(test_set_id, item):
+    """Whether a row whose S3 folder is gone should be deleted by getTestSets.
+
+    COMPLETED rows go at any age, as do DELETING ones (a delete that stopped after its
+    files were gone, and so before it could remove the row). FAILED rows go once their
+    ``createdAt`` is older than FAILED_ORPHAN_MIN_AGE_HOURS; a FAILED row whose
+    ``createdAt`` cannot be read is kept, because its age is unknown.
+
+    Never raises: this runs over every row on the stack, and one record it cannot read
+    must not stop the rows after it from being cleaned up.
+    """
+    try:
+        status = item.get("status")
+        if status in ("COMPLETED", DELETING_TEST_SET_STATUS):
+            return True
+        if status != "FAILED":
+            return False
+        created_at = _parse_utc_timestamp(item.get("createdAt"))
+        if created_at is None:
+            logger.warning(
+                f"Keeping orphaned FAILED test set {test_set_id}: its createdAt "
+                f"{item.get('createdAt')!r} cannot be read, so its age is unknown"
+            )
+            return False
+        age = datetime.now(timezone.utc) - created_at
+        return age.total_seconds() >= FAILED_ORPHAN_MIN_AGE_HOURS * 3600
+    except Exception as e:  # noqa: BLE001 — one unreadable row must not stop the rest
+        logger.warning(f"Skipping orphan check for test set {test_set_id}: {e}")
+        return False
 
 
 def get_test_set_documents(args, deadline=None):
@@ -6532,7 +6749,10 @@ LABEL_STATE_PROBE_BUDGET_SECONDS = 5
 
 # Statuses in which a set's S3 contents are still being written, so coverage read from
 # S3 is not evidence about the set's real label state. Used to skip reconciliation
-# rather than act on a half-copied prefix.
+# rather than act on a half-copied prefix, and by deleteTestSets to refuse a set a job
+# is still writing. Every member needs a window in STALE_STATUS_HOURS: a status nothing
+# can age out would make a set whose job died undeletable. (A row with no
+# statusUpdatedAt cannot be aged either; deleteTestSets lets those through.)
 IN_FLUX_TEST_SET_STATUSES = frozenset({"UPDATING", "COPYING", "GENERATING", "QUEUED"})
 
 
@@ -6540,8 +6760,9 @@ IN_FLUX_TEST_SET_STATUSES = frozenset({"UPDATING", "COPYING", "GENERATING", "QUE
 # Per status, because the plausible durations differ by orders of magnitude: a synthetic
 # generation legitimately runs for hours (its own runtime ceiling is ~8h), whereas a file
 # copy does not. Generous on purpose — declaring a live run dead is worse than a spinner
-# that lasts a little longer than it should.
-STALE_STATUS_HOURS = {"GENERATING": 12, "UPDATING": 2, "QUEUED": 2}
+# that lasts a little longer than it should. COPYING is one file-copier invocation,
+# whose function timeout is 15 minutes.
+STALE_STATUS_HOURS = {"GENERATING": 12, "UPDATING": 2, "QUEUED": 2, "COPYING": 2}
 
 
 def _reap_abandoned_test_sets(items):
@@ -6571,11 +6792,8 @@ def _reap_abandoned_test_sets(items):
         stamp = item.get("statusUpdatedAt") or (
             item.get("createdAt") if status == "QUEUED" else None
         )
-        if not stamp:
-            continue
-        try:
-            since = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        except ValueError:
+        since = _parse_utc_timestamp(stamp)
+        if since is None:
             continue
         idle_hours = (now - since).total_seconds() / 3600
         if idle_hours < max_hours:
@@ -6673,7 +6891,11 @@ def _reconcile_label_state(items):
         # set. It self-heals — fileCount changes at COMPLETED, which invalidates the
         # marker and forces a re-probe — but the user watching the list sees the badge
         # flip and flip back, and the probes spent to get there are wasted.
-        if item.get("status") in IN_FLUX_TEST_SET_STATUSES:
+        # Nor is one being deleted: its folder is emptying, and the unconditional
+        # labelState write below could recreate a stub row after the delete.
+        if item.get("status") in IN_FLUX_TEST_SET_STATUSES or (
+            item.get("status") == DELETING_TEST_SET_STATUS
+        ):
             continue
         test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
         if not test_set_id:
@@ -7012,7 +7234,11 @@ def _create_test_set_tracking_entry(
     label_state=None,
     content_signature=None,
 ):
-    """Create tracking table entry for direct upload test set"""
+    """Create tracking table entry for direct upload test set.
+
+    Returns False only when another writer created the row first; any other
+    failure is logged and returns True, so the folder is still listed this poll.
+    """
     try:
         now = datetime.utcnow().isoformat() + "Z"
         item = {
@@ -7038,11 +7264,21 @@ def _create_test_set_tracking_entry(
         if content_signature:
             item["contentSignature"] = content_signature
 
-        db_client.put_item(item)
+        # Conditional: discovery registers a folder that had no row when the scan
+        # read the table, and a create that lands in between must keep its row
+        # rather than have it replaced by this discovery-shaped one.
+        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
         logger.info(f"Created tracking entry for direct upload test set {test_set_id}")
 
     except Exception as e:
+        if getattr(e, "error_code", None) == "ConditionalCheckFailedException":
+            logger.info(
+                f"Not registering {test_set_id}: a row was created for it during "
+                "this scan"
+            )
+            return False
         logger.error(f"Error creating tracking entry for {test_set_id}: {str(e)}")
+    return True
 
 
 # Rows in one of these non-terminal states are being actively mutated by a
@@ -7505,16 +7741,12 @@ def validate_test_file_name(args):
     test_set_name = args["fileName"]
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
-    # Check if test set already exists in tracking table
-    try:
-        item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    # A failed lookup raises rather than answering "does not exist": the wizard
+    # reports an error as one, and a false "free" would send it on to a create.
+    item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
-        if item:
-            logger.info(f"Test set {test_set_id} already exists")
-            return {"exists": True, "testSetId": test_set_id}
-        else:
-            logger.info(f"Test set {test_set_id} does not exist")
-            return {"exists": False, "testSetId": None}
-    except Exception as e:
-        logger.error(f"Error checking test set existence: {str(e)}")
-        return {"exists": False, "testSetId": None}
+    if item:
+        logger.info(f"Test set {test_set_id} already exists")
+        return {"exists": True, "testSetId": test_set_id}
+    logger.info(f"Test set {test_set_id} does not exist")
+    return {"exists": False, "testSetId": None}

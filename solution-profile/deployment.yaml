@@ -1,0 +1,283 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# How the solution is deployed, where, and what a deployment needs.
+# Solution Profile contract v1 (schema/v1/README.md).
+options:
+  - id: cloudformation
+    title: One-click CloudFormation stack (Launch Stack)
+    description: >-
+      The recommended first deployment: choose the Launch Stack button for a Region,
+      review the stack parameters and create the stack from the published template,
+      with no local build. The parameters choose the configuration preset, optional
+      features (knowledge base, MCP server, malware scanning, multi-tenant strict
+      mode, VPC placement, web UI hosting) and the admin email, which receives a
+      temporary password for the web UI and a separate alerts-subscription email that
+      must be confirmed before any alarm is delivered. Lambda container images are
+      built by AWS CodeBuild during the stack deployment, inside the customer's
+      account.
+    evidence:
+      - docs/deployment.md#option-1-one-click-cloudformation-console-deployment-recommended-for-first-time-users
+      - README.md#quick-start
+      - scripts/aws-release.sh
+    status: ga
+    regions: [us-west-2, us-east-1, eu-central-1, ca-central-1]
+    partitions: [aws]
+    time_to_deploy: >-
+      10-15 minutes to CREATE_COMPLETE, as the deployment guide states; the Test
+      Studio guide states that loading its benchmark test sets adds about 15-20
+      minutes to a first deployment
+
+  - id: cli-deploy
+    title: Deploy and update with idp-cli deploy
+    description: >-
+      idp-cli deploy creates or updates a stack from the command line, waits for it to
+      finish, and accepts a local or S3 custom configuration and stack parameters; on
+      update it reuses previous parameter values unless told otherwise. Without
+      --from-code it deploys the published template of the Region; with --from-code it
+      builds and publishes the templates from a local checkout into the deployer's own
+      artifact bucket first, which is how a customised build or a Region without
+      published templates is deployed. The same command takes --headless, --govcloud
+      and the experimental --terraform.
+    evidence:
+      - docs/idp-cli.md#deploy
+      - docs/deployment.md#option-2-cli-based-deployment-recommended-for-automation
+      - docs/deployment.md#option-a-idp-cli---from-code-recommended
+    status: ga
+    partitions: [aws, aws-us-gov]
+    time_to_deploy: 10-15 minutes, as the deployment guide and the CLI guide state
+
+  - id: headless
+    title: Headless deployment (no web UI)
+    description: >-
+      A template transform (idp-cli deploy --headless) deploys the whole processing
+      backend without the web UI, its REST API, Cognito, the CloudFront-facing WAF,
+      the agents and chat, human review, the knowledge base and the web-UI-dependent
+      parts of Discovery. Documents are submitted by S3 upload, idp-cli, the SDK or
+      the optional Jobs REST API (EnableJobsApi, which needs DeployInVPC and is
+      required in GovCloud). It suits API-only integrations and
+      environments whose policy rules out Cognito, CloudFront or a UI; in a commercial
+      Region it can transform the published template, and in GovCloud it is built from
+      source.
+    evidence:
+      - docs/headless-deployment.md
+      - docs/headless-deployment.md#what-gets-removed-in-headless-mode
+      - docs/govcloud-batch-api.md
+    status: ga
+    regions: [us-west-2, us-east-1, eu-central-1, ca-central-1, us-gov-west-1, us-gov-east-1]
+    partitions: [aws, aws-us-gov]
+
+  - id: govcloud
+    title: AWS GovCloud (US) deployment with the web UI
+    description: >-
+      idp-cli deploy --govcloud --from-code builds a GovCloud variant of the template
+      from local source (no GovCloud templates are published) that keeps the full web
+      UI, served by API Gateway instead of CloudFront, with Cognito sign-in and an
+      option of public, IP-restricted or VPC-only access. The transform removes only
+      what GovCloud lacks: all CloudFront resources and the Lambda Function URL that
+      streams chat, so chat answers arrive by polling instead of live streaming. The
+      bda OCR backend is not available in GovCloud, and the GovCloud preset uses
+      GovCloud-callable Bedrock models; --headless is the alternative when no UI is
+      wanted.
+    evidence:
+      - docs/govcloud-deployment.md
+      - docs/govcloud-architecture.md#what---govcloud-removes
+      - docs/govcloud-deployment.md#not-available-in-govcloud-all-deploy-modes
+      - config_library/unified/lending-package-sample-govcloud/config.yaml
+    status: ga
+    regions: [us-gov-west-1, us-gov-east-1]
+    partitions: [aws-us-gov]
+
+  - id: vpc-secured
+    title: VPC-secured mode (Lambda functions in the customer's VPC)
+    description: >-
+      Stack parameter DeployInVPC with an existing VPC, at least 2 private subnets (and
+      2 public subnets with NAT Gateways unless images and packages are mirrored) and
+      a Lambda security group places the Lambda functions and CodeBuild image builds
+      in the customer's VPC, reaching AWS services through gateway endpoints (S3,
+      DynamoDB) and interface endpoints (SQS, Step Functions, Lambda, CloudWatch, KMS,
+      SSM, STS, Bedrock Runtime, Textract, EventBridge, CodeBuild, ECR, Glue,
+      execute-api), which a provided script can create. Builds need a NAT Gateway, or
+      internally mirrored container images and Python packages where there is no
+      internet egress. BDA mode additionally needs a bedrock-data-automation-runtime
+      endpoint, which neither the endpoint list nor the script includes.
+    evidence:
+      - docs/vpc-secured-mode.md
+      - docs/vpc-secured-mode.md#required-vpc-endpoints
+      - docs/vpc-secured-mode.md#environments-without-internet-access
+    status: ga
+    partitions: [aws, aws-us-gov]
+
+  - id: private-network
+    title: Private-network deployment with the web UI hosted on a private API Gateway
+    description: >-
+      For environments where the web UI and API must have no public endpoint,
+      WebUIHosting=APIGateway with ApiGatewayVisibility=PRIVATE serves the web UI and
+      its data API from one private REST API reachable only through an execute-api
+      interface endpoint in the VPC; Cognito sign-in still needs a route from the
+      browser to the public Cognito endpoint. It runs
+      every Lambda in the VPC with service traffic on VPC endpoints. Browser uploads go
+      to S3 through NAT by default or through a customer-managed S3 interface endpoint.
+      The runbook requires the MCP server and the knowledge base to be disabled
+      (EnableMCP false, DocumentKnowledgeBase DISABLED), and users reach the UI over
+      VPN, Direct Connect, WorkSpaces or similar.
+    evidence:
+      - docs/deployment-private-network.md
+      - docs/deployment-private-network.md#two-deployment-models
+      - docs/deployment-private-network.md#cognito-idp-egress-browser-only-consideration
+      - docs/apigateway-hosting.md#configuration
+    status: ga
+    partitions: [aws]
+    time_to_deploy: about 25-35 minutes for the stack, as the private-network runbook states
+
+  - id: terraform
+    title: Terraform or OpenTofu module generated from the CloudFormation templates
+    description: >-
+      Each release publishes a Terraform module generated from the same CloudFormation
+      templates, beside them in the same buckets, deployable from the customer's own
+      Terraform 1.7+ or OpenTofu 1.7+ configuration or with idp-cli deploy --terraform.
+      The docs label it experimental: the full stack has been applied, re-planned with
+      no changes and destroyed with both tools in a development account, while the
+      headless and GovCloud modules are validated offline but have not been applied.
+      Differences include that a failed apply is not rolled back, physical resource
+      names differ, and feature-platform extensions still install as CloudFormation
+      stacks.
+    evidence:
+      - docs/terraform.md
+      - docs/terraform.md#getting-the-module
+      - docs/terraform.md#differences-from-cloudformation-and-current-limitations
+    status: experimental
+    regions: [us-west-2, us-east-1, eu-central-1, ca-central-1]
+    partitions: [aws]
+
+  - id: cdk-sibling
+    title: GenAI IDP Accelerator for AWS CDK (separate repository)
+    description: >-
+      A separate open-source repository offers the solution's functional capabilities
+      as AWS CDK constructs, for teams that build their infrastructure with CDK. It is
+      a different implementation from this repository's CloudFormation templates, so
+      its release cadence, versions and feature coverage are its own and are not
+      described by this profile.
+    evidence:
+      - README.md#alternative-implementations
+      - https://github.com/cdklabs/genai-idp
+
+  - id: terraform-sibling
+    title: genai-idp-terraform (separate repository) and migration from it
+    description: >-
+      awslabs/genai-idp-terraform is a separate Terraform implementation of the
+      accelerator, distinct from the module this repository generates, so its state
+      cannot simply be moved. idp-cli terraform migrate-from-genai-idp-terraform
+      migrates in place: a new deployment of this repository's module adopts the old
+      buckets, tables, KMS key and Cognito user pool, keeping documents, results,
+      configuration, users and passwords, and every changing phase is a dry run until
+      --apply. It has been run end to end against one upstream configuration and needs
+      a maintenance window during which no uploads are processed.
+    evidence:
+      - docs/terraform-migration.md
+      - docs/terraform-migration.md#how-much-of-this-has-been-tested
+      - https://github.com/awslabs/genai-idp-terraform
+
+prerequisites:
+  - id: bedrock-model-access
+    title: Amazon Bedrock model access in the deployment Region
+    description: >-
+      Every model the configuration names, plus the knowledge-base embedding model,
+      must be callable from the stack's Region before documents are processed. The
+      shipped defaults call Amazon Nova 2 Lite, Nova Lite and Nova Pro, Claude Sonnet 5
+      (including its 1M-context variant), Claude Opus 4.8 (1M context), Claude Opus 4.6
+      (1M context), Claude Sonnet 4.6 and Claude Haiku 4.5, with Cohere Embed v4 for
+      multi-document discovery and Titan Text Embeddings V2 for the knowledge base. The
+      GovCloud guide lists its own defaults, and the EU and Canada guides list the
+      inference-profile mappings used there; Quick Start needs a Claude model for
+      schema authoring.
+    evidence:
+      - lib/idp_common_pkg/idp_common/config/system_defaults/
+      - README.md
+      - docs/govcloud-deployment.md#prerequisites
+      - docs/eu-region-model-support.md
+      - docs/canada-region-model-support.md
+      - docs/knowledge-base.md#configuration
+    applies_to:
+      - deployment:cloudformation
+      - deployment:cli-deploy
+      - deployment:headless
+      - deployment:govcloud
+      - deployment:terraform
+      - capability:bedrock-model-choice
+
+  - id: service-quotas
+    title: Service quotas sized for the expected volume
+    description: >-
+      High volumes need quota increases chiefly for Bedrock tokens and requests per
+      minute per model, Textract transactions per second (typically 10-25 TPS by
+      default), Lambda concurrent executions (1,000 by default), Step Functions state
+      transitions and BDA concurrent jobs in BDA mode. The stack itself limits
+      concurrent workflows to 100 by default (stack parameter MaxConcurrentWorkflows).
+      The Capacity Planning page computes the Bedrock quotas a pipeline-mode volume
+      needs, and malware scanning with CREATE_PLAN uses one of GuardDuty's 25 protected
+      buckets per account per Region.
+    evidence:
+      - docs/aws-services-and-roles.md#service-quotas-considerations
+      - docs/capacity-planning.md
+      - docs/malware-scanning.md#cost-and-quotas
+      - template.yaml
+    applies_to:
+      - deployment:cloudformation
+      - deployment:cli-deploy
+      - deployment:headless
+      - deployment:govcloud
+      - deployment:terraform
+      - capability:capacity-planning
+      - capability:load-testing
+
+  - id: iam-permissions-boundary
+    title: Optional IAM permissions boundary on every role the stack creates
+    description: >-
+      Stack parameter PermissionsBoundaryArn (empty by default) attaches an existing
+      IAM permissions boundary policy to every IAM role the stack creates, including
+      the implicit roles of SAM functions, for organisations whose service control
+      policies require one. It is optional for an administrator deployment but
+      mandatory when deploying through the example CloudFormation service role, whose
+      CreatedRolePermissionsBoundaryArn must be the same ARN; with an empty value that
+      route fails on iam:CreateRole by design.
+    evidence:
+      - docs/aws-services-and-roles.md#enterprise-deployment-considerations
+      - template.yaml
+      - iam-roles/cloudformation-management/README.md
+    applies_to:
+      - deployment:cloudformation
+      - deployment:cli-deploy
+      - deployment:headless
+      - deployment:govcloud
+      - deployment:vpc-secured
+      - deployment:private-network
+
+  - id: deploying-identity
+    title: An identity with administrator access, or the example CloudFormation service role
+    description: >-
+      Deploying needs administrator access to the account. For non-administrator
+      deployers, the repository ships an example CloudFormation service role that
+      CloudFormation assumes on the user's behalf, so the user needs only
+      iam:PassRole; it is a deployment role rather than a least-privilege one, holding
+      cloudformation:* plus service-level wildcards on every service the templates
+      deploy (including GuardDuty, and AppSync for upgrades from before 0.6.0), and is
+      contained by a
+      mandatory permissions boundary, a stack-name prefix on its IAM grants and a trust
+      policy limited to CloudFormation in the same account. The deploying credentials
+      also need ECR permissions for the image builds, and GuardDuty permissions when
+      malware scanning creates its own plan.
+    evidence:
+      - docs/deployment.md#administrator-access-requirements
+      - docs/aws-services-and-roles.md#deployment-roles
+      - iam-roles/cloudformation-management/README.md
+      - iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml
+      - docs/malware-scanning.md#enabling-it
+    applies_to:
+      - deployment:cloudformation
+      - deployment:cli-deploy
+      - deployment:headless
+      - deployment:govcloud
+      - deployment:vpc-secured
+      - deployment:private-network
+      - deployment:terraform

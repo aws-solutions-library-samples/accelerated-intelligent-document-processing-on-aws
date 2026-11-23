@@ -1517,7 +1517,48 @@ def test_nothing_retained_is_reported_as_nothing_to_do(
         assert deployer.cleanup_retained_resources("S1") == {
             "total_deleted": 0,
             "errors": [],
+            "kms_keys_retained": [],
         }
+
+
+@pytest.mark.parametrize("with_bucket", [True, False])
+def test_a_retained_kms_key_is_reported_and_left_enabled(
+    aws_credentials: str, no_additional_cleanup: None, with_bucket: bool
+):
+    """#2011: the key that encrypts the retained buckets is retained by the
+    stack. The cleanup deletes the buckets and reports the key without
+    scheduling its deletion, whether or not there was anything else to do."""
+    policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::123456789012:root"},
+                "Action": "kms:*",
+                "Resource": "*",
+            }
+        ],
+    }
+    resources: dict = {
+        # moto reads KeyPolicy as a JSON string.
+        "Key": {
+            "Type": "AWS::KMS::Key",
+            "Properties": {"KeyPolicy": json.dumps(policy)},
+        }
+    }
+    if with_bucket:
+        resources["InputBucket"] = {"Type": "AWS::S3::Bucket"}
+    with mock_aws():
+        deployer = StackDeployer(region=REGION)
+        _create_stack(deployer, "S1", _template(resources))
+        kms = boto3.client("kms", region_name=REGION)
+        [key_id] = [k["KeyId"] for k in kms.list_keys()["Keys"]]
+
+        results = deployer.cleanup_retained_resources("S1")
+
+        assert results["kms_keys_retained"] == [key_id]
+        assert len(results.get("buckets_deleted", [])) == int(with_bucket)
+        assert kms.describe_key(KeyId=key_id)["KeyMetadata"]["KeyState"] == "Enabled"
 
 
 def test_a_stack_arn_is_reduced_to_a_name_for_log_group_discovery(
@@ -1707,7 +1748,7 @@ def test_an_unparseable_arn_is_warned_about_and_used_as_is(
         deployer = StackDeployer(region=REGION)
         with caplog.at_level("INFO", logger="idp_sdk._core.stack"):
             result = deployer.cleanup_retained_resources("arn:aws:cloudformation")
-    assert result == {"total_deleted": 0, "errors": []}
+    assert result == {"total_deleted": 0, "errors": [], "kms_keys_retained": []}
 
 
 def test_resources_that_cannot_be_auto_deleted_are_called_out(

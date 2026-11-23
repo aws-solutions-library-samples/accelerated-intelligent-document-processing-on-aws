@@ -9,6 +9,12 @@ replaced, so botocore's own ``httpsession.send`` turns urllib3's ``ProtocolError
 into whatever it raises for a closed connection, and the test asserts that the
 ladder retries *that*. A botocore upgrade that changed the class would then be
 measured rather than assumed.
+
+**An HTTP 500, 502, 503 or 504 is retried whatever its code (#2036).** A real client
+is answered with a 5xx whose body names no error type (empty, or an HTML page), so
+the bare ``"500"`` code is the one botocore itself builds for such a reply; the
+replies come from ``tests/unit/_botocore_errors.py``, as do the Lambda errors the
+hook ladder is handed.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import ast
 import io
 import itertools
 import json
+import logging
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -35,6 +42,14 @@ from urllib3.exceptions import ProtocolError
 from idp_common.bedrock import client as client_mod
 from idp_common.bedrock.client import BedrockClient
 from idp_common.lambda_deadline import set_lambda_deadline_epoch
+from tests.unit._botocore_errors import (
+    Reply,
+    bare_replies,
+    named_reply,
+    ok_reply,
+    scripted_client,
+    service_error,
+)
 
 #: botocore's real transport, captured at import — before the suite's autouse
 #: no-outbound fixture replaces it for each test. The test below needs botocore's own
@@ -132,6 +147,85 @@ def test_a_dropped_connection_is_retried_like_a_read_timeout(drops, monkeypatch)
     assert metrics["BedrockTimeouts"] == drops
     assert metrics["BedrockUnexpectedErrors"] == 0
     assert metrics["BedrockRequestsFailed"] == 0
+
+
+#: Bedrock's answer when a tokens-per-minute quota is exhausted. The code is
+#: ``ThrottlingException``, the same as a requests-per-minute throttle.
+_TOO_MANY_TOKENS = "Too many tokens, please wait before trying again."
+
+
+def _throttled_response() -> urllib3.HTTPResponse:
+    return urllib3.HTTPResponse(
+        body=io.BytesIO(json.dumps({"message": _TOO_MANY_TOKENS}).encode()),
+        status=429,
+        headers={
+            "content-type": "application/json",
+            "x-amzn-ErrorType": "ThrottlingException:http://internal.amazon.com/",
+        },
+        preload_content=False,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("throttles", [3, 8], ids=["recovers", "exhausted"])
+def test_a_tokens_per_minute_throttle_is_retried_by_the_ladder(throttles, monkeypatch):
+    """#2034: a throttled packet window's error read "(reached max retries: 0): Too
+    many tokens", which looks as if nothing retried it. That count is botocore's,
+    for one attempt: ``BedrockClient`` pins botocore to a single attempt so its own
+    ladder is the only one, and every attempt therefore reports zero retries,
+    including the last of a ladder that made all eight. Measured with a real
+    ``bedrock-runtime`` client, as the dropped-connection test above is."""
+    from idp_common.utils.transient_errors import is_transient_error
+
+    sent: list[str] = []
+
+    def urlopen(pool, method, url, *args, **kwargs):
+        sent.append(url)
+        if len(sent) <= throttles:
+            return _throttled_response()
+        return urllib3.HTTPResponse(
+            body=io.BytesIO(json.dumps(_CONVERSE_OK).encode()),
+            status=200,
+            headers={"content-type": "application/json"},
+            preload_content=False,
+        )
+
+    metrics: Counter = Counter()
+    client = _recording_client(metrics)
+    client._client = _botocore_runtime_client()
+    monkeypatch.setattr(urllib3.connectionpool.HTTPConnectionPool, "urlopen", urlopen)
+    monkeypatch.setattr(URLLib3Session, "send", _REAL_SEND)
+
+    def invoke():
+        return client._invoke_with_retry(
+            model_id="us.amazon.nova-lite-v1:0",
+            converse_params={
+                "modelId": "us.amazon.nova-lite-v1:0",
+                "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+                "system": [{"text": "s"}],
+                "inferenceConfig": {"maxTokens": 10},
+                "additionalModelRequestFields": {},
+            },
+            retry_count=0,
+            max_retries=client_mod.DEFAULT_MAX_RETRIES,
+            request_start_time=0.0,
+        )
+
+    if throttles <= client_mod.DEFAULT_MAX_RETRIES:
+        assert invoke()["response"]["stopReason"] == "end_turn"
+        assert len(sent) == throttles + 1
+        assert metrics["BedrockThrottling"] == throttles
+        return
+
+    with pytest.raises(ClientError) as caught:
+        invoke()
+    # Every attempt the ladder allows was made, and the error still says zero.
+    assert len(sent) == client_mod.DEFAULT_MAX_RETRIES + 1
+    assert metrics["BedrockMaxRetriesExceeded"] == 1
+    assert "(reached max retries: 0)" in str(caught.value)
+    assert _TOO_MANY_TOKENS in str(caught.value)
+    assert caught.value.response["Error"]["Code"] == "ThrottlingException"
+    assert is_transient_error(caught.value)
 
 
 class _BodyCutShort(io.RawIOBase):
@@ -236,10 +330,13 @@ def _hook_function_error() -> dict:
     }
 
 
+_HOOK_THROTTLE = named_reply(
+    "TooManyRequestsException", message="slow", service="lambda"
+)
+
+
 def _hook_throttle() -> dict:
-    raise ClientError(
-        {"Error": {"Code": "TooManyRequestsException", "Message": "slow"}}, "Invoke"
-    )
+    raise service_error(_HOOK_THROTTLE, "Invoke", "lambda")
 
 
 def _hook_read_timeout() -> dict:
@@ -252,7 +349,9 @@ def _hook_success() -> dict:
 
 _HOOK_FAILURES = {
     "F": (_hook_function_error, RuntimeError),
-    "T": (_hook_throttle, ClientError),
+    # botocore raises a modelled error as the client's own subclass, and the ladder
+    # re-raises it unchanged, so this is that class rather than ``ClientError``.
+    "T": (_hook_throttle, type(service_error(_HOOK_THROTTLE, "Invoke", "lambda"))),
     "R": (_hook_read_timeout, ReadTimeoutError),
 }
 _HOOK_MAX_RETRIES = 3
@@ -330,10 +429,13 @@ def test_a_hook_ladder_that_recovers_stops_at_the_first_success():
 # --- LambdaHook ladder: one failed request is one LambdaHookRequestsFailed ---------
 
 
+#: Lambda's model declares no ``AccessDeniedException`` for ``Invoke``; IAM answers
+#: it with a 403.
+_HOOK_DENIED = named_reply("AccessDeniedException", 403, "no", service="lambda")
+
+
 def _hook_denied() -> dict:
-    raise ClientError(
-        {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Invoke"
-    )
+    raise service_error(_HOOK_DENIED, "Invoke", "lambda")
 
 
 def _hook_handled_function_error() -> dict:
@@ -468,3 +570,218 @@ def test_every_hook_failure_exit_is_driven():
         sys.settrace(previous)
     undriven = _hook_ladder_raise_lines() - executed
     assert not undriven, f"hook ladder raise sites no route reaches: {sorted(undriven)}"
+
+
+# -- HTTP 5xx replies (#2036) -------------------------------------------------------
+#
+# The replies are described as HTTP (status, body, headers) and turned into errors by
+# a real ``bedrock-runtime`` client (``tests/unit/_botocore_errors.py``), so the code
+# each ladder is handed is the one botocore builds -- a bare ``"500"`` for an empty or
+# HTML body -- rather than one written here.
+
+_NOVA = "us.amazon.nova-lite-v1:0"
+_TITAN = "amazon.titan-embed-text-v2:0"
+_EMBEDDING = [0.1, 0.2]
+
+_OK_REPLY = {
+    "converse": ok_reply(_CONVERSE_OK),
+    "embedding": ok_reply({"embedding": _EMBEDDING}),
+}
+
+#: Each ladder's metric names: (the retryable-error count, the non-retryable count,
+#: the failed-request count).
+_LADDER_METRICS = {
+    "converse": (
+        "BedrockThrottles",
+        "BedrockNonRetryableErrors",
+        "BedrockRequestsFailed",
+    ),
+    "embedding": (
+        "BedrockEmbeddingThrottles",
+        "BedrockEmbeddingNonRetryableErrors",
+        "BedrockEmbeddingRequestsFailed",
+    ),
+}
+
+
+def _drive_ladder(ladder: str, replies: list[Reply], monkeypatch) -> SimpleNamespace:
+    """Serve ``replies`` in order to a real ``bedrock-runtime`` client, make one call
+    through ``ladder``, and report what was sent, raised, slept and counted."""
+    codes: list[str] = []
+    backoffs: list[int] = []
+    sleeps: list[float] = []
+
+    def record_error_code(response=None, **_kwargs):
+        # The error botocore parsed from each failed reply, read from botocore.
+        if response is not None and "Error" in response[1]:
+            codes.append(response[1]["Error"]["Code"])
+
+    runtime, served = scripted_client(replies)
+    operation = "Converse" if ladder == "converse" else "InvokeModel"
+    runtime.meta.events.register(
+        f"needs-retry.bedrock-runtime.{operation}", record_error_code
+    )
+    metrics: Counter = Counter()
+    client = _recording_client(metrics)
+    client._client = runtime
+
+    def backoff(self, retry_count):
+        backoffs.append(retry_count)
+        return 0.25
+
+    monkeypatch.setattr(BedrockClient, "_backoff_within_invocation", backoff)
+    monkeypatch.setattr(client_mod.time, "sleep", sleeps.append)
+    outcome: object
+    try:
+        if ladder == "converse":
+            outcome = client._invoke_with_retry(
+                model_id=_NOVA,
+                converse_params={
+                    "modelId": _NOVA,
+                    "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+                    "system": [{"text": "s"}],
+                    "inferenceConfig": {"maxTokens": 10},
+                    "additionalModelRequestFields": {},
+                },
+                retry_count=0,
+                max_retries=4,
+                request_start_time=0.0,
+            )
+        else:
+            outcome = client._generate_embedding_with_retry(
+                model_id=_TITAN,
+                request_body=json.dumps({"inputText": "hi"}),
+                normalized_text="hi",
+                retry_count=0,
+                max_retries=4,
+            )
+    except ClientError as e:
+        outcome = e
+    return SimpleNamespace(
+        sent=len(served),
+        codes=codes,
+        backoffs=backoffs,
+        sleeps=sleeps,
+        metrics=metrics,
+        outcome=outcome,
+    )
+
+
+def _succeeded(ladder: str, outcome: object) -> bool:
+    if ladder == "converse":
+        return (
+            isinstance(outcome, dict)
+            and outcome["response"]["stopReason"] == "end_turn"
+        )
+    return outcome == _EMBEDDING
+
+
+#: Replies both ladders retry: (the replies, each checked in turn; the code botocore
+#: gives them; how many times each counts toward ``BedrockServiceUnavailable`` -- the
+#: circuit breaker's default trigger -- and toward ``BedrockThrottling``; and what the
+#: retry log line calls it). The bare statuses are the #2036 case, each checked with
+#: an empty body and with an HTML one. ``InternalFailure`` is a named code in neither
+#: list, retried for its 500 status alone. The two Bedrock names are the controls the
+#: ladders already retried. A throttle carrying a 503 is counted and logged by its
+#: name, not its status.
+_RETRIED_REPLIES = {
+    "bare 500": (bare_replies(500), "500", 0, 0, "server error (HTTP 500)"),
+    "bare 502": (bare_replies(502), "502", 0, 0, "server error (HTTP 502)"),
+    "bare 503": (bare_replies(503), "503", 1, 0, "server error (HTTP 503)"),
+    "bare 504": (bare_replies(504), "504", 0, 0, "server error (HTTP 504)"),
+    # A throttle that names no error type: retried, counted and logged as one (#2112).
+    "bare 429": (bare_replies(429), "429", 0, 1, "throttling"),
+    "InternalFailure (500)": (
+        (named_reply("InternalFailure", 500),),
+        "InternalFailure",
+        0,
+        0,
+        "server error (HTTP 500)",
+    ),
+    "InternalServerException (500)": (
+        (named_reply("InternalServerException"),),
+        "InternalServerException",
+        0,
+        0,
+        "server error (HTTP 500)",
+    ),
+    "ServiceUnavailableException (503)": (
+        (named_reply("ServiceUnavailableException"),),
+        "ServiceUnavailableException",
+        1,
+        0,
+        "server error (HTTP 503)",
+    ),
+    "ThrottlingException (503)": (
+        (named_reply("ThrottlingException", 503),),
+        "ThrottlingException",
+        0,
+        1,
+        "throttling",
+    ),
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ladder", sorted(_OK_REPLY))
+@pytest.mark.parametrize("reply", sorted(_RETRIED_REPLIES))
+def test_an_http_server_error_is_retried_with_backoff_and_recovers(
+    ladder, reply, monkeypatch, caplog
+):
+    firsts, code, service_unavailable, throttling, kind = _RETRIED_REPLIES[reply]
+    caplog.set_level(logging.WARNING, logger=client_mod.logger.name)
+    for first in firsts:
+        caplog.clear()
+        run = _drive_ladder(ladder, [first, _OK_REPLY[ladder]], monkeypatch)
+        what = first.label
+
+        assert run.codes == [code], f"{what}: the reply did not produce {code!r}"
+        assert run.sent == 2, f"{what}: {run.sent} sends, expected a retry (#2036)"
+        assert run.backoffs == [0] and run.sleeps == [0.25], f"{what}: no backoff"
+        assert _succeeded(ladder, run.outcome), (what, run.outcome)
+        retried, non_retryable, failed = _LADDER_METRICS[ladder]
+        assert run.metrics[retried] == 1, what
+        assert run.metrics[non_retryable] == 0, what
+        assert run.metrics[failed] == 0, what
+        assert run.metrics["BedrockServiceUnavailable"] == service_unavailable, what
+        assert run.metrics["BedrockThrottling"] == throttling, what
+        assert run.metrics["BedrockQuotaLimit"] == 0, what
+        assert f"Bedrock {kind} occurred (attempt 1/4)" in caplog.text, what
+
+
+#: Replies neither ladder retries: a request error, the same as a bare status, and a
+#: 5xx that fails the same way every time.
+_NOT_RETRIED_REPLIES = {
+    "ValidationException (400)": (
+        (named_reply("ValidationException", message="Malformed input request"),),
+        "ValidationException",
+    ),
+    "bare 400": (bare_replies(400), "400"),
+    "bare 501": (bare_replies(501), "501"),
+    # A 429 is retried for its status only when the reply names no error (#2112);
+    # a named code at 429 is judged by its name, and the ladders list no
+    # ModelNotReadyException.
+    "ModelNotReadyException (429)": (
+        (named_reply("ModelNotReadyException"),),
+        "ModelNotReadyException",
+    ),
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ladder", sorted(_OK_REPLY))
+@pytest.mark.parametrize("reply", sorted(_NOT_RETRIED_REPLIES))
+def test_a_request_error_or_a_501_is_not_retried(ladder, reply, monkeypatch):
+    firsts, code = _NOT_RETRIED_REPLIES[reply]
+    for first in firsts:
+        run = _drive_ladder(ladder, [first, _OK_REPLY[ladder]], monkeypatch)
+        what = first.label
+
+        assert isinstance(run.outcome, ClientError), (what, run.outcome)
+        assert run.outcome.response["Error"]["Code"] == code, what
+        assert run.sent == 1, f"{what}: {run.sent} sends, expected no retry"
+        assert run.backoffs == [] and run.sleeps == [], what
+        retried, non_retryable, failed = _LADDER_METRICS[ladder]
+        assert run.metrics[retried] == 0, what
+        assert run.metrics[non_retryable] == 1, what
+        assert run.metrics[failed] == 1, what

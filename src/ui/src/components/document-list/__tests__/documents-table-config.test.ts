@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { createIntl } from 'react-intl';
 import {
   COLUMN_DEFINITIONS_MAIN,
   DOCUMENT_LIST_SHARDS_PER_DAY,
@@ -35,9 +36,11 @@ const itemById = (items: ButtonDropdownProps.ItemOrGroup[], id: string): ButtonD
   return found as ButtonDropdownProps.Item;
 };
 
+const intl = createIntl({ locale: 'en', defaultLocale: 'en' });
+
 describe('buildDownloadMenuItems', () => {
   it('separates the list export from the selection exports, with counts in the group labels', () => {
-    const items = buildDownloadMenuItems([row(), row({ objectKey: 'b.pdf' })], 142);
+    const items = buildDownloadMenuItems(intl, [row(), row({ objectKey: 'b.pdf' })], 142);
 
     expect(group(items, 0).text).toBe('Document list');
     expect(group(items, 1).text).toBe('Selected documents (2)');
@@ -46,11 +49,11 @@ describe('buildDownloadMenuItems', () => {
   });
 
   it('singularises the filtered row count', () => {
-    expect(itemById(buildDownloadMenuItems([], 1), 'excel').text).toBe('Table as Excel (1 row)');
+    expect(itemById(buildDownloadMenuItems(intl, [], 1), 'excel').text).toBe('Table as Excel (1 row)');
   });
 
   it('disables the ZIP scopes with a reason when nothing is selected, but keeps Excel available', () => {
-    const items = buildDownloadMenuItems([], 10);
+    const items = buildDownloadMenuItems(intl, [], 10);
 
     expect(group(items, 1).text).toBe('Selected documents (0)');
     for (const id of ['all', 'predictions', 'baselines']) {
@@ -61,13 +64,13 @@ describe('buildDownloadMenuItems', () => {
   });
 
   it('enables baselines when at least one selected document has a baseline', () => {
-    const items = buildDownloadMenuItems([row(), row({ objectKey: 'b.pdf', evaluationStatus: 'BASELINE_AVAILABLE' })], 2);
+    const items = buildDownloadMenuItems(intl, [row(), row({ objectKey: 'b.pdf', evaluationStatus: 'BASELINE_AVAILABLE' })], 2);
     expect(itemById(items, 'baselines').disabled).toBe(false);
     expect(itemById(items, 'baselines').disabledReason).toBeUndefined();
   });
 
   it('disables baselines with an explanatory reason when no selected document has one', () => {
-    const items = buildDownloadMenuItems([row(), row({ objectKey: 'b.pdf', evaluationStatus: 'RUNNING' })], 2);
+    const items = buildDownloadMenuItems(intl, [row(), row({ objectKey: 'b.pdf', evaluationStatus: 'RUNNING' })], 2);
 
     expect(itemById(items, 'baselines').disabled).toBe(true);
     expect(itemById(items, 'baselines').disabledReason).toMatch(/no selected document has an evaluation baseline/i);
@@ -77,12 +80,12 @@ describe('buildDownloadMenuItems', () => {
   });
 
   it('treats a COMPLETED evaluation as having a baseline', () => {
-    const items = buildDownloadMenuItems([row({ evaluationStatus: 'COMPLETED' })], 1);
+    const items = buildDownloadMenuItems(intl, [row({ evaluationStatus: 'COMPLETED' })], 1);
     expect(itemById(items, 'baselines').disabled).toBe(false);
   });
 
   it('holds only the ZIP scopes while a download runs, leaving the Excel export usable', () => {
-    const items = buildDownloadMenuItems([row({ evaluationStatus: 'COMPLETED' })], 3, true, true);
+    const items = buildDownloadMenuItems(intl, [row({ evaluationStatus: 'COMPLETED' })], 3, true, true);
 
     for (const id of ['all', 'predictions', 'baselines']) {
       expect(itemById(items, id).disabled).toBe(true);
@@ -92,7 +95,7 @@ describe('buildDownloadMenuItems', () => {
   });
 
   it('omits the selection group entirely when bulk export is unavailable', () => {
-    const items = buildDownloadMenuItems([row()], 5, false);
+    const items = buildDownloadMenuItems(intl, [row()], 5, false);
     expect(items).toHaveLength(1);
     expect(group(items, 0).text).toBe('Document list');
   });

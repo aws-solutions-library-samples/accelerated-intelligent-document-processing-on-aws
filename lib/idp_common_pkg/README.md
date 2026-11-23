@@ -166,9 +166,12 @@ See the [Core Data Models documentation](idp_common/README.md) for more details 
 ## Document deletion
 
 `idp_common.delete_documents` is the one implementation behind the Web UI's
-`deleteDocument` resolver, `idp-cli` and the SDK. `delete_single_document` removes a
-document's input object, all versions of its output objects, its list-index row, its
-run (version) records and its tracking record.
+`deleteDocument` resolver, `idp-cli`, the SDK and the PII extension's delete of a
+superseded original. `delete_single_document` removes every version and delete marker of
+the document's input object (the exact key only, so `a.pdf` does not reach `a.pdf.bak`),
+all versions of its output objects, its list-index row, its run (version) records and its
+tracking record. Both buckets are versioned, and a versionless `delete_object` would only
+add a delete marker over bytes that stay readable as a noncurrent version.
 
 Three things about it are worth knowing before you call it or extend it.
 
@@ -201,11 +204,22 @@ failed" — those raise. The same applies at the S3 boundary and less obviously,
 in an `Errors` array and the service model declares no exception for them, so that array
 has to be read or a denied purge counts as a completed one.
 
-Two consequences for the deployment side. The output bucket is versioning-enabled, so the
-purge enumerates versions (`s3:ListBucketVersions`) and deletes them by version id
-(`s3:DeleteObjectVersion`) — **neither action is in SAM's `S3CrudPolicy`**, which grants
-the unversioned `s3:ListBucket` and `s3:DeleteObject`, so a role for this path needs them
-granted explicitly. And a sort key cannot appear in a `Query` `FilterExpression`:
+Each bucket's purge reads the whole version listing before it deletes anything. Deleting
+page by page made the next page's `VersionIdMarker` name a version that had just been
+deleted, and moto then ended the listing there, so a key with more than 1,000 versions
+was reported purged with the rest still in the bucket. Whether S3 itself resumes from a
+deleted marker has not been measured; listing first removes the dependency.
+
+Two consequences for the deployment side. Both buckets are versioning-enabled, so the
+purge enumerates versions (`s3:ListBucketVersions` on each bucket) and deletes them by
+version id (`s3:DeleteObjectVersion` on each bucket's objects) — **neither action is in
+SAM's `S3CrudPolicy`**, which grants the unversioned `s3:ListBucket` and
+`s3:DeleteObject`, so a role for this path needs them granted explicitly, on the Input
+bucket as well as the Output bucket. `scripts/tests/test_delete_document_s3_grants.py`
+checks both roles that run this path, per bucket, and that neither grants the versioned
+actions anywhere else. When the input purge fails, for example because the caller's own
+credentials lack those actions, the input object is still deleted the versionless way, so
+the upload is not left as the current object, and the failure is reported. And a sort key cannot appear in a `Query` `FilterExpression`:
 DynamoDB refuses it, so the selection of list rows belonging to a document is the
 client-side predicate `list_entry_names_document` rather than a server-side filter. That
 costs nothing a filter was saving, since a `FilterExpression` is applied after the items
@@ -214,6 +228,52 @@ key attributes in a filter, so a filtered scan naming `PK` or `SK` elsewhere is 
 same mistake. `scripts/tests/test_dynamodb_query_filter_keys.py` guards the query form
 tree-wide, at source, because the expression is rejected by the service rather than by
 any library: neither a mock nor `moto` refuses it.
+
+## Document attributes
+
+`Document.attributes` holds caller-supplied key-value attributes (an account id, a
+claim number) that a caller attached at upload. It is separate from
+`Document.metadata`, which carries internal processing data, and nothing in the
+pipeline reads it. The user-facing description, with the input routes and limits,
+is [docs/document-attributes.md](../../docs/document-attributes.md).
+
+`idp_common.document_attributes` is the one implementation of the rules; the SDK,
+the queue sender (through `Document.from_s3_event`) and the reprocess resolver all
+call it.
+
+- `validate_attributes(candidate)` returns the set or raises
+  `AttributeValidationError` naming every violation. Use it on any route with a
+  caller to answer.
+- `sanitize_attributes(candidate)` keeps what satisfies the rules and reports the
+  rest as `(key, reason)` pairs, considering keys in sorted order so which ones
+  survive the count and size bounds is deterministic.
+- `read_object_attributes(metadata, bucket, s3_client)` is the S3 intake route:
+  inline `idp-attr-<name>` metadata (`-` in the name becomes `_`) and the
+  `idp-attributes-uri` sidecar, which must be in the same bucket with a key ending
+  in `.idp-attributes.json` and is read up to the 32 KB bound. It never raises for
+  bad input.
+- `idp_common.models.attributes_dropped_issue(dropped)` builds the document-level
+  `ingest_attributes_dropped` warning, naming keys and reasons but never values.
+  It is in `models` so that `document_attributes` imports nothing from it.
+- `encode_for_upload(attributes, base_metadata)` picks the transport for an
+  upload: inline when that reproduces the set exactly, otherwise a sidecar body the
+  caller uploads first.
+- `loggable_metadata(metadata)` replaces attribute values with `<redacted>`.
+  `from_s3_event` logs metadata only through it, because a value can be personal
+  data.
+
+Three properties to keep when extending it:
+
+- **An empty set is invisible.** `to_dict()` emits `attributes` and the tracking
+  item gets `DocumentAttributes` only when the set is non-empty, so a document
+  without attributes serialises byte-for-byte as before.
+- **The intake snapshot is authoritative.** `from_s3_event(..., read_attributes=False)`
+  skips the read for a caller that already holds the stored set: the malware-gate
+  verdict path does, and copies the set and its drop warning from the tracking row,
+  so a sidecar edited during the scan cannot change them. Reprocess copies them
+  from the row for the same reason.
+- **`update_document` never writes them.** Only `create_document` does, so a
+  whole-document update from a payload without attributes cannot clear them.
 
 ## ⚙️ Configuration
 

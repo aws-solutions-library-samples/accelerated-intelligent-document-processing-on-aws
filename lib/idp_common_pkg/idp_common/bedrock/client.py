@@ -77,7 +77,9 @@ from .guardrail import (  # noqa: F401 - re-exported for existing importers
 from .model_utils import (
     LONG_CONTEXT_SUFFIX,
     REGION_PREFIXES,
+    THROTTLED_HTTP_STATUS,
     get_model_max_output_tokens,
+    http_server_error_status,
     metering_model_id,
     parse_max_tokens_limit_from_error,
     parse_model_id,
@@ -147,6 +149,27 @@ logger = logging.getLogger(__name__)
 
 # Default retry settings
 DEFAULT_MAX_RETRIES = 7
+
+#: Retryable codes counted as ``BedrockThrottling`` (the circuit breaker's throttling
+#: trigger) and logged as throttling, on both retry ladders. ``"429"`` is the code
+#: botocore gives a 429 reply that names no error type, which the ladders retry
+#: through ``http_server_error_status`` (#2112).
+_THROTTLING_CODES = (
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "RequestLimitExceeded",
+    str(THROTTLED_HTTP_STATUS),
+)
+
+
+def _retry_kind(error_code: str, server_error_status: Optional[int]) -> str:
+    """What a retry log line calls the error: a 5xx is a server error, unless its
+    code says throttling (#2036)."""
+    if server_error_status is not None and error_code not in _THROTTLING_CODES:
+        return f"server error (HTTP {server_error_status})"
+    return "throttling"
+
+
 DEFAULT_INITIAL_BACKOFF = 2  # seconds
 DEFAULT_MAX_BACKOFF = 300  # 5 minutes
 
@@ -409,9 +432,7 @@ def _strip_region_and_1m(model_id: str) -> str:
     ``:1m`` suffix. Also tolerates Opus 4.5/4.6 dated/`-v1` foundation IDs by
     matching on a prefix in is_claude_effort_model."""
     parts = model_id.split(".", 1)
-    base = (
-        parts[1] if len(parts) == 2 and parts[0] in _REGION_PREFIXES else model_id
-    )
+    base = parts[1] if len(parts) == 2 and parts[0] in _REGION_PREFIXES else model_id
     if base.endswith(":1m"):
         base = base[:-3]
     return base
@@ -655,7 +676,7 @@ DOCUMENT_BLOCK_UNSUPPORTED_ROUTES: Dict[str, str] = {
         'support documents"); their input modalities are text and image only'
     ),
     "openai-astra": (
-        "OpenAI GPT-6 Astra rejects Converse document blocks (\"This model "
+        'OpenAI GPT-6 Astra rejects Converse document blocks ("This model '
         "doesn't support the document field for user messages\"); its input "
         "modalities are text and image only"
     ),
@@ -2375,8 +2396,14 @@ class BedrockClient:
                 "RequestTimeout",
                 "RequestTimeoutException",
             ]
+            # An HTTP 500, 502, 503 or 504 is retried whatever code it carries,
+            # including the bare status botocore uses as the code when the reply
+            # names no error ("500", "Internal Server Error"). Matched by name
+            # alone, that one failed the call on its first attempt (#2036). A bare
+            # "429" is retried the same way, as throttling (#2112).
+            server_error_status = http_server_error_status(e.response)
 
-            if error_code in retryable_errors:
+            if error_code in retryable_errors or server_error_status is not None:
                 self._put_metric("BedrockThrottles", 1)
 
                 # Emit circuit-breaker specific metrics by error category.
@@ -2384,16 +2411,17 @@ class BedrockClient:
                 # that feeds BedrockServiceOutageAlarm (the circuit breaker
                 # trigger). For per-path counts use BedrockThrottles
                 # (generation, above) or BedrockEmbeddingThrottles (embedding).
+                # The code decides first. A 503 whose code names no category
+                # counts as service unavailable; a 500, 502 or 504 has no
+                # category, like InternalServerException (#2036).
                 if error_code == "ServiceUnavailableException":
                     self._put_metric("BedrockServiceUnavailable", 1)
-                elif error_code in (
-                    "ThrottlingException",
-                    "TooManyRequestsException",
-                    "RequestLimitExceeded",
-                ):
+                elif error_code in _THROTTLING_CODES:
                     self._put_metric("BedrockThrottling", 1)
                 elif error_code == "ServiceQuotaExceededException":
                     self._put_metric("BedrockQuotaLimit", 1)
+                elif server_error_status == 503:
+                    self._put_metric("BedrockServiceUnavailable", 1)
 
                 # Check if we've reached max retries
                 if retry_count >= max_retries:
@@ -2419,7 +2447,8 @@ class BedrockClient:
                     raise
 
                 logger.warning(
-                    f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
+                    f"Bedrock {_retry_kind(error_code, server_error_status)} occurred "
+                    f"(attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
                     f"Backing off for {backoff:.2f}s"
                 )
@@ -2578,6 +2607,7 @@ class BedrockClient:
         max_retries: Optional[int] = None,
         image_bytes: Optional[bytes] = None,
         input_type: Optional[str] = "search_document",
+        usage: Optional[Dict[str, int]] = None,
     ) -> List[float]:
         """
         Generate an embedding vector for text and/or image using Amazon Bedrock.
@@ -2594,6 +2624,11 @@ class BedrockClient:
             image_bytes: Optional image bytes for multimodal embedding models
             input_type: Input type for Cohere models (search_document, search_query,
                        classification, clustering). Defaults to search_document.
+            usage: Optional dict to receive the call's billed usage. On success
+                   ``inputTokens`` is set from Bedrock's
+                   ``x-amzn-bedrock-input-token-count`` response header (absent
+                   when the response carries no such header). A caller that meters
+                   the call reads it from here; the return value is unchanged.
 
         Returns:
             List of floats representing the embedding vector
@@ -2628,6 +2663,7 @@ class BedrockClient:
             normalized_text=normalized_text or "(image-only)",
             retry_count=0,
             max_retries=effective_max_retries,
+            usage=usage,
         )
 
     def generate_embeddings_batch(
@@ -2778,6 +2814,7 @@ class BedrockClient:
         max_retries: int,
         last_exception: Optional[Exception] = None,
         worst_attempt_seconds: float = 0.0,
+        usage: Optional[Dict[str, int]] = None,
     ) -> List[float]:
         """
         Recursive helper method to handle retries for embedding generation.
@@ -2844,6 +2881,14 @@ class BedrockClient:
                 "BedrockEmbeddingRequestLatency", duration * 1000, "Milliseconds"
             )
 
+            if usage is not None:
+                headers = (response.get("ResponseMetadata") or {}).get(
+                    "HTTPHeaders"
+                ) or {}
+                token_count = headers.get("x-amzn-bedrock-input-token-count")
+                if token_count is not None and str(token_count).strip().isdigit():
+                    usage["inputTokens"] = int(str(token_count).strip())
+
             logger.debug(f"Generated embedding with {len(embedding)} dimensions")
             return embedding
 
@@ -2864,8 +2909,11 @@ class BedrockClient:
                 "TimeoutError",
                 "RequestTimeoutException",
             ]
+            # The same rule as the generation ladder: any HTTP 500, 502, 503 or
+            # 504 is retried, whatever its code (#2036), and a bare "429" (#2112).
+            server_error_status = http_server_error_status(e.response)
 
-            if error_code in retryable_errors:
+            if error_code in retryable_errors or server_error_status is not None:
                 self._put_metric("BedrockEmbeddingThrottles", 1)
 
                 # Emit circuit-breaker specific metrics by error category.
@@ -2875,14 +2923,12 @@ class BedrockClient:
                 # (embedding, above) or BedrockThrottles (generation).
                 if error_code == "ServiceUnavailableException":
                     self._put_metric("BedrockServiceUnavailable", 1)
-                elif error_code in (
-                    "ThrottlingException",
-                    "TooManyRequestsException",
-                    "RequestLimitExceeded",
-                ):
+                elif error_code in _THROTTLING_CODES:
                     self._put_metric("BedrockThrottling", 1)
                 elif error_code == "ServiceQuotaExceededException":
                     self._put_metric("BedrockQuotaLimit", 1)
+                elif server_error_status == 503:
+                    self._put_metric("BedrockServiceUnavailable", 1)
 
                 # Check if we've reached max retries
                 if retry_count >= max_retries:
@@ -2911,7 +2957,8 @@ class BedrockClient:
                     raise
 
                 logger.warning(
-                    f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
+                    f"Bedrock {_retry_kind(error_code, server_error_status)} occurred "
+                    f"(attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
                     f"Backing off for {backoff:.2f}s"
                 )
@@ -2951,6 +2998,7 @@ class BedrockClient:
             retry_count=next_retry_count,
             max_retries=max_retries,
             worst_attempt_seconds=worst,
+            usage=usage,
         )
 
     def extract_text_from_response(self, response: Dict[str, Any]) -> str:

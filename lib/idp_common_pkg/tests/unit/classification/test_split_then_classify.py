@@ -140,6 +140,7 @@ def _service(
     few_shot_examples: bool = False,
     segmentation: Optional[Dict[str, Any]] = None,
     labeling: Optional[Dict[str, Any]] = None,
+    max_workers: int = 20,
     **classification: Any,
 ) -> ClassificationService:
     cfg: Dict[str, Any] = {
@@ -172,6 +173,7 @@ def _service(
     cfg.update(classification)
     return ClassificationService(
         region="us-west-2",
+        max_workers=max_workers,
         config={
             "classes": _classes(
                 *(classes or ["invoice", "receipt"]), examples=few_shot_examples
@@ -213,6 +215,11 @@ class _Router:
     The stage is on the config dict rather than inferred from the prompt,
     because that is exactly what the production code routes on — the metering
     context, the model and the prompts all come from it.
+
+    Section labels go out in the order the sections ask, so a test that asserts
+    which section got which label builds its service with ``max_workers=1``:
+    with several workers the sections are labelled concurrently, and which one
+    asks first is a matter of thread timing.
     """
 
     def __init__(
@@ -281,12 +288,10 @@ class TestStrategyConfig:
         with pytest.raises(Exception, match="strategy must be"):
             _service(strategy="three_stage")
 
-    def test_an_unimplemented_labeling_method_is_refused_by_name(self):
-        """'embeddings' and 'classifier' are the other two methods #1329
-        describes; both need a measurement before their defaults can be set
-        honestly, so the enum ships with one value and says so."""
-        with pytest.raises(Exception, match="1329"):
-            _service(labeling={"method": "embeddings"})
+    def test_an_unknown_labeling_method_is_refused_by_name(self):
+        """'classifier' is the other method #1329 describes; it is not a value."""
+        with pytest.raises(Exception, match="must be one of 'llm', 'decision_model'"):
+            _service(labeling={"method": "classifier"})
 
     def test_an_unknown_labeling_pages_value_is_refused(self):
         with pytest.raises(Exception, match="section_classification.pages must be"):
@@ -721,7 +726,7 @@ class TestSplitThenClassifyPacket:
     def test_one_splitting_call_then_one_section_classification_call_per_segment(
         self,
     ):
-        service = _service(granularity="packet")
+        service = _service(max_workers=1, granularity="packet")
         router = _Router(
             packet_segments=[
                 {"ordinal_start_page": 1, "ordinal_end_page": 2},
@@ -961,6 +966,32 @@ class TestLabelingPages:
     def test_a_segment_shorter_than_k_sends_what_it_has(self):
         service = _service(labeling={"pages": "first_k", "k": "5"})
         assert service._section_classification_pages(self._segment(2)) == ["1", "2"]
+
+    @pytest.mark.parametrize(
+        "labeling, sent",
+        [
+            ({"pages": "first"}, ["2"]),
+            ({"pages": "first_k", "k": "2"}, ["2", "3"]),
+            ({"pages": "all"}, ["1", "2", "3"]),
+        ],
+    )
+    def test_a_page_the_splitting_call_left_out_does_not_stand_for_the_segment(
+        self, labeling, sent
+    ):
+        """#2037: page 1 was in no range and was joined to this segment. It is
+        not one of the segment's opening pages by the model's account."""
+        from idp_common.classification.models import Segment
+
+        service = _service(labeling=labeling)
+        segment = Segment(page_ids=["1", "2", "3"], filled_page_ids=["1"])
+        assert service._section_classification_pages(segment) == sent
+
+    def test_a_segment_of_only_placed_pages_still_sends_one(self):
+        from idp_common.classification.models import Segment
+
+        service = _service(labeling={"pages": "first"})
+        segment = Segment(page_ids=["4"], filled_page_ids=["4"])
+        assert service._section_classification_pages(segment) == ["4"]
 
 
 # --------------------------------------------------------------------------
@@ -1332,3 +1363,95 @@ class TestADeclaredDocumentShapeSkipsSplitting:
         self._run(service, _document(2), router)
 
         assert self._stages(router).count(ClassificationService.STAGE_SPLITTING) == 2
+
+
+@pytest.mark.unit
+class TestAnUnparseableSplittingReplyIsRetried:
+    """#2035: the packet splitting call shares the combined call's window loop, so
+    a splitting reply that is not JSON gets the same one re-prompt for the JSON
+    only, and both calls are metered."""
+
+    def test_the_packet_is_split_after_one_re_prompt(self):
+        service = _service(granularity="packet")
+        router = _Router(
+            packet_segments=[{"ordinal_start_page": 1, "ordinal_end_page": 2}],
+            labels=["invoice"],
+        )
+        prose_sent: List[int] = []
+
+        def first_splitting_reply_is_prose(content, config):
+            if config.get("stage") == ClassificationService.STAGE_SPLITTING and (
+                not prose_sent
+            ):
+                prose_sent.append(1)
+                router.calls.append((config.get("stage"), content))
+                return {
+                    "response": {
+                        "output": {
+                            "message": {
+                                "content": [{"text": "One document, pages 1-2."}]
+                            }
+                        }
+                    },
+                    "metering": {"Splitting/bedrock/nova": {"inputTokens": 10}},
+                }
+            return router(content, config)
+
+        with (
+            patch("idp_common.s3.get_text_content", return_value="text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(
+                service,
+                "_invoke_bedrock_model",
+                side_effect=first_splitting_reply_is_prose,
+            ),
+        ):
+            result = service.split_then_classify_document(_document(2))
+
+        splitting = [
+            content
+            for stage, content in router.calls
+            if stage == ClassificationService.STAGE_SPLITTING
+        ]
+        assert len(splitting) == 2, "one re-prompt"
+        assert "Reply with only the JSON object" in splitting[1][-1]["text"]
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice")
+        ]
+        assert result.metering["Splitting/bedrock/nova"]["inputTokens"] == 20
+
+
+@pytest.mark.unit
+class TestASplittingAnswerThatLeavesAPageOut:
+    """#2037 at the splitting call: packet granularity shares the packet path, so
+    a page the splitting ranges leave out is placed the same way, and section
+    classification then labels the segment it joined."""
+
+    def test_the_trailing_page_is_kept_labelled_and_reported(self):
+        service = _service(max_workers=1, granularity="packet")
+        document = _document(3)
+        router = _Router(
+            packet_segments=[
+                {"ordinal_start_page": 1, "ordinal_end_page": 1},
+                {"ordinal_start_page": 2, "ordinal_end_page": 2},
+            ],
+            labels=["invoice", "receipt"],
+        )
+        with (
+            patch("idp_common.s3.get_text_content", return_value="text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=router),
+        ):
+            result = service.split_then_classify_document(document)
+
+        placed = [pid for s in result.sections for pid in s.page_ids]
+        assert sorted(placed, key=int) == sorted(document.pages, key=int)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1"], "invoice"),
+            (["2", "3"], "receipt"),
+        ]
+        codes = [
+            [pi.code for pi in (s.processing_issues or [])] for s in result.sections
+        ]
+        assert codes == [[], ["classification_page_assigned_to_neighbour"]]
+        assert result.sections[1].processing_issues[0].details == {"page_ids": ["3"]}

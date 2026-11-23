@@ -1,0 +1,911 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# What the solution does. Solution Profile contract v1 (schema/v1/README.md).
+# Every item names the docs or code that show it; numbers carry the conditions
+# they were measured under.
+capabilities:
+  - id: pipeline-mode
+    title: Pipeline processing mode (OCR, then Bedrock classification and extraction)
+    description: >-
+      The default processing mode (use_bda false) runs each step separately: OCR,
+      classification, extraction, confidence assessment, rule validation,
+      summarization and evaluation, each configurable on its own. Classification and
+      extraction are Amazon Bedrock inferences driven by the JSON Schema classes in
+      the configuration, so a new document type is added by configuration rather than
+      code. Every deployment carries both modes in one pattern stack, so switching
+      mode is a configuration change, not a redeployment. Pipeline-only features
+      include the step hooks after OCR, classification and extraction, few-shot
+      examples, advanced extraction and Capacity Planning.
+    evidence:
+      - docs/architecture.md#unified-pattern-architecture
+      - docs/pattern-2.md
+      - patterns/unified/statemachine/workflow.asl.json
+    modes: [pipeline]
+    configuration: [use_bda]
+    related:
+      - capability:bda-mode
+      - capability:ocr-backends
+      - capability:classification
+      - capability:simple-extraction
+      - capability:advanced-extraction
+
+  - id: bda-mode
+    title: Bedrock Data Automation (BDA) processing mode
+    description: >-
+      With use_bda true, Amazon Bedrock Data Automation splits, classifies and
+      extracts the document against the blueprints of the BDA project linked to the
+      configuration profile; each blueprint corresponds to a document class. Classes
+      can be pushed to BDA from the solution's configuration or pulled from BDA. The
+      shared tail still runs after BDA: human review, rule validation, summarization
+      and evaluation. The pipeline-mode classification, OCR and extraction settings,
+      few-shot examples and the post-OCR, post-classification and post-extraction
+      hooks do not apply, and structural edits such as re-extracting sections are
+      disabled for BDA-mode documents.
+    evidence:
+      - docs/pattern-1.md
+      - docs/classification.md#bda-mode-use_bda-true
+      - docs/architecture.md#unified-pattern-architecture
+      - docs/pattern-1.md#limitations
+    modes: [bda]
+    configuration: [use_bda]
+    related:
+      - capability:pipeline-mode
+      - limitation:bda-mode-disabled-features
+      - limitation:step-hooks-not-in-bda
+
+  - id: ocr-backends
+    title: Choice of OCR backend in pipeline mode (Textract, Bedrock LLM OCR, BDA OCR, none)
+    description: >-
+      Pipeline mode reads text with one of four backends set by ocr.backend. Amazon
+      Textract is the default, with TABLES, LAYOUT and SIGNATURES features on by
+      default, and it is the backend that gives per-line OCR confidence; the docs
+      quote about $1.50 per 1,000 pages for raw text, plus $15 per 1,000 for TABLES
+      and $50 per 1,000 for FORMS. The BDA backend uses Bedrock Data Automation
+      standard output as a pure OCR engine at a flat $10 per 1,000 pages, returning
+      markdown tables and word-level confidence; it is available in the commercial
+      partition only and not in ca-central-1. The Bedrock backend uses an LLM (or a
+      custom Lambda hook) for OCR and gives no confidence data unless the hook
+      returns Textract-format blocks; none stores page images only.
+    evidence:
+      - docs/configuration.md#ocr-backend-configuration-pipeline-mode
+      - lib/idp_common_pkg/idp_common/ocr/README.md#ocr-backend-options
+      - docs/pattern-2.md#bedrock-ocr-feature
+      - docs/govcloud-deployment.md#bedrock-data-automation-as-the-ocr-backend
+    modes: [pipeline]
+    configuration: [ocr.backend, ocr.features, ocr.model_id]
+    related:
+      - capability:language-support
+      - capability:assessment-confidence
+      - extension:pipeline-hook-post-ocr
+      - limitation:govcloud-differences
+      - limitation:deployment-regions
+
+  - id: classification
+    title: Page or packet classification and section splitting
+    description: >-
+      In pipeline mode, classification splits a document or packet into sections and
+      assigns each a class. classification.strategy chooses one combined call or
+      split_then_classify (a boundary call with no class list, then one call per
+      section, optionally with a decision model), and granularity chooses one call
+      per page (default) or one call per packet or window. document_shape.sectionSplitting
+      can instead treat the whole document as one section or every page as its own
+      section. Packet granularity needs a long-context model and window_pages on long
+      packets; the default classification model is Amazon Nova 2 Lite.
+    evidence:
+      - docs/classification.md#how-the-classification-settings-are-organised
+      - docs/classification.md#choosing-granularity-modality-and-strategy
+      - docs/classification.md#limitations-of-packet-level-classification
+      - lib/idp_common_pkg/idp_common/config/models.py
+    modes: [pipeline]
+    configuration:
+      - classification.strategy
+      - classification.combined.granularity
+      - classification.split_then_classify.splitting.llm.granularity
+      - classification.split_then_classify.section_classification.method
+      - classification.document_shape.sectionSplitting
+    related:
+      - capability:few-shot-examples
+      - capability:fine-tuning
+      - limitation:packet-classification-long-context
+      - extension:pipeline-hook-post-classification
+      - question:single-or-packet
+
+  - id: simple-extraction
+    title: Simple extraction (one inference per section)
+    description: >-
+      The default extraction mode returns a section's structured result from one
+      Bedrock inference, against the JSON Schema of its class; the default model is
+      Claude Sonnet 5. On the v0.6.14 benchmark grid it returned every row of three
+      400-row, 9-page statements, but on an 800-row, 17-page statement it returned the
+      whole list on only 5 of 13 runs, each reporting COMPLETED; sizes between 400 and
+      800 rows were not measured. A 66-page document was refused as too large for one
+      request on every run, and sizes between 33 and 66 pages were not measured. On
+      real-world forms it cost about half of advanced mode for accuracy inside the
+      run-to-run noise.
+    evidence:
+      - docs/extraction-and-confidence.md#extraction-mode-simple-vs-advanced
+      - docs/extraction-scaling-guide.md#simple-mode-two-limits
+      - docs/benchmarking/config-guidance.md
+    modes: [pipeline]
+    configuration: [extraction.mode, extraction.model, extraction.row_shortfall_action]
+    related:
+      - capability:advanced-extraction
+      - limitation:simple-extraction-row-limit
+      - limitation:simple-extraction-page-limit
+      - extension:pipeline-hook-post-extraction
+      - question:max-table-rows
+
+  - id: advanced-extraction
+    title: Advanced (agentic) extraction for long tables and large documents
+    description: >-
+      extraction.mode advanced runs a Strands agent with a structured-output tool that
+      shards large sections, validates against the schema, can parse markdown tables
+      deterministically and escalates to a stronger model on validation failure. On
+      the v0.6.14 benchmark it returned every row at every size measured, 25 to 3,200
+      rows and 1 to 66 pages, and an earlier v0.6.0 study kept full recall to 6,400 rows
+      and 131 pages, where that document then failed at summarization. The docs label
+      it preview; it costs about twice simple mode on real-world forms, is cheaper than
+      simple from about 800 rows, and needs a model that reliably emits tool use (not
+      OpenAI GPT-5.x and not Amazon Nova Lite).
+    evidence:
+      - docs/extraction-and-confidence.md#1-extraction-configuration
+      - docs/extraction-scaling-guide.md#advanced-mode-limits-are-cost-and-downstream-steps-not-completeness
+      - lib/idp_common_pkg/idp_common/extraction/README.md
+    status: preview
+    modes: [pipeline]
+    configuration: [extraction.mode, extraction.agentic.table_parsing.enabled]
+    related:
+      - limitation:simple-extraction-row-limit
+      - limitation:simple-extraction-page-limit
+      - capability:assessment-confidence
+      - question:max-table-rows
+      - question:tables-span-pages
+
+  - id: assessment-confidence
+    title: Configurable confidence assessment and bounding boxes (pipeline mode)
+    description: >-
+      Extraction produces a confidence score and, optionally, a page location for each
+      field. extraction.confidence.mode is separate (default; a dedicated pass, default
+      model Amazon Nova Lite, with lists scored in batches of at most 25 rows, sized
+      down from the confidence model's output limit to 13 rows for a 3-column list on
+      Nova Lite with bounding boxes, and split further on truncation), integrated (confidence on the extraction call) or off. Measured on
+      the v0.6.14 benchmark, integrated was not cheaper than separate in simple mode and
+      cost about 42% more at the default model in advanced mode; only off saved money.
+      With the default Nova Lite confidence model, 0 of 119,937 confidence values on
+      that grid scored below 0.9, including wrong values, so a threshold around 0.8
+      rarely routes a document to review. In BDA mode field confidence comes from BDA's
+      own output, with the configured thresholds applied, and these settings do not
+      apply.
+    evidence:
+      - docs/extraction-and-confidence.md#confidence-mode-separate-vs-integrated-vs-off
+      - docs/human-review.md#confidence-threshold-configuration
+      - lib/idp_common_pkg/idp_common/config/system_defaults/base-confidence.yaml
+    modes: [pipeline]
+    configuration:
+      - extraction.confidence.mode
+      - extraction.confidence.model
+      - extraction.confidence.list_batch_size
+      - extraction.geometry.mode
+    related:
+      - capability:hitl-review-queues
+      - capability:ocr-backends
+      - question:review-needs
+      - question:accuracy-target
+
+  - id: rule-validation
+    title: Business-rule validation of extracted documents
+    description: >-
+      Rule validation checks each processed document against business rules written
+      as policy classes in the configuration, using an LLM over facts extracted from
+      the document, and records a per-rule result and recommendation. It runs in the
+      shared tail of both modes when rule_validation.enabled is true and at least one
+      policy class is configured; with no policy classes it is skipped. Rules can be
+      written by hand or drafted from policy documents with Policy Discovery, and the
+      rule-validation preset ships a healthcare prior-authorization example.
+    evidence:
+      - docs/rule-validation.md
+      - docs/policy-discovery.md
+      - patterns/unified/src/bda_processresults_function/index.py
+      - config_library/unified/rule-validation/config.yaml
+    modes: [bda, pipeline]
+    configuration: [rule_validation.enabled, policy_classes]
+    tags: [preset:rule-validation]
+    related:
+      - capability:rule-validation-z3
+      - extension:pipeline-hook-post-rule-validation
+      - question:business-rules
+
+  - id: rule-validation-z3
+    title: Deterministic rule checks with the Z3 theorem prover
+    description: >-
+      Each rule can be routed to a Z3 engine instead of the LLM by setting
+      x-aws-idp-validation-engine to z3 on the rule, which suits arithmetic,
+      threshold and comparison rules that must give the same answer every time. The
+      rule is translated to SMT-LIB once, when it is generated, and an LLM call
+      extracts the rule's parameter values from the document's facts. The constraint
+      language covers arithmetic, comparison, logical operators and Int, Real, Bool
+      and String values; string equality is exact and case-sensitive, so fuzzy
+      matching belongs on the LLM engine. The solver timeout is 5,000 ms by default
+      and at most 300,000 ms.
+    evidence:
+      - docs/rule-validation-z3.md
+      - docs/rule-validation-z3.md#limitations
+      - lib/idp_common_pkg/idp_common/config/models.py
+    modes: [bda, pipeline]
+    configuration: [policy_classes, rule_validation.z3_timeout_ms]
+    related:
+      - capability:rule-validation
+      - question:business-rules
+
+  - id: summarization
+    title: Document summarization
+    description: >-
+      A summarization step in the shared tail of both modes writes a summary of each
+      document with a Bedrock model, viewable and downloadable in the web UI. It is on
+      by default (summarization.enabled) and the default model is the 1-million-token
+      context variant of Claude Sonnet 5; arrays longer than 50 items are elided from
+      the prompt by default. In the v0.6.0 scaling study a 6,400-row, 131-page document
+      extracted completely and then failed at summarization, a single non-sharded call.
+      The step now truncates over-long input to fit the model's window instead of
+      failing, so a very large document's summary may rest on truncated input; that
+      size was not re-measured on v0.6.14.
+    evidence:
+      - docs/architecture.md#document-summarization
+      - lib/idp_common_pkg/idp_common/summarization/service.py
+      - docs/extraction-scaling-guide.md#advanced-mode-limits-are-cost-and-downstream-steps-not-completeness
+      - lib/idp_common_pkg/idp_common/config/system_defaults/base-summarization.yaml
+    modes: [bda, pipeline]
+    configuration: [summarization.enabled, summarization.model]
+    related:
+      - extension:pipeline-hook-post-summarization
+      - question:pages-per-document
+
+  - id: evaluation
+    title: Accuracy evaluation against ground truth
+    description: >-
+      When a baseline (ground truth) exists for a document, the evaluation step
+      compares the result field by field with the open-source Stickler library, with
+      per-field comparison methods (exact, fuzzy, numeric, semantic, LLM), field
+      weighting and optimal matching of list items. Results appear in the web UI and
+      in the reporting database, and Test Studio runs evaluation over whole test sets.
+      The LLM comparator on a field inside a list is downgraded to a deterministic
+      method unless explicitly opted in, because list matching runs a comparator for
+      every pair of rows (about 3,000 model calls for a 54-row invoice). Any processed
+      document can be promoted to a baseline and corrected by hand.
+    evidence:
+      - docs/evaluation.md#stickler-evaluation-engine
+      - docs/evaluation.md#evaluation-methods
+      - docs/evaluation-enhanced-reporting.md
+    modes: [bda, pipeline]
+    configuration: [evaluation.enabled, evaluation.llm_method.model]
+    related:
+      - capability:test-studio
+      - capability:reporting-database
+      - question:ground-truth
+      - question:accuracy-target
+
+  - id: hitl-review-queues
+    title: Human review queues (human-in-the-loop)
+    description: >-
+      When hitl.enabled is set in a configuration profile, a document whose fields
+      fall below their confidence threshold (per field, otherwise
+      hitl.confidence_threshold), or that leaves a required field empty, is held in a
+      review queue before its final outputs are produced. Admins assign queue items
+      to Annotators, reviewers correct values beside the page images, and a second
+      finalize run applies the corrections; Test Studio has one queue per test set
+      for labelling ground truth. It works in both modes; without confidence scoring
+      only BDA's blueprint confidence can queue a document. The hooks before the
+      review point run twice and must be idempotent.
+    evidence:
+      - docs/human-review.md
+      - docs/review-queues.md#overview
+      - docs/review-queues.md#limits-and-behaviour-to-know
+    modes: [bda, pipeline]
+    configuration: [hitl.enabled, hitl.confidence_threshold, hitl.route_missing_required_fields]
+    related:
+      - capability:assessment-confidence
+      - question:review-needs
+      - question:reviewer-roles
+
+  - id: discovery
+    title: Discovery of document classes and schemas from sample documents
+    description: >-
+      Discovery analyses sample documents, with or without labelled ground truth, and
+      drafts a document class with a JSON Schema of its fields; it can auto-detect
+      section boundaries in a multi-section PDF. Multi-document collection discovery
+      embeds a folder of mixed documents (default embedding model Cohere Embed v4,
+      us.cohere.embed-v4:0), clusters them and drafts one class per
+      cluster, filtering clusters smaller than discovery.multi_document.min_cluster_size
+      (2 by default) as noise. In BDA mode the
+      result can also create BDA blueprints. It accepts PDF and image files only (.pdf,
+      .png, .jpg, .jpeg, .tiff, .tif, and .webp for collection discovery).
+    evidence:
+      - docs/discovery.md
+      - docs/discovery.md#multi-document-collection-discovery
+      - src/ui/src/components/common/constants.ts
+    modes: [bda, pipeline]
+    configuration: [discovery.without_ground_truth.model_id, discovery.multi_document]
+    related:
+      - capability:quick-start
+      - question:document-classes
+      - question:class-attributes
+
+  - id: quick-start
+    title: Quick Start conversational configuration authoring
+    description: >-
+      Quick Start takes a plain-language description of a document type, reuses a
+      close match from existing configuration profiles where one exists, drafts an
+      extraction schema for review in chat, and creates and activates a configuration
+      profile. Attached example documents are run through Discovery for a schema based
+      on real documents. It is offered in the web UI (stack parameter
+      EnableQuickStartWidget, default true) and as idp-cli bootstrap, and needs Claude
+      model access on Bedrock.
+    evidence:
+      - docs/quick-start.md
+      - docs/quick-start.md#requirements
+      - template.yaml
+    related:
+      - capability:discovery
+      - capability:configuration-profiles
+      - capability:idp-cli
+
+  - id: configuration-profiles
+    title: Named configuration profiles
+    description: >-
+      A configuration profile is a complete, self-contained configuration (classes,
+      prompts, models, step settings) stored in the stack; one is active, and a
+      document can be processed under another, for example by the Input-bucket prefix
+      it lands under. A stack upgrade updates only the default profile, so other
+      profiles stay as their owners saved them. Profiles are also the access-control
+      unit: a user's scope limits them to documents processed under the matching
+      profiles. Profiles are managed in the web UI, the CLI and the SDK, without
+      redeploying.
+    evidence:
+      - docs/configuration-profiles.md#overview
+      - docs/configuration.md
+      - docs/rbac.md
+    related:
+      - capability:configuration-versions
+      - capability:configuration-presets
+      - capability:multi-tenancy
+      - extension:config-profiles-and-versions
+
+  - id: configuration-versions
+    title: Revision history for each configuration profile
+    description: >-
+      Every save of a profile cuts an immutable numbered revision that can be viewed,
+      compared, restored and pinned for a test run, and each document records the
+      revision it ran under. The last 20 revisions per profile are kept, plus the
+      current, labelled and test-pinned ones; the cap is not an operator setting.
+      Revision bodies expire with the configuration bucket's retention, 365 days by
+      default, so a revision needed for longer should be downloaded. The former name
+      of profiles was configuration versions, and API field names still use it.
+    evidence:
+      - docs/configuration-profiles.md#revision-history
+      - docs/configuration-profiles.md#retention
+      - docs/configuration-versions.md
+    related:
+      - capability:configuration-profiles
+      - capability:test-studio
+
+  - id: configuration-presets
+    title: Configuration presets for common document sets
+    description: >-
+      The configuration library ships presets, each a configuration that inherits the
+      system defaults and adds its own classes and overrides; the preset's directory
+      name is the value of the Configuration Preset stack parameter, and a preset can
+      also be imported after deployment. Presets cover bank statements, lending
+      packets, W-2 forms, a passport application, a healthcare multi-section package,
+      prior-authorization rule validation, OCR and classification benchmarks and a
+      GovCloud variant. Every preset resolves to pipeline mode; each says to set
+      use_bda true for BDA mode, and there is no BDA-specific preset.
+    evidence:
+      - config_library/README.md
+      - config_library/unified/README.md
+      - docs/configuration.md
+    tags:
+      - preset:bank-statement-sample
+      - preset:docsplit
+      - preset:ds11-passport-application
+      - preset:fake-w2
+      - preset:healthcare-multisection-package
+      - preset:lending-package-sample
+      - preset:lending-package-sample-govcloud
+      - preset:ocr-benchmark
+      - preset:realkie-fcc-verified
+      - preset:rule-validation
+      - preset:rvl-cdip
+      - preset:rvl-cdip-package-sample
+      - preset:rvl-cdip-with-few-shot-examples
+    related:
+      - capability:configuration-profiles
+      - extension:config-library-presets
+
+  - id: web-ui
+    title: Web UI for documents, configuration and review
+    description: >-
+      A React web application signed in through Amazon Cognito shows document status
+      and history, each document's pages, sections, extracted values, confidence and
+      evaluation, and the workflow's execution flow. It also edits configuration
+      profiles and the document schema, previews the prompts a step will send, holds
+      review queues, an Inbox, document analytics, knowledge-base query and chat. It is
+      served through CloudFront by default or through API Gateway for VPC-only hosting,
+      and a headless deployment omits it.
+    evidence:
+      - docs/web-ui.md#features
+      - docs/apigateway-hosting.md
+      - docs/rbac.md
+    related:
+      - capability:test-studio
+      - capability:capacity-planning
+      - capability:hitl-review-queues
+      - deployment:headless
+      - deployment:private-network
+
+  - id: test-studio
+    title: Test Studio for test sets and accuracy comparison
+    description: >-
+      Test Studio in the web UI manages test sets (documents with ground truth), runs
+      them under a chosen configuration profile or revision, and compares runs. A
+      deployment pre-loads four public benchmark test sets (RealKIE-FCC-Verified, 75
+      invoices; OmniAI-OCR-Benchmark, 293 images; DocSplit-Poly-Seq, 500 packets;
+      Fake-W2-Tax-Forms, 2,000 W-2 images), each with a managed configuration profile.
+      With the Test Set Generator extension installed it can also generate labelled
+      synthetic test sets.
+    evidence:
+      - docs/test-studio.md
+      - docs/test-studio.md#pre-deployed-test-sets
+      - docs/creating-custom-test-sets.md
+    tags: [preset:realkie-fcc-verified, preset:ocr-benchmark, preset:docsplit, preset:fake-w2]
+    related:
+      - capability:evaluation
+      - capability:configuration-versions
+      - extension:ground-truth-data
+      - question:ground-truth
+
+  - id: capacity-planning
+    title: Capacity Planning page for throughput and Bedrock quotas
+    description: >-
+      The Capacity Planning page in the web UI estimates the Bedrock tokens-per-minute
+      and requests-per-minute quotas and the processing time a planned volume and
+      schedule need, from the token usage of documents already processed under a
+      configuration profile. Its arithmetic assumes pipeline mode; for a profile with
+      use_bda true it shows that BDA mode is not supported and disables the
+      calculation. Real processed documents are needed for meaningful numbers.
+    evidence:
+      - docs/capacity-planning.md
+      - docs/capacity-planning.md#pipeline-mode-only
+    modes: [pipeline]
+    related:
+      - capability:load-testing
+      - extension:bedrock-quotas
+      - question:peak-volume
+      - question:monthly-volume
+
+  - id: agent-companion-chat
+    title: Agent Companion Chat for analytics, troubleshooting and code questions
+    description: >-
+      A multi-turn chat in the web UI, the CLI (idp-cli chat) and the SDK routes each
+      question to specialised agents: analytics in natural language over the
+      processed-document data, error analysis, questions about the solution's code,
+      and optional external MCP servers. It remembers the last 20 turns of a
+      conversation and stores conversations in the customer's account. The Code
+      Intelligence agent uses a third-party service and is opt-in; the default model
+      is Claude Haiku 4.5. Chat with Document, a separate feature configured under
+      chat, answers questions about one document.
+    evidence:
+      - docs/agent-companion-chat.md
+      - docs/agent-companion-chat.md#code-intelligence-and-third-party-services
+      - docs/code-intelligence.md
+      - docs/custom-MCP-agent.md
+    configuration: [agents.chat_companion.model_id]
+    related:
+      - capability:error-analyzer
+      - capability:reporting-database
+      - deployment:govcloud
+
+  - id: error-analyzer
+    title: Error Analyzer for diagnosing failed documents
+    description: >-
+      The Error Analyzer is an agent, reachable from the web UI and from Agent
+      Companion Chat, that reads CloudWatch logs, the tracking table, Step Functions
+      history and X-Ray traces to find why a document failed and suggest a fix. Its
+      documentation labels it preview and says it is not yet mature. The default model
+      is Claude Sonnet 4.6.
+    evidence:
+      - docs/error-analyzer.md
+    status: preview
+    related:
+      - capability:agent-companion-chat
+
+  - id: mcp-server
+    title: MCP server for external applications
+    description: >-
+      An optional Model Context Protocol server, on Amazon Bedrock AgentCore Gateway
+      with Cognito OAuth 2.0, exposes five tools to external AI applications: search
+      (natural-language analytics), process, reprocess, status and get_results. It is
+      off by default (stack parameter EnableMCP, default false), and turning it off
+      revokes every service credential issued for it. The private-network runbook
+      requires EnableMCP false.
+    evidence:
+      - docs/mcp-server.md
+      - docs/mcp-server.md#enabling-and-disabling-the-feature
+      - template.yaml
+    related:
+      - capability:mcp-connector
+      - extension:downstream-integration
+      - deployment:private-network
+
+  - id: mcp-connector
+    title: Local MCP connector for IDE AI assistants
+    description: >-
+      The IDP MCP Connector is a local Python stdio MCP server that lets an IDE-based
+      AI coding assistant use the solution's MCP server. It exists because such
+      clients expect OAuth 2.1 dynamic client registration, which Cognito does not
+      support; the connector acquires and refreshes Cognito tokens itself and
+      discovers the remote tools at start-up. It requires a stack with the MCP server
+      enabled.
+    evidence:
+      - docs/mcp-connector.md
+      - lib/idp_mcp_connector_pkg
+    related:
+      - capability:mcp-server
+
+  - id: idp-cli
+    title: Command-line interface
+    description: >-
+      idp-cli deploys, updates and deletes stacks (CloudFormation, headless, GovCloud
+      and the experimental Terraform path), processes batches of documents from a
+      directory or a CSV or JSON manifest with live progress, downloads results,
+      manages configuration profiles and baselines, runs evaluations, Test Studio
+      comparisons, discovery, tenancy checks, load tests and Agent Companion Chat. It
+      is installed from the repository checkout, not from PyPI, because its package
+      names on PyPI belong to unrelated parties.
+    evidence:
+      - docs/idp-cli.md
+      - lib/idp_cli_pkg/idp_cli/cli.py
+      - docs/dependency-confusion.md
+    related:
+      - capability:idp-sdk
+      - capability:load-testing
+      - deployment:cli-deploy
+
+  - id: idp-sdk
+    title: Python SDK
+    description: >-
+      The idp_sdk package gives Python code the same operations as the CLI through a
+      namespaced client: stack deployment, batch and single-document processing,
+      configuration, discovery, evaluation, search, test runs and load tests. The CLI
+      is built on it, so a script and the CLI behave the same. Like the CLI it is
+      installed from the repository checkout together with idp_common.
+    evidence:
+      - docs/idp-sdk.md
+      - lib/idp_sdk/README.md
+    related:
+      - capability:idp-cli
+      - extension:downstream-integration
+
+  - id: fit-check
+    title: Fit check on sample documents
+    description: >-
+      idp-cli fit-check runs a folder of sample documents through an existing stack
+      and writes fit-report.json and fit-report.md: per document its class, each
+      field's presence and confidence, the solution-profile limitations the run
+      observed, latency and an estimated cost, and a summary per class. Without a
+      configuration profile it generates a new one with Discovery, or with Quick
+      Start from a description, and never changes the active profile. With ground
+      truth it adds the evaluation step's accuracy; without it, the report states
+      that confidence is not accuracy. --cleanup deletes the uploaded documents,
+      their results and the generated profile.
+    evidence:
+      - docs/fit-check.md
+      - lib/idp_sdk/idp_sdk/operations/fit_check.py
+      - lib/idp_sdk/idp_sdk/_core/fit_check/fit-report.schema.json
+    related:
+      - capability:discovery
+      - capability:quick-start
+      - capability:evaluation
+      - capability:cost-reporting
+      - capability:idp-cli
+
+  - id: reporting-database
+    title: Reporting database for analytics over results and costs
+    description: >-
+      Processing writes evaluation results, rule-validation results, metering (token
+      and page usage per step) and the extracted section data as Parquet in S3,
+      catalogued as AWS Glue tables and queryable with Amazon Athena. Section tables
+      are created per document class automatically, and scheduled rollup tables answer
+      cost and volume questions over wide time ranges. The analytics agent and the MCP
+      search tool query the same data.
+    evidence:
+      - docs/reporting-database.md
+      - docs/reporting-sql-layer.md
+    related:
+      - capability:cost-reporting
+      - capability:agent-companion-chat
+      - extension:downstream-integration
+
+  - id: multi-tenancy
+    title: Multi-tenant isolation within one stack
+    description: >-
+      One stack can serve several tenants: an Input-bucket prefix maps documents to a
+      configuration profile, a user's scope limits them to documents of matching
+      profiles, and a tenant declaration ties prefixes and profile patterns together.
+      Stack parameter TenantIsolationMode=Strict makes it fail closed (unscoped non-Admin
+      users see nothing; uploads outside or across tenants are refused). Isolation is
+      enforced by the application, not IAM: processing functions, tables and buckets
+      are shared, throughput is shared, and test sets carry no tenant; the docs advise
+      separate stacks or accounts where a tenant needs credential separation, its own
+      throughput or Region, or complete removal.
+    evidence:
+      - docs/multi-tenancy.md#how-isolation-works
+      - docs/multi-tenancy.md#strict-mode
+      - docs/multi-tenancy.md#what-this-does-not-isolate
+      - docs/multi-tenancy.md#when-to-use-separate-stacks-instead
+    related:
+      - capability:configuration-profiles
+      - question:multi-tenant
+
+  - id: fine-tuning
+    title: Fine-tuning Amazon Nova models for classification
+    description: >-
+      From the web UI, CLI or SDK, a Test Studio test set can be turned into training
+      data for a Bedrock fine-tuning job on an Amazon Nova model, deployed as an
+      on-demand custom model deployment and selected in a configuration. It is
+      available only in stacks deployed to us-east-1 and needs a test set of at least
+      10 documents and 2 classes with baseline classifications. A separate guide
+      covers fine-tuning Nova with scripts outside the stack.
+    evidence:
+      - docs/custom-model-finetuning.md
+      - docs/custom-model-finetuning.md#prerequisites
+      - docs/nova-finetuning.md
+      - config_library/finetuning_models.yaml
+    modes: [pipeline]
+    related:
+      - capability:classification
+      - capability:test-studio
+      - limitation:deployment-regions
+
+  - id: few-shot-examples
+    title: Few-shot examples in classification and extraction prompts
+    description: >-
+      A class can carry example documents (text, page images, expected attributes)
+      that are inserted into the classification and extraction prompts, and the
+      prompts can mark cache points so the examples are served from Bedrock prompt
+      caching. It applies to pipeline mode only; BDA mode ignores examples without an
+      error. The docs state that the size of the accuracy effect has not been measured
+      in the repository's benchmarks and advise an A/B test on the customer's own
+      documents.
+    evidence:
+      - docs/few-shot-examples.md
+      - config_library/unified/rvl-cdip-with-few-shot-examples/config.yaml
+    modes: [pipeline]
+    configuration: [classes]
+    tags: [preset:rvl-cdip-with-few-shot-examples]
+    related:
+      - capability:classification
+      - capability:simple-extraction
+      - extension:prompt-customisation
+
+  - id: input-file-formats
+    title: Input file formats
+    description: >-
+      The pipeline OCR step reads PDF and image files (JPG, JPEG, PNG, GIF, BMP, TIFF,
+      TIF, WebP; formats Bedrock cannot take are converted to JPEG, and an image file is
+      processed as one page) and converts Word .docx, Excel .xlsx and legacy .xls (each
+      sheet becomes a page), CSV and plain-text files to pages. The type is taken from
+      the file extension, with a content check for files without a known one. The web
+      UI upload picker offers PDF, PNG, JPG, JPEG, TIFF, TIF, XLSX, XLS, CSV, DOCX and
+      TXT; GIF, BMP and WebP reach the pipeline through the input bucket, CLI or SDK.
+      Legacy .doc fails the document with an error asking for .docx, and BDA mode
+      passes the original file to Bedrock Data Automation, whose accepted formats this
+      repository does not document.
+    evidence:
+      - lib/idp_common_pkg/idp_common/ocr/service.py
+      - lib/idp_common_pkg/idp_common/ocr/file_types.py
+      - lib/idp_common_pkg/idp_common/ocr/document_converter.py
+      - src/ui/src/components/common/constants.ts
+      - lib/idp_common_pkg/pyproject.toml
+    tags:
+      - format:txt
+      - format:csv
+      - format:xlsx
+      - format:xls
+      - format:docx
+      - format:pdf
+      - format:jpg
+      - format:jpeg
+      - format:png
+      - format:gif
+      - format:bmp
+      - format:tiff
+      - format:tif
+      - format:webp
+    related:
+      - limitation:legacy-office-formats
+      - limitation:unsupported-file-format
+      - question:file-formats
+
+  - id: bedrock-model-choice
+    title: Choice of model for each step
+    description: >-
+      Each model-using step (OCR with the Bedrock backend, classification, extraction,
+      confidence, summarization, evaluation, rule validation, chat) names its own
+      model in the configuration, so a cheap model can do one step and a stronger one
+      another. The selectable models are on Bedrock: Amazon Nova, Anthropic Claude, OpenAI
+      GPT, xAI Grok, Meta Llama 4, Qwen, Google Gemma and NVIDIA Nemotron models, with
+      Amazon Titan and Cohere embedding models for the knowledge base. Fine-tuned Nova
+      models can be used too, and any other endpoint is reached through a Lambda hook
+      that speaks the Converse API. Each selectable model is listed in this item's model tags. The shipped defaults are
+      Amazon Nova 2 Lite for classification, Claude Sonnet 5 for extraction, Amazon Nova
+      Lite for confidence and Claude Sonnet 5 (1M context) for summarization; model
+      availability differs by Region, with EU and Canada mappings documented.
+    evidence:
+      - docs/configuration.md
+      - docs/openai-models.md
+      - docs/grok-models.md
+      - docs/lambda-hook-inference.md
+      - docs/eu-region-model-support.md
+      - docs/canada-region-model-support.md
+      - config_library/model_config_limits.yaml
+    configuration:
+      - extraction.model
+      - classification.combined.llm.model
+      - extraction.confidence.model
+      - summarization.model
+      - ocr.model_id
+    tags:
+      - "model:amazon.nova-2-lite-v1:0"
+      - "model:amazon.nova-lite-v1:0"
+      - "model:amazon.nova-pro-v1:0"
+      - "model:amazon.titan-embed-text-v2:0"
+      - "model:anthropic.claude-haiku-4-5-20251001-v1:0"
+      - "model:anthropic.claude-haiku-5-5"
+      - "model:anthropic.claude-opus-4-5-20251101-v1:0"
+      - "model:anthropic.claude-opus-4-6-v1"
+      - "model:anthropic.claude-opus-4-7"
+      - "model:anthropic.claude-opus-4-8"
+      - "model:anthropic.claude-opus-5"
+      - "model:anthropic.claude-opus-5-5"
+      - "model:anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "model:anthropic.claude-sonnet-4-6"
+      - "model:anthropic.claude-sonnet-5"
+      - "model:anthropic.claude-sonnet-5-5"
+      - "model:cohere.embed-english-v3"
+      - "model:cohere.embed-multilingual-v3"
+      - "model:google.gemma-3-27b-it"
+      - "model:meta.llama4-maverick-17b-instruct-v1:0"
+      - "model:meta.llama4-scout-17b-instruct-v1:0"
+      - "model:nvidia.nemotron-nano-12b-v2"
+      - "model:openai.gpt-5.4"
+      - "model:openai.gpt-5.5"
+      - "model:openai.gpt-5.6-luna"
+      - "model:openai.gpt-5.6-sol"
+      - "model:openai.gpt-5.6-terra"
+      - "model:openai.gpt-6-astra"
+      - "model:qwen.qwen3-vl-235b-a22b"
+      - "model:xai.grok-4.6"
+    related:
+      - extension:model-region-availability
+      - extension:marketplace-models
+      - extension:custom-prompt-lambda
+      - extension:bedrock-quotas
+
+  - id: knowledge-base
+    title: Document knowledge base query
+    description: >-
+      Processed documents are indexed into an Amazon Bedrock Knowledge Base, by
+      default on S3 Vectors (OpenSearch Serverless optional), and users ask questions
+      across the collection in the web UI with citations to source documents.
+      Documents are chunked into fixed-size chunks of up to 8,192 tokens and ingested
+      every 30 minutes, so a new document is not queryable at once. It is controlled by
+      the DocumentKnowledgeBase stack parameter, on (Create) by default, needs access
+      to the embedding model (default Titan Text Embeddings V2) and is removed in
+      headless deployments; the private-network runbook requires DocumentKnowledgeBase
+      DISABLED.
+    evidence:
+      - docs/knowledge-base.md
+      - docs/knowledge-base.md#configuration
+      - template.yaml
+    related:
+      - deployment:headless
+      - deployment:private-network
+
+  - id: language-support
+    title: Documents in languages other than English
+    description: >-
+      Language support depends on mode and OCR backend. BDA's own supported-language
+      list, last checked in the docs on 2025-09-19, was English, Portuguese, French,
+      Italian, Spanish and German, without vertical text. Textract's coverage depends on
+      the operation: plain text detection, Queries and handwriting are English only,
+      FORMS covers six Western European languages, and the default TABLES, LAYOUT and
+      SIGNATURES features cover the broadest set. For languages Textract does not
+      read, the Bedrock OCR backend uses an LLM instead. Model accuracy is not
+      published per language, so the docs advise testing with 50-100 representative
+      documents for a high-resource language and 5-10 times that for a low-resource
+      one.
+    evidence:
+      - docs/languages.md
+      - docs/languages.md#ocr-backend-considerations-for-language-support
+    modes: [bda, pipeline]
+    configuration: [ocr.backend, ocr.features]
+    related:
+      - capability:ocr-backends
+      - limitation:language-script-support
+      - question:languages-scripts
+      - question:handwriting
+
+  - id: cost-reporting
+    title: Per-document cost estimates and cost data
+    description: >-
+      Every document records its token and page usage per step, and the web UI shows an
+      estimated cost per document from a pricing table in the configuration, which can
+      be edited to reflect negotiated prices; a reprocessed document's estimate sums all
+      its runs. The same metering lands in the reporting database for Athena queries,
+      and a DocumentEstimatedCost CloudWatch metric can be alarmed on. Completed model
+      calls whose result is not used are counted, but the calls of an attempt that Step
+      Functions retries after a transient error are not, so the estimate can be lower
+      than the bill. Bedrock application inference profiles can attribute costs in AWS
+      billing.
+    evidence:
+      - docs/cost-calculator.md#cost-monitoring-and-estimation
+      - docs/reporting-database.md#metering-table
+      - config_library/pricing.yaml
+    configuration: [pricing]
+    related:
+      - capability:reporting-database
+      - capability:capacity-planning
+      - question:monthly-volume
+
+  - id: load-testing
+    title: Load testing by copying files into the input bucket
+    description: >-
+      idp-cli load-test (and client.testing.load_test in the SDK) copies one source
+      file into the input bucket at a set rate, 100 files per minute for 1 minute by
+      default, or follows a CSV schedule of files per minute, optionally under a named
+      configuration profile. The documented examples go up to 2,500 files per minute.
+      It measures the deployed stack's real throughput and quota behaviour, and the
+      documents it creates are processed and billed like any others.
+    evidence:
+      - docs/idp-cli.md#load-test
+      - docs/idp-sdk.md
+      - lib/idp_cli_pkg/examples/load-test-schedule.csv
+    related:
+      - capability:idp-cli
+      - capability:capacity-planning
+      - question:peak-volume
+
+  - id: malware-scanning
+    title: Malware scanning of uploads at ingest
+    description: >-
+      With stack parameter MalwareScanning set to CREATE_PLAN or GATE_ONLY, Amazon
+      GuardDuty Malware Protection for S3 scans each upload and the document starts
+      processing only after a clean verdict; an infected or unscannable document
+      reaches its own terminal status with an alert. It is off by default. It is
+      static, signature and model based detection, not behavioural analysis, so novel
+      malware can pass. GuardDuty allows 25 protected buckets per account per Region
+      (not adjustable) and prices beyond the free tier at $0.09 per GB plus $0.215 per
+      1,000 objects.
+    evidence:
+      - docs/malware-scanning.md
+      - docs/malware-scanning.md#enabling-it
+      - docs/malware-scanning.md#cost-and-quotas
+      - template.yaml
+    configuration: [malware_scanning.on_unscannable]
+    related:
+      - question:pii
+      - prerequisite:service-quotas
+
+  - id: document-versions
+    title: Retained versions of each processed document
+    description: >-
+      Every processing run of a document is kept as a read-only version, so
+      reprocessing or re-uploading a document does not lose its earlier results.
+      Versions can be viewed, compared, downloaded and deleted in the web UI, which
+      helps when comparing a configuration change on the same document.
+    evidence:
+      - docs/document-versions.md
+    related:
+      - capability:configuration-versions
+      - capability:web-ui

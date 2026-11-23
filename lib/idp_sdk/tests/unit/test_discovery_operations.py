@@ -975,7 +975,7 @@ class TestMultiDocDiscoveryOperation:
         with patch.dict(
             sys.modules, {"idp_common.discovery.multi_document_discovery": fake_mod}
         ):
-            client = IDPClient()
+            client = IDPClient(region="us-west-2")
             output_dir = str(tmp_path / "schemas")
             result = client.discovery.run_multi_doc(
                 document_dir="./samples",

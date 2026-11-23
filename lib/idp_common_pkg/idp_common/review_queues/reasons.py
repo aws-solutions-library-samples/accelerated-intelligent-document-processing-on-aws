@@ -16,9 +16,15 @@ threshold, as legacy HITL marks it; that reason carries a score of 0.0. With
 ``hitl.route_missing_required_fields`` on (the default), each of a section's
 ``missing_required_fields`` (a field its class schema requires that extraction
 left absent, #1527) becomes a ``missing_required`` reason with a score of 0.0 and
-the field's threshold, or ``hitl.confidence_threshold`` when it has none. These
-reasons drive the review queues only: legacy HITL still triggers on confidence
-alerts alone. No result is read from S3.
+the field's threshold, or ``hitl.confidence_threshold`` when it has none. A
+section carrying an error-severity ``extraction_failed`` processing issue (its
+extraction produced no successful result, for example because a content filter
+withheld the model's reply, #2038) becomes one ``extraction_failed`` reason whose
+label is the issue's message, scored 0.0 against ``hitl.confidence_threshold``.
+Missing required fields drive the review queues only; a failed extraction also
+triggers legacy HITL (``routing.legacy_section_triggers`` reads
+:func:`failed_extraction_issue`), so both modes hold the document. No result is
+read from S3.
 
 This module must not import ``idp_common.assessment`` (or anything heavy): the
 Pipeline ProcessResults Lambda installs only the ``review_queues`` extra.
@@ -66,6 +72,34 @@ def _route_missing_required(config: Any) -> bool:
     return True if value is None else bool(value)
 
 
+#: ``ProcessingIssue.code`` of a section whose extraction did not succeed. The
+#: same value as ``idp_common.extraction.failure.EXTRACTION_FAILED_CODE``, spelled
+#: here because importing ``idp_common.extraction`` loads the extraction service,
+#: which the Pipeline ProcessResults Lambda does not install; a test pins the two.
+EXTRACTION_FAILED_ISSUE_CODE = "extraction_failed"
+
+
+def _issue_field(issue: Any, name: str) -> Any:
+    if isinstance(issue, Mapping):
+        return issue.get(name)
+    return getattr(issue, name, None)
+
+
+def failed_extraction_issue(section: Any) -> Optional[Any]:
+    """The section's error-severity ``extraction_failed`` issue, or ``None``.
+
+    Such a section has no successful extraction result, so it has no fields and no
+    confidence scores to raise an alert with; this is what holds it for review.
+    """
+    for issue in getattr(section, "processing_issues", None) or []:
+        if (
+            _issue_field(issue, "code") == EXTRACTION_FAILED_ISSUE_CODE
+            and _issue_field(issue, "severity") == "error"
+        ):
+            return issue
+    return None
+
+
 def _hitl_threshold(config: Any) -> float:
     """``config.hitl.confidence_threshold``, or the default when it is unset."""
     hitl = getattr(config, "hitl", None) if config is not None else None
@@ -90,6 +124,19 @@ def build_reasons(
     for section in list(getattr(document, "sections", None) or []):
         section_id = str(section.section_id)
         schema = _class_schema(config, getattr(section, "classification", None))
+        failed = failed_extraction_issue(section)
+        if failed is not None:
+            message = _issue_field(failed, "message")
+            reasons.append(
+                ReviewReason(
+                    kind="extraction_failed",
+                    section_id=section_id,
+                    field=None,
+                    label=message if isinstance(message, str) and message else None,
+                    score=0.0,
+                    threshold=default_threshold,
+                )
+            )
         for alert in getattr(section, "confidence_threshold_alerts", None) or []:
             if not isinstance(alert, Mapping):
                 continue

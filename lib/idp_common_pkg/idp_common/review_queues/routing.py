@@ -11,7 +11,8 @@ HITL marking through :func:`legacy_section_triggers` and
 of a disposed item, or (a fresh run) builds reasons from the sections'
 confidence alerts (each field's own threshold, otherwise
 ``hitl.confidence_threshold``; in BDA mode also the blueprint confidence against
-``hitl.confidence_threshold``) and writes a HOLDING item in the Default queue
+``hitl.confidence_threshold``), missing required fields and failed extractions
+(see ``reasons``), and writes a HOLDING item in the Default queue
 that the tracker activates when phase 1 succeeds.
 """
 
@@ -27,7 +28,7 @@ from . import keys
 from .finalize import apply_corrections
 from .models import ReviewDecision, ReviewItemRecord
 from .queue_defs import DEFAULT_QUEUE_ID, QueueDefinition, QueueDefStore
-from .reasons import MAX_REASONS, build_reasons
+from .reasons import MAX_REASONS, build_reasons, failed_extraction_issue
 from .statuses import LIVE_ITEM_STATES, MACHINE_RESULT_DISPOSITIONS, QueueItemState
 
 logger = logging.getLogger(__name__)
@@ -112,8 +113,19 @@ def review_mode(
 
 
 def legacy_section_triggers(section: Any, *, hitl_enabled: bool) -> bool:
-    """Pipeline mode's trigger: HITL on and the section has confidence alerts."""
-    return bool(hitl_enabled and section.confidence_threshold_alerts)
+    """Pipeline mode's trigger: HITL on, and the section has confidence alerts or
+    an error-severity ``extraction_failed`` issue (no successful result, #2038).
+
+    The failed-extraction half is the one queue mode reads as an
+    ``extraction_failed`` reason (``build_reasons``), so both modes hold the same
+    documents for it.
+    """
+    if not hitl_enabled:
+        return False
+    return bool(
+        section.confidence_threshold_alerts
+        or failed_extraction_issue(section) is not None
+    )
 
 
 def bda_segment_triggers(

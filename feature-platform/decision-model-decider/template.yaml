@@ -1,0 +1,741 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  decision-model-decider v<FEATURE_VERSION_TOKEN> — IDP Accelerator Feature
+  Platform extension. Builds the Strands Decider's AWS Lambda image in this
+  account, with CodeBuild, from a pinned upstream source commit and a pinned
+  model commit, and deploys it as the GENAIIDP- decision-model function that
+  section classification and extraction confidence call. Installs a
+  configuration profile that selects it for section classification.
+
+Parameters:
+
+  MainStackName:
+    Type: String
+    Description: Name of the deployed IDP Accelerator host stack to attach to.
+
+  # No FeatureVersion or artifact-prefix parameters: both are baked into this
+  # template at publish time (<FEATURE_VERSION_TOKEN> and
+  # <FEATURE_ARTIFACT_PREFIX_TOKEN>), because the console's "Update stack"
+  # wizard drops parameter overrides on a template change. See
+  # feature-platform/sample-feature/template.yaml.
+
+  FeatureId:
+    Type: String
+    Default: decision-model-decider
+
+  FeatureDisplayName:
+    Type: String
+    Default: "Decision Model: Strands Decider"
+
+  FeatureBucket:
+    Type: String
+    Description: >
+      S3 bucket holding this version's artifacts (the host artifacts bucket for
+      an OSS extension). The ui-deployer copies the UI bundle and the
+      configuration preset from here. Pre-filled by the host's install link.
+
+  LogLevel:
+    Type: String
+    Default: WARN
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: Days to keep this stack's CloudWatch logs.
+
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    Description: Optional IAM permissions boundary ARN applied to the roles this stack creates.
+
+  EnableXRayTracing:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      X-Ray tracing for this stack's functions. An installed extension does not
+      receive the host stack's setting, so it has its own.
+
+  DeciderFunctionName:
+    Type: String
+    Default: GENAIIDP-decider
+    AllowedPattern: '^GENAIIDP-[A-Za-z0-9_-]{1,55}$'
+    ConstraintDescription: must start with GENAIIDP- and be at most 64 characters
+    Description: >
+      The decision model function's name. The pipeline may invoke only functions
+      named GENAIIDP-*, and config_library/pricing.yaml prices
+      decision_model/GENAIIDP-decider, so keep the default unless another stack
+      in this account and Region already uses it; under another name, cost is
+      recorded only once pricing has an entry for it.
+
+  DeciderSourceRevision:
+    Type: String
+    Default: 79bf6e7184c166990eec79034667cc0bfd445e12
+    AllowedPattern: '^[0-9a-f]{40}$'
+    ConstraintDescription: must be a full 40-character commit SHA
+    Description: >
+      The strands-labs/strands-decider commit the image is built from. A full
+      commit SHA only: the build checks the fetched source is this commit.
+
+  ModelId:
+    Type: String
+    Default: StrandsAgents/strands-decider-2B-qwen3.5-v1-2610
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'
+    Description: The decision model's Hugging Face Hub id.
+
+  ModelRevision:
+    Type: String
+    Default: 4d27d8d7edcfd6616806c8684e20e2673684e283
+    AllowedPattern: '^[0-9a-f]{40}$'
+    ConstraintDescription: must be a full 40-character Hub commit SHA
+    Description: >
+      The model's Hub commit. A full commit SHA only: the build checks with the
+      Hub that it is a commit, so a redeploy serves the same weights.
+
+  EnableVision:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Include the base model's vision tower, so requests may carry page images.
+      Section classification and extraction confidence default to images, and a
+      text-only function refuses them.
+
+  EnableSnapStart:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      SnapStart on the published version. Off by default: the snapshot of a
+      10,240 MB function is billed for as long as the version exists, whether or
+      not anything calls it. On, a new execution environment answers in seconds
+      instead of loading the model first.
+
+  ReservedConcurrency:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >
+      Reserved concurrency for the decision model function; 0 reserves none.
+      Each concurrent call is a 10,240 MB execution environment drawn from the
+      account's Lambda concurrency. Set it to at most the host's
+      MaxConcurrentWorkflows times the configuration's
+      decision_model.max_concurrency to cap the decider's share; a reservation
+      the account cannot spare fails the install.
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    ConstraintDescription: must be empty or an email address
+    Description: >
+      Optional email address for the decider's error and throttle alarms. When set,
+      the stack creates the alarms, an encrypted SNS topic and an email
+      subscription, which delivers nothing until the recipient confirms it. Empty
+      creates none of them: an alarm with nobody to notify is not created.
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+  EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, 'true']
+  UseSnapStart: !Equals [!Ref EnableSnapStart, 'true']
+  HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+    Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
+    Architectures: [arm64]
+
+Resources:
+
+  ###########################################################################
+  # ECR repository: the decider images, tagged by their build inputs.
+  ###########################################################################
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    # checkov:skip=CKV_AWS_51: "Tags are content-addressed by the build inputs; the build never re-pushes an existing tag"
+    Properties:
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      # The current image and the one before it, so a rollback after a change of
+      # revision finds the previous image without rebuilding. Each image is
+      # several GB.
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the last 3 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 3
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+      # A durable pull permission for the decider function. Lambda grants itself
+      # one only when a function is created, not when an update points it at a
+      # new image, and a new image is exactly what a change of revision produces.
+      # As in nested/multi-doc-discovery/template.yaml.
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: LambdaECRImageRetrieval
+            Effect: Allow
+            Principal:
+              Service: !Sub 'lambda.${AWS::URLSuffix}'
+            Action:
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Condition:
+              StringLike:
+                aws:sourceArn: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${DeciderFunctionName}*'
+
+  ###########################################################################
+  # CodeBuild: fetch the pinned upstream commit, check it, and build its
+  # deploy/lambda/Dockerfile for arm64. The build downloads the model at the
+  # pinned Hub commit and folds its adapter into the base model, which needs
+  # about 8 GB of memory: hence the LARGE ARM machine (16 GB), as upstream uses.
+  ###########################################################################
+  DeciderImageBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/codebuild/DeciderImageBuildProject'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  DeciderImageBuildRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ecr:GetAuthorizationToken supports no resource-level permissions"
+    Properties:
+      Path: /
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'codebuild.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeciderImageBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt DeciderImageBuildLogGroup.Arn
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeciderImageBuildLogGroup}:*'
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !GetAtt ECRRepository.Arn
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                Resource: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  DeciderImageBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Description: Build the Strands Decider Lambda image from pinned source and model commits
+      ServiceRole: !GetAtt DeciderImageBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        Type: ARM_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_REPO_URI
+            Value: !GetAtt ECRRepository.RepositoryUri
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref DeciderImageBuildLogGroup
+      # The build inputs (SOURCE_REPOSITORY, SOURCE_REVISION, MODEL_ID,
+      # MODEL_REVISION, VISION, IMAGE_TAG) arrive as environment-variable
+      # overrides from the DeciderImageBuild custom resource, which derives the
+      # tag from them, so the inputs and the tag cannot disagree.
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            pre_build:
+              commands:
+                - |
+                  set -euo pipefail
+                  for name in SOURCE_REPOSITORY SOURCE_REVISION MODEL_ID MODEL_REVISION VISION IMAGE_TAG ECR_REPO_URI; do
+                    if [ -z "${!name:-}" ]; then echo "$name is not set" >&2; exit 1; fi
+                  done
+                  for name in SOURCE_REVISION MODEL_REVISION; do
+                    if ! [[ "${!name}" =~ ^[0-9a-f]{40}$ ]]; then
+                      echo "$name=${!name} is not a full commit SHA" >&2; exit 1
+                    fi
+                  done
+                  # A Hub revision that names a branch resolves to that branch's
+                  # current commit, which differs from the name. Only a commit
+                  # resolves to itself.
+                  HUB_SHA="$(curl -fsS "https://huggingface.co/api/models/${MODEL_ID}/revision/${MODEL_REVISION}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+                  if [ "$HUB_SHA" != "$MODEL_REVISION" ]; then
+                    echo "Hub revision $MODEL_REVISION of $MODEL_ID resolves to $HUB_SHA: not a commit" >&2; exit 1
+                  fi
+                  REGISTRY_HOST="${ECR_REPO_URI%%/*}"
+                  aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$REGISTRY_HOST"
+            build:
+              commands:
+                - |
+                  set -euo pipefail
+                  mkdir -p /tmp/decider && cd /tmp/decider
+                  git init -q .
+                  # GitHub serves a fork's commits through the parent's URL too, so
+                  # a commit is accepted only if one of the repository's own
+                  # branches or tags contains it. Commits and trees only: cheap.
+                  git remote add upstream "$SOURCE_REPOSITORY"
+                  git fetch -q --filter=blob:none upstream '+refs/heads/*:refs/remotes/upstream/*' '+refs/tags/*:refs/tags/*'
+                  if ! git cat-file -e "${SOURCE_REVISION}^{commit}" || [ -z "$(git for-each-ref --contains "$SOURCE_REVISION" refs/remotes/upstream refs/tags)" ]; then
+                    echo "$SOURCE_REVISION is on no branch or tag of $SOURCE_REPOSITORY" >&2; exit 1
+                  fi
+                  git checkout -q "$SOURCE_REVISION"
+                  if [ "$(git rev-parse HEAD)" != "$SOURCE_REVISION" ]; then
+                    echo "checked out $(git rev-parse HEAD), expected $SOURCE_REVISION" >&2; exit 1
+                  fi
+                  export DOCKER_BUILDKIT=1
+                  docker build --platform linux/arm64 -f deploy/lambda/Dockerfile \
+                    --build-arg MODEL="$MODEL_ID" \
+                    --build-arg MODEL_REVISION="$MODEL_REVISION" \
+                    --build-arg VISION="$VISION" \
+                    -t "$ECR_REPO_URI:$IMAGE_TAG" .
+                  docker push "$ECR_REPO_URI:$IMAGE_TAG"
+      # Under the custom resource's hour, so a slow build fails with CodeBuild's
+      # reason rather than CloudFormation's timeout.
+      TimeoutInMinutes: 50
+      EncryptionKey: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  ###########################################################################
+  # Custom resource: derive the image tag from the build inputs, build only
+  # when ECR does not already hold it, and wait for the build.
+  ###########################################################################
+  DeciderImageBuildFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/DeciderImageBuildFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  DeciderImageBuildFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'lambda.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Write-only, and needed only when tracing is on; attached
+        # unconditionally as in feature-platform/main-stack-extensions.
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess'
+      Policies:
+        - PolicyName: DeciderImageBuildRun
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt DeciderImageBuildProject.Arn
+              - Effect: Allow
+                Action: ecr:DescribeImages
+                Resource: !GetAtt ECRRepository.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeciderImageBuildFunctionLogGroup}:*'
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeciderImageBuildFunctionLogGroup}'
+                  - !GetAtt DeciderImageBuildFunctionLogGroup.Arn
+        # crhelper waits for the build by re-invoking this function from an
+        # EventBridge rule every two minutes (#1824), naming the rule after the
+        # resource's logical id plus eight random characters, hence
+        # rule/DeciderImageBuild*. lambda:AddPermission is on function:* because
+        # the function has a generated name and naming it here would be a
+        # circular reference; the condition holds it to the one grant crhelper
+        # makes, to EventBridge. As in feature-platform/idp-data-generator.
+        - PolicyName: CustomResourcePoller
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DeciderImageBuild*'
+              - Effect: Allow
+                Action: lambda:AddPermission
+                Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+                Condition:
+                  StringEquals:
+                    lambda:Principal: !Sub 'events.${AWS::URLSuffix}'
+              - Effect: Allow
+                Action: lambda:RemovePermission
+                Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+
+  DeciderImageBuildFunction:
+    Type: AWS::Serverless::Function
+    # checkov:skip=CKV_AWS_116: "DLQ not needed for a custom resource handler"
+    # checkov:skip=CKV_AWS_117: "No VPC needed: it calls CodeBuild and ECR only"
+    # checkov:skip=CKV_AWS_115: "Runs only during stack operations"
+    # checkov:skip=CKV_AWS_173: "Environment holds only the log level"
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      Handler: index.handler
+      CodeUri: image-build/
+      Description: Custom resource handler - builds the decider image when ECR lacks it
+      MemorySize: 128
+      Role: !GetAtt DeciderImageBuildFunctionRole.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref DeciderImageBuildFunctionLogGroup
+
+  DeciderImageBuild:
+    Type: Custom::DeciderImageBuild
+    Properties:
+      ServiceToken: !GetAtt DeciderImageBuildFunction.Arn
+      ProjectName: !Ref DeciderImageBuildProject
+      RepositoryName: !Ref ECRRepository
+      SourceRevision: !Ref DeciderSourceRevision
+      ModelId: !Ref ModelId
+      ModelRevision: !Ref ModelRevision
+      Vision: !Ref EnableVision
+
+  ###########################################################################
+  # The decision model function, its published version and the `live` alias
+  # the configuration points at.
+  ###########################################################################
+  DeciderFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/DeciderFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  DeciderFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'lambda.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess'
+      # The model runs entirely inside the function: it reads only its image, so
+      # its role grants nothing beyond writing its own logs.
+      Policies:
+        - PolicyName: DeciderFunctionLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DeciderFunctionLogGroup}:*'
+
+  DeciderFunction:
+    Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116: "Invoked synchronously by the pipeline, which handles failures"
+    # checkov:skip=CKV_AWS_117: "No VPC needed: the model reads nothing outside its image"
+    # checkov:skip=CKV_AWS_173: "Environment holds only request limits"
+    Properties:
+      FunctionName: !Ref DeciderFunctionName
+      Description: Strands Decider decision model (System One API), built from pinned commits
+      PackageType: Image
+      Code:
+        ImageUri: !Sub '${ECRRepository.RepositoryUri}:${DeciderImageBuild.ImageTag}'
+      Architectures: [arm64]
+      # The most Lambda gives, and the only size with 6 vCPUs; the upstream
+      # recipe's measurements are at this size.
+      MemorySize: 10240
+      Timeout: 900
+      Role: !GetAtt DeciderFunctionRole.Arn
+      Environment:
+        Variables:
+          # The upstream recipe's defaults: the most tokens one request may
+          # forward, and the longest side an image is scaled to.
+          DECIDER_MAX_REQUEST_TOKENS: '24576'
+          DECIDER_IMAGE_LONG_SIDE: '448'
+          # The same string as DeciderFunctionVersion's description. Lambda
+          # publishes a version only when the function's code or configuration
+          # changed since the last one, so whatever replaces the version must
+          # also change the function: this variable is how a new release or a
+          # setting the description names does.
+          DECIDER_PUBLISHED_AS: !Sub 'image ${DeciderImageBuild.ImageTag}, snapstart ${EnableSnapStart}, tracing ${EnableXRayTracing}, release <FEATURE_VERSION_TOKEN>'
+      SnapStart: !If
+        - UseSnapStart
+        - ApplyOn: PublishedVersions
+        - !Ref 'AWS::NoValue'
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref 'AWS::NoValue']
+      TracingConfig:
+        Mode: !If [EnableXRayTracingCondition, Active, PassThrough]
+      LoggingConfig:
+        LogGroup: !Ref DeciderFunctionLogGroup
+      Tags:
+        - Key: 'idp:feature-id'
+          Value: !Ref FeatureId
+
+  # A version is immutable, and every property of AWS::Lambda::Version requires
+  # replacement, so the description names what the version captures: a new
+  # image, a SnapStart or tracing change, or a new extension release (which may
+  # change the function's other settings) publishes a new version, the alias
+  # moves to it, and CloudFormation deletes the old one. The function carries
+  # the same string in DECIDER_PUBLISHED_AS, so the version is never replaced
+  # without the function changing, which Lambda requires to publish one. Deleting it matters with SnapStart
+  # on, because each version's snapshot is billed for as long as it exists.
+  DeciderFunctionVersion:
+    Type: AWS::Lambda::Version
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      FunctionName: !Ref DeciderFunction
+      Description: !Sub 'image ${DeciderImageBuild.ImageTag}, snapstart ${EnableSnapStart}, tracing ${EnableXRayTracing}, release <FEATURE_VERSION_TOKEN>'
+
+  DeciderFunctionAlias:
+    Type: AWS::Lambda::Alias
+    Properties:
+      Name: live
+      FunctionName: !Ref DeciderFunction
+      FunctionVersion: !GetAtt DeciderFunctionVersion.Version
+
+  # Errors are refusals and failed calls, which also fail the section they were
+  # for; throttles mean the account's Lambda concurrency, or ReservedConcurrency,
+  # could not hold another 10,240 MB environment. The host's AlertsTopic is not
+  # exported, so the alarms notify a topic of this stack's own, encrypted with the
+  # host's key (whose policy lets CloudWatch alarms use it for SNS), and exist only
+  # when someone is subscribed to it.
+  DeciderAlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      DisplayName: Decision model alerts
+      KmsMasterKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  DeciderAlarmTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref DeciderAlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  DeciderFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmEmail
+    Properties:
+      AlarmDescription: The decision model function returned errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DeciderFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DeciderAlarmTopic
+
+  DeciderFunctionThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmEmail
+    Properties:
+      AlarmDescription: The decision model function was throttled
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DeciderFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DeciderAlarmTopic
+
+  ###########################################################################
+  # UI deployer: copies the UI bundle, registers the feature, and installs the
+  # configuration preset with the alias ARN filled in.
+  ###########################################################################
+  UiDeployerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/UiDeployerFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  UiDeployerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: !Sub 'lambda.${AWS::URLSuffix}' }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess'
+      Tags:
+        - Key: 'idp:feature-id'
+          Value: !Ref FeatureId
+      Policies:
+        - PolicyName: ReadFeatureBucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # GetObject only, under this extension's version-free base.
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${FeatureBucket}/<FEATURE_ARTIFACT_PREFIX_TOKEN>/*'
+        - PolicyName: WriteWebUIBucketPrefix
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:DeleteObject
+                Resource: !Sub
+                  - 'arn:${AWS::Partition}:s3:::${Bucket}/features/${FeatureId}/*'
+                  - Bucket: { 'Fn::ImportValue': !Sub '${MainStackName}-WebUIBucketName' }
+        - PolicyName: InvokeHostResolvers
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - { 'Fn::ImportValue': !Sub '${MainStackName}-RegisterFeatureFunctionArn' }
+                  - { 'Fn::ImportValue': !Sub '${MainStackName}-ApplyFeatureConfigPresetFunctionArn' }
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${UiDeployerFunctionLogGroup}'
+                  - !GetAtt UiDeployerFunctionLogGroup.Arn
+
+  UiDeployerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ui-deployer/
+      Handler: handler.lambda_handler
+      Role: !GetAtt UiDeployerRole.Arn
+      Environment:
+        Variables:
+          FEATURE_ID: !Ref FeatureId
+          FEATURE_DISPLAY_NAME: !Ref FeatureDisplayName
+          FEATURE_VERSION: '<FEATURE_VERSION_TOKEN>'
+          MAIN_STACK_NAME: !Ref MainStackName
+          WEBUI_BUCKET: { 'Fn::ImportValue': !Sub '${MainStackName}-WebUIBucketName' }
+          FEATURE_BUCKET: !Ref FeatureBucket
+          FEATURE_ARTIFACT_PREFIX: '<FEATURE_ARTIFACT_PREFIX_TOKEN>'
+          REGISTER_FEATURE_FUNCTION_ARN: { 'Fn::ImportValue': !Sub '${MainStackName}-RegisterFeatureFunctionArn' }
+          APPLY_FEATURE_CONFIG_PRESET_FUNCTION_ARN: { 'Fn::ImportValue': !Sub '${MainStackName}-ApplyFeatureConfigPresetFunctionArn' }
+          DECIDER_ENDPOINT: !Ref DeciderFunctionAlias
+          LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref UiDeployerFunctionLogGroup
+
+  RegisterFeatureResource:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt UiDeployerFunction.Arn
+      # Re-runs on a new release, and when the endpoint the preset carries changes.
+      FeatureVersion: '<FEATURE_VERSION_TOKEN>'
+      FeatureDisplayName: !Ref FeatureDisplayName
+      DeciderEndpoint: !Ref DeciderFunctionAlias
+
+Outputs:
+  DeciderEndpoint:
+    Description: >
+      The ARN to set as decision_model.endpoint (the `live` alias). The installed
+      configuration profile already carries it for section classification.
+    Value: !Ref DeciderFunctionAlias
+  DeciderFunctionName:
+    Value: !Ref DeciderFunction
+  DeciderImageUri:
+    Value: !Sub '${ECRRepository.RepositoryUri}:${DeciderImageBuild.ImageTag}'
+  DeciderFunctionLogGroup:
+    Value: !Ref DeciderFunctionLogGroup
+  SnapStart:
+    Value: !Ref EnableSnapStart
+  InstalledVersion:
+    Value: '<FEATURE_VERSION_TOKEN>'

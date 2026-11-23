@@ -44,6 +44,12 @@ CHAT_MODEL_ID = "us.anthropic.claude-opus-4-8:1m"
 CLASSIFICATION_MODEL_ID = "us.amazon.nova-2-lite-v1:0"
 #: The SDK's local auto-split, as ``base-discovery.yaml`` ships it.
 OPUS_4_6_1M_MODEL_ID = "us.anthropic.claude-opus-4-6-v1:1m"
+#: Extraction's declared model (``ExtractionConfig.model``), as
+#: ``base-extraction.yaml`` ships it.
+SONNET_5_MODEL_ID = "us.anthropic.claude-sonnet-5"
+#: Summarization's declared model (``SummarizationConfig.model``), as
+#: ``base-summarization.yaml`` ships it.
+SONNET_5_1M_MODEL_ID = "us.anthropic.claude-sonnet-5:1m"
 
 #: Every US id a code fallback passes to :func:`regional_default`.
 FALLBACK_MODEL_IDS = frozenset(
@@ -55,6 +61,8 @@ FALLBACK_MODEL_IDS = frozenset(
         AGENT_MODEL_ID,
         CLASSIFICATION_MODEL_ID,
         OPUS_4_6_1M_MODEL_ID,
+        SONNET_5_MODEL_ID,
+        SONNET_5_1M_MODEL_ID,
     }
 )
 
@@ -70,11 +78,13 @@ REGIONAL_DEFAULT_MODELS: dict[str, dict[str, str]] = {
         AGENT_MODEL_ID: "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
         CLASSIFICATION_MODEL_ID: "eu.amazon.nova-2-lite-v1:0",
         OPUS_4_6_1M_MODEL_ID: "eu.anthropic.claude-opus-4-6-v1:1m",
+        SONNET_5_MODEL_ID: "eu.anthropic.claude-sonnet-5",
+        SONNET_5_1M_MODEL_ID: "eu.anthropic.claude-sonnet-5:1m",
     },
     # Cohere Embed v4 is reachable from Canada only through its global. profile.
     # Nova Pro has no profile there, global. included, so the swap moves it to
-    # Nova 2 Lite. The US Sonnet 4.6, Opus 4.8, Opus 4.6, Haiku 4.5 and Nova 2 Lite
-    # profiles are callable from ca-central-1, so they stay.
+    # Nova 2 Lite. The US Sonnet 4.6, Sonnet 5, Opus 4.8, Opus 4.6, Haiku 4.5 and
+    # Nova 2 Lite profiles are callable from ca-central-1, so they stay.
     "ca-": {
         EMBEDDING_MODEL_ID: "global.cohere.embed-v4:0",
         NOVA_PRO_MODEL_ID: "us.amazon.nova-2-lite-v1:0",
@@ -113,12 +123,15 @@ def _translate(model_id: str, region: Optional[str]) -> str:
 def regional_shipped_model(model_id: str, region: Optional[str] = None) -> str:
     """A model read from the shipped system defaults, translated for ``region``.
 
-    The same translation as :func:`regional_default`, for a value a local path
-    reads from ``config/system_defaults`` instead of naming in code: the SDK's local
-    discovery sends those defaults without the deploy-time swap ever having seen
-    them. The ids it reads there must be in :data:`FALLBACK_MODEL_IDS`, or this
-    returns them unchanged; ``tests/unit/test_regional_shipped_models.py`` holds
-    that by reading the YAML. Kept a separate name so the scan in
+    The same translation as :func:`regional_default`, for a value a path reads from
+    the shipped defaults instead of naming in code: the SDK's local discovery sends
+    ``config/system_defaults`` without the deploy-time swap ever having seen them,
+    and a configuration key that is absent takes its configuration field's declared
+    default (``idp_common.config.models.regional_field_default``), which is held
+    equal to the same YAML. The ids either reads must be in
+    :data:`FALLBACK_MODEL_IDS`, or this returns them unchanged;
+    ``tests/unit/test_regional_shipped_models.py`` holds that by reading the YAML
+    and every configuration field default. Kept a separate name so the scan in
     ``tests/unit/test_geographic_fallbacks.py`` can go on refusing a
     :func:`regional_default` call whose argument it cannot resolve.
     """

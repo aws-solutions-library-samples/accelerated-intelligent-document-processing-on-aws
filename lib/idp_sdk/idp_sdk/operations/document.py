@@ -5,12 +5,14 @@
 
 import os
 from datetime import datetime, timezone
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_sdk._core.ids import generate_timestamped_id
 from idp_sdk.exceptions import (
+    IDPConfigurationError,
     IDPProcessingError,
     IDPResourceNotFoundError,
 )
@@ -50,6 +52,8 @@ class DocumentOperation:
         file_path: str,
         document_id: Optional[str] = None,
         stack_name: Optional[str] = None,
+        *,
+        attributes: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> DocumentUploadResult:
         """Process a single document (upload and queue for processing).
@@ -58,6 +62,10 @@ class DocumentOperation:
             file_path: Path to local file to upload
             document_id: Optional custom document ID (defaults to filename without extension)
             stack_name: Optional stack name override
+            attributes: Caller-supplied document attributes, stored with the
+                document and returned with its results (see
+                ``docs/document-attributes.md``). Invalid attributes raise
+                ``IDPConfigurationError`` before anything is uploaded.
             **kwargs: Additional parameters
 
         Returns:
@@ -69,21 +77,41 @@ class DocumentOperation:
         if not os.path.isfile(file_path):
             raise IDPProcessingError(f"File not found: {file_path}")
 
+        if attributes:
+            from idp_sdk._core.document_attributes import validate
+
+            try:
+                attributes = validate(attributes)
+            except ValueError as e:
+                raise IDPConfigurationError(str(e)) from e
+
         # Generate document ID if not provided
         filename = os.path.basename(file_path)
         if not document_id:
             document_id = os.path.splitext(filename)[0]
 
         # Generate unique batch prefix for single document
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        batch_id = f"single-doc-{timestamp}"
+        batch_id = generate_timestamped_id("single-doc")
         s3_key = f"{batch_id}/{filename}"
 
         try:
             # Upload to InputBucket
             s3_client = boto3.client("s3", region_name=self._client._region)
             input_bucket = resources["InputBucket"]
-            s3_client.upload_file(Filename=file_path, Bucket=input_bucket, Key=s3_key)
+            if attributes:
+                from idp_sdk._core.document_attributes import prepare_upload
+
+                metadata = prepare_upload(s3_client, input_bucket, s3_key, attributes)
+                s3_client.upload_file(
+                    Filename=file_path,
+                    Bucket=input_bucket,
+                    Key=s3_key,
+                    ExtraArgs={"Metadata": metadata},
+                )
+            else:
+                s3_client.upload_file(
+                    Filename=file_path, Bucket=input_bucket, Key=s3_key
+                )
 
             return DocumentUploadResult(
                 document_id=s3_key,

@@ -237,7 +237,10 @@ def sdk(monkeypatch):
 
 @pytest.fixture
 def lookup(monkeypatch):
-    import tools.base as base
+    # By module name rather than `import tools.base`: `tools` is the handler's own
+    # directory, importable only through the `_path` fixture's `sys.path` insert, so
+    # a static import names a module the type gate cannot resolve.
+    base = importlib.import_module("tools.base")
 
     def factory(*_a, **_k):
         return profile_of

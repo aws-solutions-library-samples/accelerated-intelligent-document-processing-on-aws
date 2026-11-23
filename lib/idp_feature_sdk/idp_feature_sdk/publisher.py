@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import boto3
+import yaml
 from rich.console import Console
 
 from .bundle import BundleInfo, validate_bundle
@@ -45,6 +46,44 @@ from .manifest import (
     bake_marketplace_identity,
     load_manifest,
 )
+
+#: The account in the placeholder image repository ``sam package`` is given. It
+#: is never contacted, so it names no real account.
+PLACEHOLDER_ACCOUNT = "000000000000"
+
+_FUNCTION_TYPES = ("AWS::Lambda::Function", "AWS::Serverless::Function")
+
+
+class _IntrinsicTolerantLoader(yaml.SafeLoader):
+    """A safe loader that reads CloudFormation's short-form tags as plain values."""
+
+
+_IntrinsicTolerantLoader.add_multi_constructor(
+    "!",
+    lambda loader, suffix, node: (
+        loader.construct_scalar(node)
+        if isinstance(node, yaml.ScalarNode)
+        else loader.construct_sequence(node)
+        if isinstance(node, yaml.SequenceNode)
+        else loader.construct_mapping(node)
+    ),
+)
+
+
+def declares_container_image_function(template_path: Path) -> bool:
+    """Whether the template declares a function with ``PackageType: Image``."""
+    if not Path(template_path).is_file():
+        return False
+    template = yaml.load(  # nosec B506 - a SafeLoader subclass
+        Path(template_path).read_text(encoding="utf-8"), Loader=_IntrinsicTolerantLoader
+    )
+    resources = (template or {}).get("Resources") or {}
+    return any(
+        isinstance(body, dict)
+        and body.get("Type") in _FUNCTION_TYPES
+        and (body.get("Properties") or {}).get("PackageType") == "Image"
+        for body in resources.values()
+    )
 
 
 @dataclass
@@ -354,21 +393,29 @@ class FeaturePublisher:
         self._run_sam(["sam", "build"], step="sam build")
         out = self.project_dir / ".aws-sam" / "packaged.yaml"
         self.console.log("[cyan]▸[/cyan] Running sam package…")
-        self._run_sam(
-            [
-                "sam",
-                "package",
-                "--s3-bucket",
-                artifact_bucket,
-                "--s3-prefix",
-                artifact_prefix,
-                "--output-template-file",
-                str(out),
-                "--region",
-                region,
-            ],
-            step="sam package",
-        )
+        cmd = [
+            "sam",
+            "package",
+            "--s3-bucket",
+            artifact_bucket,
+            "--s3-prefix",
+            artifact_prefix,
+            "--output-template-file",
+            str(out),
+            "--region",
+            region,
+        ]
+        if declares_container_image_function(self.project_dir / manifest.template.path):
+            # sam package refuses a template with a container-image function
+            # unless it is given an image repository, though the image is built
+            # later, in the deploying account. It needs one only to be well
+            # formed: nothing is pushed to it. Matches the bundled publisher
+            # (idp_sdk/_core/publish.py:build_and_package_template).
+            cmd += [
+                "--image-repository",
+                f"{PLACEHOLDER_ACCOUNT}.dkr.ecr.{region}.amazonaws.com/placeholder",
+            ]
+        self._run_sam(cmd, step="sam package")
         if not out.is_file():
             raise RuntimeError(
                 f"Expected packaged template at {out} but sam package did not "

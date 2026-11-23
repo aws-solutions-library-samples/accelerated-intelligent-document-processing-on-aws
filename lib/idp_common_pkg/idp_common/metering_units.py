@@ -422,6 +422,38 @@ EXPECTED_CACHE_UNIT_OMISSIONS: tuple[CacheUnitOmission, ...] = tuple(
             "product.",
             ("cacheReadInputTokens", "cacheWriteInputTokens"),
         ),
+        (
+            "bedrock/us.cohere.embed-v4:0",
+            "Embed v4",
+            False,
+            AWS_BEDROCK_PRICE_LISTS[1],
+            "No cache dimension: the digest records 23 token-priced dimensions "
+            "for 'Embed v4', with an input rate and no output or cache rate "
+            "among them. An embeddings call has no prompt to cache, and the "
+            "embeddings path calls InvokeModel, which carries no cachePoint.",
+            ("cacheReadInputTokens", "cacheWriteInputTokens"),
+        ),
+        (
+            "bedrock/eu.cohere.embed-v4:0",
+            "Embed v4",
+            False,
+            AWS_BEDROCK_PRICE_LISTS[1],
+            "The EU Region profile of the us. entry above, and the same "
+            "price-list record: 23 token-priced dimensions for 'Embed v4' and no "
+            "cache dimension among them, in any region. Listed "
+            "separately because the lookup is by exact pricing key.",
+            ("cacheReadInputTokens", "cacheWriteInputTokens"),
+        ),
+        (
+            "bedrock/global.cohere.embed-v4:0",
+            "Embed v4",
+            False,
+            AWS_BEDROCK_PRICE_LISTS[1],
+            "The global profile the Canada Regions resolve the embedding default "
+            "to, and the same price-list record as the us. entry: 23 "
+            "token-priced dimensions and no cache dimension among them.",
+            ("cacheReadInputTokens", "cacheWriteInputTokens"),
+        ),
         # ---- dimension published at exactly $0.00 ----------------------------
         (
             "bedrock/us.amazon.nova-premier-v1:0",

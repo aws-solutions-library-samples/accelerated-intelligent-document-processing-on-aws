@@ -242,21 +242,35 @@ class TestStopReasonsThatAreNotAnAnswer:
         assert so["parsed"] is False and so["stop_reason"] == "max_tokens"
         assert written["metadata"]["output_repaired"] is True
 
-    @pytest.mark.parametrize("stop", ["max_tokens", "content_filtered"])
-    def test_json_that_happens_to_parse_is_still_not_trusted(self, stop):
+    def test_json_that_happens_to_parse_is_still_not_trusted(self):
         """The stop reason decides, not whether the text parses: a reply cut off
         at a point where it is still valid JSON is incomplete all the same."""
         written, _ = _run(
-            _config(), lambda **kw: _reply('{"invoice_number": "A"}', stop=stop)
+            _config(),
+            lambda **kw: _reply('{"invoice_number": "A"}', stop="max_tokens"),
         )
         so = written["metadata"]["structured_output"]
-        assert so["parsed"] is False and so["stop_reason"] == stop
+        assert so["parsed"] is False and so["stop_reason"] == "max_tokens"
 
-    @pytest.mark.parametrize("stop", ["content_filtered", "guardrail_intervened"])
-    def test_a_refusal_is_not_parsed_as_structured(self, stop):
-        written, _ = _run(_config(), lambda **kw: _reply("I can't help", stop=stop))
+    def test_a_masking_guardrail_stop_is_not_parsed_as_structured(self):
+        """``guardrail_intervened`` with no BLOCKED trace is the model's answer
+        with matches masked, not a withheld reply, so it reaches the text path."""
+        written, _ = _run(
+            _config(), lambda **kw: _reply("I can't help", stop="guardrail_intervened")
+        )
         so = written["metadata"]["structured_output"]
-        assert so["parsed"] is False and so["stop_reason"] == stop
+        assert so["parsed"] is False and so["stop_reason"] == "guardrail_intervened"
+
+    def test_a_withheld_reply_fails_the_section(self):
+        """A ``content_filtered`` stop is a block, however well its text parses:
+        the section is written with no fields, as for any content-filter block."""
+        written, calls = _run(
+            _config(),
+            lambda **kw: _reply('{"invoice_number": "A"}', stop="content_filtered"),
+        )
+        assert len(calls) == 1
+        assert written["inference_result"] == {}
+        assert written["metadata"]["content_filtered"] is True
 
 
 class TestFallbacksNeverFailTheDocument:
@@ -276,6 +290,20 @@ class TestFallbacksNeverFailTheDocument:
         so = written["metadata"]["structured_output"]
         assert so["applied"] is False
         assert "too complex" in so["rejected"]
+
+    def test_a_content_filter_block_is_not_taken_for_a_schema_rejection(self):
+        """A content-filter block is a ValidationException too, but it judges the
+        content, not the schema: no retry, and nothing remembered against it."""
+        calls = []
+
+        def answer(**kw):
+            calls.append(kw)
+            raise _validation_error("Output blocked by content filtering policy")
+
+        written, _ = _run(_config(), answer)
+        assert len(calls) == 1 and "output_config" in calls[0]
+        assert written["metadata"]["content_filtered"] is True
+        assert not so_mod._REJECTED_SCHEMAS
 
     def test_the_rejection_is_remembered_for_the_next_section(self):
         def answer(**kw):

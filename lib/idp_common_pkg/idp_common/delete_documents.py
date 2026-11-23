@@ -754,6 +754,114 @@ def _delete_run_records(tracking_table, object_key: str) -> int:
     return deleted
 
 
+class _PurgeTally:
+    """What a version purge has done so far, owned by the caller.
+
+    Held outside ``_purge_object_versions`` rather than returned from it, so a caller
+    catching a fault part-way still knows how many versions the batches before it
+    deleted and every refusal seen so far. A return value is lost when a later batch
+    raises, which reported a purge that had deleted 999 versions as having deleted 0.
+    """
+
+    def __init__(self) -> None:
+        self.deleted = 0
+        self.failures: List[Dict[str, Any]] = []
+
+
+def _purge_object_versions(
+    s3_client,
+    bucket: str,
+    prefix: str,
+    belongs: Callable[[str], bool],
+    description: str,
+    tally: _PurgeTally,
+) -> None:
+    """Delete every object version and delete marker under ``prefix`` that ``belongs``.
+
+    Progress accumulates in ``tally`` (see ``_PurgeTally``). The listing passes ``Prefix=prefix`` so the server does the coarse narrowing,
+    and ``belongs`` decides what is actually deleted — an S3 ``Prefix`` is a byte
+    prefix, so it alone would reach ``invoice.pdf.bak``.
+    """
+    # ⚠️ **List everything first, then delete.** Deleting each page as it arrived made
+    # the next page's ``VersionIdMarker`` name a version that no longer existed, and
+    # moto then ended the listing there — measured: 1,003 versions of one key, 1,000
+    # deleted, success reported, 3 left. Whether S3 resumes from a deleted marker is
+    # not something this module should depend on, and the listing for one document is
+    # small enough to hold.
+    paginator = s3_client.get_paginator("list_object_versions")
+    objects: List[Dict[str, str]] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        entries = page.get("Versions", []) + page.get("DeleteMarkers", [])
+        objects += [
+            {"Key": e["Key"], "VersionId": e["VersionId"]}
+            for e in entries
+            if e.get("VersionId") and belongs(e["Key"])
+        ]
+    # delete_objects accepts up to 1000 keys per call
+    for i in range(0, len(objects), 1000):
+        batch = objects[i : i + 1000]
+        response = _call_with_retry(
+            description,
+            s3_client.delete_objects,
+            Bucket=bucket,
+            Delete={"Objects": batch, "Quiet": True},
+        )
+        # ⚠️ **``DeleteObjects`` answers 200 even when every key in the batch
+        # was refused.** Per-key outcomes come back in ``Errors``, and the S3
+        # service model declares *no* exception for them — so nothing raises
+        # and ``_call_with_retry`` returns normally. Counting ``len(batch)``
+        # here reported a wholly denied purge as a completed one, which is how
+        # a missing ``s3:DeleteObjectVersion`` (SAM's ``S3CrudPolicy`` grants
+        # ``s3:DeleteObject`` and not the versioned form) could delist a
+        # document while leaving every byte of its output in the bucket, and
+        # report success (#1366).
+        # Membership rather than ``.get()``, the same way the pagination loops
+        # in this module read ``LastEvaluatedKey`` and for the same reason:
+        # ``MagicMock().get("Errors")`` auto-creates a **truthy** value, so the
+        # other form reports a refusal against every bare test double and
+        # ``len()`` of it is meaningless. S3 omits ``Errors`` when nothing was
+        # refused, so absence is the ordinary case.
+        refused = response["Errors"] if "Errors" in response else []
+        # Counted by key identity rather than by length. ``len(batch) - len(
+        # refused)`` reported a **negative** count when the ``Errors`` array
+        # did not correspond one-to-one with the batch — a malformed or
+        # duplicated entry is enough — and a negative number of deleted objects
+        # is a report nobody can act on.
+        refused_keys = {(f.get("Key"), f.get("VersionId")) for f in refused}
+        tally.deleted += sum(
+            1 for obj in batch if (obj["Key"], obj["VersionId"]) not in refused_keys
+        )
+        # ⚠️ **Accumulated, not raised here.** Raising inside the loop abandoned
+        # every version after the refused batch — measured: one refused key in
+        # the first 1000-key batch of 1,510 versions left 510 never attempted,
+        # where the previous code purged all of them. The refusal is almost
+        # always a missing permission, which is identical for every remaining
+        # key, so stopping reclaims less and reports no more. Purge everything
+        # purgeable, then report, which is what ``document_versions.py`` does
+        # for the same operation.
+        tally.failures.extend(refused)
+
+
+def _refusal_summary(tally: _PurgeTally) -> str:
+    failures = tally.failures
+    codes = ", ".join(sorted({f.get("Code") or "?" for f in failures}))
+    sample = ", ".join(
+        f"{f.get('Key') or '?'}({f.get('Code') or '?'})" for f in failures[:5]
+    )
+    return (
+        f"{len(failures)} object version(s) were refused ({codes}); "
+        f"{tally.deleted} were deleted. Sample: {sample}"
+    )
+
+
+def _already_refused(tally: _PurgeTally) -> str:
+    failures = tally.failures
+    if not failures:
+        return ""
+    codes = ", ".join(sorted({f.get("Code") or "?" for f in failures}))
+    return f" ({len(failures)} version(s) already refused: {codes})"
+
+
 def delete_single_document(
     object_key: str,
     tracking_table,
@@ -797,6 +905,7 @@ def delete_single_document(
         "object_key": object_key,
         "deleted": {
             "input_file": False,
+            "input_versions": 0,
             "output_files": 0,
             "list_entries": False,
             "document_record": False,
@@ -829,97 +938,77 @@ def delete_single_document(
         logger.info(f"[DRY RUN] Would delete document: {object_key}")
         return result
 
-    # Delete from input bucket
+    # Delete from input bucket. The input bucket is versioning-enabled too, so a
+    # versionless ``delete_object`` only adds a delete marker and the uploaded bytes
+    # stay as a noncurrent version until the lifecycle rule expires them
+    # (``DataRetentionInDays``, default 365). Nothing reads an input noncurrent version,
+    # and the documents describing deletion — the PII extension's *redact copy and
+    # stop* mode above all — promise the upload is gone, so every version and delete
+    # marker of the **exact** key is purged (#2166). Exact, not prefix: the document's
+    # outputs never live in this bucket, and ``a.pdf`` must not reach ``a.pdf.bak``.
+    input_tally = _PurgeTally()
     try:
-        logger.debug(f"Deleting from input bucket: {input_bucket}/{object_key}")
-        # S3 answers a throttle with ``SlowDown``, which is in the same botocore
-        # throttling table the DynamoDB codes come from, so the same ladder applies.
-        _call_with_retry(
-            f"input object delete for {object_key}",
-            s3_client.delete_object,
-            Bucket=input_bucket,
-            Key=object_key,
+        logger.debug(f"Purging from input bucket: {input_bucket}/{object_key}")
+        _purge_object_versions(
+            s3_client,
+            input_bucket,
+            object_key,
+            lambda key: key == object_key,
+            f"input version purge for {object_key}",
+            input_tally,
         )
+        if input_tally.failures:
+            raise RuntimeError(_refusal_summary(input_tally))
         result["deleted"]["input_file"] = True
+        logger.debug(f"Deleted {input_tally.deleted} input object versions")
     except Exception as e:
-        error_msg = f"Error deleting from input bucket: {str(e)}"
+        error_msg = (
+            f"Error deleting from input bucket: {str(e)}{_already_refused(input_tally)}"
+        )
         logger.error(error_msg)
         result["errors"].append(error_msg)
+        # ⚠️ **Fall back to the versionless delete, and still report the failure.** A
+        # caller holding s3:DeleteObject but not the versioned actions — a CLI user
+        # with a policy written for the old behaviour — had the purge refused, which
+        # left the upload as the *current*, readable object while the steps below
+        # delisted the document. The versionless delete is what every caller could do
+        # before, so it is the floor: the upload is at least no longer current, and
+        # the error above says its versions were not purged.
+        try:
+            _call_with_retry(
+                f"input object delete for {object_key}",
+                s3_client.delete_object,
+                Bucket=input_bucket,
+                Key=object_key,
+            )
+        except Exception as fallback:
+            fallback_msg = (
+                f"Error deleting from input bucket (versionless fallback): "
+                f"{str(fallback)}"
+            )
+            logger.error(fallback_msg)
+            result["errors"].append(fallback_msg)
+    finally:
+        result["deleted"]["input_versions"] = input_tally.deleted
 
     # Delete from output bucket. The output bucket is versioning-enabled, and
     # document version history pins prior runs' output bytes as noncurrent
     # object versions. A versionless delete_object would only add delete markers
     # and leak those pinned bytes forever, so on a full document delete we purge
     # ALL versions (and any delete markers) under the prefix to reclaim storage.
-    deleted_output_count = 0
-    purge_failures: List[Dict[str, Any]] = []
+    output_tally = _PurgeTally()
     try:
-        paginator = s3_client.get_paginator("list_object_versions")
-
-        for page in paginator.paginate(Bucket=output_bucket, Prefix=object_key):
-            entries = page.get("Versions", []) + page.get("DeleteMarkers", [])
-            objects = [
-                {"Key": e["Key"], "VersionId": e["VersionId"]}
-                for e in entries
-                if e.get("VersionId") and _is_document_output(e["Key"], object_key)
-            ]
-            # delete_objects accepts up to 1000 keys per call
-            for i in range(0, len(objects), 1000):
-                batch = objects[i : i + 1000]
-                response = _call_with_retry(
-                    f"output version purge for {object_key}",
-                    s3_client.delete_objects,
-                    Bucket=output_bucket,
-                    Delete={"Objects": batch, "Quiet": True},
-                )
-                # ⚠️ **``DeleteObjects`` answers 200 even when every key in the batch
-                # was refused.** Per-key outcomes come back in ``Errors``, and the S3
-                # service model declares *no* exception for them — so nothing raises
-                # and ``_call_with_retry`` returns normally. Counting ``len(batch)``
-                # here reported a wholly denied purge as a completed one, which is how
-                # a missing ``s3:DeleteObjectVersion`` (SAM's ``S3CrudPolicy`` grants
-                # ``s3:DeleteObject`` and not the versioned form) could delist a
-                # document while leaving every byte of its output in the bucket, and
-                # report success (#1366).
-                # Membership rather than ``.get()``, the same way the pagination loops
-                # in this module read ``LastEvaluatedKey`` and for the same reason:
-                # ``MagicMock().get("Errors")`` auto-creates a **truthy** value, so the
-                # other form reports a refusal against every bare test double and
-                # ``len()`` of it is meaningless. S3 omits ``Errors`` when nothing was
-                # refused, so absence is the ordinary case.
-                failures = response["Errors"] if "Errors" in response else []
-                # Counted by key identity rather than by length. ``len(batch) - len(
-                # failures)`` reported a **negative** count when the ``Errors`` array
-                # did not correspond one-to-one with the batch — a malformed or
-                # duplicated entry is enough — and a negative number of deleted objects
-                # is a report nobody can act on.
-                refused_keys = {(f.get("Key"), f.get("VersionId")) for f in failures}
-                deleted_output_count += sum(
-                    1
-                    for obj in batch
-                    if (obj["Key"], obj["VersionId"]) not in refused_keys
-                )
-                # ⚠️ **Accumulated, not raised here.** Raising inside the loop abandoned
-                # every version after the refused batch — measured: one refused key in
-                # the first 1000-key batch of 1,510 versions left 510 never attempted,
-                # where the previous code purged all of them. The refusal is almost
-                # always a missing permission, which is identical for every remaining
-                # key, so stopping reclaims less and reports no more. Purge everything
-                # purgeable, then report, which is what ``document_versions.py`` does
-                # for the same operation.
-                purge_failures.extend(failures)
-
-        if purge_failures:
-            codes = ", ".join(sorted({f.get("Code") or "?" for f in purge_failures}))
-            sample = ", ".join(
-                f"{f.get('Key') or '?'}({f.get('Code') or '?'})"
-                for f in purge_failures[:5]
-            )
-            raise RuntimeError(
-                f"{len(purge_failures)} output object version(s) were refused "
-                f"({codes}); {deleted_output_count} were deleted. Sample: {sample}"
-            )
-        logger.debug(f"Deleted {deleted_output_count} output object versions")
+        _purge_object_versions(
+            s3_client,
+            output_bucket,
+            object_key,
+            lambda key: _is_document_output(key, object_key),
+            f"output version purge for {object_key}",
+            output_tally,
+        )
+        if output_tally.failures:
+            raise RuntimeError(_refusal_summary(output_tally))
+        logger.debug(f"Deleted {output_tally.deleted} output object versions")
     except Exception as e:
         # ⚠️ **Carry the refusals accrued so far into the message.** Anything can fail
         # after a batch was partly refused — the next listing page most obviously — and
@@ -927,20 +1016,16 @@ def delete_single_document(
         # the listing broke and never learns that some versions were denied. The
         # immediate-raise form this replaced could not lose them because it never got
         # that far; accumulating is what makes losing them possible.
-        refused = (
-            f" ({len(purge_failures)} version(s) already refused: "
-            + ", ".join(sorted({f.get("Code") or "?" for f in purge_failures}))
-            + ")"
-            if purge_failures
-            else ""
+        error_msg = (
+            f"Error deleting from output bucket: {str(e)}"
+            f"{_already_refused(output_tally)}"
         )
-        error_msg = f"Error deleting from output bucket: {str(e)}{refused}"
         logger.error(error_msg)
         result["errors"].append(error_msg)
     finally:
         # Recorded whatever happened: a purge that failed part-way still deleted the
         # batches before it, and the caller's report should say how many.
-        result["deleted"]["output_files"] = deleted_output_count
+        result["deleted"]["output_files"] = output_tally.deleted
 
     # Purge the review-queue partition of the document (item, drafts, history).
     if review_store is not None:
@@ -1089,17 +1174,37 @@ def _scan_all_document_keys(
 
     Args:
         tracking_table: DynamoDB table resource
-        status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
+        status_filter: Optional status to match against each document record's
+            ``ObjectStatus`` ('COMPLETED', 'FAILED', 'QUEUED', etc.)
 
     Returns:
         List of DynamoDB items with PK starting with 'doc#'
+
+    Raises:
+        ValueError: ``status_filter`` is not a status a document record can carry.
+            The scan would match nothing, and an empty selection reads as
+            "nothing to delete" rather than as a wrong argument.
     """
     from boto3.dynamodb.conditions import Attr
+
+    from idp_common.models import DOCUMENT_STATUS_VALUES
+
+    if status_filter and status_filter not in DOCUMENT_STATUS_VALUES:
+        raise ValueError(
+            f"Unknown status_filter {status_filter!r}: a document's status is one "
+            f"of {', '.join(DOCUMENT_STATUS_VALUES)}. A document still being "
+            "processed carries the name of its current step (e.g. OCR, "
+            "EXTRACTING), not PROCESSING"
+        )
 
     items: List[Dict[str, Any]] = []
     filter_expr = Attr("PK").begins_with("doc#")
     if status_filter:
-        filter_expr = filter_expr & Attr("Status").eq(status_filter)
+        # A document record stores its status as ``ObjectStatus`` (written by
+        # ``DocumentDynamoDBService``); no tracking record carries ``Status``, so
+        # filtering on that name selected nothing (#2189). Run records carry no
+        # status, so only the ``SK = "none"`` document record can match.
+        filter_expr = filter_expr & Attr("ObjectStatus").eq(status_filter)
 
     scan_kwargs: Dict[str, Any] = {"FilterExpression": filter_expr}
 
@@ -1114,6 +1219,69 @@ def _scan_all_document_keys(
         scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
     return items
+
+
+_DOC_PK_PREFIX = "doc#"
+
+
+def _document_keys(
+    items: List[Dict[str, Any]], selects: Callable[[str], bool]
+) -> List[str]:
+    """The distinct document keys ``selects`` accepts among scanned records, in order.
+
+    The key is read from the record's partition key, ``PK = "doc#<key>"``, not from
+    its ``ObjectKey`` attribute. ``PK`` is the table's hash key and is declared as a
+    string, so DynamoDB guarantees every record has one of that type, and it is the
+    identity the deleter addresses (``delete_single_document`` rebuilds
+    ``doc#<key>``). ``ObjectKey`` is an ordinary attribute with no type guarantee: a
+    record written by hand or by an older tool can hold a number (read back as a
+    ``Decimal``), a ``NULL``, or nothing at all.
+
+    ⚠️ **Skipping such a record would make the selection partial, and raising on it
+    made one record fail the whole delete** (#2165). Reading ``PK`` does neither: the
+    record is selected or not on the same terms as every other, and a warning counts
+    the *selected* records whose ``ObjectKey`` could not be read, because that
+    attribute is still wrong and other readers of the table use it. ``ObjectKey`` is
+    the fallback only for a record whose ``PK`` is not a string, which DynamoDB never
+    returns for this table. A string ``PK`` without the ``doc#`` prefix (which the scan
+    filter ``begins_with(PK, "doc#")`` excludes), or a record with no usable key at
+    all, raises ``TypeError``: its membership is unknown and this list feeds a delete.
+
+    Keys are de-duplicated because one document owns several records under the same
+    ``PK``: the ``SK = "none"`` document record plus one ``run#<id>`` record per
+    output-version run, each carrying ``ObjectKey``. Selecting per record would hand
+    the deleter the same document once per run and inflate its counts.
+    """
+    keys: List[str] = []
+    seen: set = set()
+    unreadable: List[str] = []
+    for item in items:
+        pk = item.get("PK")
+        object_key = item.get("ObjectKey")
+        if isinstance(pk, str) and pk.startswith(_DOC_PK_PREFIX):
+            key = pk[len(_DOC_PK_PREFIX) :]
+            readable = isinstance(object_key, str)
+        elif not isinstance(pk, str) and isinstance(object_key, str):
+            key, readable = object_key, True
+        else:
+            raise TypeError(
+                "tracking record has neither a 'doc#' partition key nor a string "
+                f"ObjectKey (PK={pk!r}, ObjectKey={object_key!r}); its membership "
+                "in the selection is unknown"
+            )
+        if key in seen or not selects(key):
+            continue
+        seen.add(key)
+        keys.append(key)
+        if not readable:
+            unreadable.append(pk)
+    if unreadable:
+        logger.warning(
+            f"{len(unreadable)} selected tracking record(s) have a missing or "
+            "non-string ObjectKey and were selected by their partition key instead: "
+            f"{', '.join(unreadable[:10])}" + (" ..." if len(unreadable) > 10 else "")
+        )
+    return keys
 
 
 # ⚠️ Neither selector below catches anything, and that is a decision per exception
@@ -1154,7 +1322,8 @@ def get_documents_by_batch(
             selects ``batch-1/a.pdf`` and does **not** select ``batch-10/b.pdf``.
             For substring or wildcard selection use
             :func:`get_documents_by_pattern`.
-        status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
+        status_filter: Optional status the document record's ``ObjectStatus`` must equal
+            ('COMPLETED', 'FAILED', 'QUEUED', etc.)
 
     Returns:
         List of object keys. An empty list means the batch holds no matching
@@ -1165,20 +1334,16 @@ def get_documents_by_batch(
         ValueError: ``batch_id`` is empty.
         botocore.exceptions.ClientError: the table scan was rejected or throttled.
         botocore.exceptions.BotoCoreError: the scan could not be issued at all.
-        AttributeError: a scanned record's ``ObjectKey`` is not a string — a
-            ``Decimal`` is what an attribute written as ``N`` deserializes to.
-            Raised rather than skipped: this list feeds a delete, and a record the
-            predicate cannot read is a record whose membership is unknown.
+        TypeError: a scanned record has neither a ``doc#`` partition key nor a
+            string ``ObjectKey``, so its membership is unknown. DynamoDB cannot
+            return such a record from this table (see :func:`_document_keys`).
     """
     batch_id = _require_selector("batch_id", batch_id)
 
-    object_keys = []
-    for item in _scan_all_document_keys(tracking_table, status_filter):
-        object_key = item.get("ObjectKey", "")
-        if _is_in_batch(object_key, batch_id):
-            object_keys.append(object_key)
-
-    return object_keys
+    return _document_keys(
+        _scan_all_document_keys(tracking_table, status_filter),
+        lambda key: _is_in_batch(key, batch_id),
+    )
 
 
 def get_documents_by_pattern(
@@ -1198,28 +1363,24 @@ def get_documents_by_pattern(
         tracking_table: DynamoDB table resource
         pattern: Wildcard pattern to match against object keys. ``"*"`` is the
             explicit way to select every document.
-        status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
+        status_filter: Optional status the document record's ``ObjectStatus`` must equal
+            ('COMPLETED', 'FAILED', 'QUEUED', etc.)
 
     Returns:
         List of matching object keys. An empty list means nothing matched, and
         nothing else: a failure raises rather than returning ``[]``.
 
     Raises:
-        TypeError: ``pattern`` is not a string, or a scanned record's ``ObjectKey``
-            is not one — ``fnmatch`` answers the same class for both, so read the
-            message to tell the caller's bug from a malformed record. The record is
-            not skipped: this list feeds a delete, and one the predicate cannot read
-            is one whose membership is unknown.
+        TypeError: ``pattern`` is not a string, or a scanned record has neither
+            a ``doc#`` partition key nor a string ``ObjectKey`` (see
+            :func:`_document_keys`); read the message to tell them apart.
         ValueError: ``pattern`` is empty.
         botocore.exceptions.ClientError: the table scan was rejected or throttled.
         botocore.exceptions.BotoCoreError: the scan could not be issued at all.
     """
     pattern = _require_selector("pattern", pattern)
 
-    object_keys = []
-    for item in _scan_all_document_keys(tracking_table, status_filter):
-        object_key = item.get("ObjectKey", "")
-        if fnmatch.fnmatch(object_key, pattern):
-            object_keys.append(object_key)
-
-    return object_keys
+    return _document_keys(
+        _scan_all_document_keys(tracking_table, status_filter),
+        lambda key: fnmatch.fnmatch(key, pattern),
+    )

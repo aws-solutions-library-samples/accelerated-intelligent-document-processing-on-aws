@@ -147,6 +147,17 @@ conversation_manager = DropAndSlideConversationManager(
 agent.conversation_manager = conversation_manager
 ```
 
+**Summarizing instead of trimming**: use `MeteredSummarizingConversationManager`
+from the same module, not Strands' `SummarizingConversationManager`. Strands'
+manager summarizes with a direct call to the agent's model that the event loop
+never records, so the summary's tokens are missing from
+`agent.event_loop_metrics.accumulated_usage` and from any metering read from it.
+The metered subclass summarizes exactly as Strands does and adds each summary's
+usage to the agent's metrics. It takes the same arguments except
+`summarization_agent`, which it refuses, because that agent would record the usage
+on its own metrics. Agentic extraction uses it; see the
+[extraction module README](../extraction/README.md#a-failed-agent-run-is-still-metered--idp_commonutilsmeteringfailure_metering).
+
 ### 3. Data Storage
 
 #### ChatMessagesTable (DynamoDB)

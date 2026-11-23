@@ -1562,11 +1562,10 @@ extraction:
 > Transient failures (throttling, read timeouts, 5xx) are unchanged — they still
 > raise so Step Functions retries the section. ⚠️ Because confidence is absent on a
 > degraded section, HITL confidence routing and the UI threshold signals do not
-> apply to it; check the **Status** column of the Sections panel — that is where this
-> particular issue shows. It is written to the section record only, not into the
-> section's `result.json`, so unlike issues from a *successful* assessment run it
-> does **not** appear in the edit page's **Reports › Processing Report** (which renders
-> `metadata.processing_issues` from that file). Re-batching the oversized
+> apply to it; check the **Status** column of the Sections panel. The issue is also
+> written into the section's `result.json`, so the edit page's **Reports › Processing
+> Report** shows it and its Confidence stage reads *no confidence scores*. That write
+> is best effort; if it fails, the Status column still has the issue. Re-batching the oversized
 > confidence input so the pass *succeeds* rather than degrading is still open as
 > part of #901.
 >
@@ -2179,6 +2178,11 @@ document images appear, using the `{DOCUMENT_IMAGE}` placeholder.
 - **Without the placeholder**: no page images are attached to the prompt, which is
   sent as text only. This holds for extraction and confidence prompts alike.
 - **With the placeholder**: images are inserted exactly where `{DOCUMENT_IMAGE}` appears.
+- **With the placeholder more than once**: the prompt is refused, by extraction and
+  the confidence pass alike, and the section fails with `found N occurrences, but
+  exactly 1 is required`. Both sides of `{FEW_SHOT_EXAMPLES}` count, and so does a
+  per-class `x-aws-idp-extraction-task-prompt`. `idp-cli config-validate` reports
+  such a prompt before it is used.
 
 ```yaml
 extraction:
@@ -2551,6 +2555,43 @@ cannot carry that on its own, because it is written at `warning` severity under
 The rows that were extracted are still in the section's `result.json` and the
 section still points at it, so a partial result stays readable in the Visual
 Editor rather than being discarded with the failure.
+
+**A content-filter block fails only its own section.** When Amazon Bedrock's
+content filter withholds the extraction model's reply for a section (a
+`ValidationException` saying the output was blocked by the content filtering
+policy), extraction records an error-severity `extraction_failed` issue on that
+section, naming the block, and writes an empty result for it. Advanced mode
+regenerates a blocked reply a few times before giving up; Simple mode does not
+retry it. The section shows as **Failed** and has no extracted fields; the other
+sections keep their results and the document completes. The confidence pass
+reports the section as unscored with the same reason. Bedrock can also withhold a
+reply without an error, ending it with the stop reason `content_filtered`, or
+`guardrail_intervened` when the stack has a guardrail configured (the
+`BedrockGuardrailId` and `BedrockGuardrailVersion` stack parameters); the reply is
+then empty, cut short, or the guardrail's own message. Extraction, classification,
+the confidence pass and summarization handle that as the same block, and the issue
+names the stop reason. A guardrail can block the request before the model sees it,
+so its issue says the guardrail blocked the request or withheld the reply, and
+advises reviewing the guardrail's policies, since a different model meets the same
+guardrail. ⚠️ `guardrail_intervened` counts as a block only when the response's
+guardrail trace shows a policy that blocked: a guardrail that only masked
+sensitive information stops with the same reason, and its masked reply is used as
+the answer. In the confidence pass a withheld reply for one batch of list rows
+leaves only those rows unscored; the other batches keep their scores. The call that
+was withheld was still billed, and its tokens are counted in the document's
+metering. With human review enabled
+(`hitl.enabled: true`), the failed section holds the document for review: under
+review queues it is an **Extraction failed** review reason on that section, and in
+legacy HITL mode the section is marked pending review. The section has no fields and
+no confidence scores, so this reason is the only thing that holds it. With human
+review off the document completes; find such documents by the section's **Failed**
+status, and expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
+handle a block on their own model call the same way: see
+[Classification](./classification.md#pages-classification-could-not-classify) and
+[Summarization Configuration](./configuration.md#summarization-configuration). This applies to extraction run inside the extraction function. A block
+inside one shard of a section sharded through the Distributed Map
+(`ExtractionShardMap`) still fails the document, as any failed shard does, and
+that includes a reply withheld by stop reason.
 
 **A transient failure is not marked.** A throttle or a read timeout is retried by
 the state machine, so flagging the section would show it failed for as long as that
