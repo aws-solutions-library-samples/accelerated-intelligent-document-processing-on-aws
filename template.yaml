@@ -9878,8 +9878,11 @@ Resources:
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucket
         # Document version manifests: enumerate output object versions and
-        # write runs/<run_id>/manifest.json to the output bucket. Also delete
-        # output objects when fully deleting a REDACTED_SUPERSEDED original.
+        # write runs/<run_id>/manifest.json to the output bucket. Also purge
+        # output objects when fully deleting a REDACTED_SUPERSEDED original:
+        # delete_single_document deletes every version by VersionId, which needs
+        # s3:DeleteObjectVersion — DeleteObjects refuses each key without it in an
+        # HTTP 200 Errors array rather than raising (#1366).
         - Statement:
             - Effect: Allow
               Action:
@@ -9891,18 +9894,24 @@ Resources:
                 - s3:GetObject
                 - s3:PutObject
                 - s3:DeleteObject
+                - s3:DeleteObjectVersion
               Resource: !Sub "${OutputBucket.Arn}/*"
         # Delete the input object of a REDACTED_SUPERSEDED original (the
-        # redacted copy replaces it). Input bucket read/list/delete.
+        # redacted copy replaces it). The input bucket is versioned, so the
+        # un-redacted upload is purged by VersionId — every version and delete
+        # marker of the exact key (#2166): ListBucketVersions to enumerate them,
+        # DeleteObjectVersion to delete them.
         - Statement:
             - Effect: Allow
               Action:
                 - s3:ListBucket
+                - s3:ListBucketVersions
               Resource: !GetAtt InputBucket.Arn
             - Effect: Allow
               Action:
                 - s3:GetObject
                 - s3:DeleteObject
+                - s3:DeleteObjectVersion
               Resource: !Sub "${InputBucket.Arn}/*"
         - Statement:
             - Effect: Allow
