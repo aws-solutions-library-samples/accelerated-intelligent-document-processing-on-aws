@@ -405,6 +405,7 @@
         "scripts/discover_model_limits.py": 0.0,
         "scripts/e2e_test_headless.py": 0.0,
         "scripts/first_party_paths.py": 94.12,
+        "scripts/generate_bank_statement_review_policy.py": 98.55,
         "scripts/generate_govcloud_template.py": 0.0,
         "scripts/generate_hook_point_reachability.py": 67.15,
         "scripts/generate_multi_instance_paystub.py": 0.0,

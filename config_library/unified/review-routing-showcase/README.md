@@ -94,11 +94,13 @@ Upload each sample under the `review-routing-showcase` profile.
 | Sample | Queue | Why |
 |---|---|---|
 | `samples/lending_package.pdf` | Specialist | The package contains a bank check |
-| `samples/rule-validation/medicare_respiratory_pa_packet.pdf` | Compliance | Policy rule validation finds failed policy rules |
+| `samples/bank-statement-multipage.pdf` | Compliance | The bank statement review policy is written so that this statement fails some of its policy rules |
 | `samples/fcc-invoices-7429ba503d96718740c2f714598b40a4.pdf` | Approvals | The invoice's gross total is over 1000 |
 | A W-2 from `samples/w2/` | Default | The document is a W-2 |
 
 The lending package contains a W-2 as well. It goes to Specialist, because the routing rules are tried in order and the bank check routing rule comes first.
+
+The bank statement is checked against the policy rules of `samples/rule-validation/bank-statement-review-policy.pdf`, which apply to a document whose file name says it is a bank statement. Its first page dates the new balance before the previous balance, and its transactions are dated before the statement date by more than a year, are not in date order, and some are listed twice. The policy rules `statement_period.balance_dates_in_order`, `statement_period.transactions_within_period`, `transaction_review.transactions_in_date_order` and `transaction_review.no_duplicate_transactions` test exactly those properties.
 
 ## The scenario documents
 
@@ -138,7 +140,7 @@ Most classes are copied from other presets, unchanged except where stated:
 
 - **Invoice**, from [realkie-fcc-verified](../realkie-fcc-verified/). Its fields carry a confidence threshold of 0, so an invoice raises no confidence alert and is in review only because of its amount.
 - **Payslip, US-drivers-licenses, Bank-checks, Bank-Statement, W2, Homeowners-Insurance-Application**, from [lending-package-sample](../lending-package-sample/).
-- **PA-Administrative, PA-Medical-History, PA-Operative-Report, PA-Procedure-Log, PA-Claims-Evidence**, with the policy classes, from [rule-validation](../rule-validation/).
+- The policy classes **statement_identity, statement_period, balance_reconciliation, transaction_review**, from [rule-validation](../rule-validation/): the policy rules of the bank statement review policy. They apply to documents whose file name contains `bank statement`, with a space, a hyphen, an underscore or nothing between the two words. The class that preset validates, **Bank-Statement**, is the lending package's.
 
 The classes of the scenario documents are defined here:
 

@@ -7,13 +7,14 @@
 # feature API backed by the feature's own DynamoDB table.
 featureId: sample-health-insurance-review
 displayName: "Sample: Health Insurance Review"
-version: 0.2.3
+version: 0.2.4
 description: |
   Illustrative lightweight health insurance claims review vertical built on the IDP 
   Accelerator rule validation pipeline. Ships a prior-authorization config preset,
   a postRuleValidation pipeline hook that derives a deterministic claim status, and a 
   two-tab UI: discover validation rules from a payer policy document, and review processed 
-  claims with per-rule results. Try it with the documents in samples/rule-validation/.
+  claims with per-rule results. To try it, bring a prior authorization packet and a payer
+  policy document of your own.
 # OSS docs-site slug — the UI "Learn more" link resolves this against the
 # published docs site. Source: docs/extensions/sample-health-insurance-review.md.
 docsUrl: extensions/sample-health-insurance-review

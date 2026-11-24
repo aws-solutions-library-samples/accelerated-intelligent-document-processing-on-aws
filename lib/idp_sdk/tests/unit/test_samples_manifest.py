@@ -5,7 +5,7 @@
 
 Covers the pure (no-AWS) scanning logic:
 - top-level sample documents are indexed as "document" entries
-- known doc subdirs (w2, rule-validation, review-routing) are indexed as single
+- known doc subdirs (w2, review-routing) are indexed as single
   "batch" entries
 - unknown / code-sample subdirs are skipped
 - non-document files are skipped
@@ -107,12 +107,12 @@ def test_indexes_docs_batches_and_skips_noise(publisher_in_tmp):
 def test_empty_known_batch_dir_skipped(publisher_in_tmp):
     pub, tmp_path = publisher_in_tmp
     samples = tmp_path / "samples"
-    (samples / "rule-validation").mkdir(parents=True)
+    (samples / "w2").mkdir(parents=True)
     _touch(samples / "invoice.pdf")
 
     manifest = pub.generate_samples_manifest()
     ids = {s["id"] for s in manifest["samples"]}
-    assert ids == {"invoice"}  # empty rule-validation/ produced no entry
+    assert ids == {"invoice"}  # empty w2/ produced no entry
 
 
 def test_config_id_association(publisher_in_tmp):
@@ -204,3 +204,20 @@ def test_the_repository_ships_the_review_routing_scenarios(monkeypatch):
     _name, _description, config_id = pub._sample_label("review-routing")
     assert config_id == "review-routing-showcase"
     assert (REPO_ROOT / "config_library" / "unified" / config_id).is_dir()
+
+
+def test_the_policy_document_of_rule_validation_is_not_a_sample_to_process(
+    monkeypatch,
+):
+    """Against the real tree: samples/rule-validation holds the policy document
+    that policy rules are extracted from. Listed as a sample, it would be offered
+    as a document to process under the rule-validation configuration. The document
+    that configuration validates is the bank statement, which is listed."""
+    monkeypatch.chdir(REPO_ROOT)
+    pub = IDPPublisher(verbose=False)
+
+    assert (REPO_ROOT / "samples" / "rule-validation").is_dir()
+    assert any((REPO_ROOT / "samples" / "rule-validation").glob("*.pdf"))
+    shipped = list(pub.iter_sample_files())
+    assert not [f for f in shipped if f.startswith("rule-validation")]
+    assert "bank-statement-multipage.pdf" in shipped

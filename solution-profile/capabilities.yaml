@@ -202,7 +202,7 @@ capabilities:
       shared tail of both modes when rule_validation.enabled is true and at least one
       policy class is configured; with no policy classes it is skipped. Rules can be
       written by hand or drafted from policy documents with Policy Discovery, and the
-      rule-validation preset ships a healthcare prior-authorization example.
+      rule-validation preset ships a bank statement review example.
     evidence:
       - docs/rule-validation.md
       - docs/policy-discovery.md
@@ -404,7 +404,7 @@ capabilities:
       name is the value of the Configuration Preset stack parameter, and a preset can
       also be imported after deployment. Presets cover bank statements, lending
       packets, W-2 forms, a passport application, a healthcare multi-section package,
-      prior-authorization rule validation, OCR and classification benchmarks and a
+      rule validation of a bank statement, OCR and classification benchmarks and a
       GovCloud variant. Every preset resolves to pipeline mode; each says to set
       use_bda true for BDA mode, and there is no BDA-specific preset.
     evidence:

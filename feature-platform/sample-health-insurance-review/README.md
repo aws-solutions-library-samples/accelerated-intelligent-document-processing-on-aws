@@ -88,10 +88,10 @@ run, as the dispatcher reports it; `unplanned` when it reports none).
 
 ## Config preset
 
-`config-preset/claims-config.yaml` is a **snapshot** of
-[`config_library/unified/rule-validation/config.yaml`](../../config_library/unified/rule-validation/config.yaml)
-— the canonical, maintained copy. If you update the rule-validation preset
-there, refresh this snapshot and bump the feature version. At install the
+`config-preset/claims-config.yaml` is this feature's own configuration: the
+prior authorization document classes and the policy rules the claims are
+validated against. It is maintained here; when you change it, bump the feature
+version. At install the
 ui-deployer applies it as a **non-active** configuration profile
 (`sample-health-insurance-review` — one profile per feature, a revision per release)
 for an admin to activate.

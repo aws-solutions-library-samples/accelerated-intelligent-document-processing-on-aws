@@ -693,8 +693,8 @@ When it does not run, `policy_rule_verdict` is empty and
 
 `config_library/unified/review-routing-showcase` is a ready-made configuration
 that routes four sample documents of this repository to four queues: a lending
-package with a bank check to **Specialist**, a prior-authorization packet with
-failed policy rules to **Compliance**, an invoice over 1000 to **Approvals**,
+package with a bank check to **Specialist**, a bank statement that is meant to
+show failed policy rules to **Compliance**, an invoice over 1000 to **Approvals**,
 and a W-2 to **Default**. Each sample reaches its queue through a routing rule that
 does not read a confidence score, which comes from a model and differs between
 runs. Every routing rule of the preset carries a reason with placeholders, and one

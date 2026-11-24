@@ -1937,12 +1937,14 @@ def test_step5_rule_validation(stack_name):
     print("Step 5: Testing rule validation...")
     config_version = "rule-validation"
     config_path = "config_library/unified/rule-validation/config.yaml"
-    sample_file = "medicare_respiratory_pa_packet.pdf"
-    sample_dir = "samples/rule-validation"
+    # The bank statement the preset's policy rules are written for. Its name is
+    # what makes every policy class of the preset apply to it.
+    sample_file = "bank-statement-multipage.pdf"
+    sample_dir = "samples"
     batch_id = "test-rules"
-    verify_string = "global_periods"
+    verify_string = "statement_identity"
     result_location = "rule_validation/sections/section_1_responses.json"
-    content_path = "responses.global_periods.0.policy_type"
+    content_path = "responses.statement_identity.0.policy_type"
 
     print(f"Uploading rule validation config from: {config_path}")
     cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file(config_path)} --config-version {config_version}"

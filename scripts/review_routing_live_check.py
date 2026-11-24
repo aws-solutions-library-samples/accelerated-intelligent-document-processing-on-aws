@@ -352,8 +352,8 @@ SHOWCASE_SAMPLES = (
         LONG_ROUTE_TIMEOUT_SECONDS,
     ),
     Sample(
-        "medicare",
-        REPO / "samples" / "rule-validation" / "medicare_respiratory_pa_packet.pdf",
+        "statement",
+        REPO / "samples" / "bank-statement-multipage.pdf",
         "compliance",
         "compliance-policy-failure",
         LONG_ROUTE_TIMEOUT_SECONDS,
@@ -2230,8 +2230,8 @@ def scenarios(run: Run) -> None:
         )
         landed["invoice-completed"] = after.status == COMPLETED
 
-    def reject_medicare() -> None:
-        key = need("medicare")
+    def reject_statement() -> None:
+        key = need("statement")
         run.reject("reviewer", key)
         after = run.wait_next_run(
             key, seen[key].execution, frozenset({REJECTED}), FINALIZE_TIMEOUT_SECONDS
@@ -2440,7 +2440,7 @@ def scenarios(run: Run) -> None:
     run.step("test-studio-document-is-not-routed", test_studio)
     run.step("routing-test-names-the-rule-and-changes-nothing", routing_test)
     run.step("completed-review-starts-at-apply-review-changes", complete_invoice)
-    run.step("rejected-review-schedules-no-task", reject_medicare)
+    run.step("rejected-review-schedules-no-task", reject_statement)
     run.step("send-back-starts-at-classification", send_back_w2)
     run.step("reprocess-from-summarization-skips-to-routing", reprocess_invoice)
     run.step("author-cannot-change-routing-rules", author_saves)

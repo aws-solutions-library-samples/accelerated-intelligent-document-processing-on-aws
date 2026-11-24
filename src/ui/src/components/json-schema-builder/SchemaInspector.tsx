@@ -595,14 +595,14 @@ const SchemaInspector = ({
                 label="Document Name Regex"
                 description={
                   isRuleSchema
-                    ? 'Pattern to match document ID/name. When matched, instantly classifies all pages as this type policy (single-class configs only). Use case-insensitive patterns like (?i).*(medicare|global).*'
+                    ? 'Pattern to match document ID/name. When matched, instantly classifies all pages as this type policy (single-class configs only). Use case-insensitive patterns like (?i).*(bank[_ -]?statement).*'
                     : `Pattern to match ${typeLabel} ID/name. When matched, instantly classifies all pages as this type (single-class configs only). Use case-insensitive patterns like (?i).*(invoice|bill).*`
                 }
               >
                 <Input
                   value={(selectedClass[X_AWS_IDP_DOCUMENT_NAME_REGEX] as string) || ''}
                   onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_DOCUMENT_NAME_REGEX]: detail.value || undefined })}
-                  placeholder={isRuleSchema ? 'e.g., (?i).*(medicare|global).*' : 'e.g., (?i).*(invoice|bill).*'}
+                  placeholder={isRuleSchema ? 'e.g., (?i).*(bank[_ -]?statement).*' : 'e.g., (?i).*(invoice|bill).*'}
                 />
               </FormField>
 
@@ -610,14 +610,14 @@ const SchemaInspector = ({
                 label="Page Content Regex"
                 description={
                   isRuleSchema
-                    ? 'Pattern to match page text content. When matched, classifies the document as this policy. Use case-insensitive patterns like (?i)(medicare\\s+number|amount\\s+due)'
+                    ? 'Pattern to match page text content. When matched, classifies the document as this policy. Use case-insensitive patterns like (?i)(statement\\s+period|account\\s+summary)'
                     : 'Pattern to match page text content. When matched during page-level classification, classifies the page as this type. Use case-insensitive patterns like (?i)(invoice\\s+number|amount\\s+due)'
                 }
               >
                 <Input
                   value={(selectedClass[X_AWS_IDP_PAGE_CONTENT_REGEX] as string) || ''}
                   onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_PAGE_CONTENT_REGEX]: detail.value || undefined })}
-                  placeholder={isRuleSchema ? 'e.g., (?i)(medicare\\s+number)' : 'e.g., (?i)(invoice\\s+number|bill\\s+to)'}
+                  placeholder={isRuleSchema ? 'e.g., (?i)(statement\\s+period)' : 'e.g., (?i)(invoice\\s+number|bill\\s+to)'}
                 />
               </FormField>
 

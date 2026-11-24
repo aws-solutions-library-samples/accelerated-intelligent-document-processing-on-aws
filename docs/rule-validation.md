@@ -13,12 +13,12 @@ Rule Validation automatically checks if your documents meet specific business ru
 
 **Common Uses:**
 - Healthcare: Checking prior authorizations, validating medical coding rules
-- Financial Services: Verifying loan applications, checking compliance
+- Financial Services: Reviewing bank statements, verifying loan applications, checking compliance
 - Legal: Reviewing contract clauses, ensuring regulatory compliance
 - Insurance: Validating claims, checking policy compliance
 - Manufacturing: Quality control checks, specification compliance
 
-The healthcare examples we provide show what's possible, but you can customize this for any industry.
+The bank statement example we provide shows what's possible, but you can customize this for any industry.
 
 > **See it as a packaged vertical:** the
 > [Health Insurance Review sample feature](extensions/sample-health-insurance-review.md) wraps this
@@ -97,15 +97,15 @@ Rule validation works for any industry using this two-step process:
    - System automatically processes and validates against your rules
    - View results showing Pass/Fail for each rule with detailed reasoning
 
-### Quick Start with Healthcare Example
+### Quick Start with the Bank Statement Example
 
-Want to see it in action first? We provide a complete healthcare example with sample documents and pre-configured rules. See the [Healthcare Example](#healthcare-prior-authorization-example) section below for step-by-step instructions using:
-- **Sample prior authorization document**: `samples/rule-validation/respiratory_pa_packet.pdf`
-  - Synthetic multi-page respiratory therapy prior authorization request
-  - Contains multiple sections: patient information, clinical information, evidence documents, operative logs, and claims data
-- **Sample NCCI policy manual**: `samples/rule-validation/NCCI Medicare Policy Manual.pdf`
-  - Source: [CMS NCCI Policy Manual Chapter 5 (2024)](https://www.cms.gov/files/document/medicare-ncci-policy-manual-2024-chapter-5.pdf)
-  - Contains medical coding rules and guidelines
+Want to see it in action first? We provide a complete bank statement example with sample documents and pre-configured rules. See the [Bank Statement Example](#bank-statement-review-example) section below for step-by-step instructions using:
+- **Sample bank statement**: `samples/bank-statement-multipage.pdf`
+  - Synthetic multi-page consolidated bank statement
+  - Contains multiple parts: a summary of accounts, a checking account summary, and a list of transactions
+- **Sample review policy**: `samples/rule-validation/bank-statement-review-policy.pdf`
+  - "Bank Statement Review Policy" of the fictitious AnyCompany Financial Services, written by `scripts/generate_bank_statement_review_policy.py`
+  - Contains the policy rules a bank statement must meet before it is accepted
 - Pre-configured Policy Discovery and rule validation configs
 
 ## Key Features
@@ -329,19 +329,60 @@ rule_validation:
 
 ### Policy Classes
 
-Define policy types and specific rules to evaluate:
+Define policy types and specific rules to evaluate. These policy classes are from the **rule-validation** preset:
 
 ```yaml
 policy_classes:
-  - policy_type: "global_periods"
-    questions:
-      - "If a procedure has a global period of 000 or 010 days, it is defined as a minor surgical procedure..."
-      - "If a procedure has a global period of 090 days, it is defined as a major surgical procedure..."
-  
-  - policy_type: "same_day_service_rules"
-    questions:
-      - "Since National Correct Coding Initiative (NCCI) Procedure-to-Procedure (PTP) edits are applied..."
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    x-aws-idp-policy-type: statement_period
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
+    type: object
+    rule_properties:
+      statement_date_shown:
+        type: string
+        description: >-
+          The statement must show the date it was issued or the period
+          it covers. The rule fails when the statement prints neither.
+      balance_dates_in_order:
+        type: string
+        description: >-
+          The date printed for the new balance of an account must be
+          the same as or later than the date printed for its previous
+          balance. The rule fails when the new balance is dated before
+          the previous balance.
+      transactions_within_period:
+        type: string
+        description: >-
+          Every transaction listed on the statement must be dated
+          within the period the statement covers and no later than the
+          statement date. The rule fails when a transaction is dated
+          outside that period.
+    $id: statement_period
+
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    x-aws-idp-policy-type: balance_reconciliation
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
+    type: object
+    rule_properties:
+      new_balance_reconciles:
+        type: string
+        description: >-
+          For each account, the new balance must equal the previous
+          balance, minus checks and other withdrawals, plus deposits
+          and credits, using the amounts printed in the account
+          summary. The rule fails when the printed amounts do not add
+          up to the printed new balance.
+      summary_total_matches_accounts:
+        type: string
+        description: >-
+          The total printed for a group of accounts in the summary of
+          accounts must equal the sum of the balances of the accounts
+          in that group. The rule fails when the total differs from
+          that sum.
+    $id: balance_reconciliation
 ```
+
+Each key of `rule_properties` is one policy rule, and `x-aws-idp-document-name-regex` is the pattern that says which documents the policy class applies to (see [Required: Add a Document Matching Regex](./policy-discovery.md#required-add-a-document-matching-regex)).
 
 ### Document Classes
 
@@ -349,20 +390,27 @@ Specify which document types should be validated:
 
 ```yaml
 classes:
-  - name: "PA-Administrative"
-    description: "Prior Authorization administrative information"
-    attributes:
-      - name: "patient_name"
-        description: "Full name of the patient"
-      - name: "insurance_policy_number"
-        description: "Insurance policy or member ID"
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Bank-Statement
+    type: object
+    x-aws-idp-document-type: Bank-Statement
+    description: >-
+      A periodic financial document issued by banks detailing account activity,
+      balances, and transactions over a specific time period.
+    properties:
+      bank_name:
+        type: string
+      account_holder_name:
+        type: string
+      account_number:
+        type: string
 ```
 
 ## Customizing Recommendation Options
 
 The default recommendation options are Pass/Fail/Information Not Found, but you can customize these for your specific use case:
 
-### Healthcare Compliance Example
+### Compliance Review Example
 
 ```yaml
 rule_validation:
@@ -412,26 +460,32 @@ The statistics in the final summary will automatically use your custom options:
 
 1. **Be Specific**: Include clear criteria and conditions
    ```yaml
-   questions:
-     - "If a procedure has a global period of 090 days AND an E&M service is performed on the same date..."
+   rule_properties:
+     balance_dates_in_order:
+       type: string
+       description: "The date printed for the new balance of an account must be the same as or later than the date printed for its previous balance..."
    ```
 
 2. **Provide Context**: Include relevant definitions and examples
    ```yaml
-   questions:
-     - "CPT code 31500 describes an emergency endotracheal intubation. For example, if intubation is performed in a rapidly deteriorating patient..."
+   rule_properties:
+     large_withdrawals_identified:
+       type: string
+       description: "Every withdrawal of 10,000.00 or more must have a description that identifies the payee. The rule fails when such a withdrawal has no description, or a description that names no payee."
    ```
 
 3. **Structure Complex Rules**: Use JSON format for rules with multiple components
    ```yaml
-   questions:
-     - |
-       {
-         "cpt_codes_affected": ["31500"],
-         "rule_text": "If laryngoscopy is required...",
-         "bundled_services": ["laryngoscopy for elective or emergency placement"],
-         "separately_reportable_conditions": ["intubation in rapidly deteriorating patient"]
-       }
+   rule_properties:
+     new_balance_reconciles:
+       type: string
+       description: |
+         {
+           "rule_text": "For each account, the new balance must equal the previous balance, minus checks and other withdrawals, plus deposits and credits...",
+           "amounts_subtracted": ["checks", "other withdrawals"],
+           "amounts_added": ["deposits", "credits"],
+           "fails_when": ["the printed amounts do not add up to the printed new balance"]
+         }
    ```
 
 ### Organizing Policy Types
@@ -440,15 +494,27 @@ Group related rules into logical policy types:
 
 ```yaml
 policy_classes:
-  - policy_type: "eligibility_rules"
-    questions:
-      - "Patient must be enrolled in insurance plan..."
-      - "Coverage must be active on date of service..."
-  
-  - policy_type: "medical_necessity"
-    questions:
-      - "Procedure must be medically necessary..."
-      - "Documentation must support diagnosis..."
+  - x-aws-idp-policy-type: statement_identity
+    type: object
+    rule_properties:
+      institution_named:
+        type: string
+        description: "The statement must name the financial institution that issued it..."
+      account_holder_named:
+        type: string
+        description: "The statement must show the full name and the mailing address of the account holder..."
+    $id: statement_identity
+
+  - x-aws-idp-policy-type: transaction_review
+    type: object
+    rule_properties:
+      transactions_in_date_order:
+        type: string
+        description: "Transactions must be listed in date order, oldest first, within each account..."
+      no_duplicate_transactions:
+        type: string
+        description: "A transaction must be listed once..."
+    $id: transaction_review
 ```
 
 ## Output Formats
@@ -463,18 +529,18 @@ Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidate
   "overall_status": "COMPLETE",
   "total_policy_types": 4,
   "overall_statistics": {
-    "total_rules": 15,
+    "total_rules": 11,
     "recommendation_counts": {
-      "Pass": 12,
+      "Pass": 8,
       "Fail": 2,
       "Information Not Found": 1
     }
   },
   "rule_summary": {
-    "global_periods": {
+    "statement_identity": {
       "status": "COMPLETE",
-      "total_rules": 2,
-      "Pass": 2,
+      "total_rules": 3,
+      "Pass": 3,
       "Fail": 0
     }
   },
@@ -486,16 +552,16 @@ Each policy type's rules are under `rule_details`:
 
 ```json
 "rule_details": {
-  "global_periods": {
-    "verdict_counts": {"pass": 1, "fail": 1, "not_found": 0, "unknown": 0},
+  "statement_period": {
+    "verdict_counts": {"pass": 2, "fail": 1, "not_found": 0, "unknown": 0},
     "rules": [
       {
-        "rule_id": "global_periods.same_day_em",
+        "rule_id": "statement_period.balance_dates_in_order",
         "z3_rule_id": null,
-        "rule": "An E/M service on the day of a procedure needs modifier 25",
+        "rule": "The date printed for the new balance of an account must be the same as or later than the date printed for its previous balance. The rule fails when the new balance is dated before the previous balance.",
         "recommendation": "Fail",
         "verdict": "fail",
-        "supporting_pages": ["3"],
+        "supporting_pages": ["1"],
         "reasoning": "…"
       }
     ]
@@ -548,21 +614,21 @@ Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidate
 
 ## Overall Statistics
 
-**Total Rules:** 15
-**Pass:** 12
+**Total Rules:** 11
+**Pass:** 8
 **Fail:** 2
 **Information Not Found:** 1
 
-## Rule Type: global_periods
+## Rule Type: statement_identity
 
-**Total Rules:** 2
-**Pass:** 2
+**Total Rules:** 3
+**Pass:** 3
 
 ### Rules
 
 | Rule | Recommendation | Reasoning | Supporting Pages |
 |------|----------------|-----------|------------------|
-| Minor surgery rule | Pass | Evidence found on page 1... | 1, 3 |
+| The statement must name the financial institution that issued it... | Pass | Evidence found on page 1... | 1, 3 |
 ```
 
 ## Performance Optimization
@@ -582,7 +648,7 @@ Place static content before the `<<CACHEPOINT>>` marker and dynamic content afte
 
 ```yaml
 task_prompt: |
-  You are an insurance evaluator...
+  You are a bank statement reviewer...
   
   <<CACHEPOINT>>
   
@@ -787,35 +853,46 @@ For detailed API documentation, see the [Rule Validation Module README](../lib/i
 
 ## Examples
 
-### Healthcare Prior Authorization Example
+### Bank Statement Review Example
 
-We provide a complete healthcare example demonstrating prior authorization validation against NCCI medical coding rules.
+We provide a complete bank statement example demonstrating the validation of a bank statement against the policy rules of a review policy.
 
 **Sample Documents:**
-- **Prior Authorization Document**: `samples/rule-validation/respiratory_pa_packet.pdf`
-  - Synthetic multi-page respiratory therapy prior authorization request
-  - Contains multiple sections:
-    - Patient Information (demographics, insurance details)
-    - Clinical Information (diagnoses, medical history)
-    - Evidence Documents (supporting clinical documentation)
-    - Operative Logs (procedure details, CPT codes)
-    - Claims Data (billing information, service dates)
-  
-- **NCCI Policy Manual**: `samples/rule-validation/NCCI Medicare Policy Manual.pdf`
-  - National Correct Coding Initiative policy reference
-  - Source: [CMS NCCI Policy Manual Chapter 5 (2024)](https://www.cms.gov/files/document/medicare-ncci-policy-manual-2024-chapter-5.pdf)
-  - Contains medical coding rules, bundling guidelines, and compliance requirements
+- **Bank Statement**: `samples/bank-statement-multipage.pdf`
+  - Synthetic multi-page consolidated statement of "Example Inc. Credit Union", with the statement date 04/04/2022
+  - Contains multiple parts:
+    - Summary of Accounts (a checking account and a savings account, with account numbers and balances)
+    - Checking Account Summary (previous balance, checks, withdrawals, deposits, new balance)
+    - Transactions (date, description, amount)
+
+- **Review Policy**: `samples/rule-validation/bank-statement-review-policy.pdf`
+  - "Bank Statement Review Policy" of the fictitious AnyCompany Financial Services
+  - Written by `scripts/generate_bank_statement_review_policy.py`
+  - Contains the policy rules a bank statement must meet before it is accepted
 
 **Configuration Files:**
 - **Step 1 - Policy Discovery**: extracted rules are written into `policy_classes` on the active configuration profile (see [docs/policy-discovery.md](./policy-discovery.md))
 - **Step 2 - Rule Validation**: `config_library/unified/rule-validation/config.yaml`
 
 This example includes:
-- NCCI coding rules
-- Global period validation
-- Same-day service rules
-- Bundling and component service rules
-- Prior authorization document classes
+- Statement identity policy rules (`statement_identity`)
+- Statement period policy rules (`statement_period`)
+- Balance reconciliation policy rules (`balance_reconciliation`)
+- Transaction review policy rules (`transaction_review`)
+- The `Bank-Statement` document class
+
+Every policy class of the preset applies to a document whose file name says it is a bank statement (`x-aws-idp-document-name-regex`), so keep the sample's file name when you upload it.
+
+The statement is meant to show failed policy rules beside passed ones:
+
+| Policy rule | What the statement prints | What the policy rule tests |
+|---|---|---|
+| `statement_period.balance_dates_in_order` | The checking account summary gives a previous balance "as of 04/04/2022" and a new balance "as of 06/17/2020" | The new balance is dated the same as or later than the previous balance |
+| `statement_period.transactions_within_period` | The statement date is 04/04/2022, and the transactions are dated throughout 2020 | Every transaction is dated within the period the statement covers and no later than the statement date |
+| `transaction_review.transactions_in_date_order` | Pages 2 to 5 list the transactions out of date order | Transactions are listed oldest first |
+| `transaction_review.no_duplicate_transactions` | Pages 4 and 5 repeat transactions that pages 2 and 3 list | A transaction is listed once |
+
+A verdict comes from a model and can differ between runs, so the table says what each policy rule reads, and not the verdict it gets.
 
 **Note**: This is a reference implementation. You can replace these rules with your own domain-specific requirements.
 

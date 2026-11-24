@@ -1795,8 +1795,10 @@ STDERR:
     # Document extensions that make sense as Discovery input.
     _SAMPLE_DOC_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp")
     # Subdirectories of samples/ that hold batches of documents (indexed as a
-    # single "batch" entry). Other subdirs (code samples, hooks) are skipped.
-    _SAMPLE_DOC_SUBDIRS = ("w2", "rule-validation", "review-routing")
+    # single "batch" entry). Other subdirs are skipped: code samples, hooks, and
+    # samples/rule-validation, whose PDF is a policy document to extract policy
+    # rules from and not a document to process.
+    _SAMPLE_DOC_SUBDIRS = ("w2", "review-routing")
     # Directory holding the unified-pattern config-library presets. Used to
     # resolve a sample's associated config by folder-name convention when no
     # explicit configId override is provided.
@@ -1860,11 +1862,6 @@ STDERR:
             "W-2 Forms",
             "Batch of W-2 tax form documents.",
             "fake-w2",
-        ),
-        "rule-validation": (
-            "Rule Validation Samples",
-            "Documents for the rule-validation pipeline.",
-            "rule-validation",
         ),
         "review-routing": (
             "Review routing scenarios",

@@ -511,13 +511,13 @@ class FakeStack:
                     "pages": [1],
                 }
             ]
-        if key.endswith(live.SAMPLES_BY_NAME["medicare"].path.name):
+        if key.endswith(live.SAMPLES_BY_NAME["statement"].path.name):
             return [
                 {
-                    "ruleId": "prior_authorization.documentation",
-                    "policy": "prior_authorization",
-                    "name": "documentation",
-                    "reason": "No physician signature on the order.",
+                    "ruleId": "statement_period.transactions_within_period",
+                    "policy": "statement_period",
+                    "name": "transactions_within_period",
+                    "reason": "Transactions are dated outside the statement period.",
                     "pages": [2, 3],
                 }
             ]
@@ -1505,7 +1505,7 @@ SCENARIO_ROUNDS_CHECKS = [
 #: Every check ``seed-demo`` reports: where each document it leaves is waiting.
 SEED_DEMO_CHECKS = [
     "demo-lending-waits-in-specialist",
-    "demo-medicare-waits-in-compliance",
+    "demo-statement-waits-in-compliance",
     "demo-invoice-waits-in-approvals",
     "demo-w2-waits-in-default",
     "demo-scenario-one-waits-in-approvals",
@@ -1535,7 +1535,7 @@ def test_the_whole_sequence_passes_on_a_stack_that_behaves(state_file):
     assert failed(scenarios) == []
     assert set(outcomes(scenarios)) >= {
         "lending-lands-in-specialist",
-        "medicare-lands-in-compliance",
+        "statement-lands-in-compliance",
         "invoice-lands-in-approvals",
         "w2-lands-in-default",
         "invoice-has-no-confidence-reason",

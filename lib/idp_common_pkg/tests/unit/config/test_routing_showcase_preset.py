@@ -83,11 +83,15 @@ THRESHOLD = "x-aws-idp-confidence-threshold"
 #: The registered name a reviewer enters for the vendor printed as "AnyCo Office".
 REGISTERED_VENDOR = "AnyCompany Office Supplies"
 
+#: The class of the bank statement sample, which the policy of the
+#: ``rule-validation`` preset is written for.
+STATEMENT_CLASS = "Bank-Statement"
+
 #: The samples the showcase routing rules are written for. One more is any W-2 of
 #: ``samples/w2``.
 SHOWCASE_SAMPLES = (
     "samples/lending_package.pdf",
-    "samples/rule-validation/medicare_respiratory_pa_packet.pdf",
+    "samples/bank-statement-multipage.pdf",
     "samples/fcc-invoices-7429ba503d96718740c2f714598b40a4.pdf",
 )
 
@@ -380,17 +384,26 @@ class TestItsReasons:
 
 
 class TestItsClasses:
-    def test_they_are_the_classes_of_three_presets_and_the_scenario_classes(self, raw):
+    def test_they_are_the_classes_of_two_presets_and_the_scenario_classes(self, raw):
         lending = _source("lending-package-sample")
-        rules = _source("rule-validation")
 
         names = [schema["x-aws-idp-document-type"] for schema in raw["classes"]]
         assert names[0] == "Invoice"
         assert names[-2:] == [SCENARIO_CLASS, MISSING_CLASS]
-        assert raw["classes"][1:-2] == [*lending["classes"], *rules["classes"]]
+        assert raw["classes"][1:-2] == lending["classes"]
+        assert len(names) == len(set(names))
+
+    def test_the_policy_classes_are_the_bank_statement_policy_and_the_scenario_one(
+        self, raw
+    ):
+        """The policy of the rule-validation preset, unchanged, then the scenario
+        policy. The class that preset validates is one this preset already has
+        from the lending package, so the policy rules read a class it defines."""
+        rules = _source("rule-validation")
+
         assert raw["policy_classes"][:-1] == rules["policy_classes"]
         assert raw["policy_classes"][-1] == _scenario_policy(raw)
-        assert len(names) == len(set(names))
+        assert rules["classes"] == [_class(raw, STATEMENT_CLASS)]
 
     def test_the_invoice_is_the_fcc_invoice_with_no_confidence_alert(self, raw):
         """Its fields carry a threshold of 0, so an invoice is in review only
@@ -763,8 +776,8 @@ class TestTheScenarioRounds:
                 "specialist",
             ),
             (
-                [("PA-Administrative", {})],
-                {"bundling.bundling_hcpcs": "fail"},
+                [(STATEMENT_CLASS, {})],
+                {"statement_period.transactions_within_period": "fail"},
                 "compliance-policy-failure",
                 "compliance",
             ),
@@ -776,7 +789,7 @@ class TestTheScenarioRounds:
             ),
             ([("W2", {})], {}, "default-w2-forms", "default"),
         ],
-        ids=["lending-package", "prior-authorization", "invoice", "w2"],
+        ids=["lending-package", "bank-statement", "invoice", "w2"],
     )
     def test_no_scenario_routing_rule_takes_a_showcase_sample(
         self, config, sections, verdicts, rule_id, queue

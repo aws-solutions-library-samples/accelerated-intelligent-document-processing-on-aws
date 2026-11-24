@@ -112,8 +112,9 @@ def test_a_percent_in_a_substituted_value_is_not_rescanned():
 
     A value is inserted by the ``%`` operator, which does not re-read what it
     wrote, so a ``%`` arriving from a class description or an OCR page lands
-    verbatim. ``config_library/unified/rule-validation/config.yaml`` ships one
-    ("Look for values like 'SpO2 88%'"), which reaches a prompt by this route.
+    verbatim. The configuration preset of the Health Insurance Review sample
+    feature ships one ("Look for values like 'SpO2 88%'"), which reaches a prompt
+    by this route.
     """
     rendered = CLIENT.format_prompt(
         "desc: {DESC}", {"DESC": "SpO2 88% and 90%% too"}, required_placeholders=[]

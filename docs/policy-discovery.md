@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 # Policy Discovery Module
 
-The Policy Discovery module extracts **business rules** from policy documents (Medicare/Medicaid policy manuals, prior authorization guidelines, compliance manuals, etc.) and saves them into the selected configuration profile as `policy_classes`. Those policy classes are then consumed by the [Rule Validation](rule-validation.md) stage of the unified processing pipeline to evaluate pass/fail for each incoming document against the extracted rules.
+The Policy Discovery module extracts **business rules** from policy documents (a bank's statement review policy, underwriting guidelines, compliance manuals, etc.) and saves them into the selected configuration profile as `policy_classes`. Those policy classes are then consumed by the [Rule Validation](rule-validation.md) stage of the unified processing pipeline to evaluate pass/fail for each incoming document against the extracted rules.
 
 Policy Discovery is the **rules counterpart** of the classes-based [Discovery Module](discovery.md). Where Discovery tells the system *what fields a document type has*, Policy Discovery tells the system *what rules a document must satisfy to be compliant*.
 
@@ -47,11 +47,13 @@ Policy Discovery is the **rules counterpart** of the classes-based [Discovery Mo
 
 ### What is Policy Discovery
 
-Policy Discovery analyzes a policy document (e.g., the NCCI Medicare Policy Manual, a payer's prior-authorization guideline, an internal compliance manual) and produces a flat list of **individual rules**, each phrased as a yes/no validation question with:
+Policy Discovery analyzes a policy document (e.g., a bank statement review policy, a lender's underwriting guideline, an internal compliance manual) and produces a flat list of **individual rules**, each phrased as a yes/no validation question with:
 
-- A short, descriptive **snake_case rule name** (e.g., `modifier_59_distinct_sites`, `prior_auth_required_for_imaging`)
-- A **description** written as a yes/no question the validator can answer for each incoming document (e.g., *"Is modifier 59 appended only when reporting a service distinct from other services on the same day?"*)
+- A short, descriptive **snake_case rule name** (e.g., `balance_dates_in_order`, `large_withdrawals_identified`)
+- A **description** written as a yes/no question the validator can answer for each incoming document (e.g., *"Is the date printed for the new balance of an account the same as or later than the date printed for its previous balance?"*)
 - The **page number or section** in the source policy where the rule was found (for auditability)
+
+The examples on this page are drawn from the sample policy document of this repository, `samples/rule-validation/bank-statement-review-policy.pdf`: the "Bank Statement Review Policy" of the fictitious AnyCompany Financial Services.
 
 All rules for a policy document are grouped into a single **policy class** — a JSON-Schema-shaped object — and appended to `Config#<version>.policy_classes` in the Configuration DynamoDB table. From there, the [Rule Validation](rule-validation.md) stage of the pipeline uses them to evaluate incoming documents.
 
@@ -60,7 +62,7 @@ All rules for a policy document are grouped into a single **policy class** — a
 - **🤖 Automated Rule Extraction**: Parse a policy PDF into a structured list of rules using Bedrock LLMs
 - **🔄 Traditional & Agentic Modes**: Single-shot LLM call or multi-turn Strands agent with reviewer feedback loop
 - **📚 Append-Only Persistence**: Re-uploading or uploading a second policy document appends a new policy class — earlier policies are never overwritten
-- **🔖 Unique Class Naming**: Class names are derived from the source filename with a hex suffix (e.g., `NCCI_Medicare_Policy_839f3946`) so multiple uploads remain distinguishable
+- **🔖 Unique Class Naming**: Class names are derived from the source filename with a hex suffix (e.g., `bank_statement_revie_839f3946`) so multiple uploads remain distinguishable
 - **🗂 Policy Groups**: Uploads that name the same optional **policy group** — the chapters of one manual, say — add their rules to **one** policy class, so one regex matches the whole policy. A later upload can replace the group's rules (an amended manual) or supersede rules you choose (a rider). See [Policy Groups](#policy-groups) and [Superseding rules in a group](#superseding-rules-in-a-group)
 - **🏷 Discriminated Jobs**: Policy discovery jobs are tagged with `jobType: 'rules'` so the UI can surface them distinctly from classes discovery jobs
 - **🔗 Deep-Link to Configuration**: Finishing a job renders a "View in Configuration" link that navigates to the Policy Schema tab and auto-selects the newly extracted class
@@ -68,15 +70,15 @@ All rules for a policy document are grouped into a single **policy class** — a
 ### Use Cases
 
 **Regulatory Compliance Onboarding:**
-- Drop a payer's policy manual in; get the validation ruleset without hand-authoring each rule
-- Extract NCCI Medicare rules from the published manual
+- Drop a lender's policy manual in; get the validation ruleset without hand-authoring each rule
+- Extract the policy rules of the sample bank statement review policy
 
 **Internal Policy Automation:**
 - Convert an internal compliance handbook into machine-checkable rules
 - Keep validation logic in sync with the authoritative policy document
 
 **Cross-Policy Coverage:**
-- Upload multiple policy manuals covering different procedures or payers; each becomes its own policy class, composable at validation time
+- Upload multiple policy manuals covering different document types or products; each becomes its own policy class, composable at validation time
 
 **Rule Authoring Acceleration:**
 - Use extracted rules as a starting point; manually refine wording or thresholds before production use
@@ -316,13 +318,13 @@ The full default task prompt also defines the JSON output format the LLM must re
 
 A policy too large for one extraction has to be uploaded in parts, usually by chapter. Without a group each part becomes its own policy class, and each class then needs the same document-matching regex. A **policy group** is a name you give to the upload that says "these uploads are one policy":
 
-- The **first** upload naming a group creates one policy class for it. The class name is derived from the group name rather than the filename, with characters other than letters and digits replaced by `_` (`NCCI Policy Manual` → `NCCI_Policy_Manual`), and the group is stored on the class as `x-aws-idp-policy-group`.
-- Every **later** upload naming the same group adds its rules to that class. Group names are compared ignoring case and spacing, so `ncci  policy manual` is the same group; the class keeps the first upload's spelling.
+- The **first** upload naming a group creates one policy class for it. The class name is derived from the group name rather than the filename, with characters other than letters and digits replaced by `_` (`Bank Statement Review Policy` → `Bank_Statement_Review_Policy`), and the group is stored on the class as `x-aws-idp-policy-group`.
+- Every **later** upload naming the same group adds its rules to that class. Group names are compared ignoring case and spacing, so `bank  statement review policy` is the same group; the class keeps the first upload's spelling.
 - Everything else on the class is left as it was: its name, its description, and any Document Name Regex or Page Content Regex you have added. **One regex configured on the group's class covers every upload in the group.**
 - All rule categories the model returns for a grouped upload go into the group's one class.
 - An upload with no group behaves exactly as before: it creates its own class, named from the filename with a random suffix.
 
-**By default, re-uploading into a group appends.** With **Add to group** (the default, and what the API does when `policyGroupMode` is omitted) a later upload adds rules and does not supersede, merge or delete any rule already in the group. If an uploaded rule has a name the class already holds, it is added beside the earlier one under a suffixed name (`limit_on_units` → `limit_on_units_2`), and the job's status message lists every such rename. Both copies are then evaluated on every document. So re-uploading the same chapter doubles its rules, and an amendment uploaded with Add restates a rule as a second rule rather than replacing the first. To have the later upload win, upload it with one of the two superseding choices below.
+**By default, re-uploading into a group appends.** With **Add to group** (the default, and what the API does when `policyGroupMode` is omitted) a later upload adds rules and does not supersede, merge or delete any rule already in the group. If an uploaded rule has a name the class already holds, it is added beside the earlier one under a suffixed name (`large_withdrawals_identified` → `large_withdrawals_identified_2`), and the job's status message lists every such rename. Both copies are then evaluated on every document. So re-uploading the same chapter doubles its rules, and an amendment uploaded with Add restates a rule as a second rule rather than replacing the first. To have the later upload win, upload it with one of the two superseding choices below.
 
 Group names are 1 to 64 characters, start with a letter or digit, and contain only letters, digits, spaces, underscores, hyphens and dots. A name outside that is refused when you submit the upload, and the API refuses a `policyGroup` on a classes discovery.
 
@@ -342,7 +344,7 @@ When you name a group the selected profile already holds, the form reads the gro
 
 Both choices need the group to exist, and a superseded rule name must be one the group holds now, matched exactly (case included). The API refuses anything else with a 400 that names the missing group or rules, before the document is uploaded. The discovery job checks again before it calls the model, and once more when it saves, under the same lease that serialises saves, because the group can change in between. If a chosen rule or the group is gone by then, the job fails and saves nothing, rather than reporting a supersession that removed nothing. A replace or supersede whose upload produced no rules also fails without changing the group, because an empty extraction is far likelier to be a failure than an intended repeal. A job refused this way is **final**: it is marked failed and not retried, so it cannot apply itself later after the group has changed. Run the upload again if you still want it. Other failures, such as a throttled model call, are retried as before, and a retried job whose rules were already saved saves nothing a second time.
 
-A supersession names rules, not the upload that supplied them. If one rider supersedes `limit` and restates it, a second rider that also chooses `limit` removes the first rider's `limit`, and its status message says so by naming the first rider's document.
+A supersession names rules, not the upload that supplied them. If one rider supersedes `large_withdrawals_identified` and restates it, a second rider that also chooses `large_withdrawals_identified` removes the first rider's `large_withdrawals_identified`, and its status message says so by naming the first rider's document.
 
 Superseded rules are removed from the profile's active rules, so rule validation stops evaluating them. Every save cuts a profile revision, and the revision before the save still holds them, so a mistaken replace can be undone by restoring that revision from the profile's [revision history](configuration-profiles.md). That holds only while the revision is retained: each upload and each Policy Schema save cuts one, older unprotected revisions are pruned, and revision bodies expire (see [Retention](configuration-profiles.md#retention)). Label the revision before a large replace if you may want it back later. Revisions cut by a discovery job are recorded as saved by `system`, so the upload record below, not the revision list, is where to see which upload made the change.
 
@@ -389,7 +391,7 @@ from idp_common.discovery.rules_discovery import RulesDiscovery
 
 discovery = RulesDiscovery(
     input_bucket="my-discovery-bucket",
-    input_prefix="policies/ncci-medicare-manual.pdf",
+    input_prefix="policies/bank-statement-review-policy.pdf",
     config=my_rule_discovery_config,
     version="rule-validation",  # configuration profile to save into
     region="us-east-1",
@@ -398,37 +400,37 @@ discovery = RulesDiscovery(
 # Extract and persist rules into Config#rule-validation.policy_classes
 result = discovery.discovery_rules_from_document(
     input_bucket="my-discovery-bucket",
-    input_prefix="policies/ncci-medicare-manual.pdf",
+    input_prefix="policies/bank-statement-review-policy.pdf",
 )
 
 # Or add them to a policy group, creating its one class on the first upload
 result = discovery.discovery_rules_from_document(
     input_bucket="my-discovery-bucket",
-    input_prefix="policies/ncci-medicare-manual-ch2.pdf",
-    policy_group="NCCI Medicare Manual",
+    input_prefix="policies/bank-statement-review-policy-ch2.pdf",
+    policy_group="Bank Statement Review Policy",
 )
 
 # Replace the group's rules with an amended manual's
 result = discovery.discovery_rules_from_document(
     input_bucket="my-discovery-bucket",
-    input_prefix="policies/ncci-medicare-manual-2027.pdf",
-    policy_group="NCCI Medicare Manual",
+    input_prefix="policies/bank-statement-review-policy-2027.pdf",
+    policy_group="Bank Statement Review Policy",
     policy_group_mode="replace",
 )
 
 # Or supersede named rules with a rider's
 result = discovery.discovery_rules_from_document(
     input_bucket="my-discovery-bucket",
-    input_prefix="policies/ncci-rider-3.pdf",
-    policy_group="NCCI Medicare Manual",
+    input_prefix="policies/bank-statement-review-rider-3.pdf",
+    policy_group="Bank Statement Review Policy",
     policy_group_mode="supersede",
-    superseded_rules=["limit_on_units"],
+    superseded_rules=["large_withdrawals_identified"],
 )
 print(result["groupChange"])  # {"mode": ..., "rules": [...], "superseded": [...]}
 
 # Or extract from a local file without persisting
 result = discovery.discovery_rules_from_document_local(
-    file_path="/tmp/ncci-medicare-manual.pdf",
+    file_path="samples/rule-validation/bank-statement-review-policy.pdf",
 )
 ```
 
@@ -439,20 +441,20 @@ A rule class appended to `policy_classes` has the following JSON-Schema shape:
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "NCCI_Medicare_Policy_839f3946",
+  "$id": "bank_statement_revie_839f3946",
   "type": "object",
-  "x-aws-idp-policy-type": "NCCI_Medicare_Policy_839f3946",
+  "x-aws-idp-policy-type": "bank_statement_revie_839f3946",
   "description": "All rules extracted from the policy document",
   "rule_properties": {
-    "report_most_specific_code": {
+    "balance_dates_in_order": {
       "type": "string",
-      "description": "Is the HCPCS/CPT code that describes the procedure performed to the greatest specificity possible reported?",
-      "page": "V-3"
+      "description": "Is the date printed for the new balance of an account the same as or later than the date printed for its previous balance?",
+      "page": "1"
     },
-    "modifier_59_distinct_sites": {
+    "large_withdrawals_identified": {
       "type": "string",
-      "description": "Is modifier 59 appended only when reporting a service distinct from other services on the same day?",
-      "page": "V-7"
+      "description": "Does every withdrawal of 10,000.00 or more have a description that identifies the payee?",
+      "page": "2"
     }
   }
 }
@@ -480,17 +482,17 @@ See [docs/rule-validation.md](rule-validation.md) for the validator-side details
 
 ### Required: Add a Document Matching Regex
 
-Policy Discovery saves the rule class *without* a matching regex. That means **rules extracted by Policy Discovery will not automatically run against future documents** until you give the policy class a document-matching pattern. This is intentional — the same NCCI Medicare rules apply only to medicare PA packets, not to every document in the system.
+Policy Discovery saves the rule class *without* a matching regex. That means **rules extracted by Policy Discovery will not automatically run against future documents** until you give the policy class a document-matching pattern. This is intentional — the policy rules of a bank statement review apply only to bank statements, not to every document in the system.
 
 After a Policy Discovery job completes, add either (or both) of the following fields on the newly created policy class via the Policy Schema UI:
 
-- **`Document Name Regex`** (`x-aws-idp-document-name-regex`): case-insensitive pattern matched against the document filename. Example for medicare PA packets:
+- **`Document Name Regex`** (`x-aws-idp-document-name-regex`): case-insensitive pattern matched against the document filename. Example for bank statements:
   ```
-  (?i).*(medicare|medicaid|pa_packet|prior_auth).*
+  (?i).*bank[_ -]?statement.*
   ```
 - **`Page Content Regex`** (`x-aws-idp-document-page-content-regex`): case-insensitive pattern matched against each page's OCR text. Useful when filenames aren't diagnostic. Example:
   ```
-  (?i)(medicare\s+number|prior\s+authorization)
+  (?i)(account\s+summary|summary\s+of\s+your\s+accounts)
   ```
 
 If **multiple policy classes** are configured, `PolicyClassificationService` requires at least one regex pattern to be present on *some* class — otherwise no match is possible and rule validation is skipped. If **only one** policy class is configured, the regex is optional (single-class mode always matches).
@@ -551,7 +553,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
   Because rule validation requires a regex once a configuration holds **more than one** policy class, a *second* ungrouped Policy Discovery run (or one into a different [policy group](#policy-groups)) switches rule validation off for **every** policy class until you add one — the first policy's rules were evaluating, and now nothing is. The discovery job reports this in its status message when its save creates that state, but the remedy is manual: add a `Document Name Regex` (or `Page Content Regex`) to each policy class in **Configuration → Policy Schema**.
 - **No cross-policy deduplication.** If two policy documents contain the same underlying rule, it will appear in both policy classes. Duplicate detection across policies is not provided.
 
-  This is more than untidy output: Rule Validation answers **each copy** with its own LLM call for **every** document processed, so a rule duplicated across three payer manuals is a standing 3× cost multiplier on that rule, not a one-time extraction cost. The copies are also worded differently (each is extracted verbatim from its own source), so they can return **contradictory** Pass/Fail answers with nothing indicating they were ever the same rule. The discovery job now reports rule names that collide with other policy classes in its status message; removing the duplicates in **Configuration → Policy Schema** is still manual.
+  This is more than untidy output: Rule Validation answers **each copy** with its own LLM call for **every** document processed, so a rule duplicated across three policy manuals is a standing 3× cost multiplier on that rule, not a one-time extraction cost. The copies are also worded differently (each is extracted verbatim from its own source), so they can return **contradictory** Pass/Fail answers with nothing indicating they were ever the same rule. The discovery job now reports rule names that collide with other policy classes in its status message; removing the duplicates in **Configuration → Policy Schema** is still manual.
 - **Token limits on very large manuals.** Manuals with thousands of rules may exceed a single Bedrock call's output token limit even at the default `max_tokens`, which requests the model's maximum output. Split the document by chapter/section into multiple uploads for very large sources, giving every upload the same [policy group](#policy-groups) so the chapters stay one policy class.
 
   A truncated response does **not** silently persist a partial ruleset — a compliance validation set quietly missing rules would report documents as compliant against a fraction of the policy, so the job fails instead. The mechanism differs by extraction method, and both end in a failed job naming the remedy:

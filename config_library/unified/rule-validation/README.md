@@ -3,7 +3,7 @@ SPDX-License-Identifier: MIT-0
 
 # Rule Validation Configuration
 
-This directory contains the rule validation configuration for the GenAI IDP Accelerator. This configuration is specifically designed for processing healthcare prior authorization (PA) packets with automated rule validation against medical coding guidelines such as NCCI (National Correct Coding Initiative) rules.
+This directory contains the rule validation configuration for the GenAI IDP Accelerator. This configuration is designed for the review of a bank statement: the statement is classified and extracted, and policy rule validation checks it against the policy rules of a bank statement review policy.
 
 ## Processing Mode
 
@@ -11,34 +11,31 @@ This directory contains the rule validation configuration for the GenAI IDP Acce
 
 ## Validation Level
 
-**Level**: 2 - Comprehensive Testing
+**Level**: 1 - Basic Testing
 
-- **Testing Evidence**: This configuration has been tested with respiratory surgery prior authorization packets containing multiple document sections including administrative forms, medical history, operative reports, procedure logs, and claims evidence.
-- **Known Limitations**: Performance may vary with non-standard PA packet formats, heavily redacted medical documents, or documents with poor image quality that affect OCR accuracy. Rule validation accuracy depends on the completeness and clarity of clinical documentation.
+- **Testing Evidence**: The configuration loads and passes the config library tests (`make test-config-library`). `scripts/tests/test_generate_bank_statement_review_policy.py` checks that its policy classes hold the policy rules of the policy document word for word, and that every policy class applies to the sample statement by its file name. No live run on the bank statement sample has been recorded.
+- **Known Limitations**: Policy rule verdicts come from a model and can differ between runs. The policy applies to a document by its file name, so a bank statement whose name does not say what it is gets no policy rule validation. Performance may vary with statement layouts other than the sample's, and with documents of poor image quality that affects OCR accuracy. Rule validation accuracy depends on the completeness and clarity of what the statement prints.
 
 ## Overview
 
-The rule validation configuration is designed to handle comprehensive healthcare prior authorization document packages typically encountered in:
+The rule validation configuration is designed to review a bank statement before it is accepted as evidence of an account and its activity:
 
-- **Prior Authorization Processing**: Medical procedure approval workflows
-- **Medical Coding Compliance**: NCCI rule validation and modifier verification
-- **Claims Review**: Supporting documentation assessment
-- **Medical Necessity Evaluation**: Clinical justification review
-- **Regulatory Compliance**: Healthcare coding guideline adherence
+- **Statement Identity**: The institution, the account holder and the account numbers are printed
+- **Statement Period**: The statement is dated, and its balances and transactions fall within the period it covers
+- **Balance Reconciliation**: The printed amounts add up to the printed balances
+- **Transaction Review**: The transactions are in date order and listed once, and a large withdrawal names its payee
 
-It includes specialized settings for document classification, detailed medical information extraction, automated rule validation against coding guidelines, and comprehensive summarization using Amazon Bedrock models optimized for healthcare document processing.
+It includes settings for document classification, extraction of the statement's values, automated policy rule validation against the review policy, and summarization using Amazon Bedrock models.
+
+The policy rules are those of `samples/rule-validation/bank-statement-review-policy.pdf`, which is also the example policy document of [Policy Discovery](../../../docs/policy-discovery.md).
 
 ## Key Components
 
 ### Document Classes
 
-The configuration defines 5 specialized prior authorization document classes, each with comprehensive attributes for detailed medical data extraction:
+The `classes` section holds the document class of a bank statement:
 
-- **PA-Administrative**: Administrative and demographic information including patient identification, insurance/payer details, encounter information, provider credentials, facility details, and billing summary with CPT codes, modifiers, and global periods (29 properties)
-- **PA-Medical-History**: Patient medical history including demographics, current and past medical conditions, medications, allergies, surgical history, and relevant health background (23 properties)
-- **PA-Operative-Report**: Surgical operative report with detailed procedure information, pre-operative diagnosis, post-operative diagnosis, procedure descriptions, findings, complications, and surgeon details (28 properties)
-- **PA-Procedure-Log**: Detailed operative procedure log with timestamps, procedure steps, findings, equipment used, and clinical observations (22 properties)
-- **PA-Claims-Evidence**: Claims evidence and supporting documentation including letters of medical necessity, emergency criteria, conversion documentation, and modifier justification (12 properties)
+- **Bank-Statement**: A periodic financial document issued by banks detailing account activity, balances, and transactions over a specific time period. It is the `Bank-Statement` class of the [lending-package-sample](../lending-package-sample/) preset, unchanged. Its attributes are the bank name, the account holder's name and address, the account number and type, the statement start and end dates, the account summary rows (description and amount) and the transaction rows (date, description, deposits, withdrawals and balance).
 
 ### Classification Settings
 
@@ -57,7 +54,7 @@ comes from the system defaults in
   inferred from the placeholders the call's task prompt uses
 - **OCR Backend**: Amazon Textract with LAYOUT, TABLES, and SIGNATURES features
 
-The classification component analyzes document content and structure to accurately identify each section's PA document class and establish the section boundaries within each PA packet.
+The classification component analyzes document content and structure to identify each section's document class and establish the section boundaries within the document.
 
 ### Extraction Settings
 
@@ -70,13 +67,13 @@ The classification component analyzes document content and structure to accurate
 There is no `extraction.max_tokens` setting. Extraction always requests the model's
 maximum output, resolved per model from `config_library/model_config_limits.yaml`.
 
-The extraction component performs comprehensive attribute extraction tailored to each PA document type, capturing critical medical and administrative information including:
-- Patient demographics and insurance details
-- CPT procedure codes with modifiers
-- Global period indicators (000, 010, 090)
-- Provider and facility information
-- Clinical diagnoses and findings
-- Medical necessity justification
+The extraction component extracts the attributes of the `Bank-Statement` class, including:
+- Bank name
+- Account holder name and address
+- Account number and account type
+- Statement start and end dates
+- Account summary rows
+- Transaction details (date, description, deposits, withdrawals and balance)
 
 ### Rule Validation Settings
 
@@ -89,26 +86,33 @@ The extraction component performs comprehensive attribute extraction tailored to
 - **Chunking**: `max_chunk_size` 8000 with 10% overlap
 - **Recommendation Options**: Configurable (default: Pass, Fail, Information Not Found)
 
-The rule validation component evaluates extracted information against predefined medical coding rules including:
-- **Global Period Rules**: Validates E&M services with procedures having 000, 010, or 090 day global periods
-- **Same Day Service Rules**: Verifies same-provider/same-date requirements and modifier usage
-- **Postoperative Rules**: Checks postoperative E&M service compliance
-- **Bundling Rules**: Validates procedure bundling and unbundling scenarios
-- **Diagnostic/Surgical Rules**: Ensures proper coding of diagnostic vs surgical procedures
-- **Component Service Rules**: Validates component vs comprehensive service coding
-- **Separate Procedure Rules**: Checks separate procedure designation compliance
+The rule validation component evaluates the statement against the policy rules of the bank statement review policy, by policy type:
+- **Statement Identity** (`statement_identity`): Checks that the statement names the institution, the account holder and an account number for every account
+- **Statement Period** (`statement_period`): Checks the statement date, the order of the balance dates and the dates of the transactions
+- **Balance Reconciliation** (`balance_reconciliation`): Checks that the printed amounts add up to the new balance, and that a summary total is the sum of its accounts
+- **Transaction Review** (`transaction_review`): Checks that the transactions are in date order and listed once, and that a large withdrawal names its payee
 
-### Rule Classes
+### Policy Classes
 
-The configuration defines 7 rule types with specific validation criteria:
+The `policy_classes` section holds one policy class for each section of the policy document, and one policy rule for each policy rule the policy prints:
 
-1. **global_periods**: Minor surgery (000/010 days) and major surgery (090 days) global period rules
-2. **same_day_service_rules**: Same provider, same date service validation with NCCI PTP edits
-3. **postoperative_rules**: Postoperative E&M service compliance during global periods
-4. **bundling**: Procedure bundling and modifier requirements (e.g., emergency intubation with modifier 59)
-5. **diagnostic_surgical**: Diagnostic vs surgical procedure coding rules
-6. **component_service**: Component service vs comprehensive service validation
-7. **separate_procedure**: Separate procedure designation and reporting rules
+| Policy type | Policy rule | What the statement must show |
+|---|---|---|
+| `statement_identity` | `institution_named` | The financial institution that issued it |
+| `statement_identity` | `account_holder_named` | The full name and the mailing address of the account holder |
+| `statement_identity` | `account_number_shown` | An account number for every account it summarises |
+| `statement_period` | `statement_date_shown` | The date it was issued or the period it covers |
+| `statement_period` | `balance_dates_in_order` | A new balance dated the same as or later than the previous balance of the account |
+| `statement_period` | `transactions_within_period` | Every transaction dated within the period the statement covers and no later than the statement date |
+| `balance_reconciliation` | `new_balance_reconciles` | For each account, a new balance that equals the previous balance, minus checks and other withdrawals, plus deposits and credits |
+| `balance_reconciliation` | `summary_total_matches_accounts` | A total for a group of accounts that equals the sum of the balances of the accounts in that group |
+| `transaction_review` | `transactions_in_date_order` | Transactions listed in date order, oldest first, within each account |
+| `transaction_review` | `no_duplicate_transactions` | Each transaction listed once |
+| `transaction_review` | `large_withdrawals_identified` | A description that identifies the payee for every withdrawal of 10,000.00 or more |
+
+Each policy rule's description in `config.yaml` is the text the policy prints: the requirement, then the case in which the policy rule fails. A policy rule's stable id is its policy type and its key, for example `statement_period.transactions_within_period`.
+
+Every policy class carries `x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"`, so the policy applies to a document whose file name says it is a bank statement, such as `bank-statement-multipage.pdf` or `Bank_Statement_March.pdf`.
 
 ### Confidence Assessment Settings
 
@@ -123,8 +127,7 @@ takes the system defaults for all of it:
   `us.anthropic.claude-sonnet-5:1m`
 - **Human review threshold**: `hitl.confidence_threshold`, default `0.8`
 
-Confidence assessment ensures high accuracy for medical data extraction, critical for
-rule validation and compliance decisions.
+Confidence assessment gives every extracted value of the statement a confidence score.
 
 ### Summarization Settings
 
@@ -142,9 +145,9 @@ The summarization component creates:
 
 The rule validation process follows these detailed steps:
 
-1. **Document Classification**: Identifies PA document sections (Administrative, Medical History, Operative Report, etc.) and groups pages into sections
+1. **Document Classification**: Identifies the bank statement and groups its pages into sections
 
-2. **Information Extraction**: Extracts relevant medical and administrative data from each classified section
+2. **Information Extraction**: Extracts the statement's values from each classified section
 
 3. **Section-Level Rule Evaluation**: For each document section:
    - Evaluates each rule within each rule type against the section's content
@@ -152,7 +155,7 @@ The rule validation process follows these detailed steps:
    - Generates intermediate results for each rule evaluation
    - Stores section-level responses with supporting page references
 
-4. **Rule Type Consolidation**: For each rule type (e.g., global_periods, same_day_service_rules):
+4. **Rule Type Consolidation**: For each rule type (e.g., statement_period, transaction_review):
    - Aggregates all rule evaluations across all document sections
    - Consolidates multiple responses for the same rule from different sections
    - Uses LLM to generate a single consolidated recommendation per rule
@@ -178,20 +181,30 @@ The rule validation component supports user-customizable recommendation options:
 
 ## Test Set
 
-This configuration is designed to work with respiratory surgery prior authorization packets:
+This configuration is designed to work with the bank statement sample of this repository:
 
-- **Sample Document**: `samples/rule-validation/respiratory_pa_packet.pdf`
-- **5 Document Sections**: Administrative, Medical History, Operative Report, Procedure Log, Claims Evidence
-- **Multiple CPT Codes**: With modifiers and global period indicators
-- **Rule Validation**: Tests against 7 rule types with multiple validation criteria
+- **Sample Document**: `samples/bank-statement-multipage.pdf`, a synthetic consolidated statement of "Example Inc. Credit Union" for one account holder, with the statement date 04/04/2022. Page 1 holds the summary of accounts and the checking account summary, and pages 2 to 5 list transactions.
+- **Policy Document**: `samples/rule-validation/bank-statement-review-policy.pdf`, the "Bank Statement Review Policy" of the fictitious AnyCompany Financial Services. `scripts/generate_bank_statement_review_policy.py` writes it, and the `policy_classes` of this configuration hold its policy rules.
+- **Rule Validation**: The sample's file name matches the document name pattern of every policy class, so every policy rule is evaluated on it.
+
+The statement is meant to show failed policy rules beside passed ones. These policy rules have something to find in it:
+
+| Policy rule | What the statement prints | What the policy rule tests |
+|---|---|---|
+| `statement_period.balance_dates_in_order` | The checking account summary gives a previous balance "as of 04/04/2022" and a new balance "as of 06/17/2020" | The new balance is dated the same as or later than the previous balance |
+| `statement_period.transactions_within_period` | The statement date is 04/04/2022, and the transactions are dated throughout 2020 | Every transaction is dated within the period the statement covers and no later than the statement date |
+| `transaction_review.transactions_in_date_order` | Pages 2 to 5 list the transactions out of date order | Transactions are listed oldest first |
+| `transaction_review.no_duplicate_transactions` | Pages 4 and 5 repeat transactions that pages 2 and 3 list | A transaction is listed once |
+
+A verdict comes from a model, and no live run on this sample has been recorded: the table says what each policy rule reads, and not the verdict it gets.
 
 ## How to Use
 
 To use this rule validation configuration:
 
-1. **Direct Use**: Deploy the GenAI IDP Accelerator with this configuration for healthcare PA packet processing with automated rule validation.
+1. **Direct Use**: Deploy the GenAI IDP Accelerator with this configuration for bank statement review with automated rule validation.
 
-2. **As a Template**: Copy this configuration to a new directory and modify it for your specific medical coding rules:
+2. **As a Template**: Copy this configuration to a new directory and modify it for the policy rules of your own policy:
    ```bash
    cp -r config_library/unified/rule-validation config_library/unified/your_use_case_name
    ```
@@ -202,7 +215,7 @@ To use this rule validation configuration:
 
 ### Adding New Document Classes
 
-To add a new class of PA document section:
+To add a new document class:
 
 1. Add a new entry to the `classes` array in `config.yaml`:
    ```yaml
@@ -228,6 +241,7 @@ To add a new policy type for rule validation:
    ```yaml
    - $schema: https://json-schema.org/draft/2020-12/schema
      x-aws-idp-policy-type: your_policy_type
+     x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
      type: object
      rule_properties:
        your_rule:
@@ -236,7 +250,7 @@ To add a new policy type for rule validation:
      $id: your_policy_type
    ```
 
-2. The rule will automatically be evaluated during the rule validation step.
+2. The policy rule will automatically be evaluated during the rule validation step, on every document whose file name matches the pattern. With more than one policy class, a policy class that has no pattern is not evaluated.
 
 ### Customizing Recommendation Options
 
@@ -260,7 +274,7 @@ To adjust the behavior of rule validation:
 1. Modify the `system_prompt` or `task_prompt` in the `rule_validation` section.
 2. Keep the placeholders (e.g., `{recommendation_options}`, `{DOCUMENT_TEXT}`) intact.
 3. Ensure `{recommendation_options}` is placed AFTER `<<CACHEPOINT>>` for proper caching.
-4. Test the modified prompts with representative PA packets.
+4. Test the modified prompts with representative bank statements.
 
 ### Changing Models
 
@@ -315,21 +329,11 @@ This optimization is useful when:
 The rule validation configuration is optimized for:
 
 - **Accuracy**: Using temperature 0 for deterministic rule evaluation
-- **Compliance**: Strict validation against medical coding guidelines
+- **Compliance**: Strict validation against the requirements of the review policy
 - **Traceability**: Supporting page references for each rule evaluation
 - **Scalability**: Parallel processing with configurable semaphore limits
 
 For specialized use cases, consider adjusting the configuration to focus on the specific rule types and document sections relevant to your needs.
-
-## Pricing Configuration
-
-The configuration includes pricing information for cost tracking:
-
-- **Textract**: $0.0015 per page (first million), $0.0006 per page (over million)
-- **Claude 3.5 Sonnet**: $0.000003 per input token, $0.000015 per output token
-- **Amazon Nova Models**: Varies by model (Lite, Pro, etc.)
-
-Pricing is used for metering and cost estimation in the reporting database.
 
 ## Contributors
 

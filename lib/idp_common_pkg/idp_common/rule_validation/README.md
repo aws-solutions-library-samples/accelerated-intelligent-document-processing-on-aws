@@ -215,7 +215,7 @@ Response model from fact extraction step:
 
 #### LLMResponse
 Validated response model from orchestrator with automatic data cleaning:
-- **policy_type**: Type of policy class being evaluated (e.g., "global_periods", "same_day_service_rules")
+- **policy_type**: Type of policy class being evaluated (e.g., "statement_period", "transaction_review")
 - **rule**: The specific rule description being validated
 - **supporting_pages**: List of page IDs that support the recommendation
 - **recommendation**: Validated recommendation (customizable, default: Pass/Fail/Info Not Found)
@@ -239,11 +239,11 @@ Features:
     "chunking_occurred": True,  # True if section was chunked
     "chunks_created": 2,  # Number of chunks (0 = no chunking, 2+ = chunked)
     "responses": {
-        "policy_type_1": [
+        "statement_period": [
             {
-                "policy_type": "global_periods",
+                "policy_type": "statement_period",
                 "rule": "Rule description",
-                "rule_id": "global_periods.rule_key",
+                "rule_id": "statement_period.balance_dates_in_order",
                 "z3_rule_id": None,
                 "extracted_facts": [
                     {"fact": "What the section says", "citation": "1"}
@@ -399,7 +399,7 @@ rule_validation:
     max_tokens: ""    # empty = use the model's maximum output limit
 
     system_prompt: |
-      You are a specialized evaluator for medical coding compliance...
+      You are a Document Fact Extraction Specialist...
 
     task_prompt: |
       <<CACHEPOINT>>
@@ -455,19 +455,36 @@ rule_validation:
 ```yaml
 policy_classes:
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: global_periods
+    x-aws-idp-policy-type: statement_period
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      minor_surgery_000_010:
+      statement_date_shown:
         type: string
         description: >-
-          If a procedure has a global period of 000 or 010 days...
-      major_surgery_090:
+          The statement must show the date it was issued or the period
+          it covers. The rule fails when the statement prints neither.
+      balance_dates_in_order:
         type: string
         description: >-
-          If a procedure has a global period of 090 days...
-    $id: global_periods
+          The date printed for the new balance of an account must be
+          the same as or later than the date printed for its previous
+          balance. The rule fails when the new balance is dated before
+          the previous balance.
+      transactions_within_period:
+        type: string
+        description: >-
+          Every transaction listed on the statement must be dated
+          within the period the statement covers and no later than the
+          statement date. The rule fails when a transaction is dated
+          outside that period.
+    $id: statement_period
 ```
+
+This is the `statement_period` policy class of the `rule-validation` preset
+(`config_library/unified/rule-validation/config.yaml`). The document that preset is
+written for is `samples/bank-statement-multipage.pdf`, and its policy rules are
+those of `samples/rule-validation/bank-statement-review-policy.pdf`.
 
 ## Usage
 
@@ -984,11 +1001,11 @@ self.token_metrics = utils.merge_metering_data(
   "total_policy_types": 4,
   "rule_summary": {...},
   "overall_statistics": {
-    "total_rules": 20,
+    "total_rules": 11,
     "recommendation_counts": {
-      "Pass": 15,
-      "Fail": 3,
-      "Info Not Found": 2
+      "Pass": 8,
+      "Fail": 2,
+      "Info Not Found": 1
     }
   },
   "supporting_pages": ["1", "2", "3"],
@@ -1005,29 +1022,29 @@ self.token_metrics = utils.merge_metering_data(
 **Document ID**: doc_123
 **Status**: COMPLETE
 **Total Rule Types**: 4
-**Total Rules**: 20
+**Total Rules**: 11
 
 ## Overall Statistics
 
 **Recommendation Counts:**
-- **Pass:** 15
-- **Fail:** 3
-- **Info Not Found:** 2
+- **Pass:** 8
+- **Fail:** 2
+- **Info Not Found:** 1
 
 **Supporting Pages:** 1, 2, 3
 
-## Rule Type: global_periods
+## Rule Type: statement_period
 
-**Total Rules:** 5
+**Total Rules:** 3
 
-**Pass:** 4
+**Pass:** 2
 **Fail:** 1
 
 ### Rules
 
 | Rule | Recommendation | Reasoning | Supporting Pages |
 |------|----------------|-----------|------------------|
-| Minor surgery rule | Pass | Evidence found... | 1, 3 |
+| The statement must show the date it was issued or the period it covers... | Pass | Evidence found... | 1, 3 |
 ...
 ```
 

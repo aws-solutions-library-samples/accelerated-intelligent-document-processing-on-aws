@@ -2737,12 +2737,10 @@ summary rows, all sixty transactions — scores `5 / 38 = 0.13` on
 evidence. Under `warn` that is a spurious warning; under `fail` it is a lost
 document, and the long transaction list the check exists for passes cleanly.
 
-Nine fields of this shape ship in the config library — `account_summary`,
-`W2.codes`, `Payslip.FederalTaxes` / `StateTaxes` / `CityTaxes`,
-`Medical-Insurance-Invoice.Charges`, `PA-Procedure-Log.codes_without_documentation`
-(a declared *subset* by definition), `PA-Medical-History.chronic_conditions` — and
-of the narrow arrays in presets with `TABLES` on, only `Transactions` genuinely
-models table rows. Three further shapes produce the same spurious failure and are
+Several fields of this shape ship in the config library — `account_summary`,
+`W2.codes`, `Payslip.FederalTaxes` / `StateTaxes` / `CityTaxes` and
+`Medical-Insurance-Invoice.Charges` — and of the narrow arrays in presets with
+`TABLES` on, only `Transactions` genuinely models table rows. Three further shapes produce the same spurious failure and are
 tracked for narrowing: sibling lists whose property counts *differ* (the
 same-width grouping that stops Deposits and Withdrawals accusing each other keys
 on equality, so one extra property on one sibling disables it); a nested optional
