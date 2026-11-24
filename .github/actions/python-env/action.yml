@@ -14,7 +14,7 @@ description: uv, a virtualenv on PATH, and all first-party packages from source
 inputs:
   node:
     description: >-
-      Also install Node 22 and basedpyright. Needed by any job whose gates shell
+      Also install Node 26 and basedpyright. Needed by any job whose gates shell
       out to basedpyright — which is not only the type gate: `scripts/tests`
       contains a LIVE basedpyright probe, so the package suites need it too — and
       by any job that runs `scripts/tests/test_ux_recorder.py`, whose click-label
@@ -61,7 +61,7 @@ runs:
         uv venv .venv
         echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
 
-    # Node 22 via the first-party action rather than piping NodeSource's installer
+    # Node 26 via the first-party action rather than piping NodeSource's installer
     # into bash: that pipeline swallowed a failed download (`curl ... | bash -`
     # exits with bash's status, not curl's), so a NodeSource 403 silently left the
     # repo unregistered, the following apt-get installed Debian's own nodejs 18 —
@@ -70,7 +70,7 @@ runs:
       if: inputs.node == 'true' || inputs.ui-deps == 'true'
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
-        node-version: 22
+        node-version: 26
 
     - name: Install basedpyright
       if: inputs.node == 'true'

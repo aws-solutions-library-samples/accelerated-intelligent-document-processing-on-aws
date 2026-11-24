@@ -1199,15 +1199,18 @@ def test_install_sh_records_a_chrome_for_testing_pin_for_both_linux_platforms() 
 
 @pytest.mark.unit
 def test_install_sh_node_and_npm_equal_the_ci_node_setup() -> None:
+    """Both take npm from the pinned Node tarball, so equal Node pins mean equal
+    npm. A separate ``npm@`` upgrade in either would let the two drift apart, and
+    in install.sh it would fetch an npm no recorded digest covers."""
     setup = "\n".join(_gitlab_ci()[".node_setup"])
     node = re.search(r"nodejs\.org/dist/(v\d+\.\d+\.\d+)/node-\1-linux-", setup)
-    npm = re.search(r"npm@(\d+\.\d+\.\d+)", setup)
-    assert node and npm, (
-        ".gitlab-ci.yml .node_setup no longer pins a Node tarball and npm"
-    )
+    assert node, ".gitlab-ci.yml .node_setup no longer pins a Node tarball"
     text = _install_text()
     assert _shell_value(text, "NODE_VERSION") == node.group(1)
-    assert _shell_value(text, "NPM_VERSION") == npm.group(1)
+    assert "npm@" not in setup, ".node_setup upgrades npm instead of using Node's own"
+    assert "npm@" not in "\n".join(_shell_code_lines(text)), (
+        "install.sh upgrades npm instead of using the one the checked tarball bundles"
+    )
     assert (
         "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
         in text

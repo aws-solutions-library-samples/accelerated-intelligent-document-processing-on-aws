@@ -46,7 +46,7 @@ See also: [Setup Development Environment - WSL](../../docs/setup-development-env
 ## What These Scripts Install
 
 - Python 3.12 with pyenv
-- Node.js 22 with nvm
+- Node.js 26 with nvm
 - AWS CLI v2
 - AWS SAM CLI
 - Docker (where applicable)

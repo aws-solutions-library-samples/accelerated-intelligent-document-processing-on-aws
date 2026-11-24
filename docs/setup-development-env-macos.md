@@ -148,7 +148,7 @@ sam --version
 ```
 
 
-## 7) Node.js via nvm (Node 22 LTS)
+## 7) Node.js via nvm (Node 26 LTS)
 
 Use nvm to manage Node versions. This mirrors your Linux section but uses zsh-friendly profile updates.
 
@@ -162,9 +162,9 @@ fi
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-# Install Node 22 LTS
-nvm install 22
-nvm alias default 22
+# Install Node 26 LTS
+nvm install 26
+nvm alias default 26
 
 # Test
 node -v
@@ -257,7 +257,7 @@ make setup-venv
 source .venv/bin/activate
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies. When Node.js 22.12 or later is on `PATH`, it also installs the web UI and docs-site npm dependencies and the `basedpyright` type checker, which lint, type checking and the UI tests need; without Node it prints a warning and finishes, since deploying does not need Node. `make setup-node` installs the Node side on its own and fails on any error. Run it again after a `git pull` that changes `src/ui/package-lock.json`.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies. When Node.js 26 or later is on `PATH`, it also installs the web UI and docs-site npm dependencies and the `basedpyright` type checker, which lint, type checking and the UI tests need; without Node it prints a warning and finishes, since deploying does not need Node. `make setup-node` installs the Node side on its own and fails on any error. Run it again after a `git pull` that changes `src/ui/package-lock.json`.
 
 ## **13) Configure AWS CLI**
 ### Refer this link for AWS configure

@@ -153,7 +153,9 @@ stages:
   # Fail the build if any first-party package came from an index, not source.
   - python3 scripts/check_first_party_deps.py
 
-# Node 22.14.0, pinned. Only the jobs that need it install it — the four
+# Node 26.13.1, pinned, with the npm its tarball bundles (11.20.0) — the same
+# npm GitHub's setup-node and the UI CodeBuild project use, so every CI resolves
+# the lockfiles with one npm. Do not upgrade npm separately. Only the jobs that need it install it — the four
 # `fast_checks` gate jobs, and the five AWS-facing ones below do not. Only
 # `ui_tests` needs it for a reason its own `script:` block shows. The two that
 # run `scripts/tests` — `unit_tests` and `package_tests` — need it for three
@@ -168,8 +170,8 @@ stages:
 .node_setup: &node_setup
   - NODE_ARCH=$(case "$(uname -m)" in x86_64) echo x64;; aarch64|arm64) echo arm64;; *) echo x64;; esac)
   - echo "Runner arch $(uname -m) -> node $NODE_ARCH"
-  - curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1
-  - npm install -g npm@11.1.0 || { echo "npm upgrade failed"; exit 1; }
+  - curl -fsSL https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1
+  - node --version && npm --version
 
 # Paths whose change can actually affect a real stack deploy / its behavior.
 #
@@ -1608,7 +1610,8 @@ ai_mr_review:
   before_script:
     - apt-get update -y
     - apt-get install curl git -y
-    # Node 22: @anthropic-ai/claude-code declares `engines: {node: ">=22.0.0"}`, and
+    # Node 26, the major .node_setup pins (the floor check below stays at 22, the
+    # minimum @anthropic-ai/claude-code declares: `engines: {node: ">=22.0.0"}`), and
     # an older major fails in the quietest way available — npm's EBADENGINE is only a
     # warning, `npm install` and `claude --version` both succeed on 20, and the CLI
     # then exits 1 with an empty stderr on the first real session.
@@ -1621,7 +1624,7 @@ ai_mr_review:
     # and this image ships no Node, so the install stays — but the RUNTIME is now
     # asserted rather than the intent, because a check on the pattern stays green
     # in exactly that scenario.
-    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    - curl -fsSL https://deb.nodesource.com/setup_26.x | bash -
     - apt-get install -y nodejs
     - node --version
     - >-
@@ -1756,8 +1759,8 @@ ai_mr_review:
 # which runs as root beside the job's shell and could read its /proc/<pid>/environ
 # and the checkout's .git/config. The one step outside it is ux_test_build's
 # .node_setup, the anchor every job that builds the UI shares: it unpacks the
-# Node.js release from nodejs.org, which nothing checks against a digest, and has
-# that release's npm upgrade itself, both with the job's environment.
+# Node.js release from nodejs.org, which nothing checks against a digest, with the
+# job's environment, and uses the npm that release bundles.
 # before_script and script share one shell, so a job includes the definition
 # once, ahead of its first use.
 .without_job_secrets: &without_job_secrets

@@ -135,7 +135,7 @@ You need to have the following packages installed on your computer:
 3. [sam (AWS SAM)](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
 4. python 3.12 or later
 5. Python packages: `pip install boto3 rich typer PyYAML botocore setuptools ruff build cfn-lint`
-6. **Node.js 22.12+** and **npm** (required for UI validation in publish script)
+6. **Node.js 26+** and **npm** (required for UI validation in publish script)
 
 > **Docker is NOT required on your workstation.** Lambda functions are packaged as source code by `idp-cli publish` and uploaded to S3; AWS CodeBuild builds the container images during stack deployment.
 

@@ -77,7 +77,7 @@ Mode B fits central-network-account topologies where one team manages all VPC en
 
 ### 1. Build tools
 
-See [Deployment Guide → Dependencies](./deployment.md#dependencies) for AWS CLI, SAM CLI, Python 3.12+, Node.js 22+. Docker is **not** required locally — images are built in AWS by CodeBuild.
+See [Deployment Guide → Dependencies](./deployment.md#dependencies) for AWS CLI, SAM CLI, Python 3.12+, Node.js 26+. Docker is **not** required locally — images are built in AWS by CodeBuild.
 
 > **Note**: When `DeployInVPC=true`, all CodeBuild projects (WebUI build, Docker image builds, SDLC pipeline) run inside the VPC. They require either a **NAT Gateway** for public registry access or an **internal artifact repository** (JFrog Artifactory, AWS CodeArtifact, etc.) for air-gapped builds. See [Dependency Mirroring](./dependency-mirroring.md) for generating the full dependency manifest.
 
@@ -180,8 +180,8 @@ Once that post-stack step completes, the UI is reachable from any VPN/DC client 
 ## Step 1: Build and publish artifacts
 
 ```bash
-export PATH="/opt/homebrew/opt/node@22/bin:$PATH"  # macOS with brew node@22
-node --version  # must be v22.x or later
+export PATH="/opt/homebrew/opt/node@26/bin:$PATH"  # macOS with brew node@26
+node --version  # must be v26.x or later
 
 idp-cli publish \
   --source-dir . \
@@ -963,7 +963,7 @@ VPC that hosts the private API; the Route 53 private-hosted-zone A-alias avoids 
 | Issue | Resolution |
 |-------|-----------|
 | `ModuleNotFoundError: No module named 'boto3'` | Use venv Python. `make setup && source .venv/bin/activate` then retry. |
-| `npm error engine Unsupported engine` | Node.js 22.12+ required. `brew install node@22 && export PATH="/opt/homebrew/opt/node@22/bin:$PATH"` |
+| `npm error engine Unsupported engine` | Node.js 26+ required. `brew install node@26 && export PATH="/opt/homebrew/opt/node@26/bin:$PATH"` |
 | Stack fails with `conflicting DNS domain` | A VPC endpoint already exists for that service. Re-run `deploy-vpc-endpoints.py` — it auto-detects and skips existing ones. |
 | **Browser upload fails: `ERR_NAME_NOT_RESOLVED` on `bucket.vpce-...vpce.amazonaws.com`** | (a) Browser is not on the VPN — VPCE host is VPC-DNS-only. (b) Mode B: `S3VpcEndpointDnsNameOverride` was set without the AWS-assigned random suffix. Re-deploy with the full DNS from `aws ec2 describe-vpc-endpoints ... DnsEntries[0].DnsName` minus the `*.` prefix. |
 | **Browser upload fails: `Failed to fetch` / connect timeout** | (a) S3 VPCE endpoint SG missing ingress for VPN NAT-subnet CIDR (see SG matrix). (b) VPN association subnet differs from S3 VPCE subnets — return path is fine if SG has the NAT CIDR. |
