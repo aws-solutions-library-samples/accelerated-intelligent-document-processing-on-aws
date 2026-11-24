@@ -54,7 +54,9 @@ WHAT IT COSTS
 As the review: tokens are priced from ``config_library/pricing.yaml``; before any call
 the run estimates its cost and refuses to start above ``--max-usd`` (US$20 by default);
 during the run it stops before any batch that could take it past the cap, counting that
-batch at its largest possible size, every retry included. ``--dry-run`` prints the plan
+batch at its largest possible size, every retry included. Each call is counted as the
+review counts it (``count_call``): its usage, and each attempt botocore retried at its
+most, a part the provenance and the console show apart. ``--dry-run`` prints the plan
 and the estimate and calls nothing; ``--limit N`` takes the first N entries. It runs with
 the developer's own AWS credentials in the Region named by ``--region``.
 
@@ -555,19 +557,14 @@ def revise_batches(
         try:
             response = client.converse(**converse_request(model, prefix, batch))
         except errors as exc:
+            review.count_call(spend, rates, ceiling, None)
             if spend.calls == 0:
                 raise ToolError(
-                    f"Bedrock refused the run, so nothing was written: {exc}"
+                    f"Bedrock refused the run, so nothing was written (its attempts "
+                    f"count up to US${spend.usd:.2f}): {exc}"
                 ) from None
             return spend, f"Bedrock refused a call, so the run stopped: {exc}"
-        spend.calls += 1
-        usage = review.usage_of(response)
-        if usage is None:
-            spend.usd += ceiling  # an unreported usage is counted at its most
-        else:
-            spend.usd += rates.cost(usage)
-            for key, value in usage.items():
-                spend.tokens[key] += value
+        review.count_call(spend, rates, ceiling, response)
         messages, unusable = read_answer(response, batch)
         for target in batch:
             if target.id in messages:
@@ -838,6 +835,8 @@ def revise_catalog(layout: review.Layout, args: argparse.Namespace) -> int:
             "usd": round(spend.usd, 4),
             "maxUsd": args.max_usd,
             "calls": spend.calls,
+            "retriedUsd": round(spend.retried_usd, 4),
+            "retriedAttempts": spend.retried,
             **spend.tokens,
         },
         "stopped": stopped,
@@ -873,6 +872,8 @@ def revise_catalog(layout: review.Layout, args: argparse.Namespace) -> int:
         f"US${spend.usd:.2f} in {spend.calls} call{'' if spend.calls == 1 else 's'}; "
         f"provenance in {layout.relative(out)}"
     )
+    if spend.retried:
+        print(f"  {review.retried_note(spend.retried_usd, spend.retried)}")
     for target in plan.targets:
         if target.outcome == "refused":
             print(f"  refused: {target.id}: {target.reason}")

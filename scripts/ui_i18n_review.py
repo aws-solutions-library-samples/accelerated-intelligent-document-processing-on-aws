@@ -64,7 +64,12 @@ Tokens are priced from ``config_library/pricing.yaml`` for the model, and a mode
 with no entry there is refused. Before any call the run estimates its cost and
 refuses to start above ``--max-usd`` (US$20 by default). During the run it stops
 before any batch that could take it past the cap, counting that batch at its
-largest possible size, every retry included. ``--dry-run`` prints the plan and the
+largest possible size, every retry included. An answered call adds the usage it
+reports, which is its last attempt's, and each attempt botocore retried before it
+(``RetryAttempts``) at the most one attempt can cost: botocore retries a read timeout
+too, and a timed-out attempt may be billed. A call that fails after its retries adds
+its batch at its largest. The report shows that part on a line of its own, since a
+throttled attempt is not billed. ``--dry-run`` prints the plan and the
 estimate and calls nothing; ``--limit N`` takes the first N entries, for a small
 trial. It runs with the developer's own AWS credentials (``--profile``, or the usual
 AWS environment) in the Region named by ``--region``; nothing in a deployed stack
@@ -832,11 +837,64 @@ def usage_of(response: Mapping[str, Any]) -> dict[str, int] | None:
     return counts
 
 
+def retries_of(response: Mapping[str, Any]) -> int:
+    """The attempts botocore retried before ``response`` (``RetryAttempts`` in its
+    ``ResponseMetadata``); every retry it may make when the response does not say."""
+    metadata = response.get("ResponseMetadata")
+    retries = metadata.get("RetryAttempts") if isinstance(metadata, dict) else None
+    if not isinstance(retries, int) or retries < 0:
+        return ATTEMPTS - 1
+    return retries
+
+
 @dataclass
 class Spend:
     usd: float = 0.0
     calls: int = 0
     tokens: dict[str, int] = field(default_factory=lambda: dict.fromkeys(USAGE_KEYS, 0))
+    #: Of ``usd``, what attempts with no usage of their own add at their most: the
+    #: attempts botocore retried before an answer, and every attempt of a call that failed.
+    retried_usd: float = 0.0
+    retried: int = 0
+
+
+def count_call(
+    spend: Spend, rates: Rates, ceiling: float, response: Mapping[str, Any] | None
+) -> None:
+    """Add one call to ``spend``. ``ceiling`` is the most its batch can cost, every attempt
+    included (``ceiling_usd``), so ``ceiling / ATTEMPTS`` is the most one attempt can cost.
+
+    An answered call adds the usage it reports, or the whole ceiling when it reports none.
+    That usage is its last attempt's: each attempt botocore retried before it reported none,
+    and a retried read timeout may have been billed, so each adds the most one attempt can
+    cost, as an unreported usage does. A call that failed after its retries (``response``
+    None) adds the whole ceiling."""
+    if response is None:
+        spend.usd += ceiling
+        spend.retried_usd += ceiling
+        spend.retried += ATTEMPTS
+        return
+    spend.calls += 1
+    usage = usage_of(response)
+    if usage is None:
+        spend.usd += ceiling  # an unreported usage is counted at its most
+        return
+    spend.usd += rates.cost(usage)
+    for key, value in usage.items():
+        spend.tokens[key] += value
+    retries = retries_of(response)
+    spend.usd += retries * ceiling / ATTEMPTS
+    spend.retried_usd += retries * ceiling / ATTEMPTS
+    spend.retried += retries
+
+
+def retried_note(usd: float, attempts: int) -> str:
+    """The line that shows, apart, what retried and failed attempts add to the cost."""
+    return (
+        f"US${usd:.2f} of the cost counts {attempts} retried or failed "
+        f"attempt{'' if attempts == 1 else 's'} at their most: a throttled attempt "
+        "is not billed"
+    )
 
 
 def review_batches(
@@ -866,19 +924,14 @@ def review_batches(
         try:
             response = client.converse(**converse_request(model, prefix, batch))
         except errors as exc:
+            count_call(spend, rates, ceiling, None)
             if spend.calls == 0:
                 raise ToolError(
-                    f"Bedrock refused the run, so no report was written: {exc}"
+                    f"Bedrock refused the run, so no report was written (its attempts "
+                    f"count up to US${spend.usd:.2f}): {exc}"
                 ) from None
             return spend, f"Bedrock refused a call, so the run stopped: {exc}"
-        spend.calls += 1
-        usage = usage_of(response)
-        if usage is None:
-            spend.usd += ceiling  # an unreported usage is counted at its most
-        else:
-            spend.usd += rates.cost(usage)
-            for key, value in usage.items():
-                spend.tokens[key] += value
+        count_call(spend, rates, ceiling, response)
         reviews, unusable = read_answer(response, batch)
         for entry in batch:
             if entry.id in reviews:
@@ -926,6 +979,9 @@ def report_markdown(record: dict[str, Any]) -> str:
         f"{counts['disagreement']} disagreements). "
         f"Cost US${record['cost']['usd']:.2f} of the US${record['cost']['maxUsd']:.2f} cap.",
     ]
+    if record["cost"]["retriedAttempts"]:
+        cost = record["cost"]
+        lines += ["", f"{retried_note(cost['retriedUsd'], cost['retriedAttempts'])}."]
     provenance = record.get("provenance")
     if provenance:
         lines += [
@@ -1151,6 +1207,8 @@ def review_catalog(layout: Layout, args: argparse.Namespace) -> int:
             "usd": round(spend.usd, 4),
             "maxUsd": args.max_usd,
             "calls": spend.calls,
+            "retriedUsd": round(spend.retried_usd, 4),
+            "retriedAttempts": spend.retried,
             **spend.tokens,
         },
         "stopped": stopped,
@@ -1183,6 +1241,8 @@ def review_catalog(layout: Layout, args: argparse.Namespace) -> int:
         f"US${spend.usd:.2f} in {spend.calls} call{'' if spend.calls == 1 else 's'}; "
         f"report in {layout.relative(out)}"
     )
+    if spend.retried:
+        print(f"  {retried_note(spend.retried_usd, spend.retried)}")
     if stopped:
         print(f"  the run stopped early: {stopped}")
     if counts["unreviewed"]:

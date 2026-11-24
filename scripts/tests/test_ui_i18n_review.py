@@ -4,8 +4,9 @@
 what it costs, and what it writes.
 
 The script behind `make ui-i18n-review` calls Amazon Bedrock, so every test here hands
-it a fake client: nothing needs credentials, a Region or the network, and the fake
-records every request so the tests can say exactly what was sent. The coverage worker
+it a fake client, or the real one with made-up credentials and its HTTP send replaced:
+nothing needs credentials, a Region or the network, and the fake records every request
+so the tests can say exactly what was sent. The coverage worker
 is replaced by canned answers where a test is about the script's own logic; the
 end-to-end test runs the real worker over a catalog in a temporary directory when the
 UI's dependencies are installed, and in CI they always are, so there it never skips.
@@ -172,8 +173,16 @@ USAGE = {
 }
 
 
-def reply(reviews, *, usage: Any = USAGE, stop="tool_use", text: str | None = None):
-    """A Converse response: thinking, optional prose, and the review tool's call."""
+def reply(
+    reviews,
+    *,
+    usage: Any = USAGE,
+    stop="tool_use",
+    text: str | None = None,
+    retries: int | None = 0,
+):
+    """A Converse response: thinking, optional prose, and the review tool's call, with the
+    ``RetryAttempts`` botocore adds to every response (None leaves it out)."""
     content: list[dict[str, Any]] = [
         {"reasoningContent": {"reasoningText": {"text": "Looking at each message."}}}
     ]
@@ -195,6 +204,8 @@ def reply(reviews, *, usage: Any = USAGE, stop="tool_use", text: str | None = No
     }
     if usage is not None:
         response["usage"] = usage
+    if retries is not None:
+        response["ResponseMetadata"] = {"HTTPStatusCode": 200, "RetryAttempts": retries}
     return response
 
 
@@ -202,6 +213,24 @@ def sent(request) -> list[dict[str, Any]]:
     """The entries one request carried."""
     text = request["messages"][0]["content"][0]["text"]
     return json.loads(text.split("\n", 1)[1])
+
+
+def batch_ceiling(request) -> float:
+    """The most the batch one request carried can cost, every attempt included."""
+    return MODULE.ceiling_usd(
+        MODULE.Rates(4e-6, 2e-5, 2e-7, 5e-6),
+        request["system"][0]["text"],
+        [
+            MODULE.Entry(
+                id=i["id"],
+                english=i["english"],
+                description=i["description"],
+                translation=i["translation"],
+                terms=i.get("glossaryTerms", []),
+            )
+            for i in sent(request)
+        ],
+    )
 
 
 def review(item, problems=(), reason="ok", rendering=None) -> dict[str, Any]:
@@ -665,11 +694,61 @@ def test_the_cost_comes_from_the_reported_usage_at_the_model_rates(
         "usd": round(1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6, 4),
         "maxUsd": 20.0,
         "calls": 1,
+        "retriedUsd": 0.0,
+        "retriedAttempts": 0,
         "inputTokens": 1_000,
         "outputTokens": 500,
         "cacheReadInputTokens": 0,
         "cacheWriteInputTokens": 3_000,
     }
+
+
+@pytest.mark.parametrize("retries", [0, 2])
+def test_each_attempt_botocore_retried_is_counted_at_its_most_on_a_line_of_its_own(
+    tmp_path, monkeypatch, capsys, retries
+):
+    layout, _ = _tree(tmp_path, monkeypatch)
+    client = FakeBedrock(
+        lambda request: reply([review(i) for i in sent(request)], retries=retries)
+    )
+    _use_client(monkeypatch, client)
+
+    assert _run(layout, tmp_path) == 0
+
+    retried = retries * batch_ceiling(client.requests[0]) / MODULE.ATTEMPTS
+    cost = _report(tmp_path)["cost"]
+    assert cost["usd"] == round(1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6 + retried, 4)
+    assert cost["retriedUsd"] == round(retried, 4)
+    assert cost["retriedAttempts"] == retries
+    out = capsys.readouterr().out
+    markdown = (tmp_path / "out" / "report.md").read_text(encoding="utf-8")
+    note = (
+        f"US${retried:.2f} of the cost counts {retries} retried or failed attempts at "
+        "their most: a throttled attempt is not billed"
+    )
+    if retries:
+        assert f"\n  {note}\n" in out
+        assert f"\n\n{note}.\n" in markdown
+    else:
+        assert "retried" not in out
+        assert "retried" not in markdown
+
+
+def test_a_response_that_does_not_say_how_often_it_was_retried_counts_every_retry(
+    tmp_path, monkeypatch
+):
+    layout, _ = _tree(tmp_path, monkeypatch)
+    client = FakeBedrock(
+        lambda request: reply([review(i) for i in sent(request)], retries=None)
+    )
+    _use_client(monkeypatch, client)
+
+    assert _run(layout, tmp_path) == 0
+
+    per_attempt = batch_ceiling(client.requests[0]) / MODULE.ATTEMPTS
+    cost = _report(tmp_path)["cost"]
+    assert cost["retriedAttempts"] == MODULE.ATTEMPTS - 1
+    assert cost["retriedUsd"] == round((MODULE.ATTEMPTS - 1) * per_attempt, 4)
 
 
 def test_the_cap_stops_the_run_before_a_batch_that_could_pass_it(
@@ -709,21 +788,9 @@ def test_an_unreported_usage_is_counted_at_its_most(tmp_path, monkeypatch):
     assert _run(layout, tmp_path) == 0
 
     cost = _report(tmp_path)["cost"]
-    batch_ceiling = MODULE.ceiling_usd(
-        MODULE.Rates(4e-6, 2e-5, 2e-7, 5e-6),
-        client.requests[0]["system"][0]["text"],
-        [
-            MODULE.Entry(
-                id=i["id"],
-                english=i["english"],
-                description=i["description"],
-                translation=i["translation"],
-                terms=i.get("glossaryTerms", []),
-            )
-            for i in sent(client.requests[0])
-        ],
-    )
-    assert cost["usd"] == round(batch_ceiling, 4)
+    # The ceiling counts every attempt already, so the retries add nothing on top.
+    assert cost["usd"] == round(batch_ceiling(client.requests[0]), 4)
+    assert cost["retriedUsd"] == 0
 
 
 def test_a_model_with_no_price_is_refused(tmp_path, monkeypatch, capsys):
@@ -759,13 +826,15 @@ def test_an_aws_error_before_any_review_writes_no_report(tmp_path, monkeypatch, 
     def refuse(request):
         raise _client_error("AccessDeniedException")
 
-    _use_client(monkeypatch, FakeBedrock(refuse))
+    client = FakeBedrock(refuse)
+    _use_client(monkeypatch, client)
 
     assert _run(layout, tmp_path) == 2
 
-    assert (
-        "Bedrock refused the run, so no report was written" in capsys.readouterr().err
-    )
+    err = capsys.readouterr().err
+    assert "Bedrock refused the run, so no report was written" in err
+    ceiling = batch_ceiling(client.requests[0])
+    assert f"(its attempts count up to US${ceiling:.2f})" in err
     assert not (tmp_path / "out").exists()
 
 
@@ -780,7 +849,8 @@ def test_an_aws_error_after_a_batch_writes_a_partial_report(tmp_path, monkeypatc
             raise _client_error("ThrottlingException")
         return current(request)
 
-    _use_client(monkeypatch, FakeBedrock(answer))
+    client = FakeBedrock(answer)
+    _use_client(monkeypatch, client)
 
     assert _run(layout, tmp_path) == 1
 
@@ -788,6 +858,13 @@ def test_an_aws_error_after_a_batch_writes_a_partial_report(tmp_path, monkeypatc
     assert record["counts"]["same"] == 40
     assert record["counts"]["skipped"] == 1
     assert "ThrottlingException" in record["stopped"]
+    # The call that failed after its retries counts at its batch's ceiling.
+    failed = batch_ceiling(client.requests[1])
+    used = 1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6
+    assert record["cost"]["usd"] == round(used + failed, 4)
+    assert record["cost"]["retriedUsd"] == round(failed, 4)
+    assert record["cost"]["retriedAttempts"] == MODULE.ATTEMPTS
+    assert record["cost"]["calls"] == 1
 
 
 def test_an_unknown_profile_is_a_tool_error_not_a_traceback(
@@ -933,6 +1010,85 @@ def test_the_client_is_built_for_bedrock_runtime_with_a_long_read_timeout():
     assert client.meta.region_name == "ca-central-1"
     assert client.meta.config.read_timeout == 900
     assert client.meta.config.retries["total_max_attempts"] == MODULE.ATTEMPTS
+
+
+class _Body:
+    """The raw body of an HTTP response the test makes up."""
+
+    def __init__(self, data: bytes):
+        self.data = data
+
+    def stream(self, **kwargs):
+        yield self.data
+
+
+def test_botocore_retries_a_read_timeout_and_the_run_counts_every_attempt(
+    tmp_path, monkeypatch, capsys
+):
+    """The client ``make_client`` builds, with made-up credentials and its HTTP send
+    replaced, so nothing leaves the machine: the first batch times out once and is then
+    answered, and the second times out on every attempt botocore makes."""
+    from botocore.awsrequest import AWSResponse
+    from botocore.exceptions import ReadTimeoutError
+
+    for name in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-credentials"))
+
+    def no_network(self, request):
+        raise AssertionError(f"a request left the machine: {request.url}")
+
+    monkeypatch.setattr("botocore.httpsession.URLLib3Session.send", no_network)
+    monkeypatch.setattr(  # no backoff between the attempts
+        "botocore.retries.standard.ExponentialBackoff.delay_amount",
+        lambda self, context: 0,
+    )
+
+    en, fr = _many(41)
+    layout, _ = _tree(tmp_path, monkeypatch, en=en, fr=fr)
+    attempts: list[dict[str, Any]] = []
+    times_out = iter([True, False, *[True] * MODULE.ATTEMPTS])
+
+    def send(request, **kwargs):
+        body = json.loads(request.body)
+        attempts.append(body)
+        if next(times_out):
+            raise ReadTimeoutError(endpoint_url=request.url)
+        answer = reply([review(i) for i in sent(body)], retries=None)
+        data = json.dumps(answer).encode("utf-8")
+        return AWSResponse(
+            request.url, 200, {"Content-Type": "application/json"}, _Body(data)
+        )
+
+    make_client = MODULE.make_client
+
+    def client_that_sends_nothing(region, profile):
+        client = make_client(region, profile)
+        client.meta.events.register("before-send.bedrock-runtime.Converse", send)
+        return client
+
+    monkeypatch.setattr(MODULE, "make_client", client_that_sends_nothing)
+
+    assert _run(layout, tmp_path) == 1
+
+    assert len(attempts) == 2 + MODULE.ATTEMPTS
+    # botocore reports the first batch's one retry (RetryAttempts 1; a response that did
+    # not say would count ATTEMPTS - 1), and the second batch counts at its ceiling.
+    retried = batch_ceiling(attempts[0]) / MODULE.ATTEMPTS + batch_ceiling(attempts[2])
+    record = _report(tmp_path)
+    assert record["counts"]["same"] == 40
+    assert "Read timeout on endpoint URL" in record["stopped"]
+    used = 1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6
+    assert record["cost"]["usd"] == round(used + retried, 4)
+    assert record["cost"]["retriedUsd"] == round(retried, 4)
+    assert record["cost"]["retriedAttempts"] == 1 + MODULE.ATTEMPTS
+    note = (
+        f"US${retried:.2f} of the cost counts {1 + MODULE.ATTEMPTS} retried or failed"
+    )
+    assert note in capsys.readouterr().out
 
 
 # --- end to end, with the real coverage worker -------------------------------------

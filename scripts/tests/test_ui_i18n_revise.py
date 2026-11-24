@@ -263,8 +263,16 @@ USAGE = {
 }
 
 
-def reply(revisions, *, usage: Any = USAGE, stop="tool_use", text: str | None = None):
-    """A Converse response: thinking, optional prose, and the revision tool's call."""
+def reply(
+    revisions,
+    *,
+    usage: Any = USAGE,
+    stop="tool_use",
+    text: str | None = None,
+    retries: int = 0,
+):
+    """A Converse response: thinking, optional prose, and the revision tool's call, with
+    the ``RetryAttempts`` botocore adds to every response."""
     content: list[dict[str, Any]] = [
         {"reasoningContent": {"reasoningText": {"text": "Looking at each message."}}}
     ]
@@ -283,6 +291,7 @@ def reply(revisions, *, usage: Any = USAGE, stop="tool_use", text: str | None = 
     response: dict[str, Any] = {
         "output": {"message": {"role": "assistant", "content": content}},
         "stopReason": stop,
+        "ResponseMetadata": {"HTTPStatusCode": 200, "RetryAttempts": retries},
     }
     if usage is not None:
         response["usage"] = usage
@@ -293,6 +302,24 @@ def sent(request) -> list[dict[str, Any]]:
     """The entries one request carried."""
     text = request["messages"][0]["content"][0]["text"]
     return json.loads(text.split("\n", 1)[1])
+
+
+def batch_ceiling(layout, request) -> float:
+    """The most the batch one request carried can cost, every attempt included."""
+    batch = [
+        MODULE.Target(
+            id=item["id"],
+            english=item["english"],
+            description=item["description"],
+            before=item.get("translation"),
+            terms=item.get("glossaryTerms", []),
+            flagged=item.get("review"),
+            note=item.get("note", ""),
+        )
+        for item in sent(request)
+    ]
+    rates = REVIEW.read_rates(layout.pricing, REVIEW.DEFAULT_MODEL)
+    return MODULE.ceiling_usd(rates, request["system"][0]["text"], batch)
 
 
 #: What the fake model writes per id; any other id keeps its current text.
@@ -1032,6 +1059,30 @@ def test_the_cost_comes_from_the_reported_usage_and_an_unreported_one_counts_at_
     assert _provenance(layout)["cost"]["usd"] > 0.5  # one batch at its ceiling
 
 
+def test_each_attempt_botocore_retried_is_counted_at_its_most_and_shown_apart(
+    tmp_path, monkeypatch, capsys
+):
+    layout, report_path, notes_path, _ = _tree(tmp_path, monkeypatch)
+    answer = answer_with()
+    client = FakeBedrock(
+        lambda r: {**answer(r), "ResponseMetadata": {"RetryAttempts": 2}}
+    )
+    _use_client(monkeypatch, client)
+
+    assert _run(layout, report_path, notes_path) == 0
+
+    retried = 2 * batch_ceiling(layout, client.requests[0]) / REVIEW.ATTEMPTS
+    cost = _provenance(layout)["cost"]
+    used = 1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6
+    assert cost["usd"] == round(used + retried, 4)
+    assert cost["retriedUsd"] == round(retried, 4)
+    assert cost["retriedAttempts"] == 2
+    assert (
+        f"\n  US${retried:.2f} of the cost counts 2 retried or failed attempts at their "
+        "most: a throttled attempt is not billed\n"
+    ) in capsys.readouterr().out
+
+
 def _client_error(code: str) -> ClientError:
     return ClientError({"Error": {"Code": code, "Message": "no"}}, "Converse")
 
@@ -1042,11 +1093,15 @@ def test_an_aws_error_before_any_answer_writes_nothing(tmp_path, monkeypatch, ca
     def refuse(request):
         raise _client_error("AccessDeniedException")
 
-    _use_client(monkeypatch, FakeBedrock(refuse))
+    client = FakeBedrock(refuse)
+    _use_client(monkeypatch, client)
 
     assert _run(layout, report_path, notes_path) == 2
 
-    assert "Bedrock refused the run, so nothing was written" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "Bedrock refused the run, so nothing was written" in err
+    ceiling = batch_ceiling(layout, client.requests[0])
+    assert f"(its attempts count up to US${ceiling:.2f})" in err
     assert not (layout.repo_root / "test-reports").exists()
     assert _catalog(layout) == _fr()
 
@@ -1066,7 +1121,8 @@ def test_an_aws_error_after_a_batch_writes_what_passed(tmp_path, monkeypatch):
         except StopIteration:
             raise _client_error("ThrottlingException") from None
 
-    _use_client(monkeypatch, FakeBedrock(answer))
+    client = FakeBedrock(answer)
+    _use_client(monkeypatch, client)
 
     assert _run(layout, report_path, notes_path) == 1
 
@@ -1079,6 +1135,12 @@ def test_an_aws_error_after_a_batch_writes_what_passed(tmp_path, monkeypatch):
         "skipped": 10,
     }
     assert _catalog(layout)["m.039"]["message"] == "Nouveau"
+    # The call that failed after its retries counts at its batch's ceiling.
+    failed = batch_ceiling(layout, client.requests[1])
+    used = 1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6
+    assert record["cost"]["usd"] == round(used + failed, 4)
+    assert record["cost"]["retriedUsd"] == round(failed, 4)
+    assert record["cost"]["retriedAttempts"] == REVIEW.ATTEMPTS
 
 
 # --- what cannot be revised ---------------------------------------------------------

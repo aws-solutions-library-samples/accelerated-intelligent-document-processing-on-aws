@@ -459,7 +459,9 @@ estimated cost and calls nothing; a real run needs `--region` (and `--profile` f
   `make check-ui-i18n-catalog` checks it.
 - **Model and cost.** The default model is `us.anthropic.claude-opus-5-5`; `--model` takes another inference profile
   of it that has a price in `config_library/pricing.yaml`. The run refuses to start above `--max-usd` (US$20 by
-  default) and stops before any batch that could take it past the cap.
+  default) and stops before any batch that could take it past the cap. Each attempt botocore retried, and every
+  attempt of a call that failed, counts at its most, since a timed-out attempt may be billed; the report shows that
+  part on a line of its own.
 - **Permissions.** `bedrock:InvokeModel` on the inference profile and on the foundation model in each Region the
   profile routes to.
 - **Exit status.** 0 when the report covers every entry (or a dry run within the cap), 1 when it is partial (the
@@ -492,7 +494,8 @@ and calls nothing; a real run needs `--region` (and `--profile` for a named prof
   `test-reports/ui-i18n-revise/`. `make ui-i18n-review` with `--provenance <file>` reviews the entries that run
   wrote. When the same model wrote them, that review is not independent of the revision.
 - **Model and cost.** As the review: `us.anthropic.claude-opus-5-5` by default, a refusal to start above
-  `--max-usd` (US$20 by default), and a stop before any batch that could take the run past it.
+  `--max-usd` (US$20 by default), a stop before any batch that could take the run past it, and retried attempts
+  counted at their most, apart in the provenance.
 - **Exit status.** 0 when every entry sent was answered and checked and none was refused (or a dry run within the
   cap), 1 when an answer was refused or the cap or an AWS error stopped the run (what passed is written, the rest is
   listed), 2 when nothing was written.
