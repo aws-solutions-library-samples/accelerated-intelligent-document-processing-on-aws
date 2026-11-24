@@ -41,6 +41,7 @@ Check each of these that applies to you:
 | reprocess documents with the SDK, the CLI or the MCP tool | [SDK, CLI and MCP](#sdk-cli-and-mcp) |
 | have dashboards, alarms or tooling that name Step Functions states | [State names](#state-names) |
 | use policy rule validation together with review | [Policy rule validation and review](#policy-rule-validation-and-review) |
+| deployed with the `rule-validation` Configuration Preset, or use its healthcare samples | [The rule-validation preset is now a bank statement review](#the-rule-validation-preset-is-now-a-bank-statement-review) |
 | query the reporting database | [Reporting](#reporting) |
 | document or script the configuration page | [Names in the web UI](#names-in-the-web-ui) |
 
@@ -168,6 +169,28 @@ Two further changes to policy rule validation:
   per policy rule the symbolic engine did not decide.
 
 See [Rule Validation](./rule-validation.md).
+
+### The rule-validation preset is now a bank statement review
+
+The `rule-validation` preset no longer holds the healthcare prior-authorization
+configuration. It holds the policy rules of
+`samples/rule-validation/bank-statement-review-policy.pdf` and validates
+`samples/bank-statement-multipage.pdf`, so rule validation, Policy Discovery and the
+review routing showcase share one sample domain. The healthcare samples
+`medicare_respiratory_pa_packet.pdf` and `NCCI Medicare Policy Manual.pdf` are
+removed from `samples/rule-validation/`.
+
+A stack deployed with **Configuration Preset** `rule-validation` takes the bank
+statement configuration as its `default` profile on its next update, replacing the
+prior-authorization classes, policy classes and policy rules `default` held. Another
+profile keeps every setting it saved, and takes the new `default`'s value for any
+setting it does not hold.
+
+⚠️ **Action:** if you process prior-authorization documents with `default` on such a
+stack, copy it into a profile of your own before you upgrade (**Create profile** in
+the Configuration Profiles table) and make that profile active. The Health Insurance
+Review sample feature keeps the prior-authorization classes and policy rules in its
+own configuration preset, but ships no sample document.
 
 ### State names
 
