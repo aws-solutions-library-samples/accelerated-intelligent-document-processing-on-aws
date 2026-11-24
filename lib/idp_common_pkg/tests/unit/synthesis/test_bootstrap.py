@@ -230,6 +230,42 @@ class TestSetProcessingOptions:
             )
         assert json.dumps(cm.saved, sort_keys=True) == before
 
+    def test_a_sparse_profile_is_judged_by_the_model_it_inherits_from_default(self):
+        """A profile naming no extraction model runs with default's, so that one counts."""
+        cm = self._profile()
+        cm.saved["default"] = {"extraction": {"model": "openai.gpt-5.5"}}
+        before = json.dumps(cm.saved, sort_keys=True)
+        with pytest.raises(ValueError, match="openai.gpt-5.5"):
+            bootstrap.set_processing_options(
+                "invoices", config_manager=cm, long_tables=True
+            )
+        assert json.dumps(cm.saved, sort_keys=True) == before
+
+    def test_the_profiles_own_model_wins_over_the_one_default_names(self):
+        cm = self._profile(extraction={"model": "m"})
+        cm.saved["default"] = {"extraction": {"model": "openai.gpt-5.5"}}
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, long_tables=True
+        )
+        assert cm.saved["invoices"]["extraction"]["mode"] == "advanced"
+        assert "mode" not in cm.saved["default"]["extraction"]
+
+    def test_long_tables_is_refused_for_an_escalation_model_it_cannot_call(self):
+        cm = self._profile(
+            extraction={
+                "model": "m",
+                "validation": {
+                    "enabled": True,
+                    "fail_action": "escalate",
+                    "escalation_model": "openai.gpt-5.5",
+                },
+            }
+        )
+        with pytest.raises(ValueError, match="openai.gpt-5.5"):
+            bootstrap.set_processing_options(
+                "invoices", config_manager=cm, long_tables=True
+            )
+
     def test_simple_extraction_is_still_allowed_for_that_model(self):
         cm = self._profile(extraction={"model": "openai.gpt-5.5"})
         bootstrap.set_processing_options(
