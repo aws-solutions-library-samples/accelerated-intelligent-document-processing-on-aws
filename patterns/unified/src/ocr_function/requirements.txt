@@ -1,3 +1,2 @@
 ../../lib/idp_common_pkg[ocr,docs_service]  # OCR module and document service with dependencies
-numpy>=1.24.0,<2.0.0  # Pin numpy to stable version
 pandas>=1.5.0,<3.0.0  # Pin pandas to stable version

@@ -8,5 +8,5 @@
 # HF_HOME setup has to happen before huggingface_hub loads), so the tests import
 # the real libraries and stub only their call sites.
 huggingface-hub==0.20.0
-pyarrow==23.0.1
+pyarrow==26.0.1
 pytest>=8.0

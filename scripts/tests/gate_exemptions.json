@@ -292,6 +292,17 @@
       "reason": "Layer size reduction, not a gate.",
       "ratchetGap": "Not a gate; same as PRUNE_DIRS."
     },
+    "feature-platform/confbench-testset/shared/prune_layer.py::PRUNE_GLOBS_S3": {
+      "kind": "prune",
+      "memberKind": "path",
+      "turnsOff": "Lambda layer packaging, for pyarrow's S3 filesystem",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "feature-platform/confbench-testset/shared/prune_layer.py",
+      "reason": "Layer size reduction, not a gate. The build fails if either glob matched nothing or if a surviving object links libarrow_s3, and tests/test_prune_layer.py fails if a function that mounts the layer names pyarrow.fs, S3FileSystem or an s3:// URI in a pyarrow call."
+    },
     "feature-platform/seller-entitlement-service/tests/test_payload_robustness.py::_ALLOWED": {
       "kind": "enforced-universe",
       "memberKind": "response shape",
