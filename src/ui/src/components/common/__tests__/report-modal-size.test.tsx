@@ -62,7 +62,7 @@ describe('Reports dialog width', () => {
     ['Estimated Cost', () => <EstimatedCostModal meteringData={{}} pageCount={1} onDismiss={noop} />],
     ['History', () => <EditorHistoryModal visible onDismiss={noop} sectionData={{ inference_result: {} }} />],
   ])('%s uses the shared size', (header, dialog) => {
-    render(dialog());
+    render(dialog(), { wrapper: English });
     expect(screen.getByRole('heading', { level: 2 }).textContent).toContain(header);
     expect(modalSize()).toBe(REPORT_MODAL_SIZE);
   });

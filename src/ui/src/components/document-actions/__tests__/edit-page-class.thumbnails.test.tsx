@@ -56,9 +56,9 @@ vi.mock('../../document-panel/DocumentVersionsPanel', () => ({
 vi.mock('../../document-panel/DocumentDownloadModals', () => ({ DownloadOptionsModal: () => null, DownloadProgressModal: () => null }));
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
-  MarkdownReport: ({ title, emptyMessage, reportUri }: { title: string; emptyMessage: string; reportUri: string }) => (
+  MarkdownReport: ({ report, emptyMessage, reportUri }: { report: string; emptyMessage: string; reportUri: string }) => (
     <div data-testid="markdown-report">
-      {title}|{emptyMessage}|{reportUri}
+      {report}|{emptyMessage}|{reportUri}
     </div>
   ),
 }));

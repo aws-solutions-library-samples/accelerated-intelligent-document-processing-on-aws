@@ -12,9 +12,16 @@
 
 import { render, screen } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import ProcessingReportTab from '../ProcessingReportTab';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const renderFlow = () =>
   render(
@@ -31,6 +38,7 @@ const renderFlow = () =>
         },
       }}
     />,
+    { wrapper: English },
   );
 
 // The stage box is the label's grandparent: label div → card → positioned wrapper.

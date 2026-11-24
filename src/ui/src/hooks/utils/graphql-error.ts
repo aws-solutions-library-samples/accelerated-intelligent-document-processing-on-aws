@@ -165,7 +165,7 @@ export const fileAccessMessages = defineMessages<{ denied: NoMessageValues }>({
   },
 });
 
-/** The same message in English, written once: the export manifest records it, and the viewers not yet translated show it. */
+/** The same message in English, written once: the export manifest records it, and tests compare with it. */
 export const FILE_ACCESS_DENIED_MESSAGE = String(fileAccessMessages.denied.defaultMessage);
 
 /** The two sentences `describeApiError` words, written once for both of its forms. */
