@@ -1,0 +1,15 @@
+query GetProcessChangesPlan($objectKey: String!) {
+  getProcessChangesPlan(objectKey: $objectKey) {
+    mode
+    startStep
+    steps {
+      id
+      label
+      state
+    }
+    sections {
+      sectionId
+      cause
+    }
+  }
+}

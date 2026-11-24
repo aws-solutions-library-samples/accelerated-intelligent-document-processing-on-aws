@@ -25,9 +25,13 @@ const messages = defineMessages<{
   buttonCancel: Bold;
   buttonSave: Bold;
   buttonProcessChanges: Bold & { readonly processChanges: string };
+  buttonProcessChangesDocument: NoMessageValues;
+  buttonProcessChangesQueueItem: Bold;
+  buttonProcessChangesTestStudio: NoMessageValues;
   headingReports: NoMessageValues;
   reportHistory: Bold;
   reportSummary: Bold;
+  reportPolicyRuleValidation: Bold;
   reportProcessing: Bold;
   headingMoreActions: NoMessageValues;
   moreActionsBaseline: Bold;
@@ -90,10 +94,30 @@ const messages = defineMessages<{
   },
   buttonProcessChanges: {
     id: 'editScreen.toolsPanel.button.processChanges',
-    defaultMessage:
-      '<b>{processChanges}</b> saves, then processes the changes: evaluation and summarization re-run, and OCR, classification and extraction are not repeated. It finishes a queue item. On a Test Studio document it also writes the labels as reviewed ground truth; when no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.',
+    defaultMessage: '<b>{processChanges}</b> saves, then processes the changes:',
     description:
-      "Help panel note on the edit page's action bar. {processChanges} is the label of the bar's Process Changes button, in bold. A queue item is a review queue item; a Test Studio document is a test-set item, and the set is its test set.",
+      "Help panel note on the edit page's action bar: introduces the list of what Process Changes does, by where the document was opened from. {processChanges} is the label of the bar's Process Changes button, in bold.",
+  },
+  buttonProcessChangesDocument: {
+    id: 'editScreen.toolsPanel.button.processChangesDocument',
+    defaultMessage:
+      'On a document opened from its page, it asks you to confirm and lists the steps of the run that follows. The steps before the one it starts at are not repeated.',
+    description:
+      "Help panel note on the edit page's action bar, first in the list under the Process Changes note: what Process Changes does on a document that is not in a review queue. The run is the processing run it starts; its steps are processing steps.",
+  },
+  buttonProcessChangesQueueItem: {
+    id: 'editScreen.toolsPanel.button.processChangesQueueItem',
+    defaultMessage:
+      'On a queue item, it asks how the review ends and lists the steps of the run that follows. <b>Complete the review</b> keeps your corrections; a section whose pages you changed is extracted again first. <b>Send back for reprocessing</b> discards your corrections and any page regrouping, and the document is processed again from classification (from the beginning in BDA mode).',
+    description:
+      "Help panel note on the edit page's action bar, second in the list under the Process Changes note: what Process Changes does on a review queue item. Each bold text names one of the two options of the dialog it opens. Classification is a processing step; BDA mode is the processing mode that uses Bedrock Data Automation.",
+  },
+  buttonProcessChangesTestStudio: {
+    id: 'editScreen.toolsPanel.button.processChangesTestStudio',
+    defaultMessage:
+      'On a Test Studio document, it also writes the labels as reviewed ground truth. When no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.',
+    description:
+      "Help panel note on the edit page's action bar, third in the list under the Process Changes note: what Process Changes does on a Test Studio document. A Test Studio document is a test-set item, and the set is its test set.",
   },
   headingReports: {
     id: 'editScreen.toolsPanel.heading.reports',
@@ -109,6 +133,12 @@ const messages = defineMessages<{
     id: 'editScreen.toolsPanel.report.summary',
     defaultMessage: "<b>Summary</b>: the document's summary, once it is finished.",
     description: "Help panel note on the Reports menu of the edit page's action bar. <b>Summary</b> is the label of a menu item, in bold.",
+  },
+  reportPolicyRuleValidation: {
+    id: 'editScreen.toolsPanel.report.policyRuleValidation',
+    defaultMessage: '<b>Policy Rule Validation Summary</b>: the policy rules the document passed and failed, with the reason for each.',
+    description:
+      "Help panel note on the Reports menu of the edit page's action bar. <b>Policy Rule Validation Summary</b> is the label of a menu item, in bold.",
   },
   reportProcessing: {
     id: 'editScreen.toolsPanel.report.processing',
@@ -238,6 +268,17 @@ const EditScreenToolsPanel = (): React.JSX.Element => {
               {...messages.buttonProcessChanges}
               values={{ b: bold, processChanges: intl.formatMessage(sharedLabelMessages.processChanges) }}
             />
+            <ul>
+              <li>
+                <FormattedMessage {...messages.buttonProcessChangesDocument} />
+              </li>
+              <li>
+                <FormattedMessage {...messages.buttonProcessChangesQueueItem} values={{ b: bold }} />
+              </li>
+              <li>
+                <FormattedMessage {...messages.buttonProcessChangesTestStudio} />
+              </li>
+            </ul>
           </li>
         </ul>
         <h3>
@@ -249,6 +290,9 @@ const EditScreenToolsPanel = (): React.JSX.Element => {
           </li>
           <li>
             <FormattedMessage {...messages.reportSummary} values={{ b: bold }} />
+          </li>
+          <li>
+            <FormattedMessage {...messages.reportPolicyRuleValidation} values={{ b: bold }} />
           </li>
           <li>
             <FormattedMessage {...messages.reportProcessing} values={{ b: bold }} />

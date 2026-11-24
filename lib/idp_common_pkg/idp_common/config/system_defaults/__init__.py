@@ -15,6 +15,7 @@ The defaults are organized into modular files:
 - base-classification.yaml: LLM classification settings
 - base-extraction.yaml: LLM extraction settings
 - base-confidence.yaml: Per-field confidence assessment + HITL thresholds
+- base-routing.yaml: Review routing table (built-in rules)
 - base-geometry.yaml: Field bounding-box geometry mode
 - base-summarization.yaml: Document summarization
 - base-chat.yaml: Chat-with-Document (interactive Q&A)

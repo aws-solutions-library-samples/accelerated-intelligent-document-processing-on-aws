@@ -26,10 +26,13 @@ use_bda: true
 # the confidence/geometry/HITL defaults it carried before that split. They
 # contribute only the `confidence` and `geometry` sub-sections of `extraction`,
 # never the LLM extraction settings BDA does not use.
+# base-routing.yaml is the review routing table, which is evaluated in BDA mode
+# as it is in Pipeline mode.
 _inherits:
   - base-notes.yaml
   - base-classes.yaml
   - base-confidence.yaml
+  - base-routing.yaml
   - base-geometry.yaml
   - base-summarization.yaml
   - base-evaluation.yaml

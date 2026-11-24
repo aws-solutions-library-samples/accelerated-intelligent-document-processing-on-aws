@@ -1,0 +1,15 @@
+query TestRoutingTable($objectKey: String!, $routing: AWSJSON) {
+  testRoutingTable(objectKey: $objectKey, routing: $routing) {
+    decision
+    matchedRuleId
+    ruleLabel
+    outcomeKind
+    outcomeQueue
+    placedQueue
+    fallbackReason
+    inputs
+    staleReferences
+    reason
+    reasonSource
+  }
+}

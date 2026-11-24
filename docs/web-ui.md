@@ -25,7 +25,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - View and edit pattern configuration, including document classes, prompt engineering, and model settings
 - Manage multiple configuration profiles — create, compare, activate, and delete profiles, and view/compare/restore each profile's revision history (see [configuration-profiles.md](configuration-profiles.md))
 - Retain, view, compare, and delete **document versions** — every processing run of a document is kept and viewable read-only (see [document-versions.md](document-versions.md))
-- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the **Human-in-the-Loop (HITL) Review (Optional)** configuration section
+- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the **Review Routing (Optional)** section of the configuration's **Processing Settings**
 - Document upload from your local computer, or from the **bundled sample documents** shipped with the deployment (no local download needed)
 - Knowledge base querying for document collections
 - "Chat with document" from the detailed view of the document
@@ -170,7 +170,7 @@ beside it, left to right:
   Details brings them back, as you left them.
 - **Reports** — read-only views, each in a dialog of the same width as the edit page's
   Reports dialogs (Evaluation Report opens wider): **Summary**, **Evaluation Report**
-  (see [Evaluation report](#evaluation-report)), **Rule Validation Summary**,
+  (see [Evaluation report](#evaluation-report)), **Policy Rule Validation Summary**,
   **Estimated Cost** (the document's metering, priced, with the cost per page in the
   dialog's title; for the roles that may read the pricing, Admin, Author and Viewer) and
   **Processing Flow** (see
@@ -193,13 +193,21 @@ beside it, left to right:
   - **Download All (ZIP)**, **Download Predictions (ZIP)** and **Download Baselines
     (ZIP)** — the document's outputs as a ZIP (see
     [Download Document Data](#download-document-data)).
-  - **Reprocess**, **Abort** and **Delete**, Delete last.
+  - **Reprocess** (see [Reprocessing a document](#reprocessing-a-document)), **Abort**
+    and **Delete**, Delete last.
 - **Refresh** — read the document again.
 - **Troubleshoot** — an AI analysis of what went wrong with the document. Reopened on
   the same document it shows the last result; **Run again** starts a new analysis.
 - **Start Review** — claim a pending review, where a document has one nobody holds yet.
 - **Edit** — the primary action: the document's edit page (see [Review Studio](#review-studio)), or its
   queue item while it is in a review queue and you work queues.
+
+A document that a routing rule placed in a review queue shows two more fields among
+its details, beside **Review Owner** and **Review Completed By**: **Review queue**,
+the queue's name with the routing rule under it (**Routed by rule: …**, or **Routed
+by the default outcome**), and **Routing reason**, the reason that routing rule gave
+the reviewer, with this document's values in it. A long reason shows its beginning,
+with **Show more**.
 
 An action your role can never perform is not shown. One your role may perform but that
 doesn't apply now is shown disabled, and hovering it says why: you are viewing a past
@@ -359,7 +367,7 @@ The board has two saves:
 | Extracted values | **kept**, including any a reviewer corrected | **replaced** for the sections whose class or pages changed |
 | Reprocessing | none | the changed sections are extracted again; OCR and classification are not repeated |
 | A pending review | unchanged | marked as completed |
-| Rule validation results | unchanged | cleared |
+| Policy rule validation results | unchanged | cleared |
 | Roles | Admin, Reviewer | Admin, Reviewer |
 
 **Save page grouping** writes the page grouping and the section classes and nothing else.
@@ -369,8 +377,9 @@ you to confirm, then saves the grouping and re-extracts those sections; their cl
 recorded as confirmed. If the grouping is saved but the re-extract fails, a dialog says
 so, with **Re-extract again**. It is unavailable when only the page order changed (there
 is nothing to re-extract), while a changed section has no class, and in BDA mode, where
-the pipeline's extraction does not run. The edit page's own **Process Changes** re-runs
-evaluation and summarization only, so it keeps the values too.
+the pipeline's extraction does not run. The edit page's own **Process Changes** starts
+at policy rule validation when every section has its values, so it keeps the values too
+(see [What Process Changes runs](#what-process-changes-runs)).
 
 **Refused while the document is processing, in a review queue, or under a review in
 progress.** A grouping save writes the document directly, so it would race a run in
@@ -395,7 +404,7 @@ that look wrong while the grouping is right. Choose the sections in the dialog; 
 with no class, and one its configuration skips, can't be chosen. Before you commit, the
 dialog says what re-extracting does: the sections' extracted values, including any
 corrected by hand, are replaced, and their classes are recorded as confirmed; a pending
-review is marked as completed and rule validation results are cleared; the other
+review is marked as completed and policy rule validation results are cleared; the other
 sections keep their values, and OCR and classification are not repeated.
 
 ![Document Details page for a six-page lending package, showing the Document Sections panel with each section's class, pages, low-confidence field count and status](../images/webui-document-sections.png)
@@ -406,6 +415,33 @@ Data Automation produced the values, and the workflow skips it for any document 
 still has sections, so a re-extracted section would come back with no values. To correct
 a value in any mode, use **Edit Data** in the section row's ⋮ menu: it opens the edit
 screen on the section and writes the value without reprocessing anything.
+
+## Reprocessing a document
+
+**More Actions › Reprocess** on a document's page, and **Reprocess** on documents
+selected in the Document List, open the **Reprocess** dialog.
+
+- **Start at** chooses the step the run begins with: **OCR (beginning)**,
+  **Classification**, **Extraction**, **Assessment**, **Policy Rule Validation**,
+  **Summarization** or **Evaluation** in Pipeline mode; the beginning, Policy Rule
+  Validation, Summarization or Evaluation in BDA mode. The run does that step and every
+  later step again, and keeps what the earlier steps produced. A step that is not
+  available is greyed out with the reason: the document does not have the output of the
+  earlier steps, it is being processed, or the configuration you chose allows the
+  beginning only.
+- For a document that failed, **Resume from the failed step** starts the run at the
+  first step whose output is missing.
+- With several documents selected, a step is offered when every one of them can start
+  at it; otherwise it says for how many it is not available.
+- You can choose another configuration profile or revision. Another profile starts at
+  the beginning (see
+  [Reprocessing from a later step](configuration-profiles.md#reprocessing-from-a-later-step)).
+- After you confirm, the dialog closes when every document was queued. When some were
+  not, it stays open with a result for each document: **Queued**, or **Not queued** with
+  the reason.
+
+Reprocessing a document that waits in a review queue withdraws its review. See
+[Document Versions](document-versions.md#reprocessing) for what each start step clears.
 
 ## BDA-mode documents offer data-only editing
 
@@ -431,8 +467,9 @@ page's **Save** and **Process Changes**.
 The server applies the same rule. `processChanges` refuses any section or page change to
 a document whose profile routes it to BDA, for every role including Admin, with an error
 beginning `BDA_MODE:`, and nothing about the document is changed. A request with no
-section or page changes — field values already saved, reprocessed for evaluation and
-summarization — is accepted. The mode is the one the requeued run will take, so a
+section or page changes — field values already saved, and a run from policy rule
+validation on — is accepted. The same holds in a review queue: the page grouping of a
+BDA-mode document cannot be changed from its queue item. The mode is the one the requeued run will take, so a
 document whose profile sets `use_bda` with no BDA project linked takes section and page
 changes. If the profile or the document's pinned revision cannot be read, a section or
 page change is refused rather than assumed to be safe.
@@ -483,7 +520,7 @@ editing, at the first page with text or at the row's page. Switch the right pane
 **Markdown** and choose **Raw (editable)** to edit the text, then **Save and Reprocess**:
 it saves the page's text, then extracts again the sections that hold the page, replacing
 their values, including any corrected by hand. A pending review is marked as completed
-and rule validation results are cleared. Moving to another page with unsaved edits is
+and policy rule validation results are cleared. Moving to another page with unsaved edits is
 disabled until you save or discard them.
 
 If the text is saved but the reprocess fails, the dialog says so and offers **Retry
@@ -501,8 +538,8 @@ Admin is the only role allowed both.
 document. ⚠️ **It classifies the whole document again**, not only those pages: every page
 is classified again, so pages can move to other sections and sections can be added or
 removed, and every section is rebuilt and extracted again, so values corrected by hand
-in any section are replaced. A pending review is marked as completed and rule validation
-results are cleared. The dialog says so before anything is sent. Admins and Reviewers can
+in any section are replaced. A pending review is marked as completed and policy rule
+validation results are cleared. The dialog says so before anything is sent. Admins and Reviewers can
 reset; a user who is only a Reviewer can't once the review has finished, or before they
 hold it.
 
@@ -536,6 +573,44 @@ A three-pane master-detail: the **class list** (left, split into **Document Type
 - **Reorder / edit / remove**: drag attributes to reorder; click any class or attribute to edit its properties, constraints, few-shot examples, and per-class overrides in the inspector.
 
 For the schema format itself and how to author it by hand, see the [JSON Schema Migration Guide](json-schema-migration.md).
+
+## Routing Rules Tab
+
+The **Routing Rules** tab on the Configuration page, after **Policy Schema**, holds
+the profile's routing table: the routing rules that decide whether a processed
+document is reviewed and in which review queue. It lists the routing rules in the
+order they are tried, with each one's id, label, conditions, outcome and **Enabled**
+switch, then the **Default outcome** and **Maximum placements in a row**. A routing
+rule's label opens it.
+
+- Admins **Add routing rule**, and edit, duplicate, move, disable and delete routing
+  rules from each one's **Actions** menu (**Edit**, **Duplicate**, **Move up**, **Move
+  down**, **Delete**, which asks first) or by dragging. **More actions** holds
+  **Import DMN**, **Export DMN 1.5**, **Export DMN 1.3** and **Restore built-in
+  routing rules**. **Test on a document** runs the table as shown on a processed
+  document and changes nothing.
+- The routing rule dialog has the groups **Routing rule** (id, label, enabled),
+  **Conditions** and **Outcome and reason**. Each condition is in a box of its own,
+  titled with its number, with its menu at the top right. A condition's value is entered with
+  guided controls (yes or no, a list of values, a comparison and a number), or as a
+  test expression with **Edit as expression**. With **Send to a review queue**
+  chosen, **Reason for the reviewer (optional)** takes the text the reviewer is
+  told, and **Insert value** adds a placeholder that is filled with the document's
+  value.
+- Other roles see the table read-only and can open a routing rule to read it: only
+  Admins can change routing rules.
+- The tab warns when **Review Routing** is off for the profile (with **Open
+  Processing Settings**, where the switch is), when the Default review queue is off
+  (Admins), when a routing rule reads a policy rule result while policy rule
+  validation is off, and about routing rules that can never match or that name a
+  queue that does not exist.
+
+Whether routing rules are evaluated at all is the **Review Routing** switch, in
+**Processing Settings → Review Routing (Optional)**. That section comes after
+**Policy Rule Validation (Optional)**, in the order the pipeline runs the two steps.
+
+Routing rules, inputs, tests, the reason and its placeholders, the warnings and the
+DMN format are described in [Review Routing](review-routing.md).
 
 ## Prompt Preview
 
@@ -618,6 +693,7 @@ _The Document Process Flow visualization showing the execution steps, status, an
 - **Timeline View**: Chronological view of all processing steps with duration information
 - **Auto-Refresh**: Option to automatically refresh the flow data for active executions
 - **Map State Support**: Visualization of Map state iterations for parallel processing workflows
+- **Skipped Steps**: A run that started at a later step (a reprocess from Extraction, a run after a completed review) or left out an optional step shows each step it did not do as one greyed **Skipped** entry, in step order, with a note of where the run started
 
 ### How to Use
 
@@ -693,7 +769,7 @@ The Document Details page includes a **Version History** panel listing every ret
 
 From the panel you can, using each row's **⋮** menu:
 
-- **View** any past version's outputs (the version shown reads **Viewing**) read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. While you view a past version, every action that changes the document is disabled with the reason, as are **Refresh** and **Edit**, and **Rule Validation Summary** is unavailable because rule validation isn't kept for past versions; a banner offers **Return to current version**.
+- **View** any past version's outputs (the version shown reads **Viewing**) read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. While you view a past version, every action that changes the document is disabled with the reason, as are **Refresh** and **Edit**, and **Policy Rule Validation Summary** is unavailable because policy rule validation results aren't kept for past versions; a banner offers **Return to current version**.
 - **Compare** any two versions — a section-by-section, field-level diff of their extraction results.
 - **Delete** a version (Admin only) — permanently removes that run's pinned object versions; the current version cannot be deleted, and versions still referenced by another retained run are preserved.
 
@@ -764,13 +840,18 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
 - **Review Management** (Admins) has two tables, **Production Queues** and **Test Studio
   Queues** (one per test set), one at a time: the **Production | Test Studio** switch
   beside **Refresh** chooses which. Each lists Queue, Items, Pending, Assigned and
-  Annotators with an actions menu. Admins edit and delete Production queues here,
-  setting each one's name, priority, time limit, eligible Annotators (who works the
-  queue) and **Enabled** switch in its **Settings**; there is no **Create queue**.
-  When HITL is enabled in a document's configuration and the Default queue is
-  enabled, a production document that raised confidence alerts goes to the Default
-  queue. Queues have no threshold of their own: the alerts use each field's own
-  threshold, otherwise `hitl.confidence_threshold`. Deleting a queue moves its
+  Annotators with an actions menu. Admins create (**Create queue**), edit and delete
+  Production queues here, setting each one's name, priority, time limit, eligible
+  Annotators (who works the queue) and **Enabled** switch in its **Settings**.
+  Which queue a document goes to is decided by the routing rules of its
+  configuration profile (see [Routing Rules Tab](#routing-rules-tab)); with the
+  built-in routing rules, a production document that raised confidence alerts, left
+  a required field without a value or has a section whose extraction failed goes
+  to the Default queue, when Review Routing is on in its configuration and the
+  Default queue is enabled.
+  Queues have no threshold of their own: the alerts use each field's own
+  threshold, otherwise `hitl.confidence_threshold`. A queue's page lists the
+  **Routing rules that use this queue**. Deleting a queue moves its
   items to Default; Default itself can't be deleted. On each queue's page, Admins
   select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
   to another queue, or **Remove from queue** (the document completes with
@@ -820,16 +901,24 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   disabled with the reason otherwise, for example "Claim this item first"). They are hidden while the original file is shown.
   The page's actions are in one bar at the top, left to right: **Edit | View** (the original
   file in the editor's place); **Reports** (**History**, field edits and review
-  activity; **Summary**; **Processing Report**; each in a dialog of the same width); **More Actions** (**Use As Evaluation
+  activity; **Summary**; **Policy Rule Validation Summary**, the policy rules the
+  document passed and failed with the reason for each; **Processing Report**; each in a
+  dialog of the same width); **More Actions** (**Use As Evaluation
   Baseline**, for Admins and Authors); **Refresh** (read the document again, asking first when there
-  are unsaved edits); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
+  are unsaved edits); then **Skip** (queue items, for the assignee, with a reason), **Reject**
+  (Production queue items: ends the document as rejected, with a reason), **Cancel**
   (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
-  menu item that doesn't apply yet, such as Summary before a document is finished, is
-  disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes re-runs
-  evaluation and summarization on the corrected document, and OCR, classification and
-  extraction are not repeated. It finishes a queue item. What it asks first depends on
-  where you are: on a Production queue item it runs at once; on a direct edit it saves the
-  edits and asks you to confirm the reprocessing (**Confirm Reprocessing**); on a Test
+  menu item that doesn't apply yet, such as Summary before a document is finished, or
+  Policy Rule Validation Summary on a document that has no such report, is
+  disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes
+  processes the corrected document again from the step the changes need; the steps
+  before it are not repeated. It finishes a queue item. What it asks first depends on
+  where you are: on a Production queue item it opens **Finish the review**, where you
+  choose **Complete review** or **Send back** (see
+  [Finishing a review](#finishing-a-review)); on a direct edit it saves the
+  edits and asks you to confirm the reprocessing (**Confirm Reprocessing**, which lists
+  the steps the run will do; see
+  [What Process Changes runs](#what-process-changes-runs)); on a Test
   Studio item with no draft version of the set open it asks **Open a new version and save
   ground truth**, because it opens the next version and writes the labels as reviewed
   ground truth. Test Studio editing is draft-first: **Save** keeps a draft and opens no
@@ -841,8 +930,9 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   the notice for an item nobody holds (*View only. Claim this item to work on it; it is
   then assigned to you and shows in Home › Tasks.*), or, for an Admin, **Take over** on
   an item assigned to someone else (*Assigned to {name}. Take over to edit it and process
-  its changes.*). Each reason under **Review Reason** is a link that moves to its field,
-  and **Next alert** in its header steps through them. A direct edit also shows the evaluation
+  its changes.*). Each alert under **Review Reason** is a link that moves to its field,
+  and **Next alert** in its header steps through them (see
+  [Why a document is in review](#why-a-document-is-in-review)). A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
   item directly (the first saved edit, or Process Changes, assigns it to them) and
@@ -852,6 +942,80 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   document's edit page (its queue item). A queued document is reviewed only from that
   item, and the server refuses a direct upload of its section results meanwhile; the legacy Reviewer flow
   (**Start Review**) applies to documents outside the queues.
+
+### Why a document is in review
+
+A document that a routing rule placed in a review queue carries the reason for its
+reviewer: the text the routing rule's author wrote, with this document's values in
+it, or a generated sentence when the routing rule has no reason (see
+[The reason](review-routing.md#the-reason)). It is shown in four places:
+
+| Where | What it shows |
+|---|---|
+| The **Review Reason** panel, above the editor of a queue item | The routing notice (**Routed by rule: …**, or **Routed by the default outcome**), a yellow warning notice, with the reason under it, then **Failed policy rules (n)**, then the alerts as chips. A document sent to review by hand has its **Sent to review** note in the same kind of notice. A long reason shows its beginning with **Show more**. The first three failed policy rules are listed, each with the reason policy rule validation gave; **Show all n failed policy rules** opens a dialog with **Policy rule**, **Policy**, **Reason** and **Pages** |
+| **Home › Tasks** and a queue's **Documents** table | The **Reason** column: the routing rule's reason, otherwise the first alert, then how many policy rules the document failed. A long reason is shortened, and choosing it shows the whole text |
+| **Reports › History › Review Activity** | **Routing rule: …** and **Routing reason: …** on the entry written when the document was placed |
+| The document page | **Review queue**, with the routing rule under the queue's name, and **Routing reason** (see [Document Details](#document-details)) |
+
+Both work-item tables have **Preferences** (the gear icon), with the page size and
+the columns shown; the choice is kept in the browser. The panel and the tables are
+described in the [Annotator guide](review-queues.md#annotator-guide).
+
+### Finishing a review
+
+**Process Changes** on a Production queue item saves your latest edits and opens
+**Finish the review**. The dialog asks **How does this review end?** and offers
+**Complete the review** (your corrections are kept and processing continues with
+them) and **Send back for reprocessing** (the document is processed again without
+this review, and can return to a review queue). There is no step to choose: the
+system decides where the run starts.
+
+**Steps of the run**, under the choice, shows what the ending you chose will run
+before you confirm: **Starts at** and the step, then every step of the document's
+processing mode in order, each marked **Runs**, **Skipped** or **Not enabled**, and
+**Sections extracted again** with the cause of each (*added*, *pages changed*, *no
+result*) when the page grouping was changed during the review. If the list cannot
+be read, the dialog says so with **Retry**, and the review can still be finished.
+
+- **Complete review** starts at **Apply Review Changes**, or at **Extraction** for
+  the sections that were added or whose pages were changed, with Apply Review
+  Changes after it. Policy rule validation, Review Routing, summarization and
+  evaluation follow.
+- **Send back** starts at **Classification** (the beginning in BDA mode). The
+  dialog warns that the corrections and any page regrouping are discarded, and
+  takes an optional note for the review history.
+
+The runs are tabled in [How a review ends](review-queues.md#how-a-review-ends).
+
+### What Process Changes runs
+
+On a direct edit, outside a review queue, **Process Changes** saves the open
+section's edits and opens **Confirm Reprocessing**. The dialog says that the document
+is processed again with your saved changes and that the steps before the one the run
+starts at are not repeated, and then lists the run the server plans for the document
+as saved, under **Steps of the run**, as the dialog that finishes a review does:
+**Starts at** with the step, every step of the document's processing mode marked
+**Runs**, **Skipped** or **Not enabled** (switched off in the configuration), and
+**Sections extracted again** with the cause of each. **Confirm & Process** starts the
+run and **Cancel** leaves the document as saved. If the steps cannot be read, a
+warning headed *The steps of the run could not be loaded* gives the reason with
+**Retry**; **Confirm & Process** stays available. Where the run starts depends on the
+document:
+
+| The document as saved | The run starts at | The run does |
+|---|---|---|
+| Every section has its extracted values (field values were edited) | Policy Rule Validation | Policy Rule Validation, Review Routing, Summarization, Evaluation |
+| A section has no extracted values | Extraction, for the sections without values | Extraction and assessment of those sections, then the steps above |
+| The document is not ready for that step (it never finished, or a page has no class) | The beginning | Every step; a step whose work exists skips it |
+
+The run is routed like any other when it reaches Review Routing (see
+[Review Routing](review-routing.md)), so a document can be held for review after
+Process Changes. The list is not shown, and the warning is shown in its place, for a
+document that waits in a review queue, one a run is working on, one the malware scan
+holds, and a caller who may not process the document: `processChanges` refuses the
+same. Admins and Reviewers may read the plan (see [RBAC](rbac.md)). **Save and
+Re-extract** on the Edit Page Grouping board, and Process Changes on a Test Studio
+item, show their own confirmation and no list.
 
 ## Inbox
 

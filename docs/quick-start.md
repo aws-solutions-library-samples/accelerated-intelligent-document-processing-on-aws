@@ -136,7 +136,12 @@ ends the conversation.
    activates straight away only on a stack with no profile of its own yet;
    otherwise it names the profile in use and asks first. Upload a document from
    **Upload Documents** in the side navigation and it's processed with your new
-   configuration.
+   configuration. The new profile takes its **Review Routing** setting from
+   `default`, and a new stack has it on. A document the built-in routing rules
+   hold, such as one with a field under its confidence threshold, then waits in
+   the **Default** [review queue](review-queues.md) instead of completing. Review
+   it there, or turn Review Routing off in the profile (see
+   [The Review Routing switch](review-routing.md#the-review-routing-switch)).
 
 The agent's own writes, processing options included, refuse `default` and
 stack-managed profiles (presets the stack deployed, which a stack update replaces).

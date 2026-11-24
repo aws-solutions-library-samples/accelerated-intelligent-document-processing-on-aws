@@ -7,10 +7,13 @@
  * leaves its queue); Key Metrics shows exactly Pending, Assigned, In Progress,
  * Annotators (how many are listed) and Priority; the Annotators table lists each listed
  * Annotator, and anyone still holding documents, with the documents assigned to each;
- * the Documents table shows Document, Source, Queue, Priority and State, then the row
- * Actions menu; the page reports the queue's name for the breadcrumb; and the Settings
+ * the Documents table shows Document, Queue, Reason, State and Annotator, then the row
+ * Actions menu, and offers Source, Priority and Age in its settings, kept in the browser
+ * under the page's own key; the page reports the queue's name for the breadcrumb; and the Settings
  * dialog stays open, keeping what was typed, through a refresh that briefly returns no
- * definition, without carrying one queue's definition to another queue's page.
+ * definition, without carrying one queue's definition to another queue's page; and the
+ * routing rules that send documents to the queue are listed, with what to do when there
+ * are none and an error when they cannot be read.
  */
 
 import React from 'react';
@@ -34,15 +37,20 @@ const defaultQueue = {
   enabled: true,
   version: 4,
 };
-const { listReviewQueues } = vi.hoisted(() => ({ listReviewQueues: vi.fn() }));
+const { listReviewQueues, getReviewQueueReferences, role } = vi.hoisted(() => ({
+  listReviewQueues: vi.fn(),
+  getReviewQueueReferences: vi.fn(),
+  role: { isAdmin: true },
+}));
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setSuccessMessage: vi.fn(), setErrorMessage: vi.fn() }) }));
-vi.mock('../../../hooks/use-user-role', () => ({ default: () => ({ isAdmin: true, isAnnotator: false, loading: false }) }));
+vi.mock('../../../hooks/use-user-role', () => ({ default: () => ({ isAdmin: role.isAdmin, isAnnotator: !role.isAdmin, loading: false }) }));
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
 vi.mock('../reviewer-assignment', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../reviewer-assignment')>()),
   listReviewQueues: () => listReviewQueues(),
+  getReviewQueueReferences: (queueId: string) => getReviewQueueReferences(queueId),
   listAnnotatorEmails: async () => [],
 }));
 vi.mock('../review-api', async (importOriginal) => ({
@@ -100,17 +108,23 @@ const renderPage = async (onName?: (name: string) => void) => {
       </Routes>
     </MemoryRouter>,
   );
-  await waitFor(() => expect(createWrapper(document.body).findAllTables()).toHaveLength(2));
+  await waitFor(() => expect(createWrapper(document.body).findAllTables()).toHaveLength(3));
   await waitFor(() => expect(itemsTable().findRows()).toHaveLength(1));
 };
 
 beforeEach(() => {
   listReviewQueues.mockReset().mockResolvedValue([defaultQueue]);
+  getReviewQueueReferences.mockReset().mockResolvedValue([]);
+  role.isAdmin = true;
+  // The Documents table keeps its settings in the browser.
+  localStorage.clear();
 });
 
 const tables = () => createWrapper(document.body).findAllTables();
+// In page order: the Annotators, the routing rules that use the queue, the documents.
 const annotatorsTable = () => tables()[0];
-const itemsTable = () => tables()[1];
+const referencesTable = () => tables()[1];
+const itemsTable = () => tables()[2];
 const headers = (t: ReturnType<typeof annotatorsTable>) => t.findColumnHeaders().map((h) => h.getElement().textContent);
 
 describe('a production queue page', () => {
@@ -147,10 +161,134 @@ describe('a production queue page', () => {
     expect(rows).toEqual(['a@example.com2', 'b@example.com0', 'gone@example.com (not listed)1']);
   });
 
-  it('shows Document, Source, Queue, Priority, State, Annotator and Actions in the Documents table', async () => {
+  it('shows Document, Queue, Reason, State, Annotator and Actions in the Documents table', async () => {
     await renderPage();
     expect(itemsTable().findHeaderSlot()!.getElement().textContent).toContain('Documents');
-    expect(headers(itemsTable()).slice(-7)).toEqual(['Document', 'Source', 'Queue', 'Priority', 'State', 'Annotator', 'Actions']);
+    // After the selection column.
+    expect(headers(itemsTable()).slice(1)).toEqual(['Document', 'Queue', 'Reason', 'State', 'Annotator', 'Actions']);
+  });
+
+  it('offers Source, Priority and Age in the settings of the Documents table, and keeps the choice under its own key', async () => {
+    await renderPage();
+    const preferences = itemsTable().findCollectionPreferences()!;
+    act(() => preferences.findTriggerButton().click());
+    const options = preferences.findModal()!.findContentDisplayPreference()!.findOptions();
+    expect(options.map((o) => o.findLabel().getElement().textContent)).toEqual([
+      'Document',
+      'Source',
+      'Queue',
+      'Priority',
+      'Age',
+      'Reason',
+      'State',
+      'Annotator',
+    ]);
+
+    act(() => options[4].findVisibilityToggle().findNativeInput().click());
+    act(() => preferences.findModal()!.findConfirmButton()!.click());
+
+    expect(headers(itemsTable()).slice(1)).toEqual(['Document', 'Queue', 'Age', 'Reason', 'State', 'Annotator', 'Actions']);
+    expect(JSON.parse(localStorage.getItem('review-queue-items-preferences')!).contentDisplay).toContainEqual({ id: 'age', visible: true });
+  });
+});
+
+describe('the routing rules that use the queue', () => {
+  const referencesSection = () =>
+    createWrapper(document.body)
+      .findAllContainers()
+      .find((c) => (c.findHeader()?.getElement().textContent ?? '').includes('Routing rules that use this queue'))!;
+
+  it('are read once for this queue and listed by profile, revision and rule', async () => {
+    getReviewQueueReferences.mockResolvedValue([
+      { profile: 'lending', revision: 3, published: true, ruleId: 'big', ruleLabel: 'Big loans' },
+      { profile: 'lending', revision: 4, published: false, ruleId: 'big', ruleLabel: 'Big loans' },
+      { profile: 'mortgage', revision: null, published: true, ruleId: 'plain', ruleLabel: null },
+      { profile: 'claims', revision: 2, published: true, ruleId: '', ruleLabel: null },
+    ]);
+    await renderPage();
+    await waitFor(() => expect(referencesTable().findRows()).toHaveLength(4));
+
+    expect(getReviewQueueReferences.mock.calls).toEqual([['default']]);
+    expect(headers(referencesTable())).toEqual(['Configuration profile', 'Revision', 'Routing rule']);
+    expect(
+      referencesTable()
+        .findRows()
+        .map((row) => row.findAll('td, th').map((cell) => cell.getElement().textContent)),
+    ).toEqual([
+      ['lending', 'published r3', 'Big loans (big)'],
+      ['lending', 'current', 'Big loans (big)'],
+      ['mortgage', 'published', 'plain'],
+      ['claims', 'published r2', 'Default outcome'],
+    ]);
+    expect(referencesSection().findHeader()!.getElement().textContent).toContain('(4)');
+    // Each profile opens on its Routing Rules tab.
+    expect(referencesTable().findBodyCell(1, 1)!.findLink()!.getElement().getAttribute('href')).toBe(
+      '#/documents/config?version=lending&tab=routing',
+    );
+  });
+
+  it('say what to do when no routing rule names the queue', async () => {
+    await renderPage();
+
+    const empty = referencesTable().findEmptySlot()!;
+    expect(empty.getElement().textContent).toContain('No routing rule sends documents to this queue.');
+    expect(empty.getElement().textContent).toContain('add a routing rule on the Routing Rules tab of a configuration profile');
+    // The tab is named as the configuration page names it.
+    expect(referencesSection().findHeader()!.getElement().textContent).toContain('Change them on the Routing Rules tab of the profile.');
+    expect(empty.findButton()!.getElement().getAttribute('href')).toBe('#/documents/config');
+    expect(referencesSection().findHeader()!.getElement().textContent).toContain('(0)');
+  });
+
+  it('show an error when they cannot be read, and read them again on Retry', async () => {
+    getReviewQueueReferences.mockRejectedValueOnce(new Error('boom'));
+    window.location.hash = '';
+    renderWithIntl(
+      <MemoryRouter initialEntries={['/review-queues/queues/default']}>
+        <Routes>
+          <Route path="/review-queues/queues/:queue" element={<ReviewQueuePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(referencesSection().findContent().findAlert()).not.toBeNull());
+    const alert = referencesSection().findContent().findAlert()!;
+    expect(alert.findHeader()!.getElement().textContent).toBe("Couldn't load the routing rules that use this queue");
+    expect(alert.findContent().getElement().textContent).toBe('Failed to read the routing rules that use this queue: boom');
+
+    act(() => alert.findActionSlot()!.findButton()!.click());
+
+    await waitFor(() => expect(referencesSection().findContent().findAlert()).toBeNull());
+    expect(getReviewQueueReferences).toHaveBeenCalledTimes(2);
+    expect(referencesSection().findContent().findTable()!.findEmptySlot()).not.toBeNull();
+  });
+
+  it('are not read or shown for an Annotator', async () => {
+    role.isAdmin = false;
+    renderWithIntl(
+      <MemoryRouter initialEntries={['/review-queues/queues/default']}>
+        <Routes>
+          <Route path="/review-queues/queues/:queue" element={<ReviewQueuePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(tables()[0].findRows()).toHaveLength(1));
+
+    expect(tables()).toHaveLength(1);
+    expect(referencesSection()).toBeUndefined();
+    expect(getReviewQueueReferences).not.toHaveBeenCalled();
+  });
+
+  it('are read again by the page Refresh, not by the poll', async () => {
+    await renderPage();
+    expect(getReviewQueueReferences).toHaveBeenCalledTimes(1);
+
+    const refresh = createWrapper(document.body)
+      .findAllButtons()
+      .find((b) => b.getElement().getAttribute('aria-label') === 'Refresh')!;
+    await act(async () => {
+      refresh.click();
+    });
+
+    await waitFor(() => expect(getReviewQueueReferences).toHaveBeenCalledTimes(2));
   });
 });
 

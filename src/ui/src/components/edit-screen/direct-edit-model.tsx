@@ -3,10 +3,11 @@
 //
 // The edit page's direct edit of any processed document, in review or not: the shared
 // editor over its sections, with the evaluation baseline where the document has one.
-// Save writes the edits without reprocessing; Process Changes saves them, confirms,
-// then submits them through processChanges, so evaluation and summarization re-run on
-// them and OCR, classification and extraction are not repeated; Cancel leaves for the
-// document's page. Edit Page Grouping saves a new grouping.
+// Save writes the edits without reprocessing; Process Changes saves them, confirms
+// with the steps the server plans (the run starts at policy rule validation when every
+// section has a result, so the earlier steps are not repeated), then submits them
+// through processChanges; Cancel leaves for the document's page. Edit Page Grouping
+// saves a new grouping.
 //
 // A document in a review queue opens here read-only (for a role that does not work
 // queues, or while the queue's mirror lags): it is edited from its queue item, and
@@ -32,6 +33,7 @@ import { PROCESS_CHANGES_LABEL, sharedLabelMessages } from '../common/labels';
 import { statusLabel } from '../common/object-status-renderer';
 import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
+import { actionReasonMessages } from '../document-actions/action-reasons';
 import { editActiveHref, editTrail, homeCrumb } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { useDocumentEdit } from './document-edit-adapter';
@@ -121,8 +123,9 @@ const messages = defineMessages<{
   primaryHint: {
     id: 'editScreen.directEdit.primaryHint',
     defaultMessage:
-      'Save your changes and process them: evaluation and summarization re-run; OCR, classification and extraction are not repeated.',
-    description: "Hint of Process Changes in the action bar of a document's edit page: what it does.",
+      'Save your changes and process them. The confirmation lists the steps of the run; the steps before the one it starts at are not repeated.',
+    description:
+      "Hint of Process Changes in the action bar of a document's edit page: what it does. The confirmation is the dialog it opens first; the run is the processing run it starts, and its steps are processing steps.",
   },
   noSectionsToEdit: {
     id: 'editScreen.directEdit.noSectionsToEdit',
@@ -132,13 +135,13 @@ const messages = defineMessages<{
   regroupConsequence: {
     id: 'editScreen.directEdit.regroupConsequence',
     defaultMessage:
-      "Moving pages rewrites this document's <b>section grouping</b>. The extracted field values are <b>kept</b> and the document is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document page's <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen's <b>{processChanges}</b> re-runs evaluation and summarization only.",
+      "Moving pages rewrites this document's <b>section grouping</b>. The extracted field values are <b>kept</b> and the document is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document page's <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen's <b>{processChanges}</b> keeps the values a section already has.",
     description:
       "What saving a new page grouping does, in Edit Page Grouping opened from a document's edit page. <b>…</b> marks bold text. More Actions › Edit Page Grouping is a menu item and Save and Re-extract a button, both on the document's own page; {processChanges} is the edit page's action, Process Changes.",
   },
   processing: {
     id: 'editScreen.directEdit.processing',
-    defaultMessage: 'Processing the changes to {name}: evaluation and summarization are re-running.',
+    defaultMessage: 'Processing the changes to {name}.',
     description: "Notice shown as a document's edit page closes after Process Changes was confirmed. {name} is the document's file name.",
   },
   baselineCopying: {
@@ -409,6 +412,11 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
           reportUri: finished ? doc.summaryReportUri || undefined : undefined,
           unavailableReason: unfinishedReason ?? intl.formatMessage(documentEditStatusMessages.noSummary),
         },
+        // Available whenever the document has the report, as on the document page.
+        ruleValidation: {
+          reportUri: doc.ruleValidationResultUri || undefined,
+          unavailableReason: intl.formatMessage(actionReasonMessages.noRuleValidation),
+        },
         offerReport: true,
       },
       notices: [],
@@ -466,7 +474,8 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         baseline: evaluation.baseline,
       },
       process: {
-        confirm: { kind: 'reprocess', bdaMode },
+        // Where the run starts is the server's decision; the confirmation shows the steps it answers.
+        confirm: { kind: 'reprocess' },
         run: async () => {
           await adapter.processChanges();
           return { to: leaveTo, message: intl.formatMessage(messages.processing, { name }) };

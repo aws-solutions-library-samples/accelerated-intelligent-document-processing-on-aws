@@ -1,0 +1,13 @@
+query GetReprocessOptions($objectKeys: [String!]!, $version: String, $revision: Int) {
+  getReprocessOptions(objectKeys: $objectKeys, version: $version, revision: $revision) {
+    objectKey
+    mode
+    defaultStep
+    steps {
+      id
+      available
+      skippable
+      reason
+    }
+  }
+}

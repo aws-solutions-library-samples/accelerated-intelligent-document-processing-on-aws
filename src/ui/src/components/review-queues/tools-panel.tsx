@@ -16,12 +16,15 @@ const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
 
 const messages = defineMessages<{
   linkReviewQueues: NoMessageValues;
+  linkReviewRouting: NoMessageValues;
   linkHumanReview: NoMessageValues;
   linkTestStudio: NoMessageValues;
   managementTitle: NoMessageValues;
   managementIntro: Bold;
   productionHeading: NoMessageValues;
   productionRouting: NoMessageValues;
+  productionDefaultQueue: NoMessageValues;
+  productionCreateAndDelete: Bold;
   productionSettings: Bold;
   productionOpen: NoMessageValues;
   testStudioHeading: NoMessageValues;
@@ -42,6 +45,11 @@ const messages = defineMessages<{
     id: 'reviewQueues.toolsPanel.linkReviewQueues',
     defaultMessage: 'Review queues',
     description: 'Label of a "Learn more" link to the Review queues documentation page.',
+  },
+  linkReviewRouting: {
+    id: 'reviewQueues.toolsPanel.linkReviewRouting',
+    defaultMessage: 'Review routing',
+    description: 'Label of a "Learn more" link to the Review routing documentation page, which is about routing rules.',
   },
   linkHumanReview: {
     id: 'reviewQueues.toolsPanel.linkHumanReview',
@@ -73,9 +81,22 @@ const messages = defineMessages<{
   productionRouting: {
     id: 'reviewQueues.toolsPanel.productionRouting',
     defaultMessage:
-      'A document whose fields raised confidence alerts goes to the Default queue, when HITL is enabled in its configuration.',
+      "While Review Routing is on in a document's configuration profile and the Default queue is enabled, the routing rules of that profile decide whether the document is reviewed and send it to the queue a routing rule names. A warning on this page says when routing rules are not evaluated, and why.",
     description:
-      'Review Management info panel, "Production queues" item. Default is the name of a queue; HITL (human in the loop) is the name of a configuration setting.',
+      'Review Management info panel, "Production queues" item: how a document reaches a queue. Review Routing is the name of a processing step and of its switch in a configuration profile; Default is the name of a queue.',
+  },
+  productionDefaultQueue: {
+    id: 'reviewQueues.toolsPanel.productionDefaultQueue',
+    defaultMessage:
+      'The Default queue receives the documents the built-in routing rules hold (failed extractions, confidence alerts, missing required fields) and documents whose queue is missing or disabled.',
+    description: 'Review Management info panel, "Production queues" item: what the Default queue receives. Default is the name of a queue.',
+  },
+  productionCreateAndDelete: {
+    id: 'reviewQueues.toolsPanel.productionCreateAndDelete',
+    defaultMessage:
+      '<b>Create queue</b> adds a queue that routing rules can name by its id. Deleting a queue moves its documents to the Default queue, and lists the routing rules that name it first.',
+    description:
+      'Review Management info panel, "Production queues" item: creating and deleting a queue. <b>Create queue</b> is the label of a button, shown in bold; Default is the name of a queue.',
   },
   productionSettings: {
     id: 'reviewQueues.toolsPanel.productionSettings',
@@ -164,6 +185,7 @@ const LearnMore = (): React.JSX.Element => (
   <LearnMoreLinks
     links={[
       { text: <FormattedMessage {...messages.linkReviewQueues} />, docsPath: 'review-queues/' },
+      { text: <FormattedMessage {...messages.linkReviewRouting} />, docsPath: 'review-routing/' },
       { text: <FormattedMessage {...messages.linkHumanReview} />, docsPath: 'human-review/' },
       { text: <FormattedMessage {...messages.linkTestStudio} />, docsPath: 'test-studio/' },
     ]}
@@ -189,6 +211,12 @@ export const ReviewManagementToolsPanel = (): React.JSX.Element => (
       <ul>
         <li>
           <FormattedMessage {...messages.productionRouting} />
+        </li>
+        <li>
+          <FormattedMessage {...messages.productionDefaultQueue} />
+        </li>
+        <li>
+          <FormattedMessage {...messages.productionCreateAndDelete} values={{ b: bold }} />
         </li>
         <li>
           <FormattedMessage {...messages.productionSettings} values={{ b: bold }} />

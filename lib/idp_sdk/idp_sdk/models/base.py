@@ -320,7 +320,22 @@ class Pattern(str, Enum):
 
 
 class RerunStep(str, Enum):
-    """Pipeline steps for rerun operations."""
+    """The step a reprocess starts at.
 
+    The values are the steps of ``idp_common.run_plan.steps``, the alias ``ocr``
+    (the beginning) and ``resume`` (the first step that has no output).
+    ``scripts/tests/test_run_step_catalog.py`` holds the two lists together.
+    Not every step exists in both processing modes: ``assessment`` is a
+    Pipeline-mode step, and in BDA mode ``classification`` and ``extraction``
+    mean the beginning.
+    """
+
+    BEGINNING = "beginning"
+    OCR = "ocr"
     CLASSIFICATION = "classification"
     EXTRACTION = "extraction"
+    ASSESSMENT = "assessment"
+    POLICY_RULE_VALIDATION = "policy_rule_validation"
+    SUMMARIZATION = "summarization"
+    EVALUATION = "evaluation"
+    RESUME = "resume"

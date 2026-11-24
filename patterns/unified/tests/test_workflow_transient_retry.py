@@ -34,8 +34,9 @@ _UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 # Every task whose Lambda handler re-raises TransientError: the in-process
 # extraction task, the assessment task, all THREE shard-runtime tasks (plan,
 # shard, merge share one handler, so all three must list the name), the three
-# rule-validation tasks (#1101), classification (#2034), and OCR, summarization
-# and evaluation (#2049).
+# policy rule validation tasks (#1101), classification (#2034), OCR,
+# summarization and evaluation (#2049), and the two review tasks (the step that
+# applies a completed review, and review routing).
 TASKS = (
     "OCRStep",
     "ClassificationStep",
@@ -45,10 +46,12 @@ TASKS = (
     "ShardExtractionStep",
     "ExtractionMergeStep",
     "PolicyClassificationStep",
-    "RuleValidationStep",
-    "RuleValidationOrchestration",
+    "PolicyRuleValidationStep",
+    "PolicyRuleConsolidationStep",
     "SummarizationStep",
     "EvaluationStep",
+    "ApplyReviewChangesStep",
+    "RoutingStep",
 )
 
 # Handler sources that must surface a transient cause under the listed name, one
@@ -67,6 +70,8 @@ HANDLER_SOURCES = (
     "rule-validation-orchestration-function/index.py",
     "summarization_function/index.py",
     "evaluation_function/index.py",
+    "processresults_function/apply_review_changes_handler.py",
+    "processresults_function/routing_handler.py",
 )
 
 
@@ -280,7 +285,7 @@ def _can_invoke_a_model(logical_id: str, blocks: dict) -> bool:
 #: TransientError, so doing that without adding the name to the state's Retry list
 #: would REMOVE retryability that exists today.
 TRANSIENT_CONVERSION_EXEMPT = {
-    "RecordEvaluationFailure": (
+    "RecordEvaluationFailureStep": (
         "Runs EvaluationFunction with record_failure_only, a branch that makes no "
         "model call at all: it loads the document, stamps the evaluation status and "
         "returns, and its own except returns the document too, so it never raises "

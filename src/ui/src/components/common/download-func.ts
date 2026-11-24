@@ -47,12 +47,16 @@ export const exportToExcel = async (data: Record<string, unknown>[], nameFile: s
   }
 };
 
-export const exportToTextFile = async (text: string, nameFile: string): Promise<void> => {
-  const blob = new Blob([text], { type: 'text/plain' });
+/**
+ * Download text as a file. `extension` and `type` default to a plain `.txt`; a caller
+ * with another format names both (`'dmn'`, `'application/xml'`).
+ */
+export const exportToTextFile = async (text: string, nameFile: string, extension = 'txt', type = 'text/plain'): Promise<void> => {
+  const blob = new Blob([text], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${nameFile}.txt`;
+  link.download = `${nameFile}.${extension}`;
   link.click();
   URL.revokeObjectURL(url);
 };

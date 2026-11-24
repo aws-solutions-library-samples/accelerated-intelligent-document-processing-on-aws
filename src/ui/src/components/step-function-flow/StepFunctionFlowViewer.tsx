@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT-0
  */
 import React, { useState, useEffect, useRef } from 'react';
-import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 import { Container, Header, SpaceBetween, Box, Alert, Spinner, Button, Modal, Badge } from '@cloudscape-design/components';
 import {
   FaPlay,
@@ -24,7 +24,12 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { getStepFunctionExecution } from '../../graphql/generated';
 import { getMalwareScanView } from '../common/malware-scan';
 import type { MalwareScanFields } from '../common/malware-scan';
+import { stepMessage } from '../run-plan/StartStepPicker';
+import type { ProcessingMode } from '../run-plan/run-steps';
 import FlowDiagram from './FlowDiagram';
+import { isStepDisabled, type StepConfig } from './is-step-disabled';
+import SkippedStatus from './SkippedStatus';
+import { SKIPPED_STATUS, readRunPlan, withSkippedSteps, type ExecutionRunPlan } from './skipped-steps';
 import StepDetails from './StepDetails';
 import { stepLabelMessages, stepName, stepStatusLabel } from './step-labels';
 import { useFormatters } from '../../i18n/format';
@@ -54,6 +59,10 @@ const messages = defineMessages<{
   stepDetailsTitle: NoMessageValues;
   timelineTitle: NoMessageValues;
   mapIteration: NoMessageValues;
+  skippedNote: { readonly step: string };
+  skippedNoteRejected: NoMessageValues;
+  beginningPipeline: NoMessageValues;
+  beginningBda: NoMessageValues;
 }>({
   title: {
     id: 'documents.processingFlow.title',
@@ -163,16 +172,57 @@ const messages = defineMessages<{
     description:
       'Badge on an entry of the Steps Timeline in Reports › Processing Flow on the document page that is one iteration of a Map step. Map is a Step Functions state type.',
   },
+  skippedNote: {
+    id: 'documents.processingFlow.skippedNote',
+    defaultMessage: 'Skipped by the run plan. This run started at {step}.',
+    description:
+      'Why a step shown as Skipped in Reports › Processing Flow on the document page was not done: the tooltip of the step in the flow diagram and the Steps Timeline, and the notice in its Step Details. {step} is the name of the processing step the run started at, for example Extraction.',
+  },
+  skippedNoteRejected: {
+    id: 'documents.processingFlow.skippedNoteRejected',
+    defaultMessage: 'Skipped by the run plan. This run recorded a rejected review and did no processing step.',
+    description:
+      'Why a step shown as Skipped in Reports › Processing Flow on the document page was not done, for a run that only recorded a rejected review: the tooltip of the step in the flow diagram and the Steps Timeline, and the notice in its Step Details.',
+  },
+  beginningPipeline: {
+    id: 'documents.processingFlow.beginningPipeline',
+    defaultMessage: 'OCR',
+    description:
+      'Name of the first processing step of a document processed in Pipeline mode, in Reports › Processing Flow on the document page: the name of that step when the run skipped it, and of the step a run started at. OCR is optical character recognition.',
+  },
+  beginningBda: {
+    id: 'documents.processingFlow.beginningBda',
+    defaultMessage: 'Bedrock Data Automation',
+    description:
+      'Name of the first processing step of a document processed in BDA mode, in Reports › Processing Flow on the document page: the name of that step when the run skipped it, and of the step a run started at. Bedrock Data Automation is the name of an AWS service.',
+  },
 });
 
-interface StepConfig {
-  summarization?: { enabled?: boolean };
-  // v0.6: confidence enablement lives under extraction.confidence; the slim
-  // assessment carrier still exposes `enabled` for the step itself.
-  extraction?: { confidence?: { enabled?: boolean } };
-  assessment?: { enabled?: boolean };
-  evaluation?: { enabled?: boolean };
-}
+/** The first step of a run plan's step list, which is named after what it does in each mode. */
+const BEGINNING = 'beginning';
+
+/**
+ * The name of a processing step of the run plan, as the viewer shows it: the web UI's one
+ * set of step labels (StartStepPicker.tsx), which also names the display steps a run can
+ * start at (Apply Review Changes). The first step is named after what it does in each mode.
+ */
+const runStepName = (intl: IntlShape, stepId: string, mode: ProcessingMode): string => {
+  if (stepId === BEGINNING) return intl.formatMessage(mode === 'bda' ? messages.beginningBda : messages.beginningPipeline);
+  const message = stepMessage(stepId);
+  return message ? intl.formatMessage(message) : stepId;
+};
+
+/** One "Skipped" entry for a step the run plan skipped, with why. */
+const skippedStep = (intl: IntlShape, stepId: string, plan: ExecutionRunPlan): Step => ({
+  name: runStepName(intl, stepId, plan.mode),
+  type: SKIPPED_STATUS,
+  status: SKIPPED_STATUS,
+  isMainStep: true,
+  skipNote:
+    plan.startStep === 'rejected'
+      ? intl.formatMessage(messages.skippedNoteRejected)
+      : intl.formatMessage(messages.skippedNote, { step: runStepName(intl, plan.startStep, plan.mode) }),
+});
 
 interface Step {
   name: string;
@@ -189,6 +239,8 @@ interface Step {
   iterationIndex?: number;
   mapIterations?: number;
   mapIterationDetails?: Step[];
+  /** Set on the entry of a step the run plan skipped: why it was not done. */
+  skipNote?: string;
   /** Set on the Malware Scan step only: the document's verdict, which the step is recognised and worded by. */
   malwareScan?: MalwareScanFields;
 }
@@ -198,6 +250,8 @@ interface ExecutionData {
     status: string;
     startDate?: string;
     stopDate?: string;
+    /** The execution input (AWSJSON), which carries the run plan. */
+    input?: string | null;
     error?: string;
     steps?: Step[];
   };
@@ -269,30 +323,6 @@ export const buildMalwareScanStep = (scan?: MalwareScanFields | null): Step | nu
     // language, so this build, which runs inside the fetch, needs no `intl`.
     malwareScan: scan,
   };
-};
-
-// Helper function to check if a step is disabled based on configuration
-const isStepDisabled = (name: string, config: StepConfig | null | undefined): boolean => {
-  if (!config) return false;
-
-  const stepNameLower = name.toLowerCase();
-
-  // Check if this is a summarization step
-  if (stepNameLower.includes('summarization') || stepNameLower.includes('summary')) {
-    return config.summarization?.enabled === false;
-  }
-
-  // Check if this is an assessment step
-  if (stepNameLower.includes('assessment') || stepNameLower.includes('assess')) {
-    return (config.extraction?.confidence?.enabled ?? config.assessment?.enabled) === false;
-  }
-
-  // Check if this is an evaluation step
-  if (stepNameLower.includes('evaluation') || stepNameLower.includes('evaluate')) {
-    return config.evaluation?.enabled === false;
-  }
-
-  return false;
 };
 
 const StepFunctionFlowViewer = ({
@@ -381,7 +411,11 @@ const StepFunctionFlowViewer = ({
         // first is where it belongs chronologically and where a reader looks for
         // "was this document allowed in".
         const malwareStep = buildMalwareScanStep(malwareScan);
-        setProcessedSteps(malwareStep ? [malwareStep, ...enhancedSteps] : enhancedSteps);
+        // A run that started at a later step, or skipped an optional one, never entered
+        // the states of the steps it left out: each is shown as one Skipped entry.
+        const plan = readRunPlan(((resultData as Record<string, unknown>).getStepFunctionExecution as Record<string, unknown>).input);
+        const shownSteps = plan ? withSkippedSteps(enhancedSteps, plan, (stepId) => skippedStep(intl, stepId, plan)) : enhancedSteps;
+        setProcessedSteps(malwareStep ? [malwareStep, ...shownSteps] : shownSteps);
 
         // If there's a failed step and no step is currently selected, select the first failed step
         if (!selectedStep) {
@@ -729,13 +763,14 @@ const StepFunctionFlowViewer = ({
         >
           <div className="steps-timeline">
             {(processedSteps.length > 0 ? processedSteps : execution.steps)?.map((step, index) => {
-              const stepDisabled = isStepDisabled(step.name, mergedConfig);
+              const stepSkipped = step.status === SKIPPED_STATUS;
+              const stepDisabled = !stepSkipped && isStepDisabled(step.name, mergedConfig);
               return (
                 <div
                   key={`timeline-${step.name}-${step.type}-${step.status}-${step.startDate || index}`}
                   className={`timeline-step ${step.status.toLowerCase()} ${selectedStep?.name === step.name ? 'selected' : ''} ${
                     step.isMapIteration ? 'map-iteration-step' : ''
-                  } ${stepDisabled ? 'step-disabled' : ''}`}
+                  } ${stepDisabled || stepSkipped ? 'step-disabled' : ''}`}
                   onClick={() => setSelectedStep(step)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -744,7 +779,7 @@ const StepFunctionFlowViewer = ({
                   }}
                   role="button"
                   tabIndex={0}
-                  title={stepDisabled ? intl.formatMessage(stepLabelMessages.disabledTitle) : ''}
+                  title={stepDisabled ? intl.formatMessage(stepLabelMessages.disabledTitle) : (step.skipNote ?? '')}
                 >
                   <div className="timeline-step-icon">{getStepIcon(step.name, step.type, step.status)}</div>
                   <div className="timeline-step-content">
@@ -767,10 +802,16 @@ const StepFunctionFlowViewer = ({
                       )}
                     </div>
                     <div className="timeline-step-meta">
-                      <span className={`timeline-step-status status-${step.status.toLowerCase()}`}>
-                        {stepStatusLabel(step.status, intl)}
-                      </span>
-                      <span className="timeline-step-duration">{formatDuration(step.startDate, step.stopDate)}</span>
+                      {stepSkipped ? (
+                        <SkippedStatus />
+                      ) : (
+                        <>
+                          <span className={`timeline-step-status status-${step.status.toLowerCase()}`}>
+                            {stepStatusLabel(step.status, intl)}
+                          </span>
+                          <span className="timeline-step-duration">{formatDuration(step.startDate, step.stopDate)}</span>
+                        </>
+                      )}
                     </div>
                     {step.error && (
                       <div className="timeline-step-error">

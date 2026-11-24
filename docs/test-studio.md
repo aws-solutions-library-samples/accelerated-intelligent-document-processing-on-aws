@@ -1804,8 +1804,8 @@ key's mean (not zero-filled), so an older `results.json` payload without
 graded metrics can't drag the newer docs' scores down.
 
 **When the panel populates.**
-- **Multi-section documents** (lending packages, medical prior-auth packets,
-  DocSplit-Poly-Seq): metrics vary meaningfully per doc and the panel is the
+- **Multi-section documents** (lending packages, DocSplit-Poly-Seq): metrics
+  vary meaningfully per doc and the panel is the
   primary way to see how close-but-not-exact classification is. E.g. a run
   where `split_accuracy_without_order = 0.41` typically shows graded means
   around 0.56–0.69, revealing partial correctness the exact-match view

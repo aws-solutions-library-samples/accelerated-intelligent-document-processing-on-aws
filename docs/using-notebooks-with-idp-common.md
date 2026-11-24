@@ -109,7 +109,7 @@ jupyter notebook step6_summarization.ipynb
 jupyter notebook step7_evaluation.ipynb
 ```
 
-> **Note**: Step 5 (Rule Validation) is optional and designed for healthcare/medical document workflows. If you're using the default lending package sample, skip step 5 and proceed directly from step 4 to step 6.
+> **Note**: Step 5 (Rule Validation) is optional, and its policy rules are written for a bank statement. If you're using the default lending package sample, skip step 5 and proceed directly from step 4 to step 6.
 
 ### Running Individual Steps
 
@@ -222,10 +222,10 @@ Each step produces:
 - **Outputs**: Policy classification results, rule validation results per section
 - **Key Features**: Policy classification, regex-based filtering, rule validation, result consolidation
 
-> ⚠️ **Important**: Rule validation is an **optional step** designed for **healthcare/medical document use cases** (e.g., prior authorization, Medicare/Medicaid forms). The default sample documents (lending package) are **not compatible** with rule validation. 
+> ⚠️ **Important**: Rule validation is an **optional step**, and the policy rules in `config/rule_validation.yaml` are written for a **bank statement** (the policy of `samples/rule-validation/bank-statement-review-policy.pdf`). The default sample document (lending package) is **not** the document they are written for.
 >
 > **To use rule validation:**
-> 1. Use healthcare-related sample documents that match the policy class regex patterns
+> 1. Use a bank statement, such as `samples/bank-statement-multipage.pdf`, under a document id that matches the policy class regex patterns
 > 2. Configure `config/rule_validation.yaml` with appropriate `policy_classes` and rules
 > 3. See [Rule Validation Documentation](./rule-validation.md) for detailed configuration
 >

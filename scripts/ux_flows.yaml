@@ -288,3 +288,157 @@ flows:
 #         tables with repeating values. (Known-broken: occurrence_index.)
 #   7.1   A machine draft is never styled as verified ground truth.
 #   10.3  What a published version guarantees. (Known limitation: not immutable.)
+
+  - id: 'RR.1'
+    title: Add a routing rule and test it on a document
+    persona: Admin
+    priority: p1
+    paths:
+      - src/ui/src/components/config-routing/**
+      - src/ui/src/components/configuration-layout/ConfigBuilder.tsx
+    setup:
+      - A configuration profile with at least one document class, and one
+        document processed under it.
+      - Never save the configuration. Everything on the Routing Rules tab stays
+        in the editor until the configuration is saved.
+    steps:
+      - Open Configuration, choose the profile and open the Routing Rules tab.
+      - Read the built-in routing rules, the Default outcome and Maximum
+        placements in a row, and any warning above the table.
+      - Choose Add routing rule, give it an id and a label, add a condition on
+        the document class, send matching documents to the Default queue, and
+        write a reason for the reviewer with a value inserted.
+      - Move the new routing rule above the built-in routing rules.
+      - Under Test on a document, enter the processed document's key and choose
+        Test.
+      - Export the table as DMN, then leave the page without saving.
+    expect:
+      - The dialog offers the profile's classes, fields and policy rules where
+        an input takes one, guided controls for a condition's value, and
+        refuses an id that is taken or malformed.
+      - The reason field counts its length, and Insert value adds a placeholder
+        where the cursor is.
+      - The test shows the decision, the matched routing rule, the queue, the
+        reason for the reviewer and the values the table read, and changes
+        nothing on the document.
+      - A routing rule that can never match, and a routing rule that names a
+        queue that does not exist, are each reported on the tab.
+      - The tab warns when Review Routing is off for the profile.
+    ux_watch:
+      - Is it clear that routing rules are tried in order and that the first
+        match decides?
+      - Does the person understand that nothing takes effect until the
+        configuration is saved?
+      - Is the difference between a routing rule and a policy rule clear from
+        the words on the tab?
+      - Is it clear what a placeholder in the reason will show the reviewer?
+
+  - id: 'RR.2'
+    title: Create a review queue and see which routing rules use it
+    persona: Admin
+    priority: p1
+    paths:
+      - src/ui/src/components/review-queues/QueuesPage.tsx
+      - src/ui/src/components/review-queues/QueueDefinitionModal.tsx
+      - src/ui/src/components/review-queues/QueueReferences.tsx
+    setup:
+      - Nothing to seed. Cancel the queue form; do not create a queue on the
+        shared review stack.
+    steps:
+      - Open Review Studio › Review Management and choose Create queue.
+      - Fill in an id and a name, read what the form says about the id and the
+        Enabled switch, then cancel.
+      - Open the Default queue's page and read Routing rules that use this
+        queue.
+      - Open the row menu of a production queue other than Default, choose
+        Delete, read the confirmation, and cancel.
+    expect:
+      - The form says that routing rules name the queue by its id, and where
+        documents go while a queue is disabled.
+      - The queue's page lists the profiles and routing rules that send
+        documents to it, each with a way to open that profile's Routing Rules
+        tab.
+      - The delete confirmation lists the same routing rules and says where
+        their documents go afterwards.
+    ux_watch:
+      - Would an Admin know what to do next after creating a queue, given that a
+        new queue receives nothing until a routing rule names it?
+
+  - id: 'RR.3'
+    title: End a review by completing it, sending it back or rejecting it
+    persona: Admin
+    priority: p1
+    paths:
+      - src/ui/src/components/review-queues/ReviewCompletionModal.tsx
+      - src/ui/src/components/review-queues/RoutedBy.tsx
+      - src/ui/src/components/review-queues/ReviewTaskContext.tsx
+      - src/ui/src/components/run-plan/**
+      - src/ui/src/components/edit-screen/production-item-edit-model.tsx
+      - src/ui/src/components/edit-screen/EditPage.tsx
+    setup:
+      - A document waiting in a production review queue.
+      - Cancel every dialog. Completing, sending back and rejecting all end the
+        review of a document other people may be looking at.
+    steps:
+      - Open the document from its queue's page.
+      - Read the Review Reason panel above the editor, which says which routing
+        rule placed the document and gives its reason, and lists any failed
+        policy rules and alerts.
+      - Choose Process Changes, read both endings and the steps of the run under
+        each, choose Send back for reprocessing, read its warning, and cancel.
+      - Choose Reject, read the dialog and its reasons, and cancel.
+    expect:
+      - The Review Reason panel says which routing rule placed the item, or that
+        the default outcome did, with the reason for the reviewer, and why it is
+        in the Default queue when the routing rule named another.
+      - Failed policy rules are listed under the reason, each with the reason
+        policy rule validation gave, and a long text is shortened with a way to
+        read all of it.
+      - Process Changes asks how the review ends before anything happens, and
+        offers no step to choose for either ending.
+      - Each ending lists the steps of its run, the step it starts at and
+        whether each step runs, is skipped or is not enabled.
+      - Send back says that the review's corrections and any page regrouping
+        are discarded and that processing starts again from classification.
+      - Reject says what happens to the document and asks for a reason.
+    ux_watch:
+      - Is the difference between completing, sending back and rejecting clear
+        before the person commits to one?
+      - Is it clear that a send-back loses the corrections made so far?
+      - Can the person tell from the list of steps what the run will do, without
+        knowing the pipeline?
+      - Does the Review Reason panel stay readable with a long reason and
+        several failed policy rules?
+
+  - id: 'RR.4'
+    title: Reprocess a document from a later step and read the flow
+    persona: Admin
+    priority: p1
+    paths:
+      - src/ui/src/components/common/ReprocessDocumentModal.tsx
+      - src/ui/src/components/run-plan/**
+      - src/ui/src/components/step-function-flow/**
+    setup:
+      - A document that finished processing, and one that was reprocessed from a
+        later step or whose review was completed.
+      - Cancel the Reprocess dialog; do not start a run on the shared review
+        stack.
+    steps:
+      - Open the finished document and choose More Actions › Reprocess.
+      - Read the steps under Start at, and the reason shown for any step that is
+        not available, then cancel.
+      - Select two documents in the Document List, open Reprocess, read the
+        steps, and cancel.
+      - Open the other document's Reports › Processing Flow and read the steps
+        marked Skipped.
+    expect:
+      - The dialog lists the steps of the document's processing mode and says
+        what a run from the chosen step does again and what it keeps.
+      - A step that is not available is greyed out with its reason; for several
+        documents it says for how many.
+      - The Processing Flow shows the steps the run left out as Skipped, in step
+        order, with a note of where the run started.
+    ux_watch:
+      - Would a person know which step to choose for the change they made?
+      - Is a Skipped step clearly different from a step the configuration turned
+        off and from a step that failed?

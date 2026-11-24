@@ -294,6 +294,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "generateDraftLabels": "addDocumentsToTestSet",
     "getDraftLabelJob": "addDocumentsToTestSet",
     "updateDocumentSections": "processChanges",
+    "getProcessChangesPlan": "processChanges",
     "updateTestSetDocumentSections": "addDocumentsToTestSet",
     "getTestSetDocuments": "addDocumentsToTestSet",
     "getTestSets": "addDocumentsToTestSet",
@@ -339,6 +340,9 @@ FIELD_ALIASES: Dict[str, str] = {
     "updateModelConfigLimits": "deleteConfigVersion",
     "updatePricing": "deleteConfigVersion",
     "generateRuleJson": "deleteConfigVersion",
+    # Review routing, served by the same configuration resolver.
+    "getReviewQueueReferences": "deleteConfigVersion",
+    "convertRoutingDmn": "deleteConfigVersion",
     # compareTestRuns (TestResultsResolverFunction)
     "getTestRun": "compareTestRuns",
     "getTestRunStatus": "compareTestRuns",
@@ -389,6 +393,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "listReviewQueueItems": "getMyReviewQueues",
     "listMyReviewWork": "getMyReviewQueues",
     "getReviewItem": "getMyReviewQueues",
+    "getReviewCompletionPlan": "getMyReviewQueues",
     "claimReviewItem": "getMyReviewQueues",
     "claimNextReviewItem": "getMyReviewQueues",
     "renewReviewLease": "getMyReviewQueues",
@@ -407,6 +412,10 @@ FIELD_ALIASES: Dict[str, str] = {
     "createReviewQueue": "getMyReviewQueues",
     "updateReviewQueue": "getMyReviewQueues",
     "deleteReviewQueue": "getMyReviewQueues",
+    "sendBackReviewItem": "getMyReviewQueues",
+    "testRoutingTable": "getMyReviewQueues",
+    # reprocessDocument (ReprocessDocumentResolverFunction)
+    "getReprocessOptions": "reprocessDocument",
 }
 
 

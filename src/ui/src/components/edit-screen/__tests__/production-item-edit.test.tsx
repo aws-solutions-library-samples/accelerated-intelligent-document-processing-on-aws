@@ -7,15 +7,20 @@
  * claims it once (concurrent saves share the one claim) before the save or complete
  * is sent; if an Annotator got there first the screen says so and goes view-only; an
  * Admin on someone else's item sees it view-only with Take over, which calls
- * takeOverReviewItem; there is no Reject; Skip is offered only to the assignee; and
- * the screen gives the breadcrumbs the item's queue. The bar adds Save
- * and Discard Changes (through the editor's controller), Processing Report, and an Edit
- * page grouping that stays disabled while the item is in review; History has the item's
+ * takeOverReviewItem; Process Changes asks how the review ends (complete it, or send the
+ * document back, which discards the corrections and any page regrouping), shows what the
+ * server says each ending runs, and asks for no step; Reject asks for
+ * a reason from the queue's list; both are for whoever may finish the review; Skip is
+ * offered only to the assignee; and the screen gives the breadcrumbs the item's queue. The bar adds Save
+ * and Discard Changes (through the editor's controller), Processing Report, the Policy
+ * Rule Validation Summary (available during the review), and an Edit Page Grouping for the
+ * item's holder that a BDA-mode document does not offer; History has the item's
  * review activity; and there is no "Queue · profile · priority" meta line.
  */
 
 import React, { useCallback, useState } from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
@@ -24,12 +29,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewItem, ReviewItemDetail } from '../../../graphql/generated/operation-types';
 
 // ---------------------------------------------------------------- the server
-const server: { detail: ReviewItemDetail | null } = { detail: null };
+const server: { detail: ReviewItemDetail | null; ruleValidationResultUri: string | null } = { detail: null, ruleValidationResultUri: null };
 const saveSection = vi.fn();
 const complete = vi.fn();
 const claimItem = vi.fn();
 const releaseItem = vi.fn();
 const takeOverItem = vi.fn();
+const rejectItem = vi.fn();
+const sendBackItem = vi.fn();
+const getReviewCompletionPlan = vi.fn();
 const setErrorMessage = vi.fn();
 const setSuccessMessage = vi.fn();
 const exit = vi.fn();
@@ -79,6 +87,7 @@ vi.mock('../production-item-edit-adapter', () => ({
       ],
       refreshDocument: (...a: unknown[]) => refreshDocument(...a),
       summaryReportUri: 's3://out/in/w2.pdf/summary/summary.md',
+      ruleValidationResultUri: server.ruleValidationResultUri,
       evaluationStatus: null,
       reloadToken: 0,
       loadSection: vi.fn(),
@@ -133,6 +142,18 @@ vi.mock('../../review-queues/review-api', async (importOriginal) => ({
   claimItem: (...a: unknown[]) => claimItem(...a),
   releaseItem: (...a: unknown[]) => releaseItem(...a),
   takeOverItem: (...a: unknown[]) => takeOverItem(...a),
+  rejectItem: (...a: unknown[]) => rejectItem(...a),
+  sendBackItem: (...a: unknown[]) => sendBackItem(...a),
+}));
+// What each ending of the review runs, as the server answers it.
+vi.mock('../../run-plan/run-plan-api', () => ({
+  getReviewCompletionPlan: (...a: unknown[]) => getReviewCompletionPlan(...a),
+}));
+// The report dialog's content reads the report from the server; here it shows what it was given.
+vi.mock('../../document-viewer/MarkdownViewer', () => ({
+  MarkdownReport: ({ reportUri, documentId }: { reportUri: string; documentId: string }) => (
+    <div data-testid="markdown-report">{[documentId, reportUri].join('|')}</div>
+  ),
 }));
 /** The props the Review Reason panel was last rendered with. */
 let contextProps: { onReasonClick?: (r: { sectionId: string; field?: string | null }) => void } | null = null;
@@ -164,15 +185,17 @@ vi.mock('../../common/document-grouping', () => ({
   },
 }));
 /** The grouping board's props, while it is open. */
-let board: { sections: { sectionId: string }[]; onSave: (next: unknown[]) => Promise<void> } | null = null;
+let board: { sections: { sectionId: string }[]; consequence?: React.ReactNode; onSave: (next: unknown[]) => Promise<void> } | null = null;
 vi.mock('../../common/PageGroupingEditor', () => ({
   default: (props: NonNullable<typeof board>) => {
     board = props;
-    return <div data-testid="grouping-board" />;
+    return <div data-testid="grouping-board">{props.consequence}</div>;
   },
 }));
 
 import ProductionItemEdit from '../ProductionItemEdit';
+import type { ReviewCompletionPlan } from '../../../graphql/generated/operation-types';
+import { BDA_REGROUP_REASON } from '../document-edit-status';
 import { CLAIM_TO_REGROUP_REASON } from '../production-item-edit-model';
 import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
 import { chooseRegroup, regroupItem } from './regroup-stand-in';
@@ -233,6 +256,66 @@ const button = (text: string) => {
   return b;
 };
 const readOnly = () => screen.getByTestId('editor').getAttribute('data-readonly') === 'true';
+/** An open dialog, by its header. */
+const openDialog = (header: string) =>
+  createWrapper(document.body)
+    .findAllModals()
+    .find((m) => m.isVisible() && m.findHeader().getElement().textContent === header);
+/** The dialog Process Changes opens on a review item. */
+const completion = () => openDialog('Finish the review');
+const completionButton = (text: string) =>
+  completion()!
+    .findFooter()!
+    .findAllButtons()
+    .find((b) => label(b) === text)!;
+/** Press Process Changes and wait for the dialog that asks how the review ends, and for what it says each ending runs. */
+const openCompletion = async () => {
+  fireEvent.click(button('Process Changes').getElement());
+  await waitFor(() => expect(completion()).toBeDefined());
+  await waitFor(() => expect(completion()!.findContent().findStatusIndicator('[class*="status-loading"]')).toBeNull());
+};
+/** The steps the dialog lists for the ending chosen, in order: each one's name and what the run does with it. */
+const plannedSteps = () =>
+  completion()!
+    .findContent()
+    .findList()!
+    .findItems()
+    .map((i) => [i.findContent().getElement().textContent, i.findActions()!.getElement().textContent]);
+
+/** What the server says each ending runs: completing applies the corrections; sending back starts at classification. */
+const COMPLETION_PLAN: ReviewCompletionPlan = {
+  complete: {
+    mode: 'pipeline',
+    startStep: 'apply_review_changes',
+    steps: [
+      { id: 'beginning', label: 'Beginning', state: 'skipped' },
+      { id: 'classification', label: 'Classification', state: 'skipped' },
+      { id: 'extraction', label: 'Extraction', state: 'skipped' },
+      { id: 'assessment', label: 'Assessment', state: 'skipped' },
+      { id: 'apply_review_changes', label: 'Apply Review Changes', state: 'run' },
+      { id: 'policy_rule_validation', label: 'Policy Rule Validation', state: 'run' },
+      { id: 'review_routing', label: 'Review Routing', state: 'run' },
+      { id: 'summarization', label: 'Summarization', state: 'run' },
+      { id: 'evaluation', label: 'Evaluation', state: 'not_enabled' },
+    ],
+    sections: [],
+  },
+  sendBack: {
+    mode: 'pipeline',
+    startStep: 'classification',
+    steps: [
+      { id: 'beginning', label: 'Beginning', state: 'skipped' },
+      { id: 'classification', label: 'Classification', state: 'run' },
+      { id: 'extraction', label: 'Extraction', state: 'run' },
+      { id: 'assessment', label: 'Assessment', state: 'run' },
+      { id: 'policy_rule_validation', label: 'Policy Rule Validation', state: 'run' },
+      { id: 'review_routing', label: 'Review Routing', state: 'run' },
+      { id: 'summarization', label: 'Summarization', state: 'run' },
+      { id: 'evaluation', label: 'Evaluation', state: 'not_enabled' },
+    ],
+    sections: [],
+  },
+};
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -241,7 +324,20 @@ beforeEach(() => {
   role.isAnnotator = false;
   role.isReviewer = false;
   role.canWrite = true;
-  for (const f of [saveSection, complete, claimItem, releaseItem, takeOverItem, setErrorMessage, setSuccessMessage, exit]) f.mockReset();
+  for (const f of [
+    saveSection,
+    complete,
+    claimItem,
+    releaseItem,
+    takeOverItem,
+    rejectItem,
+    sendBackItem,
+    getReviewCompletionPlan,
+    setErrorMessage,
+    setSuccessMessage,
+    exit,
+  ])
+    f.mockReset();
   controller.save.mockReset().mockResolvedValue(true);
   refreshDocument.mockReset().mockResolvedValue(undefined);
   saveDocumentGrouping.mockReset().mockResolvedValue({ success: true, message: 'Page grouping saved' });
@@ -250,6 +346,8 @@ beforeEach(() => {
   controller.isDirty.mockReset().mockReturnValue(false);
   saveSection.mockResolvedValue(undefined);
   complete.mockResolvedValue(undefined);
+  getReviewCompletionPlan.mockResolvedValue(COMPLETION_PLAN);
+  server.ruleValidationResultUri = null;
   // A claim succeeds: the next read shows the item assigned to the Admin.
   claimItem.mockImplementation(async () => {
     server.detail = mine();
@@ -262,6 +360,197 @@ beforeEach(() => {
   server.detail = detailFor({});
 });
 
+describe('finishing a review', () => {
+  const chooseSendBack = () => {
+    act(() => completion()!.findContent().findRadioGroup()!.findInputByValue('send-back')!.click());
+  };
+
+  it('asks whether to complete the review or send the document back, and does nothing on Cancel', async () => {
+    server.detail = mine();
+    renderScreen();
+    await openCompletion();
+
+    const outcomes = completion()!.findContent().findRadioGroup()!;
+    // Each option is its label followed by what it does.
+    expect(outcomes.findButtons().map((b) => b.findLabel().getElement().textContent)).toEqual([
+      'Complete the reviewYour corrections are kept and processing continues with them.',
+      'Send back for reprocessingThe document is processed again without this review. It can return to a review queue afterwards.',
+    ]);
+    // Completing is the default, and it has no warning and no step to choose.
+    expect(outcomes.findInputByValue('complete')!.getElement().checked).toBe(true);
+    expect(completion()!.findContent().findAlert()).toBeNull();
+    expect(completion()!.findContent().findAllRadioGroups()).toHaveLength(1);
+
+    completionButton('Cancel').click();
+    await waitFor(() => expect(completion()).toBeUndefined());
+    expect(complete).not.toHaveBeenCalled();
+    expect(sendBackItem).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('shows what each ending runs, as the server says for this item and review cycle', async () => {
+    server.detail = mine();
+    renderScreen();
+    await openCompletion();
+
+    expect(getReviewCompletionPlan).toHaveBeenCalledTimes(1);
+    expect(getReviewCompletionPlan).toHaveBeenCalledWith('in/w2.pdf', 'c1');
+    expect(completion()!.findContent().getElement().textContent).toContain('Starts at Apply Review Changes');
+    expect(plannedSteps()).toEqual([
+      ['OCR (beginning)', 'Skipped'],
+      ['Classification', 'Skipped'],
+      ['Extraction', 'Skipped'],
+      ['Assessment', 'Skipped'],
+      ['Apply Review Changes', 'Runs'],
+      ['Policy Rule Validation', 'Runs'],
+      ['Review Routing', 'Runs'],
+      ['Summarization', 'Runs'],
+      ['Evaluation', 'Not enabled'],
+    ]);
+
+    chooseSendBack();
+    expect(completion()!.findContent().getElement().textContent).toContain('Starts at Classification');
+    expect(plannedSteps()).toEqual([
+      ['OCR (beginning)', 'Skipped'],
+      ['Classification', 'Runs'],
+      ['Extraction', 'Runs'],
+      ['Assessment', 'Runs'],
+      ['Policy Rule Validation', 'Runs'],
+      ['Review Routing', 'Runs'],
+      ['Summarization', 'Runs'],
+      ['Evaluation', 'Not enabled'],
+    ]);
+    // One read serves both endings.
+    expect(getReviewCompletionPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends the document back with the note and no step, saying the corrections and the regrouping are discarded', async () => {
+    server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ADMIN, isMine: true, processingMode: 'pipeline' } as Partial<ReviewItem>);
+    sendBackItem.mockResolvedValue(undefined);
+    renderScreen();
+    await openCompletion();
+    chooseSendBack();
+
+    expect(completion()!.findContent().findAlert()!.getElement().textContent).toContain(
+      'The corrections and any page regrouping are discarded, and the document is processed again from classification (from the beginning in BDA mode).',
+    );
+    // The ending is the only choice: the server decides where the run starts.
+    expect(completion()!.findContent().findAllRadioGroups()).toHaveLength(1);
+    act(() => completion()!.findContent().findTextarea()!.setTextareaValue('  wrong extraction prompt  '));
+    completionButton('Send back').click();
+
+    await waitFor(() => expect(sendBackItem).toHaveBeenCalledTimes(1));
+    // The item and the note, and nothing else.
+    expect(sendBackItem.mock.calls[0]).toHaveLength(2);
+    expect(sendBackItem.mock.calls[0][0]).toMatchObject({ objectKey: 'in/w2.pdf', cycleId: 'c1' });
+    expect(sendBackItem.mock.calls[0][1]).toBe('wrong extraction prompt');
+    // The review is not completed, and its corrections are not sent.
+    expect(complete).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(exit).toHaveBeenCalledWith(
+        expect.objectContaining({ to: '/review-queues/queues/default', message: 'w2.pdf was sent back and is being processed again.' }),
+      ),
+    );
+  });
+
+  it('sends no note with a send-back unless one is written', async () => {
+    server.detail = mine();
+    sendBackItem.mockResolvedValue(undefined);
+    renderScreen();
+    await openCompletion();
+    chooseSendBack();
+    completionButton('Send back').click();
+
+    await waitFor(() => expect(sendBackItem).toHaveBeenCalledTimes(1));
+    expect(sendBackItem.mock.calls[0].slice(1)).toEqual([undefined]);
+  });
+
+  it('lets an Admin send an unassigned item back without assigning it to them', async () => {
+    sendBackItem.mockResolvedValue(undefined);
+    renderScreen();
+    await openCompletion();
+    chooseSendBack();
+    completionButton('Send back').click();
+
+    await waitFor(() => expect(sendBackItem).toHaveBeenCalledTimes(1));
+    expect(claimItem).not.toHaveBeenCalled();
+  });
+
+  it.each([['pipeline'], ['bda'], [null]])('offers no step to choose, whatever mode the item records (%s)', async (processingMode) => {
+    server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ADMIN, isMine: true, processingMode } as Partial<ReviewItem>);
+    renderScreen();
+    await openCompletion();
+    chooseSendBack();
+
+    // The one group of options is the ending; the steps are a list to read.
+    expect(completion()!.findContent().findAllRadioGroups()).toHaveLength(1);
+    expect(completion()!.findContent().findSelect()).toBeNull();
+    expect(plannedSteps().length).toBeGreaterThan(0);
+  });
+
+  it('still completes the review when what it runs cannot be read, saying so with a Retry', async () => {
+    server.detail = mine();
+    getReviewCompletionPlan.mockRejectedValue(new Error('offline'));
+    renderScreen();
+    await openCompletion();
+
+    const warning = completion()!.findContent().findAlert()!;
+    expect(warning.findHeader()!.getElement().textContent).toBe('The steps of the run could not be loaded');
+    expect(warning.findActionSlot()!.findButton()!.getElement().textContent).toBe('Retry');
+    completionButton('Complete review').click();
+
+    await waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(exit).toHaveBeenCalled());
+    // Not being able to read the summary is not a failure of the review.
+    expect(setErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dialog open with the reason when the server refuses the send-back', async () => {
+    const { SendBackRefused } = await vi.importActual<typeof import('../../review-queues/review-api')>('../../review-queues/review-api');
+    server.detail = mine();
+    sendBackItem.mockRejectedValue(new SendBackRefused('CYCLE_CHANGED', 'the document has a newer review cycle'));
+    renderScreen();
+    await openCompletion();
+    chooseSendBack();
+    completionButton('Send back').click();
+
+    await waitFor(() => expect(completion()!.findContent().findAllAlerts().length).toBe(2));
+    const error = completion()!
+      .findContent()
+      .findAllAlerts()
+      .find((a) => a.findHeader()?.getElement().textContent === 'The document was not sent back')!;
+    expect(error.findContent().getElement().textContent).toBe('Failed to send the document back: the document has a newer review cycle');
+    // Shown in the dialog, not as a page notification, and the reviewer stays on the item.
+    expect(setErrorMessage).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+
+    // A second try clears the error as soon as it starts, before the server answers.
+    let answer: () => void = () => undefined;
+    sendBackItem.mockReturnValue(new Promise<void>((resolve) => (answer = resolve)));
+    completionButton('Send back').click();
+    await waitFor(() => expect(completion()!.findContent().findAllAlerts().length).toBe(1));
+    expect(completion()!.findContent().getElement().textContent).not.toContain('The document was not sent back');
+    await act(async () => answer());
+    await waitFor(() => expect(exit).toHaveBeenCalled());
+  });
+
+  it('is offered to a Reviewer who holds the item, and not to one who does not', async () => {
+    role.isAdmin = false;
+    role.isReviewer = true;
+    server.detail = mine();
+    renderScreen();
+    expect(buttons()).toEqual(expect.arrayContaining(['Reject', 'Process Changes']));
+    expect(button('Process Changes').isDisabled()).toBe(false);
+
+    document.body.innerHTML = '';
+    server.detail = annotators();
+    renderScreen();
+    // Neither ending is within reach: no Reject, and Process Changes cannot open the dialog.
+    expect(buttons()).not.toContain('Reject');
+    expect(buttons().includes('Process Changes') ? button('Process Changes').isDisabled() : true).toBe(true);
+  });
+});
+
 describe('an Admin on an unassigned item', () => {
   it('can edit it, and says editing or reprocessing assigns it to them', () => {
     renderScreen();
@@ -270,9 +559,13 @@ describe('an Admin on an unassigned item', () => {
     expect(button('Process Changes').isDisabled()).toBe(false);
   });
 
-  it('claims the item, then reprocesses it', async () => {
+  it('claims the item, then completes the review', async () => {
     renderScreen();
-    fireEvent.click(button('Process Changes').getElement());
+    await openCompletion();
+    // Nothing is claimed or completed until the review's ending is confirmed.
+    expect(claimItem).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    completionButton('Complete review').click();
     await waitFor(() => expect(complete).toHaveBeenCalled());
     expect(claimItem).toHaveBeenCalledTimes(1);
     expect(claimItem.mock.calls[0][0]).toMatchObject({ objectKey: 'in/w2.pdf', cycleId: 'c1' });
@@ -361,13 +654,108 @@ describe('an Admin on an item assigned to someone else', () => {
 });
 
 describe('the actions', () => {
-  it('offer no Reject', () => {
-    for (const d of [detailFor({}), mine(), annotators()]) {
+  it('offer Reject to whoever may finish the review: the holder, and an Admin on an unassigned item', () => {
+    for (const [d, offered] of [
+      [detailFor({}), true],
+      [mine(), true],
+      [annotators(), false],
+    ] as const) {
       document.body.innerHTML = '';
       server.detail = d;
       renderScreen();
-      expect(buttons()).not.toContain('Reject');
+      expect(buttons().includes('Reject')).toBe(offered);
     }
+  });
+
+  it('put Reject between Skip and Cancel', () => {
+    server.detail = mine();
+    renderScreen();
+    expect(barButtonLabels()).toEqual(['Refresh', 'Skip', 'Reject', 'Cancel', 'Save', 'Process Changes']);
+  });
+
+  it('ask why before rejecting, and reject with that reason and note', async () => {
+    server.detail = { ...mine(), rejectReasons: ['Illegible', 'Wrong document'] } as ReviewItemDetail;
+    rejectItem.mockResolvedValue({});
+    renderScreen();
+    button('Reject').click();
+    // Nothing is rejected until a reason is chosen.
+    expect(rejectItem).not.toHaveBeenCalled();
+    const modal = openDialog('Reject this document')!;
+    expect(modal.findContent().getElement().textContent).toContain('your corrections are not applied');
+    const select = modal.findContent().findSelect()!;
+    select.openDropdown();
+    expect(
+      select
+        .findDropdown()
+        .findOptions()
+        .map((o) => o.getElement().textContent),
+    ).toEqual(['Illegible', 'Wrong document']);
+    select.selectOptionByValue('Wrong document');
+    modal.findContent().findTextarea()!.setTextareaValue('a W-4, not a W-2');
+    modal
+      .findFooter()!
+      .findAllButtons()
+      .find((b) => b.getElement().textContent === 'Reject')!
+      .click();
+    await waitFor(() => expect(rejectItem).toHaveBeenCalledTimes(1));
+    expect(rejectItem.mock.calls[0][0]).toMatchObject({ objectKey: 'in/w2.pdf', cycleId: 'c1' });
+    expect(rejectItem.mock.calls[0].slice(1)).toEqual(['Wrong document', 'a W-4, not a W-2']);
+    // The holder already has the item: nothing is claimed.
+    expect(claimItem).not.toHaveBeenCalled();
+    await waitFor(() => expect(exit).toHaveBeenCalledWith(expect.objectContaining({ message: 'w2.pdf was rejected.' })));
+  });
+
+  it('assign an unassigned item to the Admin before rejecting it, since only a held item can be rejected', async () => {
+    rejectItem.mockResolvedValue({});
+    renderScreen();
+    button('Reject').click();
+    const modal = openDialog('Reject this document')!;
+    const select = modal.findContent().findSelect()!;
+    select.openDropdown();
+    select.selectOptionByValue('Illegible');
+    modal.findFooter()!.findAllButtons().at(-1)!.click();
+    await waitFor(() => expect(rejectItem).toHaveBeenCalledTimes(1));
+    expect(claimItem).toHaveBeenCalledTimes(1);
+    expect(claimItem.mock.invocationCallOrder[0]).toBeLessThan(rejectItem.mock.invocationCallOrder[0]);
+  });
+
+  it('do not reject an item an Annotator was assigned meanwhile', async () => {
+    claimItem.mockImplementation(async () => {
+      server.detail = annotators();
+      throw { errors: [{ message: 'ALREADY_CLAIMED: the item is claimed' }] };
+    });
+    renderScreen();
+    button('Reject').click();
+    const modal = openDialog('Reject this document')!;
+    const select = modal.findContent().findSelect()!;
+    select.openDropdown();
+    select.selectOptionByValue('Illegible');
+    modal.findFooter()!.findAllButtons().at(-1)!.click();
+    await waitFor(() => expect(claimItem).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(readOnly()).toBe(true));
+    expect(rejectItem).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('say why Reject is unavailable on a queue that lists no reject reasons', () => {
+    server.detail = { ...mine(), rejectReasons: [] } as ReviewItemDetail;
+    renderScreen();
+    expect(button('Reject').isDisabled()).toBe(true);
+    expect(button('Reject').getElement().textContent).toContain('This queue lists no reject reasons');
+  });
+
+  it('report a failed reject and stay on the item', async () => {
+    server.detail = mine();
+    rejectItem.mockRejectedValue(new Error('boom'));
+    renderScreen();
+    button('Reject').click();
+    const modal = openDialog('Reject this document')!;
+    const select = modal.findContent().findSelect()!;
+    select.openDropdown();
+    select.selectOptionByValue('Illegible');
+    modal.findFooter()!.findAllButtons().at(-1)!.click();
+    await waitFor(() => expect(setErrorMessage).toHaveBeenCalledWith('Failed to reject the document: boom'));
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it('offer Skip only on an item assigned to me, describing what it does', () => {
@@ -520,6 +908,81 @@ describe('the actions', () => {
     });
   });
 
+  it('do not offer Edit Page Grouping for a document processed in BDA mode, saying why, even to the holder', () => {
+    server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ADMIN, isMine: true, processingMode: 'bda' } as Partial<ReviewItem>);
+    renderScreen();
+    expect(regroupItem()).toMatchObject({ disabled: true, disabledReason: BDA_REGROUP_REASON });
+    // The fields stay editable: only the page grouping is fixed.
+    expect(readOnly()).toBe(false);
+  });
+
+  it('say BDA mode, not claiming, is why an Annotator cannot regroup an unassigned BDA document', () => {
+    Object.assign(role, { isAdmin: false, isAnnotator: true, canWrite: false });
+    server.detail = detailFor({ state: 'OPEN', ownerEmail: null, isMine: false, processingMode: 'bda' } as Partial<ReviewItem>);
+    renderScreen();
+    // Claiming would not make it possible, so the reason is not "claim first".
+    expect(regroupItem()).toMatchObject({ disabled: true, disabledReason: BDA_REGROUP_REASON });
+  });
+
+  it.each([['pipeline'], [null]])('offer Edit Page Grouping to the holder in any other mode (%s)', (processingMode) => {
+    server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ADMIN, isMine: true, processingMode } as Partial<ReviewItem>);
+    renderScreen();
+    expect(regroupItem()).toMatchObject({ disabled: false });
+  });
+
+  it('say, on the grouping board, that changed sections are extracted again at completion and corrections applied afterwards', async () => {
+    server.detail = mine();
+    renderScreen();
+    chooseRegroup();
+    await waitFor(() => expect(board).not.toBeNull());
+    const consequence = screen.getByTestId('grouping-board');
+    expect(consequence.textContent).toBe(
+      "Moving pages rewrites this document's section grouping. When you choose Process Changes and complete the review, a section you added or whose pages you changed is extracted again, and the corrections you saved are applied afterwards. The other sections keep their extracted values and your draft edits. A section you remove takes its draft edits with it.",
+    );
+    expect([...consequence.querySelectorAll('b')].map((b) => b.textContent)).toEqual([
+      'section grouping',
+      'Process Changes',
+      'extracted again',
+    ]);
+  });
+
+  it('offer the Policy Rule Validation Summary during the review, and open the report', async () => {
+    server.detail = mine();
+    server.ruleValidationResultUri = 's3://out/in/w2.pdf/rule_validation/consolidated/consolidated_summary.md';
+    renderScreen();
+    // The review is not complete: Summary waits, the policy report does not.
+    expect(menuItems('Reports')).toEqual([
+      { text: 'History', disabled: false, disabledReason: null },
+      { text: 'Summary', disabled: true, disabledReason: 'Available once the review is complete' },
+      { text: 'Policy Rule Validation Summary', disabled: false, disabledReason: null },
+      { text: 'Processing Report', disabled: false, disabledReason: null },
+    ]);
+    chooseMenuItem('Reports', 'Policy Rule Validation Summary');
+    const modal = openDialog('Policy Rule Validation Summary')!;
+    expect(modal.findContent().getElement().querySelector('[data-testid="markdown-report"]')!.textContent).toBe(
+      'in/w2.pdf|s3://out/in/w2.pdf/rule_validation/consolidated/consolidated_summary.md',
+    );
+  });
+
+  it('keep the Policy Rule Validation Summary in Reports, disabled, for a document with no policy report', () => {
+    server.detail = mine();
+    renderScreen();
+    expect(menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary')).toEqual({
+      text: 'Policy Rule Validation Summary',
+      disabled: true,
+      disabledReason: 'This document has no policy rule validation summary',
+    });
+  });
+
+  it('offer the Policy Rule Validation Summary beside Claim to an Annotator viewing an unassigned item', () => {
+    role.isAdmin = false;
+    role.isAnnotator = true;
+    server.ruleValidationResultUri = 's3://out/in/w2.pdf/rule_validation/consolidated/consolidated_summary.md';
+    renderScreen();
+    expect(barButtonLabels()).toEqual(['Refresh', 'Claim']);
+    expect(menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary')).toMatchObject({ disabled: false });
+  });
+
   it('save a draft through the editor, and Cancel discards unsaved edits after asking', async () => {
     server.detail = mine();
     renderScreen();
@@ -542,13 +1005,28 @@ describe('the actions', () => {
     expect(controller.discard).toHaveBeenCalledTimes(1);
   });
 
-  it('save unsaved edits before reprocessing on Reprocess', async () => {
+  it('save unsaved edits before asking how the review ends, and before completing it', async () => {
     server.detail = mine();
     controller.isDirty.mockReturnValue(true);
     renderScreen();
-    fireEvent.click(button('Process Changes').getElement());
+    await openCompletion();
+    expect(controller.save).toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    completionButton('Complete review').click();
     await waitFor(() => expect(complete).toHaveBeenCalled());
     expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(complete.mock.invocationCallOrder[0]);
+  });
+
+  it('do not ask how the review ends when the unsaved edits could not be saved', async () => {
+    server.detail = mine();
+    controller.isDirty.mockReturnValue(true);
+    controller.save.mockResolvedValue(false);
+    renderScreen();
+    fireEvent.click(button('Process Changes').getElement());
+    await waitFor(() => expect(controller.save).toHaveBeenCalled());
+    await act(async () => {});
+    expect(completion()).toBeUndefined();
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it('offer History and Refresh beside Claim to an Annotator viewing an unassigned item', () => {

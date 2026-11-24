@@ -48,6 +48,21 @@ def calculate_durations(timestamps):
 REVIEW_STATUS_VALUES = tuple(s.value for s in ReviewStatus)
 
 
+def _plain(value):
+    """A tracking attribute as JSON carries it.
+
+    DynamoDB returns every number as a Decimal: a whole one becomes an int, any
+    other a float, at any depth of a map or a list.
+    """
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {key: _plain(entry) for key, entry in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(entry) for entry in value]
+    return value
+
+
 def review_info(item):
     """The document's review-queue status, or None when it was never routed.
 
@@ -60,6 +75,15 @@ def review_info(item):
     return {
         'status': status,
         'queue': item.get('ReviewQueue'),
+        # The queue's name, and the routing rule that placed the document, as
+        # the tracker writes it: {tableId, ruleId, ruleLabel, reason,
+        # policyFailures: [{ruleId, policy, name, reason, pages}],
+        # policyFailureCount}. reason is what the reviewer reads; a row written
+        # before routing rules had a reason holds the first three keys only.
+        # None for a document no rule placed. The map passes through as it is
+        # stored, with its numbers (pages, policyFailureCount) as JSON numbers.
+        'queueName': item.get('ReviewQueueName'),
+        'routedBy': _plain(item.get('ReviewRoutedBy')),
         'cycleId': item.get('ReviewCycleId'),
         'statusUri': item.get('ReviewStatusUri'),
         'reviewedBy': item.get('HITLReviewedBy'),

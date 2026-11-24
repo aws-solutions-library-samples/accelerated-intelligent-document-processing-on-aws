@@ -36,6 +36,7 @@ import useUserRole from '../../hooks/use-user-role';
 import useSettingsContext from '../../contexts/settings';
 import useAppContext from '../../contexts/app';
 import ConfigBuilder from './ConfigBuilder';
+import { routingRefusal } from '../config-routing/routing-types';
 import PromptPreview from './PromptPreview';
 import ConfigurationVersionsTable from './ConfigurationVersionsTable';
 import ConfigRevisionHistoryPanel from './ConfigRevisionHistoryPanel';
@@ -68,6 +69,7 @@ const messages = defineMessages<{
   previewPrompts: NoMessageValues;
   previewPromptsDisabledReason: NoMessageValues;
   previewPromptsClose: NoMessageValues;
+  policySchemaError: { readonly path: string; readonly message: string };
 }>({
   previewPrompts: {
     id: 'configuration.layout.previewPrompts',
@@ -85,6 +87,12 @@ const messages = defineMessages<{
     id: 'configuration.layout.previewPromptsClose',
     defaultMessage: 'Close',
     description: 'Button that closes the "Preview prompts" dialog of the Configuration page.',
+  },
+  policySchemaError: {
+    id: 'configuration.layout.policySchemaError',
+    defaultMessage: 'Policy Schema: {path} - {message}',
+    description:
+      'Configuration page: one validation error of the Policy Schema tab. {path} is where in the schema the error is and {message} what is wrong there.',
   },
 });
 
@@ -486,7 +494,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
     }
 
     // Check if BDA-enabled pattern and show confirmation for auto-sync to BDA (unless skipping)
-    if ((isPattern1 || targetHasBda) && !skipSyncConfirmation) {
+    if (targetHasBda && !skipSyncConfirmation) {
       setActivateVersionTarget(versionName);
       setShowActivateVersionConfirmModal(true);
       return;
@@ -726,7 +734,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
       return 'unified';
     }
 
-    // Extract pattern number from string like "Pattern1 - Description" or "Pattern2 - Description"
+    // Extract the pattern number from a string like "Pattern2 - Description"
     const match = idpPattern.match(/Pattern(\d+)/i);
     if (match) {
       return `pattern-${match[1]}`;
@@ -745,14 +753,11 @@ const ConfigurationLayout = (): React.JSX.Element => {
     return firstClass.attributes && Array.isArray(firstClass.attributes);
   };
 
-  // Helper function to check if Pattern-1 is selected
-  const isPattern1 = (settings?.IDPPattern as string | undefined)?.includes('Pattern1');
+  // BDA sync actions are only relevant when this is a BDA mode configuration.
+  const isBdaConfigActive = Boolean(mergedConfig?.use_bda || formValues?.use_bda);
 
-  // Rule Schema/Validation is available in all modes (Unified, Pattern2, etc.) - only excluded for Pattern1-only
-  const showRuleSchema = !isPattern1;
-
-  // BDA sync actions are only relevant when this is a BDA/Pattern-1 configuration.
-  const isBdaConfigActive = Boolean(isPattern1 || mergedConfig?.use_bda || formValues?.use_bda);
+  // What the server refused about the routing table on the last save, for the Routing tab.
+  const routingServerError = routingRefusal(saveError);
 
   // Explains, on hover, why the primary Save changes button is disabled for
   // stack-managed / default versions (mirrors the button's disabled condition).
@@ -2754,7 +2759,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
           )}
 
           {/* BDA Project Status Banner */}
-          {Boolean(isPattern1 || mergedConfig?.use_bda || formValues?.use_bda) && currentVersion && (
+          {isBdaConfigActive && currentVersion && (
             <>
               {bdaProjectCreating ? (
                 <Alert type="info" header="BDA Project Creation In Progress">
@@ -2844,7 +2849,23 @@ const ConfigurationLayout = (): React.JSX.Element => {
                   currentVersionName={currentVersionName}
                   activeTabId={configBuilderActiveTab}
                   onTabChange={setConfigBuilderActiveTab}
-                  showRuleSchema={showRuleSchema}
+                  showRuleSchema
+                  showRoutingTab
+                  routing={formValues.routing}
+                  routingReadOnly={!isAdmin}
+                  classes={formValues.classes}
+                  policyClasses={formValues.policy_classes}
+                  routingServerError={routingServerError}
+                  onRoutingChange={(routing) => {
+                    const updatedConfig = { ...formValues, routing };
+                    setFormValues(updatedConfig);
+                    setJsonContent(JSON.stringify(updatedConfig, null, 2));
+                    try {
+                      setYamlContent(yaml.dump(updatedConfig));
+                    } catch (e) {
+                      console.error('Error converting to YAML:', e);
+                    }
+                  }}
                   versionDescription={versionDescription}
                   onDescriptionChange={setVersionDescription}
                   onSchemaChange={(schemaData: unknown, isDirty: boolean) => {
@@ -2905,7 +2926,10 @@ const ConfigurationLayout = (): React.JSX.Element => {
                     if (!valid) {
                       setValidationErrors(
                         errors.map((e) => ({
-                          message: `Rule Schema: ${(e as Record<string, string>).path} - ${(e as Record<string, string>).message}`,
+                          message: intl.formatMessage(messages.policySchemaError, {
+                            path: (e as Record<string, string>).path,
+                            message: (e as Record<string, string>).message,
+                          }),
                         })),
                       );
                     } else {

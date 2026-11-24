@@ -1523,10 +1523,6 @@
     "message": "Remplacer leurs valeurs extraites, y compris celles corrigées à la main",
     "sourceHash": "0f1fb8b75be556bf"
   },
-  "common.processChangesModal.noStructure": {
-    "message": "Aucun changement de structure de section n’a été détecté. Cela déclenchera le retraitement de <strong>l’évaluation et de la synthèse</strong>.",
-    "sourceHash": "fc7318d9b63e2411"
-  },
   "common.processChangesModal.regroupIntro": {
     "message": "Vous êtes sur le point d’enregistrer le nouveau regroupement de pages, puis d’extraire à nouveau ces sections :",
     "sourceHash": "e910dd0b6432ba0e"
@@ -1538,26 +1534,6 @@
   "common.processChangesModal.sectionLine": {
     "message": "{count,plural,one{Section {id} : {class}, page {pages}} other{Section {id} : {class}, pages {pages}}}",
     "sourceHash": "3cae5dcea908dd1d"
-  },
-  "common.processChangesModal.skipBda": {
-    "message": "Le traitement BDA (Bedrock Data Automation) sera automatiquement sauté puisque les données existantes sont conservées.",
-    "sourceHash": "4bf8b68900c876ae"
-  },
-  "common.processChangesModal.skipPipeline": {
-    "message": "Les étapes d’OCR, de classification, d’extraction et d’évaluation seront automatiquement sautées puisque les données existantes sont conservées.",
-    "sourceHash": "d7be67da6b55117d"
-  },
-  "common.processChangesModal.useEvaluate": {
-    "message": "Réexécuter l’évaluation pour comparer les prédictions par rapport à la base de référence",
-    "sourceHash": "cb4dbeabafe3fc0f"
-  },
-  "common.processChangesModal.useSummary": {
-    "message": "Mettre à jour le rapport de synthèse du document",
-    "sourceHash": "15d6c466d7e0f2f8"
-  },
-  "common.processChangesModal.useWhen": {
-    "message": "Utilisez ceci lorsque vous avez modifié des données d’extraction (prédictions ou base) et que vous voulez :",
-    "sourceHash": "69de39714922668e"
   },
   "common.processChangesModal.versionBody": {
     "message": "{processChanges} ouvre la prochaine version de ce jeu de tests (la version actuelle reste telle quelle) et enregistre vos étiquettes comme vérité terrain révisée.",
@@ -7114,10 +7090,6 @@
   "editScreen.toolsPanel.button.editView": {
     "message": "<b>Modifier | Afficher</b> bascule entre l’Éditeur de document et le fichier original. Les modifications non enregistrées sont conservées tant que le fichier est affiché.",
     "sourceHash": "72307e99d77bf7dd"
-  },
-  "editScreen.toolsPanel.button.processChanges": {
-    "message": "<b>{processChanges}</b> enregistre, puis traite les modifications : l’évaluation et la synthèse sont réexécutées, et l’OCR, la classification et l’extraction ne sont pas répétées. Il termine un élément de file d’attente. Sur un document du Studio de test, il écrit aussi les étiquettes comme vérité terrain révisée; lorsqu’aucune version brouillon du jeu de tests n’est ouverte, il demande d’abord, puis ouvre la version suivante en laissant la version actuelle telle quelle.",
-    "sourceHash": "9fa0dff047fc0233"
   },
   "editScreen.toolsPanel.button.refresh": {
     "message": "<b>Rafraîchir</b> recharge le document; avec les modifications non enregistrées, il demande d’abord.",

@@ -110,6 +110,31 @@ records it at `$.HookResults.preprocessing.Payload.unreachableHooks`. Both halve
 are described in
 [`docs/feature-platform.md`](../../docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode).
 
+## When a registered hook fires
+
+Registering a hook says at which point it is invoked, not on which runs. A run does
+the steps its run plan names and fires the hooks of those steps only: the run after
+a completed review starts at the step that applies the review and passes
+`postRuleValidation`, `postSummarization` and `postprocessing`; a reprocess from a
+later step passes the points from that step on; a rejected review fires nothing.
+A document held in a review queue stops after `postRuleValidation`, so that point is
+passed before the review and again after it.
+
+A run after a completed review that has to extract sections again (in Pipeline
+mode, when the reviewer changed the pages of a section or a section has no result)
+starts at extraction instead. It passes `postExtraction` for each section it
+extracts, then applies the review, then passes `postRuleValidation`,
+`postSummarization` and `postprocessing`. Every hook in that run receives `runKind`
+`review_completed`, `startStep` `extraction` and `reviewed` false, because the newly
+extracted values are not reviewer-confirmed.
+
+The dispatcher tells the hook which run it is in with three event fields, `runKind`,
+`startStep` and `reviewed`. The contract is in
+[`docs/feature-platform.md`](../../docs/feature-platform.md#when-hooks-fire), and the
+helper-side description in the
+[hooks README](../../lib/idp_common_pkg/idp_common/hooks/README.md#when-a-hook-fires-and-which-run-it-is-in).
+
+
 ## Why additive + flag-gated?
 
 The main `template.yaml` declares an `EnableFeaturePlatform` parameter (default `'true'`), and everything in this directory is deployed (or not) by a single nested-stack `AWS::CloudFormation::Stack` resource — `FeaturePlatformStack` — guarded by the `IsFeaturePlatformEnabled` condition. The GraphQL schema fragment in `appsync/feature-platform.graphql` — a vestigial directory name, kept only so existing references still resolve — is merged into `nested/api-resolvers/src/api/schema.graphql`, wrapped in clearly-marked `# === Feature Platform (optional) ===` block comments so it can be lifted back out if needed. That schema file is no longer served by AppSync — AppSync was removed — but it remains the authoritative baseline for field-level RBAC (`scripts/sdlc/scan_api_rbac.py`) and for the dispatcher's argument validation spec (`scripts/sdlc/generate_api_validation_spec.py`), so a new feature field still has to be declared there.

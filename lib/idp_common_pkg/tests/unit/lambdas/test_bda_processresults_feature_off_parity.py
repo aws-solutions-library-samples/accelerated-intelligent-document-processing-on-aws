@@ -4,10 +4,10 @@
 """Feature-off parity for the BDA-mode ProcessResults handler (IDP-0002).
 
 Each case runs the real handler in
-``patterns/unified/src/bda_processresults_function`` through one of its three
-return paths (the main BDA path, ``handle_skip_bda`` and the ``metadata.skipped``
-path) and compares the response and every ``update_document`` write with a
-golden captured **before** the review-queues change.
+``patterns/unified/src/bda_processresults_function`` through one of its two
+return paths (the main BDA path and ``handle_skip_bda``) and compares the
+response and every ``update_document`` write with a golden captured **before**
+the review-queues change.
 
 Replaced, and so outside the comparison: the page-image renderer, the BDA output
 copiers (``process_bda_sections`` / ``process_bda_pages``, which here set the
@@ -40,7 +40,6 @@ CASES = (
     "alerts_hitl_on",
     "blueprint_only_hitl_on",
     "skip_bda_path",
-    "metadata_skipped_path",
     "no_trigger",
 )
 
@@ -122,16 +121,6 @@ def _case(case_id: str):
             _config(),
             {
                 "skip_bda": True,
-                "document": _stored_document([_ALERT]).to_dict(),
-                "execution_arn": _EXEC,
-            },
-            None,
-        )
-    if case_id == "metadata_skipped_path":
-        return (
-            _config(),
-            {
-                "metadata": {"skipped": True, "working_bucket": ""},
                 "document": _stored_document([_ALERT]).to_dict(),
                 "execution_arn": _EXEC,
             },

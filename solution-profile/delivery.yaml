@@ -84,7 +84,7 @@ typical_work:
       - A labelled sample to check how many known-wrong values fall below a candidate threshold
     refs: [capability:hitl-review-queues, capability:assessment-confidence, question:review-needs, question:reviewer-roles]
     evidence:
-      - docs/human-review.md#enabling-hitl
+      - docs/human-review.md#turning-review-routing-on-and-off
       - docs/review-queues.md#turning-review-queues-on
       - docs/rbac.md
   - id: downstream-integration-build

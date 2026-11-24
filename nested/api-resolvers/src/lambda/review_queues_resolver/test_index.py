@@ -11,13 +11,12 @@ closed, domain errors leave as exactly ``PermissionError``, ``ValueError`` or
 ``ResourceNotFound``, and the queue-definition operations map the API shape.
 """
 
-import importlib.util
-import os
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _harness import event as _event
+from _harness import load as _load
+from _harness import stub_service as _stub_service
 
 from idp_common.api_adapter import ResourceNotFound
 from idp_common.review_queues import (
@@ -26,6 +25,7 @@ from idp_common.review_queues import (
     ReviewItemNotFound,
     ReviewValidationError,
 )
+from idp_common.review_queues.api_models import MyReviewQueues
 from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS, QueueDefinition
 
 #: The operations a queue worker (Admin, Annotator or Reviewer) calls, and the Admin-only
@@ -42,6 +42,8 @@ _WORKER_FIELDS = dict.fromkeys(
         "saveReviewDraft",
         "completeReviewItem",
         "rejectReviewItem",
+        "sendBackReviewItem",
+        "getReviewCompletionPlan",
     ]
 )
 _ADMIN_FIELDS = dict.fromkeys(
@@ -58,29 +60,9 @@ _ADMIN_FIELDS = dict.fromkeys(
         "createReviewQueue",
         "updateReviewQueue",
         "deleteReviewQueue",
+        "testRoutingTable",
     ]
 )
-
-_INDEX = Path(__file__).with_name("index.py")
-
-
-def _load():
-    name = "review_queues_resolver_index_under_test"
-    with patch.dict(os.environ, {"HITL_TABLE_NAME": ""}):
-        spec = importlib.util.spec_from_file_location(name, _INDEX)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-    return module
-
-
-def _event(field, args=None, *, groups=("Admin",), email="Admin@Example.com"):
-    claims = {"email": email, "sub": "sub-1", "cognito:groups": list(groups)}
-    return {
-        "info": {"fieldName": field},
-        "arguments": {} if args is None else args,
-        "identity": {"claims": claims},
-    }
 
 
 def _echo(d, create, expected_version=None):
@@ -98,8 +80,58 @@ def _model(payload):
 def module():
     m = _load()
     assert m._SERVICE is None  # no table at import
-    m._SERVICE = MagicMock(name="ReviewQueueService")
+    m._SERVICE = _stub_service()
     return m
+
+
+@pytest.mark.unit
+class TestTheServiceIsBuilt:
+    """The service completes reviews, and for that it asks this function for the
+    mode and the configuration of a profile at a revision."""
+
+    def _built_with(self):
+        built = {}
+
+        def factory(**kwargs):
+            built.update(kwargs)
+
+        with patch(
+            "idp_common.review_queues.service.create_review_queue_service", factory
+        ):
+            m = _load()
+        return m, built
+
+    def test_with_a_resolver_of_the_configuration(self):
+        m, built = self._built_with()
+
+        assert set(built) == {"configuration_of"}
+        manager = MagicMock(name="ConfigurationManager")
+        with (
+            patch.object(m, "_configuration_manager", return_value=manager),
+            patch.object(m, "resolve_processing_mode", return_value="resolved") as read,
+        ):
+            assert built["configuration_of"]("lending", 4) == "resolved"
+        read.assert_called_once_with(manager, "lending", 4)
+
+    def test_an_item_with_no_profile_reads_the_default_one(self):
+        m, built = self._built_with()
+
+        with (
+            patch.object(m, "_configuration_manager", return_value="manager"),
+            patch.object(m, "resolve_processing_mode") as read,
+        ):
+            built["configuration_of"]("", None)
+        read.assert_called_once_with("manager", "default", None)
+
+    def test_no_configuration_is_read_when_the_function_loads(self):
+        """The manager is built when the service first asks, not at import."""
+        with patch(
+            "idp_common.config.configuration_manager.ConfigurationManager"
+        ) as manager:
+            m = _load()
+
+        manager.assert_not_called()
+        assert m._CONFIG_MANAGERS == {}
 
 
 @pytest.mark.unit
@@ -239,6 +271,31 @@ class TestErrors:
         with pytest.raises(ValueError, match="BAD_ARGUMENT"):
             module.handler(_event("getReviewQueuesOverview", {"x": 1}), None)
         module._SERVICE.overview.assert_not_called()
+
+
+@pytest.mark.unit
+class TestMyQueues:
+    """``getMyReviewQueues``: what Review Management reads about the switches."""
+
+    @pytest.mark.parametrize("enabled", [True, False, None])
+    def test_the_answer_says_whether_review_routing_is_on(self, module, enabled):
+        """``None`` is "could not be read", which the page does not warn about."""
+        module._SERVICE.get_my_queues.return_value = MyReviewQueues(
+            default_queue_enabled=True, review_routing_enabled=enabled
+        )
+
+        result = module.handler(_event("getMyReviewQueues"), None)
+
+        assert result["reviewRoutingEnabled"] is enabled
+        assert result["defaultQueueEnabled"] is True
+        assert set(result) == {
+            "queues",
+            "myClaimCount",
+            "items",
+            "defaultQueueEnabled",
+            "bulkSkipSyncLimit",
+            "reviewRoutingEnabled",
+        }
 
 
 @pytest.mark.unit
@@ -538,15 +595,18 @@ class TestQueueVersions:
 
     def test_the_view_carries_the_version(self, module):
         store = module._SERVICE.directory.queue_defs
-        store.list.return_value = [QueueDefinition(id="claims", version=9)]
-        (view,) = module.handler(_event("listReviewQueues"), None)
+        store.list_page.return_value = ([QueueDefinition(id="claims", version=9)], None)
+        page = module.handler(_event("listReviewQueues"), None)
+        (view,) = page["items"]
         assert view["version"] == 9
 
     def test_the_listing_reads_past_the_cache(self, module):
         store = module._SERVICE.directory.queue_defs
-        store.list.return_value = []
+        store.list_page.return_value = ([], None)
         module.handler(_event("listReviewQueues"), None)
-        store.list.assert_called_once_with(fresh=True)
+        (limit, cursor), kwargs = store.list_page.call_args
+        assert cursor is None
+        assert kwargs == {"fresh": True}
 
 
 @pytest.fixture
@@ -589,7 +649,9 @@ class TestLostUpdateOnMoto:
         h = moto_module.handler
         h(_event("createReviewQueue", {"input": {"id": "claims"}}), None)
         (view,) = [
-            q for q in h(_event("listReviewQueues"), None) if q["id"] == "claims"
+            q
+            for q in h(_event("listReviewQueues"), None)["items"]
+            if q["id"] == "claims"
         ]
         first = h(_event("updateReviewQueue", self._form(view, priority=80)), None)
         assert first["version"] == view["version"] + 1
@@ -602,7 +664,9 @@ class TestLostUpdateOnMoto:
                 None,
             )
         (stored,) = [
-            q for q in h(_event("listReviewQueues"), None) if q["id"] == "claims"
+            q
+            for q in h(_event("listReviewQueues"), None)["items"]
+            if q["id"] == "claims"
         ]
         assert (stored["priority"], stored["eligibleAnnotators"]) == (80, [])
         # Reloaded, the second Admin's save goes through.
@@ -622,7 +686,9 @@ class TestLostUpdateOnMoto:
         h = moto_module.handler
         h(_event("createReviewQueue", {"input": {"id": "claims"}}), None)
         (view,) = [
-            q for q in h(_event("listReviewQueues"), None) if q["id"] == "claims"
+            q
+            for q in h(_event("listReviewQueues"), None)["items"]
+            if q["id"] == "claims"
         ]
         h(_event("updateReviewQueue", self._form(view, priority=80)), None)
         old = {k: v for k, v in self._form(view, priority=20)["input"].items()}

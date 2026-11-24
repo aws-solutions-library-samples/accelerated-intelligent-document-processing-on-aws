@@ -18,6 +18,7 @@ The GenAI IDP Accelerator includes a comprehensive reporting database that captu
 - [Rule Validation Tables](#rule-validation-tables)
   - [Rule Validation Summary](#rule-validation-summary)
   - [Rule Validation Details](#rule-validation-details)
+- [Document Reviews Table](#document-reviews-table)
 - [Metering Table](#metering-table)
 - [Document Sections Tables](#document-sections-tables)
   - [Dynamic Section Tables](#dynamic-section-tables)
@@ -129,8 +130,51 @@ The `rule_validation_details` table contains individual rule validation results:
 | reasoning | string | Explanation for the recommendation |
 | supporting_pages | string | JSON array of page numbers supporting the validation |
 | validation_date | timestamp | When the validation was performed |
+| rule_id | string | Stable id of the policy rule: `<policy type>.<rule key>`, where the rule key is the rule's key in the Policy Schema. Null in rows written before rule ids existed |
+| verdict | string | The recommendation as one of `pass`, `fail`, `not_found` or `unknown`. Null in rows written before verdicts existed |
 
 This table is partitioned by date (YYYY-MM-DD format).
+
+`recommendation` is the label configured in `rule_validation.recommendation_options`, so it is free text. `verdict` is the same result in four fixed values: `Pass`, `Fail` and `Information Not Found` (ignoring case) become `pass`, `fail` and `not_found`, and any other label is `unknown`. Group and filter on `rule_id` and `verdict`; two policy rules can share a description, and a description can be edited.
+
+In `rule_validation_summary`, `pass_count`, `fail_count` and `information_not_found_count` are counts of the `pass`, `fail` and `not_found` verdicts.
+
+## Document Reviews Table
+
+The `document_reviews` table records the reviews of documents held in a review
+queue (see [Review Queues](./review-queues.md)). A row is written when a document is
+placed in a queue, with `review_status` `in_review`, and another when its review ends,
+with `complete` or `rejected`. The two rows of a review share `document_id` and
+`cycle_id`; take the latest by `timestamp` for a review's current state.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| document_id | string | Unique identifier for the document |
+| cycle_id | string | The review cycle. A document that is reviewed more than once has one row per cycle |
+| review_status | string | `in_review`, `complete` or `rejected` |
+| disposition | string | How the review ended: `complete`, `rejected`, `removed` or `skipped`. Null while the document is in review |
+| profile | string | The configuration profile the document was processed with |
+| queue | string | The id of the review queue the document was in |
+| reviewer | string | Who ended the review. Null while the document is in review |
+| reviewed_at | timestamp | When the review ended. Null while the document is in review |
+| enqueued_at | timestamp | When the document was placed in the queue |
+| reason_count | int | How many review reasons the document had (confidence alerts, missing required fields, sections whose extraction failed) |
+| top_reason_kind | string | The kind of the first review reason: `low_confidence`, `blueprint_confidence`, `missing_required` or `extraction_failed`. `routing_rule` when a [routing rule](./review-routing.md) placed the document and it had no such reason. Null for a document that was sent to review by hand |
+| reject_reason | string | The reason chosen for a rejected document |
+| escalated | boolean | Whether the item was escalated |
+| machine_run_id | string | The run that produced the machine output |
+| final_run_id | string | The run that followed the review, when it is known |
+| timestamp | timestamp | When the row was written |
+| routing_reason | string | The [reason](./review-routing.md#the-reason) of the routing rule that placed the document, **as written**: its `{placeholders}` are not filled in, so the column holds no value of the document. Null when the outcome that placed the document has no reason of its own, and for a document that was sent to review by hand |
+
+This table is partitioned by date (YYYY-MM-DD format).
+
+`routing_reason` is the last column, so it is an addition for a table that already
+has rows: rows written before the column existed read as null. Group on it to count
+reviews by the reason their routing rule states. The reason a reviewer reads, with
+the document's values in it, is in the document's
+[review status object](./review-queues.md#review-status-for-downstream-consumers),
+not in this table, which is read across configuration profiles.
 
 ## Metering Table
 

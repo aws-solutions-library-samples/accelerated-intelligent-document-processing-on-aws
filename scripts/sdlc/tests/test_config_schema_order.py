@@ -16,10 +16,15 @@ added on slots already taken by ``model``/``model_lambda_hook_arn``, and
 reading the rendered order by hand. Fractional slots (``4.1``) are the intended
 escape hatch — ``getOrderWeight`` parses with ``parseFloat`` — so there is never a
 reason to reuse an integer.
+
+The same sort decides where a whole section sits on the Processing Settings tab,
+so the sections that configure pipeline steps are held to pipeline order too: the
+``order`` of each must be larger than that of the section for the step before it.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import re
 from typing import Any
@@ -32,6 +37,22 @@ _TEMPLATES = [
     "patterns/unified/template.yaml",
     "template.yaml",
 ]
+
+#: The top-level section that holds the settings of each pipeline step, keyed by
+#: the step ids of ``idp_common/run_plan/steps.py``. ``None`` is a step with no
+#: section of its own: assessment is set up inside ``extraction``, and Apply
+#: Review Changes has no settings.
+_SECTION_OF_STEP: dict[str, str | None] = {
+    "beginning": "ocr",
+    "classification": "classification",
+    "extraction": "extraction",
+    "assessment": None,
+    "apply_review_changes": None,
+    "policy_rule_validation": "rule_validation",
+    "review_routing": "hitl",
+    "summarization": "summarization",
+    "evaluation": "evaluation",
+}
 
 
 def _repo_root() -> pathlib.Path:
@@ -147,6 +168,68 @@ def test_the_extraction_group_is_covered():
         assert extraction, f"{label}: extraction property group not discovered"
         for expected in ("coercion", "validation", "image", "model"):
             assert expected in extraction, (expected, sorted(extraction))
+        return
+    pytest.fail("patterns/unified/template.yaml was not scanned")
+
+
+def _run_steps() -> Any:
+    """The step module of this checkout, through the step catalogue's loader."""
+    path = _repo_root() / "scripts" / "generate_run_step_catalog.py"
+    spec = importlib.util.spec_from_file_location("_generate_run_step_catalog", path)
+    assert spec is not None and spec.loader is not None, path
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    return generator.load_steps(_repo_root())
+
+
+def test_pipeline_step_sections_are_in_pipeline_order():
+    """The sections that configure pipeline steps read in pipeline order.
+
+    The pipeline order is the one ``idp_common/run_plan/steps.py`` declares, so
+    a step that moves there moves its section here.
+    """
+    steps = _run_steps()
+    pipeline = steps.display_order(steps.PIPELINE, review_completed=True)
+
+    unmapped = [step_id for step_id in pipeline if step_id not in _SECTION_OF_STEP]
+    assert not unmapped, (
+        f"_SECTION_OF_STEP does not name the pipeline steps {unmapped}. Map each "
+        "to the top-level section that configures it, or to None when it has none."
+    )
+    stale = sorted(set(_SECTION_OF_STEP) - set(pipeline))
+    assert not stale, f"_SECTION_OF_STEP names {stale}, which are not pipeline steps"
+
+    for label, schema in _schemas():
+        if "patterns/unified" not in label:
+            continue
+        top_level = dict(_iter_property_groups(schema)).get("<root>", {})
+        out_of_order: list[str] = []
+        previous: tuple[str, float] | None = None
+        for step_id in pipeline:
+            section = _SECTION_OF_STEP[step_id]
+            if section is None:
+                assert step_id not in top_level, (
+                    f"{label}: the step '{step_id}' has a top-level section of its "
+                    "own; name it in _SECTION_OF_STEP"
+                )
+                continue
+            assert section in top_level, (
+                f"{label}: no top-level section '{section}' with an order, for the "
+                f"step '{step_id}'"
+            )
+            weight = float(top_level[section])
+            if previous is not None and not previous[1] < weight:
+                out_of_order.append(
+                    f"'{section}' (order {weight:g}) configures the step "
+                    f"'{step_id}', so it must come after '{previous[0]}' "
+                    f"(order {previous[1]:g})"
+                )
+            previous = (section, weight)
+        assert not out_of_order, (
+            f"{label}: the Processing Settings tab lists the sections that "
+            "configure pipeline steps out of pipeline order:\n"
+            + "\n".join(out_of_order)
+        )
         return
     pytest.fail("patterns/unified/template.yaml was not scanned")
 

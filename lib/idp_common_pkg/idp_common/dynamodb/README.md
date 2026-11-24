@@ -104,9 +104,20 @@ High-level service for document operations:
   code `ConditionalCheckFailedException`, and the two cannot be combined. The
   queue processor writes RUNNING after `StartExecution` with
   `unless_status=ABORTED`, and stops the execution when that is refused
-- `get_document(object_key, consistent_read=False)` - Retrieve documents by
-  object key. The default read is eventually consistent, so pass
-  `consistent_read=True` when deciding from a write that has just landed
+- `get_document(object_key, consistent_read=False, with_policy_rule_validation=False)` -
+  Retrieve documents by object key. The default read is eventually consistent, so
+  pass `consistent_read=True` when deciding from a write that has just landed.
+  `update_document` stores `rule_validation_result` as a JSON string, and a read
+  restores it from that form only with `with_policy_rule_validation=True`. The
+  runs that requeue a document read from its row (saved edits, a completed
+  review) rely on the result being absent, because policy rule validation skips a
+  document that already carries one and those runs must validate again. A run
+  that starts after the stage (`idp_common.run_plan.reprocess`) sets the flag and
+  keeps the result
+- `remove_attributes(object_key, names)` - Remove named attributes from an
+  existing tracking row. `update_document` sets attributes and never removes one,
+  so a caller that cleared part of a document (a result a run will produce
+  again) removes the attributes that held it
 - `claim_for_execution(object_key)` - A conditional write that changes nothing
   and returns False if the document is ABORTED or has no tracking record. The
   queue processor calls it immediately before starting an execution, so a

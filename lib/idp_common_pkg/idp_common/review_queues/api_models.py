@@ -14,11 +14,12 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from pydantic.alias_generators import to_camel
 
 from idp_common.notifications.api_models import summarize_validation_error
 from idp_common.review_queues.queue_defs import QUEUE_REF_PATTERN
+from idp_common.run_plan.planned import PlannedRun
 
 __all__ = ["summarize_validation_error"]
 
@@ -63,11 +64,84 @@ class ReviewSendInfoView(_View):
     requested_at: str
 
 
+class ReviewPolicyFailureView(_View):
+    """A policy rule the document failed, with the explanation stored for it."""
+
+    #: ``<policy type>.<rule key>``.
+    rule_id: str = ""
+    policy: str = ""
+    #: The rule's key: the id without its policy type.
+    name: str = ""
+    reason: str = ""
+    #: The page numbers the explanation cites.
+    pages: list[int] = Field(default_factory=list)
+
+
+class ReviewRoutedByView(_View):
+    """The routing rule that placed an item in its queue."""
+
+    table_id: str = ""
+    #: Empty when the table's default outcome applied.
+    rule_id: str = ""
+    rule_label: str = ""
+    placed_queue: str = ""
+    #: Empty, or why the item is in the Default queue instead of the queue the
+    #: rule named: ``queue_missing``, ``queue_disabled``, ``evaluation_error``.
+    fallback_reason: str = ""
+    #: The input values the decision read, as a JSON object.
+    inputs: Optional[str] = None
+    #: What the reviewer reads: the routing rule's reason with the document's
+    #: values. ``None`` on an item placed before routing rules had a reason.
+    reason: Optional[str] = None
+    #: ``admin`` (the routing rule's own reason) or ``fallback`` (generated).
+    reason_source: Optional[str] = None
+    #: The first policy rules the document failed, whichever routing rule
+    #: placed it, and how many it failed in all.
+    policy_failures: list[ReviewPolicyFailureView] = Field(default_factory=list)
+    policy_failure_count: int = 0
+
+
+class RoutingTestResult(_View):
+    """What a routing table decides for a document (``testRoutingTable``).
+
+    The result of an evaluation that places nothing.
+    """
+
+    #: ``hold`` when the outcome is a queue, ``continue`` when it is no review.
+    decision: str
+    #: The rule that matched; ``None`` when the table's default outcome applied.
+    matched_rule_id: Optional[str] = None
+    rule_label: Optional[str] = None
+    #: ``queue`` or ``no_review``.
+    outcome_kind: str
+    #: The queue the outcome names.
+    outcome_queue: Optional[str] = None
+    #: The queue a run would place the document in: the outcome's queue, or the
+    #: Default queue when that one is missing or disabled.
+    placed_queue: Optional[str] = None
+    #: Empty, or why the placed queue is the Default queue: ``queue_missing``,
+    #: ``queue_disabled``, ``evaluation_error``.
+    fallback_reason: str = ""
+    #: The input values the decision read, as a JSON object.
+    inputs: Optional[str] = None
+    #: References that could not be resolved for this document: a class the
+    #: configuration does not have, a section result that could not be read.
+    stale_references: list[str] = Field(default_factory=list)
+    #: What the reviewer would read: the routing rule's reason with this
+    #: document's values. ``None`` when the outcome is no review.
+    reason: Optional[str] = None
+    #: ``admin`` (the routing rule's own reason) or ``fallback`` (generated,
+    #: because the routing rule has none or it could not be rendered).
+    reason_source: Optional[str] = None
+
+
 class ReviewItemView(_View):
     object_key: str
     cycle_id: str
     profile: str
     queue: str
+    #: The queue's name; ``None`` when its definition is gone or was not read.
+    queue_name: Optional[str] = None
     priority: int
     state: str
     review_status: str
@@ -90,6 +164,11 @@ class ReviewItemView(_View):
     reject_reason: Optional[str] = None
     version: int = 0
     sent_to_review: Optional[ReviewSendInfoView] = None
+    #: ``None`` for an item placed before routing rules existed, or by hand.
+    routed_by: Optional[ReviewRoutedByView] = None
+    #: ``pipeline`` or ``bda``: the mode of the run that placed the document, so
+    #: the steps a send-back can start at. ``None`` when it was not recorded.
+    processing_mode: Optional[str] = None
 
 
 class ReviewItemPage(_View):
@@ -131,6 +210,10 @@ class MyReviewQueues(_View):
     default_queue_enabled: bool = False
     #: The bulk Skip All Reviews inline limit in force.
     bulk_skip_sync_limit: int = 50
+    #: Review Routing (``hitl.enabled``) of the active profile: with it off, no
+    #: document is held, whatever the routing rules say. ``None`` when the
+    #: profile could not be read.
+    review_routing_enabled: Optional[bool] = None
 
 
 class ReviewSectionDetail(_View):
@@ -181,6 +264,15 @@ class ReviewDraftView(_View):
     updated_at: str
     lease_expires_at: Optional[str] = None
     changed_field_count: int = 0
+
+
+class ReviewCompletionPlanView(_View):
+    """What finishing a review runs, for each of the two ways to finish it."""
+
+    #: The run that follows Complete.
+    complete: PlannedRun
+    #: The run that follows Send back.
+    send_back: PlannedRun
 
 
 class ReviewerLoad(_View):
@@ -290,6 +382,65 @@ class ReassignArgs(ItemArgs):
 
 class MoveArgs(ItemArgs):
     target_queue: str = Field(pattern=QUEUE_REF_PATTERN)
+
+
+class SendBackArgs(ItemArgs):
+    """Send a document in review back to be processed again.
+
+    The call names no step: where the run starts is the reprocess service's
+    decision.
+    """
+
+    note: Optional[str] = Field(default=None, max_length=MAX_NOTE)
+
+
+class TestRoutingArgs(ItemKeyArgs):
+    """Evaluate a routing table against a document, placing nothing."""
+
+    # Not a test class: the name is the operation's (``testRoutingTable``).
+    __test__ = False
+
+    #: A routing section to try in place of the configuration's own: a JSON
+    #: object, or its text. Left out, the configuration is tested as it is.
+    routing: Optional[Any] = None
+
+
+class _QueueDefinitionArgs(_Args):
+    """A queue definition as the API takes it (``ReviewQueueDefinitionInput``).
+
+    Every field but ``id`` may be left out. The service fills what is missing:
+    with the defaults for a new queue, and for an update with the stored
+    ``enabled`` and ``skipReasons``.
+    """
+
+    id: str = Field(min_length=1, max_length=64)
+    name: Optional[str] = Field(default=None, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=300)
+    priority: Optional[int] = None
+    checklist: Optional[list[str]] = None
+    reject_reasons: Optional[list[str]] = None
+    skip_reasons: Optional[list[str]] = None
+    time_limit_minutes: Optional[int] = None
+    eligible_annotators: Optional[list[str]] = None
+    enabled: Optional[bool] = None
+    #: The version an update was built from. A create ignores it.
+    version: Optional[StrictInt] = Field(default=None, ge=0)
+    #: Sent by clients written when a queue had a threshold of its own. Accepted
+    #: and ignored: queues have none.
+    confidence_threshold: Optional[Any] = None
+
+
+class CreateQueueArgs(_QueueDefinitionArgs):
+    """``createReviewQueue``'s input."""
+
+
+class UpdateQueueArgs(_QueueDefinitionArgs):
+    """``updateReviewQueue``'s input."""
+
+
+class ListQueuesArgs(_Args):
+    limit: Optional[int] = None
+    next_token: Optional[str] = Field(default=None, max_length=4096)
 
 
 def draft_depth(value: Any, depth: int = 0) -> int:

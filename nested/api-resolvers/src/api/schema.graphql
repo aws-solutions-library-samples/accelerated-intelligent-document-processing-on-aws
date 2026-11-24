@@ -105,6 +105,14 @@ type Document implements DynamoDbBase @aws_cognito_user_pools @aws_iam {
   HITLReviewedBy: String
   HITLReviewedByEmail: String
   HITLReviewHistory: AWSJSON
+  # The review queue the document is, or was last, in: its id and its name.
+  ReviewQueue: String
+  ReviewQueueName: String
+  # The routing rule that placed it there, as {tableId, ruleId, ruleLabel, reason,
+  # policyFailures: [{ruleId, policy, name, reason, pages}], policyFailureCount};
+  # ruleId is empty when the table's default outcome applied. reason is what the
+  # reviewer reads, and policyFailures the first policy rules the document failed.
+  ReviewRoutedBy: AWSJSON
   ConfidenceAlertCount: Int
   # Required fields (JSON Schema `required` in each section's class schema) that
   # extraction left absent, summed over sections. Counted separately from
@@ -822,6 +830,11 @@ type ProcessChangesResponse @aws_cognito_user_pools {
   success: Boolean!
   message: String
   processingJobId: String
+  # Set by processChanges when it succeeds: the step the run starts at and every
+  # step of the run with its state, as getProcessChangesPlan lists them.
+  # updateDocumentSections starts no run and sets neither.
+  startStep: String
+  steps: [PlannedStep!]
 }
 
 type AbortWorkflowResponse @aws_cognito_user_pools @aws_iam {
@@ -1621,6 +1634,37 @@ type ReviewQueueDefinition @aws_cognito_user_pools {
   version: Int
 }
 
+type ReviewQueueDefinitionPage @aws_cognito_user_pools {
+  items: [ReviewQueueDefinition!]!
+  nextToken: String
+}
+
+# A routing rule that sends documents to a review queue. ruleId is empty when it is
+# the table's default outcome. published is true when the reference is in the
+# configuration new documents run; false when it is in a newer revision that is
+# not published.
+type QueueReference @aws_cognito_user_pools {
+  profile: String!
+  revision: Int
+  published: Boolean!
+  ruleId: String!
+  ruleLabel: String
+}
+
+# A page covers a number of configuration profiles, so it can hold no reference
+# and still have a nextToken. Page until nextToken is null.
+type QueueReferencePage @aws_cognito_user_pools {
+  items: [QueueReference!]!
+  nextToken: String
+}
+
+# The result of convertRoutingDmn: xml for direction to_dmn, routing (a JSON object)
+# for from_dmn.
+type RoutingDmnConversion @aws_cognito_user_pools {
+  routing: AWSJSON
+  xml: String
+}
+
 input ReviewQueueDefinitionInput {
   id: String!
   name: String
@@ -1961,6 +2005,14 @@ type ReviewItem @aws_cognito_user_pools {
   version: Int!
   # Set on an item created by Send to review: why, and by whom.
   sentToReview: ReviewSendInfo
+  # The display name of the item's queue.
+  queueName: String
+  # Set on an item a routing rule placed: the rule, and where it placed the item.
+  routedBy: ReviewRoutedBy
+  # "pipeline" or "bda": the processing mode of the run that placed the document,
+  # which is the mode a send-back runs in. Null when it was not recorded (an item
+  # placed by Send to review, or before the mode was stored).
+  processingMode: String
 }
 
 type ReviewSendInfo @aws_cognito_user_pools {
@@ -1968,6 +2020,98 @@ type ReviewSendInfo @aws_cognito_user_pools {
   note: String
   requestedBy: String!
   requestedAt: AWSDateTime!
+}
+
+# A policy rule the document failed. ruleId is <policy type>.<rule key>, name the
+# rule key. reason is the explanation policy rule validation stored for the rule,
+# shortened. pages are the page numbers it cites.
+type ReviewPolicyFailure @aws_cognito_user_pools {
+  ruleId: String!
+  policy: String!
+  name: String!
+  reason: String!
+  pages: [Int!]!
+}
+
+# The routing rule that placed a document in its review queue. ruleId is empty when
+# the table's default outcome applied. placedQueue is the Default queue when the
+# queue the rule names is missing or disabled; fallbackReason then says which
+# (queue_missing, queue_disabled) or evaluation_error when the table could not be
+# evaluated. inputs holds the values the decision read, as a JSON object.
+# reason is what the reviewer reads: the routing rule's reason with the document's
+# values in it. reasonSource is admin for the routing rule's own reason and
+# fallback for a generated one; both are null on an item placed before routing
+# rules had a reason. policyFailures lists the first policy rules the document
+# failed, whichever routing rule placed it, and policyFailureCount how many it
+# failed in all.
+type ReviewRoutedBy @aws_cognito_user_pools {
+  tableId: String
+  ruleId: String
+  ruleLabel: String
+  placedQueue: String
+  fallbackReason: String
+  inputs: AWSJSON
+  reason: String
+  reasonSource: String
+  policyFailures: [ReviewPolicyFailure!]
+  policyFailureCount: Int
+}
+
+# What a routing table decides for a document (testRoutingTable). decision is hold
+# or continue; outcomeKind is queue or no_review. matchedRuleId is empty when the
+# table's default outcome applied. staleReferences names what the table refers to
+# and this document does not have (a class, a section result). reason is what the
+# reviewer would read and reasonSource where it comes from (admin or fallback);
+# both are null when the outcome is no review.
+type RoutingTestResult @aws_cognito_user_pools {
+  decision: String!
+  matchedRuleId: String
+  ruleLabel: String
+  outcomeKind: String!
+  outcomeQueue: String
+  placedQueue: String
+  fallbackReason: String
+  inputs: AWSJSON
+  staleReferences: [String!]
+  reason: String
+  reasonSource: String
+}
+
+# The answer to reprocessDocument: how many documents were queued, and what
+# happened to each one, in the order they were asked for.
+type ReprocessResult @aws_cognito_user_pools {
+  queued: Int!
+  results: [ReprocessDocumentResult!]!
+}
+
+# What a document can be reprocessed from (getReprocessOptions). mode is pipeline or
+# bda. steps lists every step of that mode in pipeline order.
+type ReprocessOption @aws_cognito_user_pools {
+  objectKey: String!
+  mode: String!
+  defaultStep: String!
+  steps: [ReprocessStepOption!]!
+}
+
+# One step of a document's processing mode. available says whether a run can start
+# at it; when it cannot, reason is the code that says why. skippable says whether a
+# run can leave the step out.
+type ReprocessStepOption @aws_cognito_user_pools {
+  id: String!
+  available: Boolean!
+  skippable: Boolean!
+  reason: String
+}
+
+# What happened to one document of a request to process it again. status is QUEUED,
+# REFUSED or FAILED. reason is the code that explains a refusal, and message says it
+# in words. startStep is the step the run starts at.
+type ReprocessDocumentResult @aws_cognito_user_pools {
+  objectKey: String!
+  status: String!
+  startStep: String
+  reason: String
+  message: String
 }
 
 type ReviewItemPage @aws_cognito_user_pools {
@@ -1983,6 +2127,9 @@ type MyReviewQueues @aws_cognito_user_pools {
   defaultQueueEnabled: Boolean!
   # The bulk Skip All Reviews inline limit in force (hitl.bulk_skip_sync_limit).
   bulkSkipSyncLimit: Int!
+  # Review Routing of the active profile (hitl.enabled): with it off, no document
+  # is held for review. Null when the profile could not be read.
+  reviewRoutingEnabled: Boolean
 }
 
 # Bulk Skip All Reviews (BulkReviewResolverFunction). mode is SELECTED (objectKeys)
@@ -2098,6 +2245,33 @@ type ReviewItemDetail @aws_cognito_user_pools {
   machineOutputManifestUri: String
   canClaim: Boolean!
   claimBlockedReason: String
+}
+
+# One step of a planned run, in pipeline order. state is run, skipped or not_enabled.
+type PlannedStep @aws_cognito_user_pools {
+  id: String!
+  label: String!
+  state: String!
+}
+
+# A section the run extracts again, and why: added, pages_changed or no_result.
+type PlannedSection @aws_cognito_user_pools {
+  sectionId: String!
+  cause: String!
+}
+
+# Where a run starts and which steps it runs, in the document's processing mode.
+type PlannedRun @aws_cognito_user_pools {
+  mode: String!
+  startStep: String!
+  steps: [PlannedStep!]!
+  sections: [PlannedSection!]!
+}
+
+# What finishing a review runs: after Complete, and after Send back.
+type ReviewCompletionPlan @aws_cognito_user_pools {
+  complete: PlannedRun!
+  sendBack: PlannedRun!
 }
 
 type ClaimNextResult @aws_cognito_user_pools {
@@ -2425,7 +2599,11 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   copyToBaseline(objectKey: String!): CopyToBaselineResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
-  reprocessDocument(objectKeys: [String!]!, version: String, revision: Int): Boolean!
+  # Queues documents to be processed again. startStep is the step each run starts
+  # at (the beginning when omitted) and skipSteps the optional steps it leaves out.
+  # A document that cannot run as asked is refused in its own result and does not
+  # stop the others.
+  reprocessDocument(objectKeys: [String!]!, version: String, revision: Int, startStep: String, skipSteps: [String!]): ReprocessResult!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   abortWorkflow(objectKeys: [String!]!): AbortWorkflowResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
@@ -2680,6 +2858,14 @@ type Mutation {
       cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   rejectReviewItem(objectKey: String!, cycleId: String!, reason: String!, note: String): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  # Sends a document in review back to be processed again. The run starts at
+  # classification (the beginning in BDA mode). The review is withdrawn and its
+  # corrections are not kept. For the holder of the item, and for an Admin on an
+  # item that is open or assigned.
+  sendBackReviewItem(objectKey: String!, cycleId: String!, note: String): ReprocessDocumentResult!
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
@@ -2963,6 +3149,16 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )
+  # For each document, its processing mode and the steps a reprocess can start at.
+  # version and revision are the configuration a reprocess would run under, as in
+  # reprocessDocument. Reads only; the same configuration scope applies.
+  getReprocessOptions(objectKeys: [String!]!, version: String, revision: Int): [ReprocessOption!]!
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  # Where processChanges would start for the document as saved, and every step of
+  # that run with its state. Reads only; the groups and the caller checks are those
+  # of processChanges.
+  getProcessChangesPlan(objectKey: String!): PlannedRun!
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
 
   # Document version history (processing runs). All three require an assigned
   # group: listDocumentVersions shapes every run through the same helper as
@@ -3116,11 +3312,39 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
+  # What finishing the review of an item runs, for completing it and for sending it
+  # back: the step each run starts at, its steps, and the sections extracted again.
+  # For the holder of the item, and for an Admin on an item that is open or assigned.
+  getReviewCompletionPlan(objectKey: String!, cycleId: String!): ReviewCompletionPlan!
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
   getReviewQueuesOverview: ReviewQueuesOverview
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]
     )
-  listReviewQueues: [ReviewQueueDefinition!]
+  # The queue definitions, a page at a time, in id order.
+  listReviewQueues(limit: Int, nextToken: String): ReviewQueueDefinitionPage!
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  # The routing rules, in every configuration profile, that send documents to a
+  # review queue: what an Admin is shown before deleting or disabling it.
+  getReviewQueueReferences(queueId: String!, limit: Int, nextToken: String): QueueReferencePage!
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  # Converts a routing section to DMN XML (direction to_dmn; content is the routing
+  # section as JSON; dmnVersion is 1.5 or 1.3) or DMN XML to a routing section
+  # (direction from_dmn; content is the XML). Nothing is read or saved.
+  convertRoutingDmn(direction: String!, content: String!, dmnVersion: String): RoutingDmnConversion!
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Author", "Viewer"]
+    )
+  # What a routing table decides for a processed document. routing is a routing
+  # section to try, such as one that is not saved yet; omitted, the configuration
+  # the document is pinned to is tested as it is. Nothing is changed.
+  testRoutingTable(objectKey: String!, routing: AWSJSON): RoutingTestResult!
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]
     )

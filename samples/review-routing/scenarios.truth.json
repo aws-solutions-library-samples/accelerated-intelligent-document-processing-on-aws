@@ -1,0 +1,48 @@
+{
+  "description": "What each review routing scenario invoice prints, by field of the Scenario-Invoice class. null: the page does not print the field. Amounts are printed with a thousands separator and two decimals.",
+  "document_class": "Scenario-Invoice",
+  "documents": [
+    {
+      "scenario": "one",
+      "file": "routing-scenario-one-problem.pdf",
+      "page_count": 1,
+      "fields": {
+        "Vendor": "AnyCo Office",
+        "InvoiceNumber": "INV-1001",
+        "InvoiceType": "Standard",
+        "PaymentTerms": "Net 30",
+        "GrossTotal": 840.0,
+        "Discount": 40.0,
+        "NetAmountDue": 800.0
+      }
+    },
+    {
+      "scenario": "two",
+      "file": "routing-scenario-two-problems.pdf",
+      "page_count": 1,
+      "fields": {
+        "Vendor": "Example Print Services",
+        "InvoiceNumber": "INV-2002",
+        "InvoiceType": "Standard",
+        "PaymentTerms": null,
+        "GrossTotal": 1200.0,
+        "Discount": 100.0,
+        "NetAmountDue": 1250.0
+      }
+    },
+    {
+      "scenario": "three",
+      "file": "routing-scenario-three-problems.pdf",
+      "page_count": 1,
+      "fields": {
+        "Vendor": "AnyCo Office",
+        "InvoiceNumber": "INV-3003",
+        "InvoiceType": "PO-backed",
+        "PaymentTerms": null,
+        "GrossTotal": 2000.0,
+        "Discount": 0.0,
+        "NetAmountDue": 2000.0
+      }
+    }
+  ]
+}

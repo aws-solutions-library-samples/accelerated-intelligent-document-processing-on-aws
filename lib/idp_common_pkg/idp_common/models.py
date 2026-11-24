@@ -35,6 +35,15 @@ def coerce_revision(value: Any) -> Optional[int]:
         return None
 
 
+def _optional_int(value: Any) -> Optional[int]:
+    """``value`` as an int, or None when it is absent or not a number.
+
+    The normalisation of :func:`coerce_revision`, for a count that arrives as a
+    Decimal (DynamoDB), a str or an int (JSON).
+    """
+    return coerce_revision(value)
+
+
 class Status(Enum):
     """Document processing status."""
 
@@ -615,6 +624,13 @@ class Section:
     extracted value is absent never appears here (#1527): its score stays in
     ``explainability_info``, and if the class schema requires it, it is listed in
     :attr:`missing_required_fields` instead."""
+    confidence_alert_total: Optional[int] = None
+    """How many confidence alerts this section really has, when the list above
+    holds fewer. The tracking row caps the stored list and records the true
+    figure beside it (``ConfidenceThresholdAlertsTotal``); the row reader puts
+    it here, so a document reloaded from the row still knows the exact count and
+    writes it back unchanged. ``None`` means the list is complete. Review
+    routing counts ``max(len(list), total)``. Serialized only when set."""
     missing_required_fields: List[Dict[str, Any]] = field(default_factory=list)
     """Required fields (JSON Schema ``required`` in this section's class schema)
     that extraction left absent, in the same shape as a confidence alert:
@@ -685,6 +701,7 @@ class Section:
             extraction_result_uri=data.get("extraction_result_uri"),
             attributes=data.get("attributes"),
             confidence_threshold_alerts=data.get("confidence_threshold_alerts", []),
+            confidence_alert_total=_optional_int(data.get("confidence_alert_total")),
             missing_required_fields=list(data.get("missing_required_fields") or []),
             processing_issues=[
                 ProcessingIssue.from_dict(pi)
@@ -713,6 +730,9 @@ class Section:
         # rather than as a presumed 1.0 (see the `confidence` docstring).
         if self.confidence is not None:
             result["confidence"] = self.confidence
+        # Only when the alert list above is known to be incomplete.
+        if self.confidence_alert_total is not None:
+            result["confidence_alert_total"] = self.confidence_alert_total
         # Only emit when non-empty to keep output compact / back-compatible.
         if self.missing_required_fields:
             result["missing_required_fields"] = self.missing_required_fields
@@ -1219,6 +1239,8 @@ class Document:
                 "extraction_result_uri": section.extraction_result_uri,
                 "confidence_threshold_alerts": section.confidence_threshold_alerts,
             }
+            if section.confidence_alert_total is not None:
+                section_dict["confidence_alert_total"] = section.confidence_alert_total
             if section.missing_required_fields:
                 section_dict["missing_required_fields"] = (
                     section.missing_required_fields
@@ -1372,6 +1394,9 @@ class Document:
                     attributes=section_data.get("attributes"),
                     confidence_threshold_alerts=section_data.get(
                         "confidence_threshold_alerts", []
+                    ),
+                    confidence_alert_total=_optional_int(
+                        section_data.get("confidence_alert_total")
                     ),
                     missing_required_fields=list(
                         section_data.get("missing_required_fields") or []

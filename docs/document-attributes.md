@@ -144,11 +144,14 @@ so `2.0` is returned as `2` (and `-0.0` as `0`).
 - **The document object** carried between workflow steps has an `attributes` key,
   again only when the document has any, so post-processing hooks receive them.
 
-Attributes are carried unchanged through a reprocess from the web UI or API, an SDK
-or CLI rerun, and the malware-scanning gate: each uses the set stored at the
-original intake rather than reading the object again. Only when a document being
-reprocessed has no tracking record left are they read from the object by the same
-rules.
+Attributes are carried unchanged through a reprocess and through the
+malware-scanning gate: each uses the set stored at the original intake rather than
+reading the object again. Every reprocess, from the web UI, the API, the SDK, the
+CLI or the MCP tool, is done by the stack (see
+[Reprocessing](./document-versions.md#reprocessing)): a run that starts at the
+beginning recreates the document's record with the stored set, and a run that
+starts at a later step keeps the record. Only when a document being reprocessed
+has no tracking record left are they read from the object by the same rules.
 
 ## Security
 

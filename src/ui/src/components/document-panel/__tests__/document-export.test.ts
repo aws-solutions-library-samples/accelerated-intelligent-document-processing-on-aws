@@ -206,6 +206,38 @@ describe('exportDocument', () => {
     expect(manifest.errors).toEqual([]);
   });
 
+  it('writes the review queue, the routing rule and its reason into the document attributes', async () => {
+    const routedBy = {
+      tableId: 'review-routing',
+      ruleId: 'claims-over-1000',
+      ruleLabel: 'Claims over 1000',
+      reason: 'Invoice total 1250.00 is over 1000.',
+      policyFailureCount: 2,
+    };
+    const attributesOf = async (doc: typeof DOC & Record<string, unknown>) => {
+      const result = await exportDocument(doc, SETTINGS, {
+        scope: 'predictions',
+        credentials: {},
+        presignFn: makeMocks({}).presignFn,
+        fetchFn: makeMocks({}).fetchFn,
+      });
+      const zip = await readZip(result.blob);
+      return JSON.parse((await zip.file('tenant_one_lending.pdf/document-attributes.json')!.async('string')) as string);
+    };
+
+    const routed = await attributesOf({
+      ...DOC,
+      sections: [],
+      reviewQueue: 'claims',
+      reviewQueueName: 'Claims team',
+      reviewRoutedBy: routedBy,
+    });
+    expect(routed).toMatchObject({ reviewQueue: 'claims', reviewQueueName: 'Claims team', reviewRoutedBy: routedBy });
+
+    const plain = await attributesOf({ ...DOC, sections: [] });
+    expect(plain).toMatchObject({ reviewQueue: null, reviewQueueName: null, reviewRoutedBy: null });
+  });
+
   it('baselines scope: swaps bucket, routes files under baseline/ prefix', async () => {
     const mocks = makeMocks({
       's3://baseline-bkt/tenant/one/lending.pdf/sections/s1/result.json': ok(textBody('{}')),

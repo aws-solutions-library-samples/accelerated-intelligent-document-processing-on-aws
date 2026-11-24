@@ -30,8 +30,8 @@ discovery:
 
       Analyze the policy document thoroughly, page by page. For each rule found:
 
-      1. Give the rule a short, descriptive snake_case name (e.g., "bundled_services_not_separate",
-         "modifier_59_distinct_sites", "prior_auth_required")
+      1. Give the rule a short, descriptive snake_case name (e.g., "wire_transfer_dual_approval",
+         "dormant_account_reactivation", "overdraft_fee_disclosed")
 
       2. Write a clear, actionable description — phrased as a yes/no validation question
          or checkable statement
@@ -80,21 +80,21 @@ discovery:
               "x-aws-idp-rule-type": "policy_rules",
               "description": "All rules extracted from the policy document",
               "rule_properties": {
-                  "bundled_services_not_separate": {
-                      "description": "Are bundled services (exploration, lysis of adhesions, closure, anesthesia) NOT reported separately from the primary surgical procedure?",
-                      "page": "V-5"
+                  "wire_transfer_dual_approval": {
+                      "description": "Was every outgoing wire transfer above the dual-approval limit approved by two authorised signers?",
+                      "page": "3"
                   },
-                  "modifier_59_distinct_sites": {
-                      "description": "Is modifier 59 used only when procedures are performed at distinctly different anatomic sites or during separate patient encounters?",
-                      "page": "V-8"
+                  "dormant_account_reactivation": {
+                      "description": "Was the identity of the account holder verified again before a dormant account was reactivated?",
+                      "page": "5"
                   },
-                  "prior_auth_required": {
-                      "description": "Has prior authorization been obtained before performing procedures that require pre-approval per the policy?",
-                      "page": "III-4"
+                  "overdraft_fee_disclosed": {
+                      "description": "Is every overdraft fee disclosed on the statement of the period in which it is charged?",
+                      "page": "7"
                   },
-                  "medical_necessity_documented": {
-                      "description": "Is medical necessity documentation included to support the procedure performed?",
-                      "page": "IV-1"
+                  "joint_account_holders_listed": {
+                      "description": "Does the statement of a joint account list every holder of the account?",
+                      "page": "2"
                   }
               }
           }

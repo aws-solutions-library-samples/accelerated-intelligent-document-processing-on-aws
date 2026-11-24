@@ -14,8 +14,17 @@ from aws_xray_sdk.core import patch_all, xray_recorder
 from botocore.exceptions import BotoCoreError, ClientError
 
 from idp_common.config import ConfigurationManager
+from idp_common.config.feature_flags import policy_rule_validation_enabled
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
+from idp_common.run_plan.asl import entry_for, to_execution_input
+from idp_common.run_plan.mode import (
+    BDA,
+    PIPELINE,
+    ProcessingMode,
+    resolve_processing_mode,
+)
+from idp_common.run_plan.models import RUN_PLAN_ATTRIBUTE, RunPlan, RunPlanError, decode
 from idp_common.utils.execution_names import (  # noqa: F401 — re-exported
     _EXECUTION_NAME_MAX_LEN,
     _EXECUTION_NAME_UNSAFE,
@@ -30,7 +39,9 @@ patch_all()
 
 # Same pattern as idp_common.review_queues.finalize.FINALIZE_TOKEN_RE; kept local
 # here so the handler (and its hermetic tests, which stub idp_common) needs no
-# review_queues import on its hot path.
+# review_queues import on its hot path. The run plan is read with
+# idp_common.run_plan.models, .asl and .mode and idp_common.config.feature_flags
+# only, none of which imports review_queues.
 _FINALIZE_TOKEN_RE = re.compile(r"^rvw-[0-9a-f]{32}$")
 # Same pattern as idp_common.utils.execution_names.RESUBMIT_TOKEN_RE, kept local
 # for the same reason.
@@ -1335,46 +1346,11 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
         logger.warning(f"Failed to extend visibility for OPEN-state message: {e}")
 
 
-def routing_configuration(
-    manager: Any, config_version: str, config_revision: Optional[int]
-) -> Any:
-    """The configuration ``use_bda`` routing is read from.
-
-    The document's pinned revision when it has one, so that a save made while
-    the document was queued cannot send it down a branch its own configuration
-    does not select (#1619). With no pin, the profile head, as before revisions
-    existed.
-
-    A pinned read that fails falls back to the profile head, with a WARNING
-    naming the revision, rather than to pipeline mode. The head is what routed
-    every document before this read was pinned, so the fallback is never worse
-    than that; defaulting to pipeline would send every BDA document on the
-    stack down the wrong branch whenever the revision cannot be read, which is
-    what an unreadable bucket did when this read was first pinned. The steps
-    after routing load the pinned revision themselves and fail the document if
-    it is gone, so a revision that is really unavailable is still reported.
-    A head read that fails as well raises, into the handling every head-read
-    failure has always had.
-    """
-    if config_revision is None:
-        return manager.get_merged_configuration(config_version)
-    try:
-        return manager.get_merged_configuration(
-            config_version, revision=config_revision
-        )
-    except Exception as e:
-        logger.warning(
-            f"Could not read revision r{config_revision} of configuration profile "
-            f"'{config_version}' for routing: {e}. Routing from the profile head.",
-            exc_info=True,
-        )
-        return manager.get_merged_configuration(config_version)
-
-
 def start_workflow(
     document: Document,
     execution_name: Optional[str] = None,
     review_finalize_token: Optional[str] = None,
+    run_plan: Optional[RunPlan] = None,
 ) -> Dict[str, Any]:
     """
     Start Step Functions workflow
@@ -1387,6 +1363,10 @@ def start_workflow(
         review_finalize_token: A review-queue finalize token; adds
             ``review.finalizeToken`` to the input so the tracker recognises the
             finalize run. None (every other message) leaves the input as before.
+        run_plan: The plan the message carried (see ``run_plan_of``); adds
+            ``runPlan`` to the input, which says where the run starts and which
+            steps it skips. None leaves the input with no ``runPlan`` key, and
+            the run starts at the first step.
 
     Returns:
         Dict containing execution details
@@ -1463,6 +1443,35 @@ def start_workflow(
                 exc_info=True,
             )
 
+    # The processing mode, at the version and revision pinned above, so the
+    # routing flags, the run plan and the rest of the pipeline come from the same
+    # configuration. Resolved before the document is serialized: the plan's entry
+    # depends on it.
+    if config_table_name:
+        # (Still tolerant of an unset pin: the pin block above is best-effort.)
+        config_version = getattr(document, "config_version", None) or "default"
+        try:
+            manager = ConfigurationManager(table_name=config_table_name)
+        except Exception as e:
+            logger.warning(
+                f"Could not read config from ConfigurationManager: {e}. "
+                f"Defaulting to pipeline mode.",
+                exc_info=True,
+            )
+            mode = ProcessingMode(PIPELINE, None, None, False)
+        else:
+            # use_bda at the revision the document is pinned to, so routing
+            # agrees with every later step (#1619); a BDA profile with no
+            # project linked runs in pipeline mode. Never raises.
+            mode = resolve_processing_mode(
+                manager, config_version, getattr(document, "config_revision", None)
+            )
+    else:
+        logger.warning(
+            "CONFIG_TABLE env var not set. Cannot determine use_bda flag. Defaulting to pipeline mode."
+        )
+        mode = ProcessingMode(PIPELINE, None, None, False)
+
     # Each run reports only its own usage (see docs/reporting-database.md). A
     # resubmitted document (processChanges, review finalize, the SDK rerun,
     # trigger_reprocessing) arrives carrying the usage of its earlier runs; move
@@ -1490,57 +1499,34 @@ def start_workflow(
     # Inject use_bda flag and bda_project_arn from config into document for state machine routing.
     # The unified state machine uses $.document.use_bda to choose BDA vs pipeline branch,
     # and $.document.bda_project_arn for the per-config-version BDA project.
-    if config_table_name:
-        try:
-            # Read the version PINNED above, so the routing flags and the rest of
-            # the pipeline are guaranteed to come from the same config version.
-            # (Still tolerant of an unset pin: the pin block above is best-effort.)
-            config_version = getattr(document, "config_version", None) or "default"
-            manager = ConfigurationManager(table_name=config_table_name)
+    compressed_document["use_bda"] = mode.mode == BDA
+    if mode.bda_project_arn:
+        compressed_document["bda_project_arn"] = mode.bda_project_arn
 
-            # Read use_bda from the full config (properly decompresses gzip
-            # storage), at the revision the document is pinned to, so routing
-            # agrees with every later step (#1619).
-            config = routing_configuration(
-                manager, config_version, getattr(document, "config_revision", None)
-            )
-            use_bda = getattr(config, "use_bda", False) if config else False
-            compressed_document["use_bda"] = bool(use_bda)
-
-            # Read per-version BDA project ARN (stored as top-level DynamoDB metadata)
-            if use_bda:
-                bda_project_arn = manager.get_bda_project_arn(config_version)
-                if bda_project_arn:
-                    compressed_document["bda_project_arn"] = bda_project_arn
-                    logger.info(
-                        f"Config version '{config_version}': use_bda=True, bda_project_arn={bda_project_arn}"
-                    )
-                else:
-                    # No BDA project linked — fall back to pipeline to avoid errors
-                    logger.warning(
-                        f"Config version '{config_version}' has use_bda=True but no BDA project ARN linked. "
-                        f"Falling back to pipeline mode. Please sync the config version to a BDA project."
-                    )
-                    compressed_document["use_bda"] = False
-            else:
-                logger.info(
-                    f"Config version '{config_version}': use_bda=False, using pipeline mode"
-                )
-        except Exception as e:
-            logger.warning(
-                f"Could not read config from ConfigurationManager: {e}. Defaulting to pipeline mode.",
-                exc_info=True,
-            )
-            compressed_document["use_bda"] = False
-    else:
-        logger.warning(
-            "CONFIG_TABLE env var not set. Cannot determine use_bda flag. Defaulting to pipeline mode."
-        )
-        compressed_document["use_bda"] = False
-
-    event = {"document": compressed_document}
+    event: Dict[str, Any] = {"document": compressed_document}
     if review_finalize_token:
         event["review"] = {"finalizeToken": review_finalize_token}
+    if run_plan is not None:
+        # Where the run starts and which steps it skips, in the mode it takes. A
+        # message with no plan gets no key, and the run starts at the first step.
+        event["runPlan"] = to_execution_input(
+            run_plan,
+            mode=mode.mode,
+            policy_rule_validation_enabled=(
+                policy_rule_validation_enabled(mode.config)
+                if mode.config is not None
+                else False
+            ),
+        )
+        if entry_for(run_plan.start, mode.mode, bool(run_plan.sections)).fell_back:
+            # The plan was built before the mode was known for certain (a BDA
+            # profile with no project linked runs in pipeline mode, and the
+            # reverse), so its start does not exist in the mode the run takes.
+            logger.warning(
+                f"The run plan of {document.id} starts at '{run_plan.start}', which "
+                f"does not exist in {mode.mode} mode; starting at the beginning"
+            )
+            _emit_concurrency_event_metric("RunPlanStartFallback")
 
     logger.info(
         f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)"
@@ -1602,6 +1588,26 @@ def review_finalize_token_of(record: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def run_plan_of(record: Dict[str, Any]) -> Optional[RunPlan]:
+    """The plan the ``RunPlan`` message attribute carries, when valid.
+
+    Every message the product sends carries one (``idp_common.run_plan.sender``).
+    A message with no attribute comes from code outside the product, which may
+    send to the document queue: it starts an unplanned run, from the first step.
+    An attribute that is not a plan this code reads is ignored with a WARNING,
+    and the run is unplanned too.
+    """
+    attribute = (record.get("messageAttributes") or {}).get(RUN_PLAN_ATTRIBUTE) or {}
+    value = attribute.get("stringValue")
+    if value is None:
+        return None
+    try:
+        return decode(value)
+    except RunPlanError as e:
+        logger.warning(f"Ignoring an invalid RunPlan message attribute: {e}")
+        return None
+
+
 def resubmit_token_of(record: Dict[str, Any]) -> Optional[str]:
     """The ``ResubmitIdempotencyToken`` message attribute, when valid.
 
@@ -1639,6 +1645,8 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     finalize_token = review_finalize_token_of(record)
     # A finalize token wins; a resubmit token only names the execution.
     name_token = finalize_token or resubmit_token_of(record)
+    # The plan changes what the run does, never what it is named.
+    run_plan = run_plan_of(record)
     receipt_handle = record.get("receiptHandle", "")
 
     try:
@@ -1729,6 +1737,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                     document,
                     execution_name_for(object_key, name_token or message_id),
                     review_finalize_token=finalize_token,
+                    run_plan=run_plan,
                 )
             except DocumentAbortedBeforeStart:
                 # Aborted after the check at the top of this function read it.

@@ -17,6 +17,8 @@ import type { EditOrigin } from '../../routes/constants';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import { documentName, reasonText } from './review-api';
 import { productionWorkItemId, testSetWorkItemId } from './work-item-ids';
+import { policyFailureTotal } from './RoutedBy';
+import type { RoutedByLike } from './RoutedBy';
 
 export type WorkSource = 'production' | 'test-set';
 
@@ -32,16 +34,24 @@ export interface WorkItem {
   source: WorkSource;
   objectKey: string;
   name: string;
-  /** Production: the queue id. Test set: the test set name. */
+  /** Production: the queue id. Test set: the test set id. */
   queue: string;
+  /** Production: the queue's name, when the API reports one. Shown instead of the id. */
+  queueName?: string | null;
   /** The item is escalated (production only). */
   escalated: boolean;
   priority: number | null;
   /** Production: when the item entered its queue. Test set: when it was assigned. */
   enqueuedAt: string | null;
-  /** The top reason, as data. */
+  /** The first alert of the item, as data; `extraReasons` counts the others. */
   reason: WorkItemReason | null;
   extraReasons: number;
+  /** Production: the routing rule that placed the item. It is the reason shown when the item has no other. */
+  routedBy?: RoutedByLike | null;
+  /** Production: the reason the routing rule gives, with the document's values. It is the reason shown when there is one. */
+  routingReason: string | null;
+  /** Production: how many policy rules the document failed. */
+  policyFailureCount: number;
   /** The queue item state (`QueueItemState`), or `ASSIGNED_STATE`. */
   state: string;
   /** The e-mail of the Annotator the item is assigned to, or null. */
@@ -87,7 +97,8 @@ const messages = defineMessages<{
   escalated: {
     id: 'reviewQueues.workItem.escalated',
     defaultMessage: '{queue} (escalated)',
-    description: 'Queue column of a review work table for an escalated item. {queue} is the queue id, as an Admin named it.',
+    description:
+      'Queue column of a review work table for an escalated item. {queue} is the name of the queue, or its id when it has no name, as an Admin named it.',
   },
   you: {
     id: 'reviewQueues.workItem.you',
@@ -99,13 +110,13 @@ const messages = defineMessages<{
     id: 'reviewQueues.workItem.alerts',
     defaultMessage: '{count, plural, one {# confidence alert} other {# confidence alerts}}',
     description:
-      'Top reason column of Home › Tasks for a Test Studio document. {count} is the number of its fields below their confidence threshold.',
+      'Reason column of Home › Tasks for a Test Studio document. {count} is the number of its fields below their confidence threshold.',
   },
   draftLabels: {
     id: 'reviewQueues.workItem.draftLabels',
     defaultMessage: 'Draft labels to confirm',
     description:
-      'Top reason column of Home › Tasks for a Test Studio document that has no confidence alert but has labels for the Annotator to check and confirm.',
+      'Reason column of Home › Tasks for a Test Studio document that has no confidence alert but has labels for the Annotator to check and confirm.',
   },
 });
 
@@ -115,11 +126,12 @@ export const workSourceLabel = (source: WorkSource, intl: IntlShape): string =>
 
 /** A work row as a table shows it: each label in the UI's language. */
 export interface WorkItemView {
-  /** The queue id, with "(escalated)" when the item is escalated. */
+  /** The queue's name, or its id when the API reports no name, with "(escalated)" when the item is escalated. */
   queue: string;
   state: string;
   /** "You" for the caller's item, else the Annotator's e-mail; null when no one is assigned. */
   assignee: string | null;
+  /** The first alert of the item, in words; null when it has none. */
   reason: string | null;
 }
 
@@ -136,12 +148,16 @@ const reasonLabel = (reason: WorkItemReason | null, intl: IntlShape): string | n
 };
 
 /** Words a row for its table: the cells, the text and assignment filters and the sorting all read this. */
-export const workItemView = (item: WorkItem, intl: IntlShape): WorkItemView => ({
-  queue: item.escalated ? intl.formatMessage(messages.escalated, { queue: item.queue }) : item.queue,
-  state: item.state === ASSIGNED_STATE ? intl.formatMessage(messages.assigned) : reviewItemStateView(item.state, intl).label,
-  assignee: item.assignedToYou ? intl.formatMessage(messages.you) : item.assignedTo,
-  reason: reasonLabel(item.reason, intl),
-});
+export const workItemView = (item: WorkItem, intl: IntlShape): WorkItemView => {
+  // The queue as people know it: its name, or its id when the API reports no name.
+  const queue = item.queueName ?? item.queue;
+  return {
+    queue: item.escalated ? intl.formatMessage(messages.escalated, { queue }) : queue,
+    state: item.state === ASSIGNED_STATE ? intl.formatMessage(messages.assigned) : reviewItemStateView(item.state, intl).label,
+    assignee: item.assignedToYou ? intl.formatMessage(messages.you) : item.assignedTo,
+    reason: reasonLabel(item.reason, intl),
+  };
+};
 
 /** One production review item, as a row whose link opens the edit page with its origin. */
 export const fromReviewItem =
@@ -152,11 +168,17 @@ export const fromReviewItem =
     objectKey: item.objectKey,
     name: documentName(item.objectKey),
     queue: item.queue,
+    queueName: item.queueName || null,
     escalated: item.escalated,
     priority: item.priority,
     enqueuedAt: item.enqueuedAt,
     reason: item.reasons[0] ? { kind: 'review', reason: item.reasons[0] } : null,
     extraReasons: Math.max(item.reasonCount - 1, 0),
+    routedBy: item.routedBy
+      ? { ruleId: item.routedBy.ruleId, ruleLabel: item.routedBy.ruleLabel, fallbackReason: item.routedBy.fallbackReason }
+      : null,
+    routingReason: item.routedBy?.reason?.trim() || null,
+    policyFailureCount: policyFailureTotal(item.routedBy),
     // The backend state for an item held by its Annotator is CLAIMED; the UI says Assigned.
     state: item.state === QueueItemState.CLAIMED ? ASSIGNED_STATE : item.state,
     assignedTo: item.ownerEmail ?? null,
@@ -178,6 +200,8 @@ export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
   enqueuedAt: task.assignedAt ?? null,
   reason: task.alertCount ? { kind: 'alerts', count: task.alertCount } : task.labelSource ? { kind: 'draftLabels' } : null,
   extraReasons: 0,
+  routingReason: null,
+  policyFailureCount: 0,
   state: ASSIGNED_STATE,
   assignedTo: task.assignedTo ?? null,
   assignedToYou: true,

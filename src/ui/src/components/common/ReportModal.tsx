@@ -42,7 +42,7 @@ interface ReportModalProps {
 
 /**
  * The one width of the dialogs the Reports menus open: Summary, Processing Report,
- * Rule Validation Summary, Estimated Cost and the editor's History. A report that
+ * Policy Rule Validation Summary, Estimated Cost and the editor's History. A report that
  * needs more room (Evaluation Report) passes its own size.
  */
 export const REPORT_MODAL_SIZE: ModalProps.Size = 'x-large';

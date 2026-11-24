@@ -27,6 +27,8 @@ from idp_common.review_queues.testset_docs import (
     store_assigned_count,
 )
 from idp_common.review_queues.testset_summaries import summarize_document
+from idp_common.run_plan.models import RunKind, RunPlan
+from idp_common.run_plan.sender import EVENT_DOCUMENT_RUN_REQUESTED, send_run
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -756,9 +758,10 @@ def _read_json(bucket, key):
 def trigger_reprocessing(object_key):
     """Trigger reprocessing via SQS queue after HITL completion.
 
-    Uses the same pattern as processChanges - sends document to queue,
-    workflow runs with intelligent skip logic (OCR/Classification/Extraction/Assessment
-    are skipped since data exists), only Summarization and Evaluation re-run.
+    Sends the document to the queue with a ``legacy_review`` run plan, which
+    starts at the beginning: the workflow runs with intelligent skip logic
+    (OCR/Classification/Extraction/Assessment are skipped since data exists), and
+    only Summarization and Evaluation re-run.
     """
     try:
         # Load document from DynamoDB
@@ -779,19 +782,18 @@ def trigger_reprocessing(object_key):
         document.completion_time = None
         document.workflow_execution_arn = None
 
-        # Compress and send to queue (same pattern as processChanges)
-        working_bucket = os.environ.get("WORKING_BUCKET")
-        if working_bucket:
-            sqs_message = document.serialize_document(
-                working_bucket, "hitl_complete", logger
-            )
-        else:
-            sqs_message = document.to_dict()
-
         queue_url = os.environ.get("QUEUE_URL")
         if queue_url:
-            sqs_client.send_message(
-                QueueUrl=queue_url, MessageBody=json.dumps(sqs_message, default=str)
+            # Stored in the working bucket when there is one, with a reference in
+            # the message: a full document can exceed the queue's message size.
+            send_run(
+                sqs_client,
+                queue_url,
+                document=document,
+                plan=RunPlan(kind=RunKind.LEGACY_REVIEW, start="beginning"),
+                event_type=EVENT_DOCUMENT_RUN_REQUESTED,
+                working_bucket=os.environ.get("WORKING_BUCKET") or None,
+                prefix="hitl_complete",
             )
             logger.info(
                 f"Queued document {object_key} for reprocessing after HITL completion"

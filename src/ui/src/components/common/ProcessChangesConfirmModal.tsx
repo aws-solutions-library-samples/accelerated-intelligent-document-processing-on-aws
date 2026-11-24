@@ -3,13 +3,21 @@
 //
 // The confirmation before Process Changes. The 'reprocess' variant ("Confirm
 // Reprocessing") says what reprocessing will do: shared by the edit page's Process Changes
-// on a direct edit and the document page's Edit Page Grouping › Save and Re-extract, which
-// lists the sections it re-extracts. The 'version' variant is Test Studio's Process Changes
-// while no draft version of the set is open: it opens one and writes reviewed ground truth.
-import React from 'react';
-import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
+// on a direct edit, which shows the steps the server says the run will do
+// (getProcessChangesPlan, read while the dialog is open: the step the run starts at, each
+// step with whether it runs, and the sections extracted again), and the document page's
+// Edit Page Grouping › Save and Re-extract, which lists the sections it re-extracts. Where
+// a run starts is the server's decision: this dialog holds no step of its own. When the
+// steps cannot be read the dialog says so and offers Retry, and the changes can still be
+// processed. The 'version' variant is Test Studio's Process Changes while no draft version
+// of the set is open: it opens one and writes reviewed ground truth.
+import React, { useCallback } from 'react';
+import { Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
+import PlannedSteps from '../run-plan/PlannedSteps';
+import { getProcessChangesPlan } from '../run-plan/run-plan-api';
+import usePlannedRun from '../run-plan/use-planned-run';
 import { sharedLabelMessages } from './labels';
 
 const messages = defineMessages<{
@@ -26,12 +34,7 @@ const messages = defineMessages<{
   effectReview: NoMessageValues;
   effectRules: NoMessageValues;
   effectOthers: NoMessageValues;
-  noStructure: { readonly strong: MessageTag };
-  useWhen: NoMessageValues;
-  useEvaluate: NoMessageValues;
-  useSummary: NoMessageValues;
-  skipBda: NoMessageValues;
-  skipPipeline: NoMessageValues;
+  reprocess: NoMessageValues;
 }>({
   cancel: {
     id: 'common.processChangesModal.cancel',
@@ -100,55 +103,23 @@ const messages = defineMessages<{
   },
   effectRules: {
     id: 'common.processChangesModal.effect.rules',
-    defaultMessage: "Clear the document's rule validation results",
+    defaultMessage: "Clear the document's Policy Rule Validation results",
     description:
-      "What Save and Re-extract in Edit Page Grouping does to the document's rule validation results, in the Confirm Reprocessing dialog's list.",
+      "What Save and Re-extract in Edit Page Grouping does to the document's Policy Rule Validation results, in the Confirm Reprocessing dialog's list.",
   },
   effectOthers: {
     id: 'common.processChangesModal.effect.others',
     defaultMessage: "Leave the other sections' values as they are; OCR and classification are not repeated",
     description: "What Save and Re-extract in Edit Page Grouping leaves alone, in the Confirm Reprocessing dialog's list.",
   },
-  noStructure: {
-    id: 'common.processChangesModal.noStructure',
-    defaultMessage: 'No section structure changes detected. This will trigger <strong>evaluation and summarization</strong> reprocessing.',
+  reprocess: {
+    id: 'common.processChangesModal.reprocess',
+    defaultMessage:
+      'The document is processed again with your saved changes. The steps before the one the run starts at are not repeated: what they produced is kept.',
     description:
-      "Text of the Confirm Reprocessing dialog before the edit page's Process Changes on a document. The <strong> tags mark the words shown in bold.",
-  },
-  useWhen: {
-    id: 'common.processChangesModal.useWhen',
-    defaultMessage: 'Use this when you have edited extraction data (predictions or baseline) and want to:',
-    description:
-      "Text of the Confirm Reprocessing dialog before the edit page's Process Changes on a document, above a list of two reasons.",
-  },
-  useEvaluate: {
-    id: 'common.processChangesModal.useEvaluate',
-    defaultMessage: 'Re-run evaluation to compare predictions against baseline',
-    description:
-      "A reason to use Process Changes, in the list of the Confirm Reprocessing dialog before the edit page's Process Changes on a document.",
-  },
-  useSummary: {
-    id: 'common.processChangesModal.useSummary',
-    defaultMessage: 'Update the document summary report',
-    description:
-      "A reason to use Process Changes, in the list of the Confirm Reprocessing dialog before the edit page's Process Changes on a document.",
-  },
-  skipBda: {
-    id: 'common.processChangesModal.skipBda',
-    defaultMessage: 'BDA (Bedrock Data Automation) processing will be automatically skipped since existing data is preserved.',
-    description:
-      "Note in the Confirm Reprocessing dialog before the edit page's Process Changes on a document processed with BDA (Bedrock Data Automation).",
-  },
-  skipPipeline: {
-    id: 'common.processChangesModal.skipPipeline',
-    defaultMessage: 'OCR, Classification, Extraction, and Assessment steps will be automatically skipped since existing data is preserved.',
-    description:
-      "Note in the Confirm Reprocessing dialog before the edit page's Process Changes on a document not processed with BDA (Bedrock Data Automation).",
+      "Text of the Confirm Reprocessing dialog before the edit page's Process Changes on a document outside a review. The list of the processing steps the run will do follows it.",
   },
 });
-
-/** Renders a `<strong>...</strong>` element value: the words shown in bold. */
-const strong = (chunks: React.ReactNode[]): React.JSX.Element => <strong>{chunks}</strong>;
 
 interface ProcessChangesConfirmModalProps {
   visible: boolean;
@@ -156,8 +127,8 @@ interface ProcessChangesConfirmModalProps {
   variant?: 'reprocess' | 'version';
   /** Save and Re-extract: the sections saved, then extracted again. */
   reextractSections?: { sectionId: string; documentClass?: string | null; pageIds: number[] }[];
-  /** BDA mode, whose processing is skipped rather than the Pipeline mode steps. */
-  bdaMode?: boolean;
+  /** Process Changes on a document: the document, whose planned steps the dialog reads and shows. */
+  objectKey?: string;
   busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -167,12 +138,19 @@ const ProcessChangesConfirmModal = ({
   visible,
   variant = 'reprocess',
   reextractSections,
-  bdaMode = false,
+  objectKey,
   busy = false,
   onConfirm,
   onCancel,
 }: ProcessChangesConfirmModalProps): React.JSX.Element => {
   const intl = useIntl();
+  // What Process Changes will run, read while the dialog asks about it. Save and
+  // Re-extract and the new test-set version say what they do themselves.
+  const showsPlan = variant === 'reprocess' && !reextractSections;
+  const planKey = showsPlan ? objectKey : undefined;
+  const loadPlan = useCallback(() => getProcessChangesPlan(planKey ?? ''), [planKey]);
+  const planned = usePlannedRun(loadPlan, visible && !!planKey);
+
   return (
     <Modal
       onDismiss={onCancel}
@@ -195,72 +173,55 @@ const ProcessChangesConfirmModal = ({
       }
       header={intl.formatMessage(variant === 'version' ? messages.versionHeader : messages.reprocessHeader)}
     >
-      <SpaceBetween size="s">
-        {variant === 'version' ? (
+      {variant === 'version' ? (
+        <Box>
+          <FormattedMessage {...messages.versionBody} values={{ processChanges: intl.formatMessage(sharedLabelMessages.processChanges) }} />
+        </Box>
+      ) : reextractSections ? (
+        <SpaceBetween size="s">
           <Box>
-            <FormattedMessage
-              {...messages.versionBody}
-              values={{ processChanges: intl.formatMessage(sharedLabelMessages.processChanges) }}
-            />
+            <FormattedMessage {...messages.regroupIntro} />
           </Box>
-        ) : reextractSections ? (
-          <>
-            <Box>
-              <FormattedMessage {...messages.regroupIntro} />
-            </Box>
-            <ul>
-              {reextractSections.map((s) => (
-                <li key={s.sectionId}>
-                  <FormattedMessage
-                    {...messages.sectionLine}
-                    values={{ count: s.pageIds.length, id: s.sectionId, class: s.documentClass ?? '', pages: s.pageIds.join(', ') }}
-                  />
-                </li>
-              ))}
-            </ul>
-            <Box>
-              <FormattedMessage {...messages.willDo} />
-            </Box>
-            <ul>
-              <li>
-                <FormattedMessage {...messages.effectValues} />
+          <ul>
+            {reextractSections.map((s) => (
+              <li key={s.sectionId}>
+                <FormattedMessage
+                  {...messages.sectionLine}
+                  values={{ count: s.pageIds.length, id: s.sectionId, class: s.documentClass ?? '', pages: s.pageIds.join(', ') }}
+                />
               </li>
-              <li>
-                <FormattedMessage {...messages.effectClasses} />
-              </li>
-              <li>
-                <FormattedMessage {...messages.effectReview} />
-              </li>
-              <li>
-                <FormattedMessage {...messages.effectRules} />
-              </li>
-              <li>
-                <FormattedMessage {...messages.effectOthers} />
-              </li>
-            </ul>
-          </>
-        ) : (
-          <>
-            <Box>
-              <FormattedMessage {...messages.noStructure} values={{ strong }} />
-            </Box>
-            <Box>
-              <FormattedMessage {...messages.useWhen} />
-            </Box>
-            <ul>
-              <li>
-                <FormattedMessage {...messages.useEvaluate} />
-              </li>
-              <li>
-                <FormattedMessage {...messages.useSummary} />
-              </li>
-            </ul>
-            <Alert type="info">
-              {bdaMode ? <FormattedMessage {...messages.skipBda} /> : <FormattedMessage {...messages.skipPipeline} />}
-            </Alert>
-          </>
-        )}
-      </SpaceBetween>
+            ))}
+          </ul>
+          <Box>
+            <FormattedMessage {...messages.willDo} />
+          </Box>
+          <ul>
+            <li>
+              <FormattedMessage {...messages.effectValues} />
+            </li>
+            <li>
+              <FormattedMessage {...messages.effectClasses} />
+            </li>
+            <li>
+              <FormattedMessage {...messages.effectReview} />
+            </li>
+            <li>
+              <FormattedMessage {...messages.effectRules} />
+            </li>
+            <li>
+              <FormattedMessage {...messages.effectOthers} />
+            </li>
+          </ul>
+        </SpaceBetween>
+      ) : (
+        <SpaceBetween size="m">
+          <Box>
+            <FormattedMessage {...messages.reprocess} />
+          </Box>
+          {/* Confirming does not wait for this: a failed read shows as a warning with Retry. */}
+          <PlannedSteps plan={planned.plan} loading={planned.loading} error={planned.error} onRetry={planned.retry} />
+        </SpaceBetween>
+      )}
     </Modal>
   );
 };

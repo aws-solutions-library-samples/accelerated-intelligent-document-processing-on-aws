@@ -231,6 +231,26 @@ The solution creates various IAM roles to run different components of the system
   * `s3:GetObject`, `s3:PutObject`
   * `logs:*`
 
+* **Routing Role** (the Review Routing step, which decides after policy rule validation whether a document is held in a review queue, continues or ends as rejected):
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query` on `HITLTable` and its indexes (only on a stack that has one): the document's review item, the queue definitions, the item of a document it places and its history. No delete
+  * `dynamodb:GetItem`, `dynamodb:UpdateItem` on the Tracking table (the review attributes of the document's row)
+  * SAM `DynamoDBReadPolicy` on the Configuration table, `s3:GetObject` on `config_revisions/*` in the Configuration bucket and `s3:ListBucket` limited to that prefix (the configuration at the revision the document is pinned to). No write
+  * `s3:GetObject` on the Output bucket (section results and the policy rule validation summary) and `s3:DeleteObject` limited to `*/review/*` in it (the status object of a review the run withdraws). No write to the Output bucket
+  * `s3:GetObject`, `s3:PutObject` on `compressed_documents/*` in the Working bucket (the document passed between states)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+  * `cloudwatch:PutMetricData`, limited to the stack's namespace
+  * `logs:CreateLogStream`, `logs:PutLogEvents`
+
+* **Apply Review Changes Role** (the first step of the run that follows a completed review, which writes the reviewer's corrections onto the section results):
+  * `dynamodb:GetItem`, `dynamodb:UpdateItem`, `dynamodb:Query` on `HITLTable` and its indexes (only on a stack that has one): the document's review item and the reviewer's drafts. It creates no item
+  * `dynamodb:GetItem`, `dynamodb:UpdateItem` on the Tracking table (the document's row after the review is applied)
+  * SAM `DynamoDBReadPolicy` on the Configuration table, `s3:GetObject` on `config_revisions/*` in the Configuration bucket and `s3:ListBucket` limited to that prefix. No write
+  * `s3:GetObject`, `s3:PutObject` on the Output bucket (the section results it rewrites and the drafts it reads). No delete
+  * `s3:GetObject`, `s3:PutObject` on `compressed_documents/*` in the Working bucket (the document passed between states)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+  * `cloudwatch:PutMetricData`, limited to the stack's namespace
+  * `logs:CreateLogStream`, `logs:PutLogEvents`
+
 * **BDA Integration Role** (BDA mode, `use_bda: true`):
   * `bedrock:InvokeDataAutomationAsync`
   * `bedrock:GetDataAutomationProject`, `bedrock:ListDataAutomationProjects`, `bedrock:GetBlueprint`, `bedrock:GetBlueprintRecommendation`
@@ -257,6 +277,7 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`
   * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
   * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
+  * `dynamodb:GetItem`, `dynamodb:Query` on `HITLTable` (the table only, and only on a stack that has one), to check that each review queue a [routing rule](./review-routing.md) names is a production queue when a profile's routing rules are saved. No write: this role never creates, changes or seeds a queue
 
 * **Notifications Resolver Role** (API resolver Lambda that serves each user's own [Inbox](./web-ui.md#inbox)):
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
@@ -267,6 +288,7 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:GetItem`, `Query`, `UpdateItem` on the Tracking table; `Scan`, `GetItem`, `Query` on the Configuration table; `GetItem`, `Query` on the Users table
   * `sqs:SendMessage` on the DocumentQueue (finalize runs); S3 read/write of `review/` objects in the Output bucket and writes to the Working bucket
   * `cognito-idp:ListUsersInGroup`, `ListUsers`, `AdminListGroupsForUser` on the user pool; the customer-managed key; `cloudwatch:PutMetricData` in the stack's namespace
+  * `lambda:InvokeFunction` on the Reprocess Document Resolver function only (`sendBackReviewItem` asks it for the run), and `s3:GetObject` on `config_revisions/*` in the Configuration bucket with `s3:ListBucket` limited to that prefix (`testRoutingTable` reads the configuration a document is pinned to). The bulk review roles below do not have these two
 
 * **Bulk Review Resolver Role** (API resolver Lambda for `bulkSkipAllReviews`, `getBulkReviewJob`, `listBulkReviewJobs`, `cancelBulkReviewJob`, `deleteBulkReviewJob` and `sendToReview`):
   * The Review Queues Resolver's grants (the skips go through the same review queue service)
@@ -285,6 +307,27 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:Query`, `dynamodb:GetItem` on the Users table and its indexes (the caller's configuration scope)
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
   * `cloudwatch:PutMetricData`, limited to the stack's namespace
+
+* **Reprocess Document Resolver Role** (API resolver Lambda for `reprocessDocument`, which runs a document again from the beginning or from a later step):
+  * SAM `DynamoDBCrudPolicy` on the Tracking table: the document's row is recreated for a run from the beginning and updated for a run from a later step
+  * `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `ConditionCheckItem`, `BatchWriteItem` on `HITLTable` and its indexes (only on a stack that has one), to withdraw the document's review, and the Inbox producer set on `NotificationsTable`
+  * SAM `DynamoDBReadPolicy` on the Configuration table (the config prefix mappings and each profile's processing mode). No write
+  * `s3:GetObject` on `config_revisions/*` in the Configuration bucket, and `s3:ListBucket` limited to that prefix: the configuration at the revision a document is pinned to, which decides the steps a run can start at
+  * `sqs:SendMessage` on the DocumentQueue
+  * SAM `S3ReadPolicy` on the Input bucket and `S3CrudPolicy` on the Output bucket (deleting the output a run produces again)
+  * `s3:PutObject` on `compressed_documents/*` in the Working bucket: the document a run from a later step queues. No read
+  * `dynamodb:Query`, `dynamodb:GetItem` on the Users table and its indexes (the caller's configuration scope)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+  * `cloudwatch:PutMetricData`, limited to the stack's namespace
+
+* **Process Changes Resolver Role** (API resolver Lambda for `processChanges`, which queues a run after saved edits, `getProcessChangesPlan`, which reads where that run would start and its steps and writes nothing, and `updateDocumentSections`, which saves a new page grouping):
+  * SAM `DynamoDBCrudPolicy` on the Tracking table (the document's row)
+  * `dynamodb:GetItem`, `dynamodb:DeleteItem` on `HITLTable` (the table only, and only on a stack that has one): the document's review item, to check that the caller holds it before a page grouping is saved during a review, and the reviewer's drafts of the sections that grouping removes. It creates and changes no item
+  * `dynamodb:GetItem`, `dynamodb:Scan` on the Configuration table, `s3:GetObject` on `config_revisions/*` in the Configuration bucket and `s3:ListBucket` limited to that prefix: the processing mode of the configuration a document is pinned to. No write
+  * `sqs:SendMessage` on the DocumentQueue
+  * SAM `S3CrudPolicy` on the Output and Working buckets
+  * `dynamodb:Query`, `dynamodb:GetItem` on the Users table and its indexes (the caller's test-set and configuration scope)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
 
 * **Inbox producers**. A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
   * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
@@ -365,7 +408,7 @@ The solution creates various IAM roles to run different components of the system
 
 * **Agent Roles** (the functions that run the analytics agent: `AgentChatProcessorFunction`, `ChatStreamProcessorFunction`, `AgentProcessorFunction`, and `AgentCoreMCPHandlerFunction` for the MCP `search` tool):
   * `bedrock-agentcore:*CodeInterpreter*` session actions on the AWS-managed interpreter only (`arn:<partition>:bedrock-agentcore:*:aws:code-interpreter/*`)
-  * `lambda:InvokeFunction` on the document lookup function (`LookupFunction`) only
+  * `lambda:InvokeFunction` on the document lookup function (`LookupFunction`) only. `AgentCoreMCPHandlerFunction` may also invoke the reprocess resolver (`ReprocessDocumentResolverFunction`), which is what its `reprocess` tool asks to process documents again: the resolver checks the caller the tool acts for, clears the outputs the run produces again and queues the documents under its own role. The MCP handler holds no `s3:DeleteObject`
   * On the reporting bucket, the three chat and agent processors hold read (`S3ReadPolicy`) plus `s3:PutObject` under `athena-results/` (where Athena writes query results with the caller's credentials); `ChatStreamProcessorFunction` also reads the output bucket and writes only `<document key>/summary/fulltext.txt` there, for Chat with Document
   * Asserted, with the S3 object access each function declares, by `scripts/tests/test_analytics_role_grants.py`
 

@@ -511,6 +511,19 @@ def run_variant(
             return result
 
         print(f"✅ [{variant.name}] stack reached {status_text}")
+        # --govcloud keeps the review table, so its new stack has Review Routing
+        # on, and a sample document that needs review would wait for a reviewer
+        # instead of completing. --headless has no review table and stays off.
+        if variant.key == "govcloud":
+            switched = cbd.switch_off_review_routing(stack_name, region)
+            if not switched.get("success"):
+                result["error"] = (
+                    "Could not switch Review Routing off in the default profile: "
+                    f"{switched.get('error')}"
+                )
+                result["failure_type"] = "test"
+                print(f"❌ [{variant.name}] {result['error']}")
+                return result
         # Validation runs in its OWN try. Inside the outer one, a throttled
         # list-stack-resources or an exception from run_inference_test would be
         # reported as failure_type="deploy" and trigger a CF-event capture — i.e.

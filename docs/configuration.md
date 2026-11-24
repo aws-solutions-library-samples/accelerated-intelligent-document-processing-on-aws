@@ -173,6 +173,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 | `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape`; its default prompts are files under `prompts/classification/` ([Default prompts](./classification.md#default-prompts)) |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
+| `base-routing.yaml` | Review Routing: the routing table and its built-in routing rules (see [Review Routing](./review-routing.md)) |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
 | `pattern-1.yaml` / `pattern-2.yaml` | which of the above compose for BDA vs Pipeline mode |
 
@@ -606,7 +607,7 @@ For detailed information, see [Extraction & Confidence](extraction-and-confidenc
 The [Inbox](web-ui.md#inbox) keeps each user's messages for a limited time and up to
 a per-user cap. Both are configuration settings under `hitl.notifications`, shown in
 the Web UI configuration editor as **Inbox messages** inside the
-**Human-in-the-Loop (HITL) Review (Optional)** section:
+**Review Routing (Optional)** section of **Processing Settings**:
 
 ```yaml
 hitl:
@@ -629,7 +630,7 @@ How the settings apply:
 - They apply to messages written after the change. Existing messages keep the
   expiry they were written with, and the cap is enforced the next time a message is
   written for that user.
-- They apply whether or not `hitl.enabled` is set.
+- They apply whether or not Review Routing (`hitl.enabled`) is on.
 - If the configuration cannot be read, the defaults apply.
 
 For how platform components post messages, see the
@@ -640,7 +641,7 @@ For how platform components post messages, see the
 [Bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents) runs at
 once for up to `hitl.bulk_skip_sync_limit` documents, and as a background job (Home ›
 Jobs) above it. It is shown in the configuration editor as **Bulk skip synchronous
-limit** in the **Human-in-the-Loop (HITL) Review (Optional)** section:
+limit** in the **Review Routing (Optional)** section of **Processing Settings**:
 
 ```yaml
 hitl:
@@ -652,8 +653,72 @@ hitl:
 | `hitl.bulk_skip_sync_limit` | 50 | 1–100 | Documents a bulk Skip All Reviews request handles immediately. A stored value outside the range is clamped to it, never rejected, and no value can raise the immediate path above 100. |
 
 Like the Inbox settings, it is read from the **active** configuration profile, cached
-for about 60 seconds, applies whether or not `hitl.enabled` is set, and falls back to
-the default if the configuration cannot be read.
+for about 60 seconds, applies whether or not Review Routing (`hitl.enabled`) is on,
+and falls back to the default if the configuration cannot be read.
+
+## Routing rules
+
+[Review Routing](./review-routing.md) decides, after policy rule validation, whether
+a processed document is reviewed and in which review queue. A profile configures it
+in two places:
+
+| Section | In the Web UI | Holds |
+|---|---|---|
+| `hitl` | **Processing Settings → Review Routing (Optional)** | The **Review Routing** switch (`hitl.enabled`), the confidence threshold and **Review missing required fields**, which the built-in routing rules read, and the Inbox and bulk-skip settings above |
+| `routing` | The **Routing Rules** tab (Admins only) | The routing table: the routing rules, the default outcome and the placement limit |
+
+In **Processing Settings** the sections follow the order of the pipeline:
+**Policy Rule Validation (Optional)** comes after **Extraction**, then **Review
+Routing (Optional)**, then **Summarization (Optional)**.
+
+The switch is off in the system defaults. A newly created stack turns it on in the
+profiles it creates, and a stack update keeps the value each profile has; see
+[The Review Routing switch](./review-routing.md#the-review-routing-switch) for the
+cases and for how to turn it off for unattended processing.
+
+The `routing` section is versioned with the profile like every other section:
+
+```yaml
+routing:
+  max_consecutive_placements: 3     # 1-10: placements in a row before a document continues
+  tables:
+    - id: review-routing
+      rules:
+        - id: builtin-confidence-alerts
+          label: Confidence alerts
+          conditions:
+            - input: reviewed
+              test: "false"
+            - input: confidence_alert_count
+              test: "> 0"
+          actions:                  # What happens to a matching document; [] = not reviewed
+            - type: review_queue    # The only action type
+              queue: default        # A review queue id
+          reason: "Fields below the confidence threshold: {confidence_alert_count}. Check the highlighted fields and correct them."
+      default_outcome:
+        actions: []
+        reason: ""
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `routing.tables` | one table with the built-in routing rules | The routing table. A profile has exactly one |
+| `routing.tables[].rules` | `builtin-extraction-failed`, `builtin-confidence-alerts`, `builtin-missing-required` | Tried in order; the first enabled routing rule whose conditions all hold decides |
+| `routing.tables[].rules[].actions` | — | What happens to a document the routing rule matches: one `review_queue` action naming a queue, or an empty list for no review |
+| `routing.tables[].rules[].reason` | — | What the reviewer is told. `{placeholders}` take the document's values; without a reason one is generated |
+| `routing.tables[].default_outcome` | `actions: []` (no review) | What a document that matches no routing rule gets: `actions` and a `reason`, as on a routing rule |
+| `routing.max_consecutive_placements` | 3 | How many times in a row a document can be placed in a review queue (1–10) |
+
+A profile without a `routing` section uses the defaults, which hold a document when
+a section's extraction failed, or when it has a confidence alert or a missing
+required field. The section is checked when a
+profile is saved (limits, inputs, tests, field paths, policy rule ids, classes,
+actions, reason placeholders, and the queues the routing rules name), and in the web
+UI only an Admin's save may change it. A save that is accepted can still
+return warnings, for a routing rule that reads a policy rule result in a profile
+where policy rule validation does not run. The inputs, the test syntax, the reason
+and its placeholders, the limits, the warnings and DMN XML export and import are
+described in [Review Routing](./review-routing.md).
 
 ## Stack Parameters
 
@@ -835,28 +900,33 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. The OCR, classification, extraction, assessment, rule-validation,
-summarization and evaluation task states additionally list `TransientError`: OCR,
-classification, in-process extraction, shard plan, shard, shard merge, assessment,
-policy classification, per-section rule validation, orchestration, summarization
-and evaluation (`EvaluationStep`). That is the one name their handlers re-raise a transient cause
-under when it arrives as an ordinary Python exception (a botocore read or connect
-timeout, a dropped connection, a Strands wrapper around one). This includes a failure
-the service records instead of raising: an OCR page whose Textract or Bedrock call
-failed transiently, and a summarization section whose model call did, now fail
-their step with `TransientError` and are retried, where before the document failed
-with no retry. In `EvaluationStep` it is an LLM-judge call that failed transiently
-(a throttle that outlasted the Bedrock client's retries, a bare HTTP 5xx, a read
-timeout): the comparator raises it instead of scoring the field 0.0, and the step is
-retried without a failed evaluation being recorded first. A deterministic judge
-error still scores its field 0.0. The same holds for the step's S3 reads: a
-throttled, 5xx or timed-out read of the document, the baseline or a section's
-extraction result is retried, where before it scored the section's fields as
-misses or failed the evaluation with no retry, and a missing object keeps its
-existing outcome. If the retries run out, the step's Catch records
-the evaluation as failed and the document continues. `RecordEvaluationFailure` does
-not list `TransientError`, because it makes no model call and never raises. Whether
-a failure is transient is decided in
+availability codes. The OCR, classification, extraction, assessment, policy rule
+validation, review, summarization and evaluation task states additionally list
+`TransientError`: `OCRStep`, `ClassificationStep`, the extraction and assessment
+states (`ExtractionStep`, `ExtractionPlanStep`, `ShardExtractionStep`,
+`ExtractionMergeStep`, `AssessmentStep`), the policy rule validation states
+(`PolicyClassificationStep`, `PolicyRuleValidationStep`,
+`PolicyRuleConsolidationStep`), the two review states (`ApplyReviewChangesStep`,
+`RoutingStep`), `SummarizationStep` and `EvaluationStep`. To list them from the
+definition, search `patterns/unified/statemachine/workflow.asl.json` for the
+retriers that name `TransientError`. That is the one name their handlers re-raise a
+transient cause under when it arrives as an ordinary Python exception (a botocore
+read or connect timeout, a dropped connection, a Strands wrapper around one). This
+includes a failure the service records instead of raising: an OCR page whose
+Textract or Bedrock call failed transiently, and a summarization section whose
+model call did, now fail their step with `TransientError` and are retried, where
+before the document failed with no retry. In `EvaluationStep` it is an LLM-judge
+call that failed transiently (a throttle that outlasted the Bedrock client's
+retries, a bare HTTP 5xx, a read timeout): the comparator raises it instead of
+scoring the field 0.0, and the step is retried without a failed evaluation being
+recorded first. A deterministic judge error still scores its field 0.0. The same
+holds for the step's S3 reads: a throttled, 5xx or timed-out read of the document,
+the baseline or a section's extraction result is retried, where before it scored
+the section's fields as misses or failed the evaluation with no retry, and a
+missing object keeps its existing outcome. If the retries run out, the step's Catch
+records the evaluation as failed and the document continues.
+`RecordEvaluationFailureStep` does not list `TransientError`, because it makes no
+model call and never raises. Whether a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says,
 and a bare HTTP 500, 502, 503, 504 or 429 in place of a code is transient),
@@ -932,9 +1002,11 @@ added later is covered without editing the test.
 #### Adding a Lambda task state to the workflow
 
 Because that test enumerates the definition rather than naming states, a new Lambda
-task state inherits three requirements the moment it is added. All 24 existing states
-comply; a new one that does not will fail `make test-packages-cicd` in both CIs,
-naming the state:
+task state inherits three requirements the moment it is added. Every existing state
+complies; a new one that does not will fail `make test-packages-cicd` in both CIs,
+naming the state. Its name must also follow the naming rules that
+`patterns/unified/tests/test_state_names.py` enforces (a Lambda task is named
+`…Step`, a hook `Pre…Hook` or `Post…Hook`, a Choice `Check…`):
 
 1. **It must carry a transient retrier** — at least one of `ThrottlingException`,
    `Lambda.TooManyRequestsException`, `Lambda.ServiceException` or

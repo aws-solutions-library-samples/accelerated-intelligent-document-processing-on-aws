@@ -450,9 +450,9 @@ Features can inject custom Lambdas at extension points in the unified
 processing workflow. There are two kinds:
 
 - **Two standalone single-hook points** that bracket the pipeline:
-  - **`preprocessing`** — runs **FIRST**, before the BDA/pipeline routing
-    decision, so it fires in both processing modes and even when OCR is
-    disabled. It operates on the *source document* (before any OCR output
+  - **`preprocessing`** — runs **FIRST** on a run that starts at the beginning,
+    before the BDA/pipeline routing decision, so it fires in both processing
+    modes and even when OCR is disabled. It operates on the *source document* (before any OCR output
     exists) and can **halt** the execution by returning `halt: true` — used by
     the [PII Anonymization extension](extensions/pii-anonymizer.md) to
     short-circuit an original whose only purpose was to spawn a redacted copy.
@@ -471,6 +471,46 @@ At each point the Step Functions workflow invokes
 `PipelineHooksDispatcherFunction`, which runs any hook Lambdas registered for
 that point.
 
+### When hooks fire
+
+A hook fires when a run **does** the step it belongs to. Every run has a run plan
+that says where it starts and which optional steps it skips, so not every run
+passes every hook point:
+
+| Run | Hook points it passes |
+|---|---|
+| A new upload, or a reprocess from the beginning | Every point of the document's processing mode, up to the point where the run ends |
+| A reprocess from a later step | The points of the start step and of every later step. `preprocessing` is not among them |
+| The run after a **completed review** | `postRuleValidation`, `postSummarization`, `postprocessing` |
+| The run after a **completed review** that extracts sections again (Pipeline mode: the reviewer added a section or changed a section's pages, or a section has no extracted values) | `postExtraction` for each section it extracts, then `postRuleValidation`, `postSummarization`, `postprocessing` |
+| The run after a review is **sent back** | The points of classification and of every later step in Pipeline mode; every point in BDA mode, where the run starts at the beginning |
+| The run after a review is removed or skipped | `postRuleValidation`, `postSummarization`, `postprocessing` |
+| A **rejected** review | None: the document is recorded as rejected without a Lambda invocation |
+
+- A step the run plan **skips** fires no hook. A step the **configuration** turns
+  off (summarization disabled, no policy rule validation) still fires its hook.
+- A run that ends by **holding the document in a review queue** stops after
+  `postRuleValidation`: policy rule validation runs before review routing, so that
+  routing rules can read its verdicts. `postSummarization` and `postprocessing`
+  fire on the run after the review. A reviewed document therefore passes
+  `postRuleValidation` twice: before the review, and after it on the corrected
+  values.
+- `preprocessing`, `postOcr`, `postClassification` and `postExtraction` fire once
+  per document unless it is reprocessed or sent back from one of those steps, or a
+  completed review extracts a section again, which fires `postExtraction` for that
+  section.
+- A run after a completed review that extracts sections again applies the review
+  **after** the extraction: the corrections the reviewer saved for those sections
+  are set on the newly extracted values, and then policy rule validation runs.
+  `postExtraction` therefore sees the new values before the corrections are on
+  them, and `postRuleValidation` sees them with the corrections.
+
+The payload says which run this is, in three fields (see the hook Lambda
+contract below): `runKind`, `startStep` and `reviewed`. Every hook of a run after
+a completed review receives `runKind` `review_completed`. `reviewed` is `true` when
+that run starts at `apply_review_changes`, and `false` when it starts at
+`extraction`: the newly extracted values are not confirmed by a reviewer.
+
 <a id="hook-points-by-processing-mode"></a>
 ### Not every hook point exists in every processing mode
 
@@ -481,7 +521,7 @@ including a hook that declares `onError: fail`.
 
 | Hook point | Pipeline mode (`use_bda: false`) | BDA mode (`use_bda: true`) |
 |---|---|---|
-| `preprocessing` | ✅ runs (`StartAt`, before the routing decision) | ✅ runs |
+| `preprocessing` | ✅ runs (first, before the routing decision, on a run that starts at the beginning) | ✅ runs |
 | `postOcr` | ✅ runs | ❌ **no such state — hook never invoked** |
 | `postClassification` | ✅ runs | ❌ **no such state — hook never invoked** |
 | `postExtraction` | ✅ runs (inside the `ProcessSections` Map) | ❌ **no such state — hook never invoked** |
@@ -599,8 +639,15 @@ extraction:
 ```json
 { "hookPoint": "postExtraction", "featureId": "my-feature",
   "document": { ... }, "section": { ... }, "executionArn": "arn:aws:states:...",
-  "args": [ { "key": "...", "value": "..." } ], "argsMap": { "...": "..." } }
+  "args": [ { "key": "...", "value": "..." } ], "argsMap": { "...": "..." },
+  "runKind": "new_upload", "startStep": "beginning", "reviewed": false }
 ```
+
+| Field | Value |
+|---|---|
+| `runKind` | Why the run exists: `new_upload`, `reprocess`, `saved_edits` (Process Changes after edits), `review_completed`, `review_rejected`, `review_skipped` (a review that was removed or skipped), `sent_back`, `restart_failed`, `legacy_review`; `unplanned` for a run with no run plan |
+| `startStep` | The step the run started at: `beginning`, `classification`, `extraction`, `assessment`, `policy_rule_validation`, `summarization`, `evaluation`, or `apply_review_changes`. The run after a completed review starts at `apply_review_changes`, or at `extraction` when it extracts sections again first |
+| `reviewed` | `true` when the document's review was completed and this run does not extract again, so the values the hook sees are the ones a reviewer confirmed. `false` in every other run, including the run after a completed review that starts at `extraction` (`runKind` is then `review_completed` with `reviewed` `false`) and the run of a document that was sent back |
 
 It returns any JSON result (surfaced under `$.HookResults`). A `preprocessing`
 hook may include `"halt": true` in its result to end the execution (the
@@ -657,16 +704,27 @@ delivery that must not do either, use the
 [EventBridge post-processing hook](post-processing-lambda-hook.md) instead —
 the two mechanisms coexist and are compared there.
 
-**HITL and `postprocessing`.** The workflow does *not* skip the hook while a
-human review is pending: `MarkHITLPending` lets the execution complete, and the
-document is re-queued after review (so the hook fires again). The hook decides
-what to do from the document's own HITL fields — `hitl_status`
+**Human review and `postprocessing`.** A document held in a **review queue** does
+not reach `postprocessing` while it waits: its run ends at the Review Routing step,
+and the hook fires once, on the run after the review. That run carries `reviewed:
+true` when the review was completed and no section was extracted again, and
+`reviewed: false` when it extracted sections again: the document can then be
+placed in a review queue once more, and the hook fires on the run after that
+review. A rejected document never reaches it.
+
+A document reviewed **outside a review queue** (review is enabled in its
+configuration while the Default review queue is disabled; see
+[When the Default queue is off](human-review.md#when-the-default-queue-is-off)) is
+not held: its first run goes on to the end, so the hook fires while the review is
+pending, and fires again when the document is processed again after the review
+(`runKind: legacy_review`). For those documents the hook decides what to do from
+the document's own HITL fields — `hitl_status`
 (`PendingReview` | `InProgress` | `Completed` | `Skipped`), `hitl_triggered`,
 `hitl_sections_pending`, `hitl_sections_completed`, and `hitl_metadata`. Note
 these are **omitted when falsy**, so treat an absent field as "no HITL": gate
 delivery on `hitl_status in (None, "Completed", "Skipped")` rather than
-inspecting `hitl_status == "PendingReview"` alone, and keep the hook idempotent
-because it will be invoked once per pass.
+inspecting `hitl_status == "PendingReview"` alone. Keep the hook idempotent
+either way: a reprocess passes it again.
 
 **Modifying the document (optional)** — a hook is not limited to observing. To
 change what the *next* workflow step consumes, return the modified document
@@ -714,7 +772,8 @@ keeps its own value:
 - `use_bda`, `bda_project_arn` — the BDA/pipeline routing Choice and the BDA
   invoke parameters.
 - `num_pages`, `status`, `sections` — the compressed wrapper's own metadata,
-  read by `BDA_CheckExistingData` and by `ProcessSections`' `ItemsPath`. The
+  read by `CheckExistingBdaData` and by the states that list the sections for
+  `ProcessSections`. The
   `idp_common.hooks` helper and the dispatcher's inline path always emit these;
   the back-fill covers a hand-rolled compressed reference that omits them.
 

@@ -312,6 +312,9 @@ class TestTheVocabularyIsARule:
             ("baseRevision", None),
             ("testSetVersion", None),
             ("installedVersion", None),
+            ("dmnVersion", None),
+            # ...and a profile's version stays one whatever else the name says
+            ("dmnConfigVersion", "profile"),
             # words that are not scope-bearing at all
             ("testSetId", None),
             ("jobId", None),

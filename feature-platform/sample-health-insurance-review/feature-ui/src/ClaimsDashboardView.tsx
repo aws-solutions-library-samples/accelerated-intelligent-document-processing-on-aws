@@ -110,10 +110,11 @@ const ClaimsDashboardView: React.FC<ClaimsDashboardViewProps> = ({ api, enabled 
         <b>No claims processed yet</b>
         <Box variant="small">
           Activate the <code>sample-health-insurance-review</code> configuration
-          profile, then upload the sample prior-auth packet{' '}
-          <code>samples/rule-validation/medicare_respiratory_pa_packet.pdf</code>{' '}
-          to the input bucket. After rule validation runs, the
-          postRuleValidation hook records the claim here.
+          profile, then upload a prior authorization packet of your own to the
+          input bucket. Give the file a name that the policy classes of the
+          profile match, for example <code>prior_auth_packet.pdf</code>. After
+          rule validation runs, the postRuleValidation hook records the claim
+          here.
         </Box>
       </SpaceBetween>
     </Box>

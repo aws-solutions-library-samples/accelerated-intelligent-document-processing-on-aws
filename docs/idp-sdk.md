@@ -113,7 +113,14 @@ client.document.list(...)
 client.document.download_results(...)
 client.document.download_source(...)
 client.document.reprocess(...)
+client.document.reprocess_options(...)
 client.document.delete(...)
+
+# Review queue operations (queue administration)
+client.review_queues.list(...)
+client.review_queues.create(...)
+client.review_queues.update(...)
+client.review_queues.delete(...)
 
 # Discovery operations (schema generation)
 client.discovery.run(...)
@@ -149,6 +156,8 @@ client.config.revisions(...)
 client.config.activate(...)
 client.config.delete(...)
 client.config.sync_bda(...)
+client.config.routing_to_dmn(...)
+client.config.routing_from_dmn(...)
 
 # Manifest operations
 client.manifest.generate(...)
@@ -297,7 +306,11 @@ Get processing status for a single document.
 - `document_id` (str, required): Document identifier (S3 key format: batch-id/filename)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, errors, and `bucket` — the progress bucket the document is reported under: `completed`, `failed`, `awaiting_review` (held for human review), `running` or `queued`
+**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, errors, and `bucket` — the progress bucket the document is reported under: `completed`, `failed`, `awaiting_review` (held for human review), `running` or `queued`. For a document in a review queue, or one whose review has ended, `review` holds the review status (`in_review`, `complete` or `rejected`), the queue (`queue`, `queue_name`), the reviewer, and `routed_by`: the routing rule that placed the document (`ruleId`, `ruleLabel`, `tableId`). For a document a routing rule placed, `review` also holds what its reviewer is told:
+
+- `reason` (str or `None`): the routing rule's [reason](review-routing.md#the-reason) with the document's values filled in, or the generated reason when the routing rule has none. It can hold extracted values, so treat it as document content.
+- `policy_failures` (list of `ReviewPolicyFailure`): the first policy rules the document failed, whichever routing rule placed it. Each has `rule_id` (`<policy type>.<rule key>`), `policy`, `name`, `reason` (the explanation policy rule validation gave) and `pages`.
+- `policy_failure_count` (int): how many policy rules the document failed in all; `policy_failures` may list fewer. See [Failed policy rules](review-routing.md#failed-policy-rules).
 
 ```python
 status = client.document.get_status(document_id="batch-123/invoice.pdf")
@@ -305,6 +318,12 @@ status = client.document.get_status(document_id="batch-123/invoice.pdf")
 print(f"Status: {status.status.value}")
 print(f"Pages: {status.num_pages}")
 print(f"Duration: {status.duration_seconds}s")
+
+# A document held for review: why, and which policy rules it failed
+if status.review and status.review.reason:
+    print(f"Reason: {status.review.reason}")
+    for failure in status.review.policy_failures:
+        print(f"  {failure.rule_id}: {failure.reason} (pages {failure.pages})")
 ```
 
 ### document.download_results()
@@ -351,24 +370,72 @@ print(f"Downloaded to: {file_path}")
 
 ### document.reprocess()
 
-Reprocess a single document from a specific pipeline step.
+Process a document again, starting at a step. The stack does the work: the SDK
+invokes the stack's reprocess function, which checks that the document can start at
+the step, clears the outputs the run will produce again, and queues the run. The
+web UI, the CLI and the MCP tool reprocess the same way, so they offer the same
+steps and refuse the same requests. See
+[Reprocessing](./document-versions.md#reprocessing).
 
 **Parameters:**
 - `document_id` (str, required): Document identifier (S3 key)
-- `step` (str or RerunStep, required): Pipeline step to reprocess from (e.g., "classification", "extraction", RerunStep.EXTRACTION)
+- `step` (str or RerunStep, optional): The step the run starts at. Default `"beginning"`.
+  One of `beginning` (alias `ocr`), `classification`, `extraction`, `assessment`,
+  `policy_rule_validation`, `summarization`, `evaluation`, or `resume` for a failed
+  document (start at the first step whose output is missing). Classification,
+  extraction and assessment are steps of Pipeline mode
+- `skip` (sequence of str or RerunStep, optional): Optional steps the run leaves out:
+  `assessment`, `policy_rule_validation`, `summarization`, `evaluation`
+- `version` (str, optional): Configuration profile to run under. A profile other than
+  the document's own starts at the beginning only
+- `revision` (int, optional): Configuration revision to run under
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentReprocessResult` with `document_id`, `step`, and `queued` status
+**Returns:** `DocumentReprocessResult` with `document_id`, `step`, `queued`, and the
+server's answer for the document: `status` (`QUEUED`, `REFUSED` or `FAILED`),
+`start_step`, `reason` (a code such as `RUN_IN_PROGRESS`, `OUTPUT_MISSING`,
+`STEP_NOT_IN_MODE`, `NOT_FAILED`) and `message`. A document the server refuses is a
+result, not an exception.
 
 ```python
 from idp_sdk import RerunStep
 
 result = client.document.reprocess(
     document_id="batch-123/invoice.pdf",
-    step=RerunStep.EXTRACTION
+    step=RerunStep.EXTRACTION,
 )
 
-print(f"Queued: {result.queued}")
+if result.queued:
+    print(f"Queued from {result.start_step}")
+else:
+    print(f"Not queued: {result.reason}: {result.message}")
+```
+
+`rerun()` is a deprecated alias of `reprocess()`.
+
+**Permissions.** The caller's AWS credentials need `lambda:InvokeFunction` on the
+stack's reprocess resolver function, and `cloudformation:DescribeStackResources` and
+`cloudformation:DescribeStacks` on the stack, which is how the SDK finds the function
+(an output of the nested API resolver stack). A stack deployed from a release that
+has no such function is reported as such, naming the release.
+
+### document.reprocess_options()
+
+List the steps documents can be reprocessed from. Reads only.
+
+**Parameters:**
+- `document_ids` (str or sequence of str, required): One or more document identifiers
+- `version`, `revision` (optional): The configuration the reprocess would run under
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** a list of `ReprocessOption`, one per document: `document_id`, `mode`
+(`pipeline` or `bda`), `default_step`, and `steps`, each with `id`, `available`,
+`skippable` and, when it is not available, the `reason` code.
+
+```python
+for option in client.document.reprocess_options(["batch-123/invoice.pdf"]):
+    for step in option.steps:
+        print(step.id, "available" if step.available else f"no: {step.reason}")
 ```
 
 ### document.delete()
@@ -528,9 +595,10 @@ fixed. Past that window a document with no row is reported as failed with
 window.
 
 **A document waiting for human review settles the batch without completing it.**
-With review queues on, a document that raises a confidence alert ends its first
-processing run as `HITL_IN_PROGRESS` and stays there until a reviewer completes
-or rejects it in the web UI's review queues. `get_status` counts it in
+With Review Routing on, a document that a routing rule holds for review (with the
+built-in routing rules, one that raises a confidence alert, for example) ends its
+first processing run as `HITL_IN_PROGRESS` and stays there until its review ends
+in the web UI's review queues (completed, rejected or sent back). `get_status` counts it in
 `awaiting_review` (bucket `awaiting_review`), not in `in_progress`, and
 `all_complete` treats it as settled, so a polling loop ends rather than waiting
 on a person. `all_complete` is therefore not "every document has an outcome":
@@ -758,21 +826,26 @@ print(f"Deleted: {result.deleted_count}/{result.total_count}")
 
 ### batch.reprocess()
 
-Reprocess existing documents from a specific pipeline step.
+Process existing documents again, starting at a step. As for
+[`document.reprocess()`](#documentreprocess), the stack does the work for each
+document, and the same permissions are needed.
 
 **Parameters:**
-- `step` (str or RerunStep, required): Pipeline step to reprocess from (e.g., "classification", "extraction", RerunStep.EXTRACTION)
+- `step` (str or RerunStep, optional): The step the runs start at (default `"beginning"`); the values are those of `document.reprocess()`
 - `document_ids` (list[str], optional): Specific document IDs to reprocess
 - `batch_id` (str, optional): Batch ID to reprocess all documents in batch
+- `skip` (sequence of str or RerunStep, optional): Optional steps the runs leave out
+- `version`, `revision` (optional): Configuration profile and revision to run under
 - `stack_name` (str, optional): Stack name override
 
 **Note:** Must specify either `document_ids` or `batch_id`
 
-**Returns:** `BatchReprocessResult` with `documents_queued`, `documents_failed`, `failed_documents`, and `step`
+**Returns:** `BatchReprocessResult` with `documents_queued`, `documents_failed`, `failed_documents`, `step`, and `results`: one `DocumentReprocessResult` per document, with its `status`, `start_step`, `reason` and `message`. A document that cannot be reprocessed does not stop the others.
 
-Each entry of `failed_documents` has an `object_key` and an `error`. `error` is
-`"Document not found"` only when the tracking table has no record for the key; any
-other failure reading or queueing the document carries that failure's own message.
+Each entry of `failed_documents` has an `object_key`, an `error`, a `status`
+(`REFUSED` or `FAILED`) and a `reason`. `error` is the stack's message for that
+document and `reason` its reason code (`RUN_IN_PROGRESS`, `OUTPUT_MISSING`,
+`MALWARE_GATE`, …), so each document that was not queued carries its own failure.
 
 ```python
 from idp_sdk import RerunStep
@@ -1653,7 +1726,7 @@ each operation sets the variables again for its own stack.
 Generate an IDP configuration template.
 
 **Parameters:**
-- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none. `"all"` is every section except `hitl`, `chat` and `rule_validation`. Uploaded, the template is merged over the stack's preset or the profile's current configuration, so every setting it writes is reset to its default there (`summarization` and `evaluation` switch back on where a preset turned them off; prompts left out keep their own values); the three are left out so the reset does not also switch human review, the chat companion or rule validation on or off. Name them to include them
+- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none. `"all"` is every section except `hitl`, `chat`, `rule_validation` and `routing`. Uploaded, the template is merged over the stack's preset or the profile's current configuration, so every setting it writes is reset to its default there (`summarization` and `evaluation` switch back on where a preset turned them off; prompts left out keep their own values); those are left out so the reset does not also switch human review, the chat companion or rule validation on or off, or replace a profile's review routing rules with the built-in table. Name them to include them
 - `pattern` (str, optional): Pattern to use — `"pattern-1"` or `"pattern-2"` (default: `"pattern-2"`)
 - `output` (str, optional): Output file path
 - `include_prompts` (bool, optional): Include prompt templates (default: False). When False, the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the template, so they take whatever value the configuration is merged over
@@ -1760,18 +1833,27 @@ Upload configuration to a deployed stack.
 
 **Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, `error`, and `warnings`
 
-`warnings` holds the non-fatal findings validation produced for the file, the
-same list `config.validate()` returns in `ConfigValidationResult.warnings`. It is
-filled when validation refuses the upload as well as when the upload succeeds. It
-is empty with `validate=False`, and for a refusal that comes before validation
-runs (a file that does not load, or one marked `managed: true`), because nothing
-was checked. A warning never makes `success` false.
-
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
 `None` when the stack has no revision history. A save that changed nothing cuts
 no new revision, so `revision` is then the one already current, which is still
 the right value to pin.
+
+`warnings` holds two kinds of non-fatal finding, each once, in this order:
+
+- The findings validation produced for the file, the same list `config.validate()`
+  returns in `ConfigValidationResult.warnings`. They are filled when validation
+  refuses the upload as well as when the upload succeeds, and are absent with
+  `validate=False`.
+- What the saved configuration will not do although the upload succeeded: for
+  example a routing rule that tests a policy rule result in a profile where policy
+  rule validation is off or has no policies. Every upload that is saved is checked,
+  not only one that changes the routing table, and with `validate=False` too. See
+  [Warnings](review-routing.md#warnings).
+
+The list is empty when there is nothing to say, and for a refusal that comes before
+validation runs (a file that does not load, or one marked `managed: true`), because
+nothing was checked. A warning never makes `success` false.
 
 ```python
 # Upload to the default profile
@@ -1783,6 +1865,8 @@ result = client.config.upload(
 
 if result.success:
     print("Configuration uploaded")
+for warning in result.warnings:
+    print(f"Warning: {warning}")
 
 # Upload to a named profile, creating it if it does not exist
 result = client.config.upload(
@@ -2111,6 +2195,23 @@ for arn in result.orphaned_blueprint_arns:
 
 ---
 
+### config.routing_to_dmn() and config.routing_from_dmn()
+
+Convert a configuration's [review routing](review-routing.md) table to DMN XML and
+back. Both are local: they read no stack and call no AWS service.
+
+- `routing_to_dmn(config, dmn_version="1.5")` returns the DMN XML as text. `config` is
+  a configuration dict, the path of a YAML or JSON configuration file, or a `routing`
+  section itself. `dmn_version` is `"1.5"` or `"1.3"`.
+- `routing_from_dmn(xml)` returns `{"routing": {...}}`, ready to merge into a
+  configuration or to write to a file and upload with `config.upload()`. The queues the
+  rules name are checked when the configuration is uploaded, not here.
+
+```python
+xml = client.config.routing_to_dmn("config.yaml")
+section = client.config.routing_from_dmn(xml)
+```
+
 ## Discovery Operations
 
 Discover document class schemas from sample documents using Amazon Bedrock.
@@ -2364,6 +2465,35 @@ The settings these use (gateway, token URL, stack key, isolation mode) are read 
 the stack's credential manager function, so a credential made here is configured
 exactly as one made on the page.
 
+## Review Queue Operations
+
+Administration of the production [review queues](review-queues.md): the operations
+behind `idp-cli review-queues`. The SDK invokes the stack's review queues resolver
+function with the caller's AWS credentials, so they need `lambda:InvokeFunction` on
+that function, and `cloudformation:DescribeStackResources` and
+`cloudformation:DescribeStacks` to find it. Working a queue (claiming and completing
+reviews) is done in the web UI.
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `review_queues.list(limit=25, next_token=None)` | `ReviewQueuePage` | One page of queue definitions: `queues`, `count`, and `next_token` (`None` on the last page). |
+| `review_queues.create(definition)` | `ReviewQueueDefinition` | Create a queue. `definition` is a `ReviewQueueDefinition` or a dict; only `id` is required. |
+| `review_queues.update(definition, expected_version=None)` | `ReviewQueueDefinition` | Replace a queue's definition. A field left out is reset to its default, except `enabled` and `skip_reasons`. With `expected_version`, the update is refused when the queue was changed since it was read (`QUEUE_CHANGED`). |
+| `review_queues.delete(queue_id)` | `int` | Delete a queue; returns how many documents moved to the Default queue. Routing rules that name it are not changed: documents they send there go to the Default queue. |
+
+```python
+queue = client.review_queues.create(
+    {"id": "approvals", "name": "Approvals", "eligible_annotators": ["ana@example.com"]}
+)
+
+page = client.review_queues.list()
+for q in page.queues:
+    print(q.id, q.name, q.enabled)
+```
+
+A queue receives documents once a routing rule of a configuration profile names it;
+see [Review Routing](review-routing.md).
+
 ## Tenancy Operations
 
 Tenant declarations and isolation checks — the operations behind `idp-cli tenancy`.
@@ -2566,6 +2696,8 @@ from idp_sdk import (
     DocumentMetadata,
     DocumentInfo,
     DocumentListResult,
+    ReviewInfo,
+    ReviewPolicyFailure,
 
     # Batch models
     BatchResult,

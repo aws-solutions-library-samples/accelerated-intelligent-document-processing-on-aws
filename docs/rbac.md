@@ -109,7 +109,8 @@ assigned them (`reassignReviewItem` refuses a Reviewer). A Reviewer has the same
 Production review-queue operations as an Annotator (`getMyReviewQueues`,
 `listReviewQueueItems`, `listMyReviewWork`, `getReviewItem`, `claimReviewItem`,
 `claimNextReviewItem`, `releaseReviewItem`, `saveReviewDraft`, `completeReviewItem`,
-`rejectReviewItem`), within their `allowedConfigVersions`. A Reviewer works
+`rejectReviewItem`, `sendBackReviewItem`, `getReviewCompletionPlan`), within their
+`allowedConfigVersions`. A Reviewer works
 Production review queues only: Test Studio queues, labelling and test-set file reads
 are for Admins, Authors and Annotators, so a Reviewer who labels test sets also needs
 the Annotator role.
@@ -128,8 +129,25 @@ the Annotator role.
     the Production items whose own profile is in that scope, in every listing as well
     as when an item is opened or claimed.
   - Their work: `listMyReviewWork`, `getReviewItem`, `saveReviewDraft`,
-    `completeReviewItem` and `rejectReviewItem`. `getReviewItem` is read-only for an
-    item the caller doesn't hold; saving and the dispositions need the claim.
+    `completeReviewItem`, `rejectReviewItem`, `sendBackReviewItem` and
+    `getReviewCompletionPlan`. `getReviewItem`
+    is read-only for an item the caller doesn't hold; saving and the dispositions need
+    the claim. `sendBackReviewItem` withdraws the review and has the document processed
+    again. It takes the document, the review cycle and an optional note, and no start
+    step: the run starts at classification, or at the beginning in BDA mode and for a
+    document whose page text is missing, and a request that names a step is refused
+    as a bad request. The service accepts it only from the item's holder (or an
+    Admin), and then queues the run itself, so a reviewer who may send a document back
+    does not need the Admin or Author role that `reprocessDocument` requires.
+  - `getReviewCompletionPlan` is the read behind the dialog that finishes a review.
+    It answers what completing the review, and what sending the document back, would
+    run: the step each run starts at, every step with whether the run does it, and
+    the sections extracted again. It returns step ids, labels and section ids, and no
+    document content. It is refused for anyone but the item's holder
+    (`NOT_LEASE_HOLDER`), except an Admin on an item that is open or assigned; for an
+    item in another state or of another review cycle; and for an item whose profile
+    is outside the caller's `allowedConfigVersions`. `getReviewItem` also admits the
+    queue's other members; this read does not.
   - `listMyTestSetTasks` and the Test Studio annotation operations for the test sets
     in its `allowedTestSets`. A test-set save, made with `updateTestSetDocumentSections`,
     `completeSectionReview`, `saveTestSetDocumentSection` (documents with no review
@@ -149,6 +167,11 @@ the Annotator role.
   - Review Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
     `deleteReviewQueue`, `updateTestSetQueue`, `listAnnotators`,
     `getReviewQueuesOverview`, and `listTestSetQueues` across every set.
+  - Review routing: `testRoutingTable` (run a routing table on a processed document;
+    it reads the document and changes nothing) and `getReviewQueueReferences` (which
+    profiles' routing rules send documents to a queue). Changing a profile's routing
+    rules is Admin-only too, although `updateConfiguration` admits Authors: see
+    [Routing rules are Admin-only](#routing-rules-are-admin-only).
   - Assignment: `reassignReviewItem` (assign), `takeOverReviewItem` (take an item
     assigned to someone else), `forceReleaseReviewItem` (unassign),
     `assignTestSetDocuments`, `unassignTestSetDocuments`.
@@ -201,6 +224,13 @@ the Annotator role.
   Output bucket). For a Reviewer who is not an Admin, `processChanges` also requires
   owning the document's open review, refuses a finished review or a document that is
   still processing, and applies the caller's `allowedConfigVersions`.
+  `getProcessChangesPlan`, the read behind the confirmation of **Process Changes**
+  on a direct edit, is for Admins and Reviewers and refuses what `processChanges`
+  refuses: a document in a production review queue (`QUEUE_MANAGED`), a document
+  outside the caller's scope, a Reviewer who does not own the document's open
+  review, and, for every caller, a document that is being processed or that the
+  malware scan holds. It answers where the run would start and its steps, starts no
+  run and writes nothing.
 - **Residual access.** Like every role, an Annotator can call `listDocuments`,
   `getDocument` and the object-read operations (`getFileContents`,
   `getFilePresignedUrl`, `getFilePresignedUrls`) for any document in its
@@ -301,7 +331,7 @@ List documents, View document details: an Annotator-only console has no Document
 Regroup pages: an Annotator only on a document of a test set in their allowedTestSets, or on a production document while holding its review-queue item within their allowedConfigVersions; the edit page offers it to an item's holder, the document page only to Admins and Reviewers
 Claim/Release review, Complete section review: an Annotator only on a document of a test set in their allowedTestSets, and Complete section review only on one assigned to them; production documents are refused, and the console takes a Test Studio document from Work Test Studio queues
 Regroup pages, Claim/Release review, Complete section review, Skip all section reviews, Process changes: a Reviewer who is not also an Admin, Author or Annotator only on a production document, never one in a test set
-Work Production queues: list, open, claim, save, skip, finish and reject the items of a Production review queue. A Reviewer works every Production queue and an Annotator the queues that list them; saving, skipping, finishing and rejecting need the claim
+Work Production queues: list, open, claim, save, skip, finish, send back and reject the items of a Production review queue. A Reviewer works every Production queue and an Annotator the queues that list them; saving, skipping, finishing and rejecting need the claim
 Work Test Studio queues: open a test set's queue and label its documents. An Annotator works only the queues that list them and the sets in their allowedTestSets, and saves or skips only a document assigned to them. Taking a document (claimTestSetDocument) is the Annotator's alone: Admins assign test-set documents, and Admins and Authors label them without taking them. Listing the Test Studio queues (listTestSetQueues) is for Admins and Annotators; an Author opens a set's queue from Test Studio
 View/Edit configuration: getConfigVersion answers a Reviewer or an Annotator with the class names and descriptions only, for the annotation class dropdown
 Chat with agent, Code intelligence: Reviewers and Annotators are refused on the REST API and on the chat-streaming Function URL, which verifies the caller's ID token (see the Agent Chat note below)
@@ -722,7 +752,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 144 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 151 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 28 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -996,7 +1026,13 @@ enforcement itself is Layer 2.
 | `updatePricing`, `restoreDefaultPricing` | Admin |
 | `updateModelConfigLimits`, `restoreDefaultModelConfigLimits` | Admin |
 | `deleteDocument`, `updateConfiguration`, `setActiveVersion` | Admin, Author |
-| `uploadDocument`, `reprocessDocument`, `abortWorkflow` | Admin, Author. `uploadDocument` refuses a section result of a document in a review queue (`QUEUE_MANAGED`) |
+| `uploadDocument`, `reprocessDocument`, `abortWorkflow` | Admin, Author. `uploadDocument` refuses a section result of a document in a review queue (`QUEUE_MANAGED`). `reprocessDocument` answers with a result for each document; a document outside the caller's scope refuses the whole request |
+| `getReprocessOptions` | Admin, Author. The steps each named document can be reprocessed from; scope-checked like `reprocessDocument`, and it reads only |
+| `getProcessChangesPlan` | Admin, Reviewer. What `processChanges` would run for the document as saved: the step the run starts at, its steps and the sections extracted again. It starts no run and writes nothing. A caller who is not an Admin passes the same review-ownership, review-state, document-status and configuration-scope checks as for `processChanges`; a document in a review queue is refused (`QUEUE_MANAGED`) |
+| `sendBackReviewItem` | Admin, Annotator, Reviewer. The item's holder, or an Admin, within their configuration scope |
+| `getReviewCompletionPlan` | Admin, Annotator, Reviewer. What completing the review, or sending the document back, would run: the step each run starts at, its steps and the sections extracted again. It starts no run. The item's holder, or an Admin on an item that is open or assigned, within their configuration scope |
+| `testRoutingTable`, `getReviewQueueReferences` | Admin |
+| `convertRoutingDmn` | Admin, Author, Viewer. A pure conversion between a routing section and DMN XML: it reads no profile and no document |
 | `addTestSet`, `addDocumentsToTestSet`, `listBucketFiles` (import by file pattern searches a whole bucket, so it is not offered to Authors) | Admin |
 | `startTestRun`, `addTestSetFromUpload`, `createEmptyTestSet`, `deleteTests`, `deleteTestSets` | Admin, Author |
 | `addDocumentsToTestSetFromUpload`, `addDocumentsToTestSetByKey` (exact document keys, each checked against the caller's configuration-profile scope before anything is copied; not a bucket search), `removeDocumentsFromTestSet`, `updateTestSet`, `publishTestSetVersion` | Admin, Author |
@@ -1048,6 +1084,36 @@ enforcement itself is Layer 2.
 | `listInboxMessages`, `getInboxUnreadCount`, `getInboxPreferences` | Any assigned group (`ANY_GROUP`); every key is built from the caller's verified identity, so another user's message id is not found |
 
 **Note**: The `updateConfiguration` mutation is schema-level restricted to Admin+Author, but the resolver additionally enforces that `saveAsVersion` and `saveAsDefault` operations within that mutation are **Admin-only**.
+
+#### Routing rules are Admin-only
+
+A profile's `routing` section decides which documents are reviewed and by whom, so
+only an Admin may change it. `updateConfiguration` and
+`restoreConfigProfileRevision` compare the `routing` section before and after the
+save; when it differs and the caller is not an Admin, the save is
+refused with **403** and nothing is written. The same caller's save of any other
+section goes through. The Routing Rules tab is read-only for other roles, which is a
+convenience: the refusal is the control.
+
+A configuration written with the CLI or the SDK (`idp-cli config-upload`) is
+authorised by the caller's AWS credentials on the configuration table and bucket,
+as every such upload is, and is not role-checked.
+
+#### Operations the SDK and CLI invoke directly
+
+Two resolver functions also accept a direct Lambda invocation, with no REST route
+and no signed-in user. Permission to invoke the function (`lambda:InvokeFunction`,
+an IAM permission of the deployment's operators) is the authorisation:
+
+| Function | Operations | Caller | Treated as |
+|---|---|---|---|
+| Reprocess resolver | `reprocessDocument`, `getReprocessOptions` | The SDK and CLI | Trusted and unscoped, as a direct invocation of the abort resolver is |
+| Reprocess resolver | `reprocessDocument` | The MCP handler, passing the signed-in caller it acts for | That caller: Admin or Author is required, and the caller's configuration scope applies |
+| Reprocess resolver | `reprocessDocument` | The review queues resolver, for a send-back | Trusted: the review queue service has authorised the reviewer |
+| Review queues resolver | `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`, `deleteReviewQueue` | The SDK and CLI | A system Admin. Every other review operation is refused without a signed-in user |
+
+A request that arrives through the REST API cannot claim to be a direct invocation:
+the fields a direct caller passes are read only when the event carries no identity.
 
 #### The status a refusal arrives with, and why it matters operationally
 

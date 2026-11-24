@@ -211,41 +211,106 @@ rule_validation:
     top_k: 20
     max_tokens: 4096
 
-# Policy classes define which rules apply to which documents
+# Policy classes define which policy rules apply to which documents.
+# These are the policy classes of the bank statement review preset
+# (config_library/unified/rule-validation/config.yaml): the policy rules of
+# samples/rule-validation/bank-statement-review-policy.pdf, each with the text
+# the policy prints. Every policy class applies to a document whose name says
+# it is a bank statement, such as the "bank_statement" document id that
+# step0_setup.ipynb sets.
 policy_classes:
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: global_periods
-    x-aws-idp-document-name-regex: "(?i).*(bank|medicare|medicaid|pa_packet|prior_auth|statement).*"
+    x-aws-idp-policy-type: statement_identity
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      minor_surgery_global_period:
+      institution_named:
         type: string
         description: >-
-          If a procedure has a global period of 000 or 010 days, it is defined
-          as a minor surgical procedure. E&M services on the same date of service
-          as the minor surgical procedure are included in the payment for the procedure.
-        cpt_codes_affected: ["99213", "99214"]
-
+          The statement must name the financial institution that
+          issued it. The rule fails when no institution name is
+          printed on the statement.
+      account_holder_named:
+        type: string
+        description: >-
+          The statement must show the full name and the mailing
+          address of the account holder. The rule fails when the name
+          or the address is not printed on the statement.
+      account_number_shown:
+        type: string
+        description: >-
+          The statement must show an account number for every account
+          it summarises. The rule fails when an account is listed
+          without an account number.
+    $id: statement_identity
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: bundling
-    x-aws-idp-document-name-regex: "(?i).*(bank|medicare|medicaid|pa_packet|prior_auth|statement).*"
+    x-aws-idp-policy-type: statement_period
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      procedure_bundling:
+      statement_date_shown:
         type: string
         description: >-
-          Certain procedures are bundled and not separately reportable when
-          performed together during the same encounter.
-        cpt_codes_affected: ["32100", "32551"]
-
+          The statement must show the date it was issued or the period
+          it covers. The rule fails when the statement prints neither.
+      balance_dates_in_order:
+        type: string
+        description: >-
+          The date printed for the new balance of an account must be
+          the same as or later than the date printed for its previous
+          balance. The rule fails when the new balance is dated before
+          the previous balance.
+      transactions_within_period:
+        type: string
+        description: >-
+          Every transaction listed on the statement must be dated
+          within the period the statement covers and no later than the
+          statement date. The rule fails when a transaction is dated
+          outside that period.
+    $id: statement_period
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: separate_procedure
-    x-aws-idp-document-name-regex: "(?i).*(bank|medicare|medicaid|pa_packet|prior_auth|statement).*"
+    x-aws-idp-policy-type: balance_reconciliation
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      separate_procedure_designation:
+      new_balance_reconciles:
         type: string
         description: >-
-          Procedures designated as separate procedures have specific billing rules
-          and may not be separately reportable with other procedures.
-        cpt_codes_affected: ["31600", "32551"]
+          For each account, the new balance must equal the previous
+          balance, minus checks and other withdrawals, plus deposits
+          and credits, using the amounts printed in the account
+          summary. The rule fails when the printed amounts do not add
+          up to the printed new balance.
+      summary_total_matches_accounts:
+        type: string
+        description: >-
+          The total printed for a group of accounts in the summary of
+          accounts must equal the sum of the balances of the accounts
+          in that group. The rule fails when the total differs from
+          that sum.
+    $id: balance_reconciliation
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    x-aws-idp-policy-type: transaction_review
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
+    type: object
+    rule_properties:
+      transactions_in_date_order:
+        type: string
+        description: >-
+          Transactions must be listed in date order, oldest first,
+          within each account. The rule fails when a transaction is
+          listed after a transaction with a later date.
+      no_duplicate_transactions:
+        type: string
+        description: >-
+          A transaction must be listed once. The rule fails when two
+          listed transactions have the same date, description,
+          reference number and amount.
+      large_withdrawals_identified:
+        type: string
+        description: >-
+          Every withdrawal of 10,000.00 or more must have a
+          description that identifies the payee. The rule fails when
+          such a withdrawal has no description, or a description that
+          names no payee.
+    $id: transaction_review

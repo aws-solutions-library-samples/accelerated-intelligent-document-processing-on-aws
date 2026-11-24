@@ -7,8 +7,9 @@
 // and the Document Editor panel.
 //
 // The bar is one row, left to right: Edit | View (the source document, where it can be
-// shown); the Reports menu (History, Summary, Processing Report); the More Actions menu
-// (Use As Evaluation Baseline); Refresh; then Skip, Cancel, Save and
+// shown); the Reports menu (History, Summary, Policy Rule Validation Summary, Processing
+// Report); the More Actions menu (Use As Evaluation Baseline); Refresh; then Skip, Reject
+// (a review item), Cancel, Save and
 // Process Changes, the primary action, last (or Claim, for an Annotator viewing an
 // unassigned item, with the view switch, Reports and Refresh only). A button that does not apply is left out;
 // a menu item the mode offers but that does not apply now is disabled, with the reason on
@@ -27,12 +28,15 @@ import DocumentPageHeader from '../common/DocumentPageHeader';
 import { sharedLabelMessages } from '../common/labels';
 import { ReportModal, SummaryReportModal } from '../common/ReportModal';
 import VersionBadge from '../common/VersionBadge';
+import DocumentReportDialog from '../document-actions/DocumentReportDialog';
 import { editScreenSharedMessages } from './edit-messages';
 import EditScreenLayout from './EditScreenLayout';
 import ProcessingReportContent from './ProcessingReportContent';
 import type { EditView } from './use-edit-view';
 
-export type EditAction = 'process' | 'skip' | 'claim' | 'cancel' | 'save' | 'regroup' | 'baseline' | 'refresh';
+export type EditAction = 'process' | 'skip' | 'reject' | 'send-back' | 'claim' | 'cancel' | 'save' | 'regroup' | 'baseline' | 'refresh';
+/** The two endings of a review that only a Production review item offers. */
+export type ReviewOutcomeAction = 'reject' | 'send-back';
 
 const barMessages = defineMessages<{
   viewSwitch: NoMessageValues;
@@ -40,6 +44,7 @@ const barMessages = defineMessages<{
   viewSource: NoMessageValues;
   reports: NoMessageValues;
   summary: NoMessageValues;
+  policyRuleValidation: NoMessageValues;
   processingReport: NoMessageValues;
   refresh: NoMessageValues;
   claim: NoMessageValues;
@@ -48,6 +53,8 @@ const barMessages = defineMessages<{
   useAsBaseline: NoMessageValues;
   skip: NoMessageValues;
   skipHint: NoMessageValues;
+  reject: NoMessageValues;
+  rejectHint: NoMessageValues;
   cancel: NoMessageValues;
   cancelHint: NoMessageValues;
   cancelAriaLabel: NoMessageValues;
@@ -71,12 +78,18 @@ const barMessages = defineMessages<{
   reports: {
     id: 'editScreen.bar.reports',
     defaultMessage: 'Reports',
-    description: "Menu of the edit page's action bar that holds History, Summary and Processing Report.",
+    description: "Menu of the edit page's action bar that holds History, Summary, Policy Rule Validation Summary and Processing Report.",
   },
   summary: {
     id: 'editScreen.bar.summary',
     defaultMessage: 'Summary',
     description: "Item of the edit page's Reports menu that opens the document's summary report.",
+  },
+  policyRuleValidation: {
+    id: 'editScreen.bar.policyRuleValidation',
+    defaultMessage: 'Policy Rule Validation Summary',
+    description:
+      "Item of the edit page's Reports menu that opens the document's policy rule validation summary, which lists the policy rules it passed and failed.",
   },
   processingReport: {
     id: 'editScreen.bar.processingReport',
@@ -120,6 +133,17 @@ const barMessages = defineMessages<{
     id: 'editScreen.bar.skipHint',
     defaultMessage: 'Give this item back to its queue, unassigned and not finished.',
     description: 'Hover text of Skip while it is available.',
+  },
+  reject: {
+    id: 'editScreen.bar.reject',
+    defaultMessage: 'Reject',
+    description:
+      "Button of the edit page's action bar, on a review queue item, that ends the review with the document rejected. It asks for a reason first.",
+  },
+  rejectHint: {
+    id: 'editScreen.bar.rejectHint',
+    defaultMessage: 'End the review and reject this document. A reason is asked for first.',
+    description: 'Hover text of Reject while it is available.',
   },
   cancel: {
     id: 'editScreen.bar.cancel',
@@ -165,6 +189,10 @@ export interface EditActionsProps {
   onShowSummary?: () => void;
   /** Summary in Reports, disabled with this reason (a document with no summary yet). EditScreen sets it. */
   summaryDisabledReason?: string;
+  /** Policy Rule Validation Summary in Reports: available (opens it). EditScreen sets it. */
+  onShowRuleValidation?: () => void;
+  /** Policy Rule Validation Summary in Reports, disabled with this reason (a document with no such report). EditScreen sets it. */
+  ruleValidationDisabledReason?: string;
   /** Offer Use As Evaluation Baseline, in More Actions: copy the finished document's results into the baseline. */
   showBaseline?: boolean;
   baselineDisabledReason?: string;
@@ -185,6 +213,9 @@ export interface EditActionsProps {
   /** Offer Skip: give the item back to its queue, unassigned and not finished. */
   showSkip?: boolean;
   skipDisabledReason?: string;
+  /** Offer Reject: end the review with the document rejected, for a reason from the queue's list. */
+  showReject?: boolean;
+  rejectDisabledReason?: string;
   /** Offer Cancel: discard the unsaved edits and leave the screen. */
   showCancel?: boolean;
   cancelDisabledReason?: string;
@@ -210,6 +241,8 @@ const EditActions = ({
   onShowReport,
   onShowSummary,
   summaryDisabledReason,
+  onShowRuleValidation,
+  ruleValidationDisabledReason,
   showBaseline = false,
   baselineDisabledReason,
   showClaim = false,
@@ -217,6 +250,8 @@ const EditActions = ({
   refreshDisabledReason,
   showSkip = false,
   skipDisabledReason,
+  showReject = false,
+  rejectDisabledReason,
   showCancel = false,
   cancelDisabledReason,
   showSave = false,
@@ -258,12 +293,22 @@ const EditActions = ({
             },
           ]
         : []),
+      ...(onShowRuleValidation || ruleValidationDisabledReason
+        ? [
+            {
+              id: 'rule-validation',
+              text: intl.formatMessage(barMessages.policyRuleValidation),
+              disabledReason: onShowRuleValidation ? undefined : ruleValidationDisabledReason,
+            },
+          ]
+        : []),
       ...(onShowReport ? [{ id: 'report', text: intl.formatMessage(barMessages.processingReport) }] : []),
     ],
     disabled: !!working,
     onItemClick: (id) => {
       if (id === 'history') onShowHistory?.();
       else if (id === 'summary') onShowSummary?.();
+      else if (id === 'rule-validation') onShowRuleValidation?.();
       else if (id === 'report') onShowReport?.();
     },
   };
@@ -316,6 +361,7 @@ const EditActions = ({
   };
 
   const skipReason = working ?? skipDisabledReason;
+  const rejectReason = working ?? rejectDisabledReason;
   const cancelReason = working ?? cancelDisabledReason;
   const saveReason = working ?? saveDisabledReason;
   const primaryReason = working ?? primaryDisabledReason;
@@ -334,6 +380,15 @@ const EditActions = ({
           loading: busy === 'skip',
           hint: { title: skipReason ? undefined : intl.formatMessage(barMessages.skipHint) },
           onClick: () => onAction('skip'),
+        },
+        showReject && {
+          kind: 'button',
+          id: 'reject',
+          text: intl.formatMessage(barMessages.reject),
+          disabledReason: rejectReason,
+          loading: busy === 'reject',
+          hint: { title: rejectReason ? undefined : intl.formatMessage(barMessages.rejectHint) },
+          onClick: () => onAction('reject'),
         },
         showCancel && {
           kind: 'button',
@@ -358,7 +413,8 @@ const EditActions = ({
           text: intl.formatMessage(sharedLabelMessages.processChanges),
           variant: 'primary',
           disabledReason: primaryReason,
-          loading: busy === 'process',
+          // A send-back is one of the two ways Process Changes ends a review.
+          loading: busy === 'process' || busy === 'send-back',
           hint: { title: primaryReason ? undefined : primaryHint },
           onClick: () => onAction('process'),
         },
@@ -414,6 +470,17 @@ interface EditScreenProps {
    * complete). Ignored when `summaryReportUri` is given; both omitted, there is no Summary.
    */
   summaryUnavailableReason?: string;
+  /**
+   * The document's policy rule validation report, for Policy Rule Validation Summary.
+   * Passed where the document has one; omitted, the item is disabled or absent (below).
+   */
+  ruleValidationReportUri?: string;
+  /**
+   * Policy Rule Validation Summary offered but unavailable: why (a document with no such
+   * report). Ignored when `ruleValidationReportUri` is given; both omitted, there is no
+   * such item.
+   */
+  ruleValidationUnavailableReason?: string;
   /** The Document Editor panel. */
   children: React.ReactNode;
 }
@@ -430,11 +497,14 @@ const EditScreen = ({
   reportSectionData,
   summaryReportUri,
   summaryUnavailableReason,
+  ruleValidationReportUri,
+  ruleValidationUnavailableReason,
   children,
 }: EditScreenProps): React.JSX.Element => {
   const intl = useIntl();
   const [showReport, setShowReport] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  const [showRuleValidation, setShowRuleValidation] = useState(false);
   const offerReport = reportSectionData !== undefined;
   return (
     <EditScreenLayout
@@ -451,6 +521,8 @@ const EditScreen = ({
                 onShowReport={offerReport ? () => setShowReport(true) : undefined}
                 onShowSummary={summaryReportUri ? () => setShowSummary(true) : undefined}
                 summaryDisabledReason={summaryReportUri ? undefined : summaryUnavailableReason}
+                onShowRuleValidation={ruleValidationReportUri ? () => setShowRuleValidation(true) : undefined}
+                ruleValidationDisabledReason={ruleValidationReportUri ? undefined : ruleValidationUnavailableReason}
               />
             }
           />
@@ -469,6 +541,13 @@ const EditScreen = ({
       )}
       {showSummary && summaryReportUri && (
         <SummaryReportModal reportUri={summaryReportUri} objectKey={objectKey} onDismiss={() => setShowSummary(false)} />
+      )}
+      {showRuleValidation && ruleValidationReportUri && (
+        <DocumentReportDialog
+          report="rule-validation"
+          displayed={{ objectKey, ruleValidationResultUri: ruleValidationReportUri }}
+          onDismiss={() => setShowRuleValidation(false)}
+        />
       )}
     </EditScreenLayout>
   );

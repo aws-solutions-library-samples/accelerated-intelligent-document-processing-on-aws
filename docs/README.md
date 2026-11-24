@@ -48,7 +48,8 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Missing Pages vs. Blank Fields](./missing-page-handling.md) - Telling a legitimately omitted page apart from an empty field on sparsely populated forms
 - [Few-Shot Examples](./few-shot-examples.md) - Implementing few-shot examples for improved accuracy
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
-- [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
+- [Review Queues](./review-queues.md) - System-wide review queues: creating queues, assigning work to Annotators, review outcomes, the review status contract
+- [Review Routing](./review-routing.md) - Routing rules that decide whether a processed document is reviewed and in which review queue; testing a table; DMN XML export and import
 - [Document Attributes](./document-attributes.md) - Attach caller-supplied key-value attributes (account id, claim number) at upload and get them back with the results
 - [Document Versions](./document-versions.md) - Each processing run of a document is kept as a version, so reprocessing or re-uploading does not lose prior results
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
@@ -152,6 +153,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 ## Migration
 
 - [Migration v0.6.12 to v0.6.13](./migration-v0612-to-v0613.md) - Classification settings nested by model call (config format 0.9)
+- [Migration v0.6.15 to v0.6.16](./migration-v0615-to-v0616.md) - Review routing and run plans: workflow state names, hooks, the review status object, API and SDK changes, rollback
 - [Migration v0.5 to v0.6](./migration-v05-to-v06.md) - The standalone `assessment:` block folded into `extraction.confidence`, `extraction.geometry` and `hitl`
 - [Granular Assessment Retirement](./migration-granular-retirement.md) - What the retirement of granular assessment means for your configuration
 - [AppSync to REST API Migration](./migration-appsync-to-rest.md) - How the REST transport reproduces what the UI previously got from AWS AppSync

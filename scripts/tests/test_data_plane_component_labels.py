@@ -58,6 +58,8 @@ EXPECTED_COMPONENT: Dict[str, str] = {
     "SummarizationFunction": "summarization",
     "EvaluationFunction": "evaluation",
     "ProcessResultsFunction": "process-results",
+    "RoutingFunction": "routing",
+    "ApplyReviewChangesFunction": "apply-review-changes",
     "PipelineHooksDispatcherFunction": "pipeline-hooks",
     "ShardRuntimeFunction": "shard-runtime",
     # BDA mode

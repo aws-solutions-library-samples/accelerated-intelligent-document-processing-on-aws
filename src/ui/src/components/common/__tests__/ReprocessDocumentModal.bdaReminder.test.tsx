@@ -58,6 +58,8 @@ vi.mock('../../../hooks/use-configuration', async () => {
 });
 
 vi.mock('../ConfigRevisionSelector', () => ({ default: () => null }));
+// The dialog also asks which steps the run can start at; that is not what this suite is about.
+vi.mock('../../run-plan/run-plan-api', () => ({ getReprocessOptions: async () => [] }));
 
 import ReprocessDocumentModal from '../ReprocessDocumentModal';
 

@@ -27,7 +27,7 @@ raise — they return a fallback so one bad rule does not discard the others, or
 document marked failed so the handler can record a diagnosis. Every one of them first
 asks `idp_common.utils.transient_errors` whether the failure is transient, and
 re-raises it under `TransientError` if it is. That is the one class name
-`PolicyClassificationStep`, `RuleValidationStep` and `RuleValidationOrchestration`
+`PolicyClassificationStep`, `PolicyRuleValidationStep` and `PolicyRuleConsolidationStep`
 list in `Retry.ErrorEquals`, so a throttle, read timeout, dropped connection or
 not-ready model is retried — eight attempts at 2.5× backoff from ten seconds — rather
 than becoming a permanent outcome (#1101).
@@ -97,7 +97,12 @@ The rule validation service uses a three-step approach:
   - Configurable overlap (default 10%) for context preservation. `0` repeats nothing;
     values above 50 are bounded to 50 by the character chunker
   - Automatic fallback to character-based chunking
-  - Chunking always occurs for fact extraction, orchestrator always runs
+  - A section too long for one call is chunked for fact extraction
+  - The verdict pass runs for every document, whatever its number of sections,
+    when `rule_validation.rule_validation_orchestrator` is configured
+- **Stable rule ids and normalised verdicts**:
+  - Every rule has the id `<policy type>.<rule key>` in every output
+  - Every verdict is also given as `pass`, `fail`, `not_found` or `unknown`
 - **Customizable Recommendations**: 
   - User-defined recommendation options (e.g., Pass/Fail/Info Not Found)
   - Dynamic statistics generation based on actual recommendations
@@ -137,7 +142,9 @@ The rule validation service uses a three-step approach:
    - Makes final compliance decisions per rule
    - Generates overall statistics with dynamic recommendation counts
    - Creates JSON and Markdown summary outputs
-   - Always runs (even for single sections) to make compliance decisions
+   - Gives every rule its verdict when `rule_validation.rule_validation_orchestrator`
+     is configured, for a document with one section as for one with many. Without
+     that configuration the extracted facts are stored with no verdict
 
 ### Data Flow
 
@@ -171,20 +178,27 @@ Output (JSON + Markdown)
 **Step 2: Fact Extraction**
 - Input: Document text + Rules (filtered by matched policy types)
 - Output: `FactExtractionResponse`
+  - `rule_id`: The rule's stable id, `<policy type>.<rule key>`
+  - `z3_rule_id`: The rule's Z3 id, when it has one
   - `extracted_facts`: List of facts with citations
   - `extraction_summary`: Summary of findings
 - LLM focuses on finding relevant evidence
-- No compliance decision made at this stage
+- No compliance decision made at this stage: a section's stored responses are
+  fact extractions and carry no recommendation
 
 **Step 3: Orchestrator**
 - Input: All extracted facts from all chunks/sections
 - Output: `LLMResponse`
+  - `rule_id`, `z3_rule_id`: Carried over from the fact extractions
   - `recommendation`: Pass/Fail/Information Not Found
+  - `verdict`: The recommendation normalised to `pass`, `fail`, `not_found` or
+    `unknown`
   - `reasoning`: Compliance determination explanation
   - `supporting_pages`: Aggregated page references
-- LLM makes final compliance decision
+- LLM makes final compliance decision, one call per rule
 - Consolidates evidence from multiple sources
-- Always runs (even for single section documents)
+- Runs when `rule_validation.rule_validation_orchestrator` is configured, for any
+  number of sections. A rule the Z3 solver decided is passed through
 
 ## Models
 
@@ -194,23 +208,29 @@ Output (JSON + Markdown)
 Response model from fact extraction step:
 - **policy_type**: Type of policy class being evaluated
 - **rule**: The specific rule description
+- **rule_id**: The rule's stable id, `<policy type>.<rule key>`
+- **z3_rule_id**: The rule's Z3 id (`x-aws-idp-rule-id`), when it has one
 - **extracted_facts**: List of facts with citation and relevance
 - **extraction_summary**: Summary of extracted evidence
 
 #### LLMResponse
 Validated response model from orchestrator with automatic data cleaning:
-- **policy_type**: Type of policy class being evaluated (e.g., "global_periods", "same_day_service_rules")
+- **policy_type**: Type of policy class being evaluated (e.g., "statement_period", "transaction_review")
 - **rule**: The specific rule description being validated
 - **supporting_pages**: List of page IDs that support the recommendation
 - **recommendation**: Validated recommendation (customizable, default: Pass/Fail/Info Not Found)
 - **reasoning**: Cleaned explanation text with specific page citations
+- **rule_id**: The rule's stable id, `<policy type>.<rule key>`
+- **z3_rule_id**: The rule's Z3 id, when it has one
+- **verdict**: The recommendation as `pass`, `fail`, `not_found` or `unknown`
 
 Features:
 - Automatic validation of recommendation against configured options
 - Reasoning text cleaned of special characters
 - Supporting pages validated as list format
 - Whitespace automatically stripped
-- `policy_type` and `rule` added by code (not from LLM response)
+- `policy_type`, `rule`, `rule_id`, `z3_rule_id` and `verdict` added by code (not
+  from LLM response)
 
 #### Section Response Structure
 ```python
@@ -219,18 +239,26 @@ Features:
     "chunking_occurred": True,  # True if section was chunked
     "chunks_created": 2,  # Number of chunks (0 = no chunking, 2+ = chunked)
     "responses": {
-        "policy_type_1": [
+        "statement_period": [
             {
-                "policy_type": "global_periods",
+                "policy_type": "statement_period",
                 "rule": "Rule description",
-                "supporting_pages": ["1", "3"],
-                "recommendation": "Pass",
-                "reasoning": "Detailed reasoning with page citations"
+                "rule_id": "statement_period.balance_dates_in_order",
+                "z3_rule_id": None,
+                "extracted_facts": [
+                    {"fact": "What the section says", "citation": "1"}
+                ],
+                "extraction_summary": "Summary of the evidence found",
+                "z3_parameters": None
             }
         ]
     }
 }
 ```
+
+A section's responses are fact extractions. They hold what the section says about
+each rule and no recommendation. The verdict is made by the orchestrator, from the
+facts of every section.
 
 #### Consolidated Summary Structure
 ```python
@@ -251,19 +279,78 @@ Features:
         "recommendation_counts": {
             "Pass": 15,
             "Fail": 3,
-            "Info Not Found": 2
-        }
+            "Information Not Found": 2
+        },
+        "verdict_counts": {"pass": 15, "fail": 3, "not_found": 2, "unknown": 0}
     },
     "supporting_pages": ["1", "2", "3", "4"],
     "rule_details": {
         "policy_type_1": {
             "total_rules": 5,
             "recommendation_counts": {"Pass": 4, "Fail": 1},
-            "rules": [...]
+            "verdict_counts": {"pass": 4, "fail": 1, "not_found": 0, "unknown": 0},
+            "rules": [
+                {
+                    "rule_id": "policy_type_1.rule_key",
+                    "z3_rule_id": None,
+                    "rule": "Rule description",
+                    "recommendation": "Pass",
+                    "verdict": "pass",
+                    "supporting_pages": ["1", "3"],
+                    "reasoning": "Detailed reasoning with page citations"
+                }
+            ]
         }
     }
 }
 ```
+
+### Rule ids and verdicts
+
+**Rule id.** A policy rule's id is `<policy type>.<rule key>`, where the rule key
+is the rule's key in the policy's `rule_properties`. It is the same in the section
+files, the consolidated per-policy files, the consolidated summary, the Markdown
+report (in parentheses after the rule text) and the reporting table. The
+description alone cannot name a rule: two rules may share one, and an edit changes
+it. `z3_rule_id` is the rule's `x-aws-idp-rule-id`, when it has one.
+
+In `RuleValidationService._get_rule_metadata`, the metadata key `rule_id` is the
+**Z3** id, as it always was; the stable id there is `policy_rule_id`. Every
+response and every output uses `rule_id` for the stable id and `z3_rule_id` for the
+Z3 id.
+
+**Verdict.** `recommendation` is free text from `recommendation_options`.
+`verdict` is the same result as one of four fixed values:
+
+| `recommendation` (case and surrounding space ignored) | `verdict` |
+|---|---|
+| `Pass` | `pass` |
+| `Fail` | `fail` |
+| `Information Not Found` | `not_found` |
+| any other label, or none | `unknown` |
+
+Only those three labels are recognised. A profile that configures other labels
+(`Approved`, `Rejected`) still gets them in `recommendation` and in
+`recommendation_counts`, and `unknown` in `verdict`. Review Routing reads `verdict`,
+so a routing rule on a policy rule's verdict needs the default labels.
+
+`verdict_counts` counts the same rules by verdict, for the document and for each
+policy type. Its four counts sum to `total_rules`. The label-based fields
+(`recommendation_counts`, `pass_count`, `fail_count`,
+`information_not_found_count`, `pass_percentage`) are exact-match on the label, as
+before.
+
+**When a rule has no verdict.** Without a `rule_validation_orchestrator`
+configuration no verdict pass runs, so every rule's recommendation is `Unknown` and
+its verdict `unknown`.
+
+**Cost.** The verdict pass makes one model call per rule that the solver did not
+decide, for every document that reaches consolidation, including a document with
+one section.
+
+**Section files written before ids existed** have no `rule_id`. They still
+consolidate: such responses are grouped by the rule text, and a Z3 rule is matched
+by its description.
 
 ## Configuration
 
@@ -283,6 +370,12 @@ settings that *are* fields of `rule_validation` itself — `enabled`, `semaphore
 `recommendation_options`, `extraction_results`, `z3_timeout_ms` — stay at that
 level. See `config/system_defaults/base-rule-validation.yaml` for the shipped
 values.
+
+In the web UI the section is **Policy Rule Validation (Optional)** on the
+configuration's **Processing Settings** tab, before **Review Routing (Optional)**,
+and the orchestrator block is **Policy Rule Validation Orchestrator**. The report
+this service writes is headed **Policy Rule Validation Summary**, the name its
+dialog has in the web UI.
 
 ### Rule Validation Configuration
 
@@ -306,7 +399,7 @@ rule_validation:
     max_tokens: ""    # empty = use the model's maximum output limit
 
     system_prompt: |
-      You are a specialized evaluator for medical coding compliance...
+      You are a Document Fact Extraction Specialist...
 
     task_prompt: |
       <<CACHEPOINT>>
@@ -362,19 +455,36 @@ rule_validation:
 ```yaml
 policy_classes:
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: global_periods
+    x-aws-idp-policy-type: statement_period
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      minor_surgery_000_010:
+      statement_date_shown:
         type: string
         description: >-
-          If a procedure has a global period of 000 or 010 days...
-      major_surgery_090:
+          The statement must show the date it was issued or the period
+          it covers. The rule fails when the statement prints neither.
+      balance_dates_in_order:
         type: string
         description: >-
-          If a procedure has a global period of 090 days...
-    $id: global_periods
+          The date printed for the new balance of an account must be
+          the same as or later than the date printed for its previous
+          balance. The rule fails when the new balance is dated before
+          the previous balance.
+      transactions_within_period:
+        type: string
+        description: >-
+          Every transaction listed on the statement must be dated
+          within the period the statement covers and no later than the
+          statement date. The rule fails when a transaction is dated
+          outside that period.
+    $id: statement_period
 ```
+
+This is the `statement_period` policy class of the `rule-validation` preset
+(`config_library/unified/rule-validation/config.yaml`). The document that preset is
+written for is `samples/bank-statement-multipage.pdf`, and its policy rules are
+those of `samples/rule-validation/bank-statement-review-policy.pdf`.
 
 ## Usage
 
@@ -450,17 +560,13 @@ The step that clears that prefix is best-effort, so on a reprocessed document th
 prefix can hold the previous run's verdicts for the *same* document — plausible enough
 to be consolidated and acted on, where a rule whose verdict changed between runs is
 reported at the stale value ([#1143](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1143)).
-The list is also what the section count is taken from, so a stale object otherwise
-routes a single-section document through LLM summarization.
 
-**A URI the loader will not read does not count towards the section total either.**
-Two are dropped: one naming a bucket other than the document's `output_bucket`, which
-is logged as a warning, and one whose key is not a per-section result — the key must
-end `_responses.json` **and** contain `section_`, which is the shape
-`RuleValidationService` writes (`section_<id>_responses.json`). Both the load and the
-count apply that one predicate, so the count is always of the objects actually read;
-they used to differ, and a key the loader skipped still pushed the count past one and
-bought an unnecessary LLM summarization.
+**A URI the loader will not read is dropped.** Two kinds are: one naming a bucket
+other than the document's `output_bucket`, which is logged as a warning, and one
+whose key is not a per-section result — the key must end `_responses.json` **and**
+contain `section_`, which is the shape `RuleValidationService` writes
+(`section_<id>_responses.json`). When a list is given, the prefix is not listed for
+anything.
 
 ### Customizing Recommendation Options
 
@@ -895,11 +1001,11 @@ self.token_metrics = utils.merge_metering_data(
   "total_policy_types": 4,
   "rule_summary": {...},
   "overall_statistics": {
-    "total_rules": 20,
+    "total_rules": 11,
     "recommendation_counts": {
-      "Pass": 15,
-      "Fail": 3,
-      "Info Not Found": 2
+      "Pass": 8,
+      "Fail": 2,
+      "Info Not Found": 1
     }
   },
   "supporting_pages": ["1", "2", "3"],
@@ -911,34 +1017,34 @@ self.token_metrics = utils.merge_metering_data(
 ### Markdown Report
 
 ```markdown
-# Rule Validation Summary
+# Policy Rule Validation Summary: doc_123
 
 **Document ID**: doc_123
 **Status**: COMPLETE
 **Total Rule Types**: 4
-**Total Rules**: 20
+**Total Rules**: 11
 
 ## Overall Statistics
 
 **Recommendation Counts:**
-- **Pass:** 15
-- **Fail:** 3
-- **Info Not Found:** 2
+- **Pass:** 8
+- **Fail:** 2
+- **Info Not Found:** 1
 
 **Supporting Pages:** 1, 2, 3
 
-## Rule Type: global_periods
+## Rule Type: statement_period
 
-**Total Rules:** 5
+**Total Rules:** 3
 
-**Pass:** 4
+**Pass:** 2
 **Fail:** 1
 
 ### Rules
 
 | Rule | Recommendation | Reasoning | Supporting Pages |
 |------|----------------|-----------|------------------|
-| Minor surgery rule | Pass | Evidence found... | 1, 3 |
+| The statement must show the date it was issued or the period it covers... | Pass | Evidence found... | 1, 3 |
 ...
 ```
 

@@ -22,18 +22,29 @@ class _Completed:
         self.stderr = stderr
 
 
-def _stub_suite(cbd, monkeypatch, *, parallel_ok=True, seq_ok=True):
+def _stub_suite(
+    cbd, monkeypatch, *, parallel_ok=True, seq_ok=True, order=None, upload_rc=0
+):
     """Stub IAM/deploy/step functions so deploy_and_test_stack runs fast, no AWS.
 
     Replaces PARALLEL_TEST_STEPS / SEQUENTIAL_TEST_STEPS with tiny fake steps.
+    `order`, a list, receives each command and each step as it runs. `upload_rc`
+    is the exit code of the configuration upload.
     """
     monkeypatch.setattr(
         cbd, "create_iam_resources", lambda s: ("role-arn", "boundary-arn")
     )
 
     def fake_run_command(cmd, check=True, timeout=cbd.DEFAULT_COMMAND_TIMEOUT):
+        if order is not None:
+            order.append(cmd)
         if "describe-stacks" in cmd:
             return _Completed(stdout="CREATE_COMPLETE")
+        if "config-upload" in cmd:
+            return _Completed(
+                returncode=upload_rc,
+                stderr="✗ Error: no such stack\n" if upload_rc else "",
+            )
         return _Completed(stdout="")
 
     monkeypatch.setattr(cbd, "run_command", fake_run_command)
@@ -42,6 +53,8 @@ def _stub_suite(cbd, monkeypatch, *, parallel_ok=True, seq_ok=True):
 
     def mk(ok, err="boom"):
         def step(stack_name):
+            if order is not None:
+                order.append("a step")
             return {"success": ok} if ok else {"success": False, "error": err}
 
         return step
@@ -140,6 +153,63 @@ def test_no_progress_cb_is_fine(cbd, monkeypatch):
     # Omitting the callback (default None) must work unchanged.
     result = cbd.deploy_and_test_stack("idp-x", "a@b.com", "https://t")
     assert result["success"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Review Routing is switched off before the first step. A new stack has it on,
+# and a document that needs review would then wait for a reviewer the suite
+# does not have.
+# --------------------------------------------------------------------------- #
+SWITCH_OFF_COMMAND = (
+    "idp-cli config-upload --stack-name idp-x "
+    "--config-file scripts/sdlc/config/review-routing-off.yaml "
+    "--config-version default"
+)
+
+
+def test_review_routing_is_switched_off_before_the_first_step(cbd, monkeypatch):
+    order = []
+    _stub_suite(cbd, monkeypatch, order=order)
+
+    result = cbd.deploy_and_test_stack("idp-x", "a@b.com", "https://t")
+
+    assert result["success"] is True
+    assert order.count(SWITCH_OFF_COMMAND) == 1, order
+    assert order.count("a step") == 4, order
+    switched = order.index(SWITCH_OFF_COMMAND)
+    # After the stack is up, and ahead of every step.
+    assert any("describe-stacks" in entry for entry in order[:switched]), order
+    assert "a step" not in order[:switched], order
+
+
+def test_a_failed_switch_off_stops_before_the_steps(cbd, monkeypatch):
+    order = []
+    _stub_suite(cbd, monkeypatch, order=order, upload_rc=1)
+    snapshots = []
+
+    result = cbd.deploy_and_test_stack(
+        "idp-x", "a@b.com", "https://t", progress_cb=snapshots.append
+    )
+
+    error = (
+        "Could not switch Review Routing off in the default profile: "
+        "the configuration upload exited 1: ✗ Error: no such stack"
+    )
+    assert result == {
+        "stack_name": "idp-x",
+        "success": False,
+        "failure_type": "deploy",
+        "error": error,
+        "convergence_failed": False,
+        "parity_failed": False,
+        # A failed row of its own, which the summary reads.
+        "step_results": {
+            cbd.REVIEW_ROUTING_OFF_ROW: {"status": "failed", "error": error}
+        },
+    }
+    assert SWITCH_OFF_COMMAND in order
+    assert "a step" not in order, order
+    assert snapshots == []
 
 
 # --------------------------------------------------------------------------- #

@@ -39,6 +39,25 @@ query ListReviewQueueItems($queueProfile: String, $queueName: String, $claimable
         requestedBy
         requestedAt
       }
+      queueName
+      routedBy {
+        tableId
+        ruleId
+        ruleLabel
+        placedQueue
+        fallbackReason
+        inputs
+        reason
+        reasonSource
+        policyFailures {
+          ruleId
+          policy
+          name
+          reason
+          pages
+        }
+        policyFailureCount
+      }
     }
     nextToken
   }

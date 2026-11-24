@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The document page's Reports › Summary, Evaluation Report and Rule Validation Summary,
+// The document page's Reports › Summary, Evaluation Report and Policy Rule Validation Summary,
 // each in a dialog over the document as the page shows it (a past version's reports
 // when one is being viewed). Rendered inside the page's DocumentVersionProvider, so a
 // past version's reports are read at that version.
@@ -26,13 +26,14 @@ const messages = defineMessages<{
   },
   ruleValidationSummary: {
     id: 'documentActions.reportDialog.ruleValidationSummary',
-    defaultMessage: 'Rule Validation Summary',
-    description: "Title of the dialog that shows the document's rule validation summary, opened from the document page's Reports menu.",
+    defaultMessage: 'Policy Rule Validation Summary',
+    description:
+      "Title of the dialog that shows the document's policy rule validation summary, opened from the document page's Reports menu.",
   },
   ruleValidationEmpty: {
     id: 'documentActions.reportDialog.ruleValidationEmpty',
-    defaultMessage: 'Rule validation summary not available for this document',
-    description: 'Text of the Rule Validation Summary dialog when the document has no rule validation summary.',
+    defaultMessage: 'Policy rule validation summary not available for this document',
+    description: 'Text of the Policy Rule Validation Summary dialog when the document has no policy rule validation summary.',
   },
 });
 

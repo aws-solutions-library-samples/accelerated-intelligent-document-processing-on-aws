@@ -108,6 +108,7 @@ class FakeDocument:
         self.hitl_sections_pending = list(pending or [])
         self.hitl_sections_completed = list(completed or [])
         self.hitl_status = hitl_status
+        self.input_key = OBJECT_KEY
         self.input_bucket = None
         self.output_bucket = None
         self.status = None
@@ -116,12 +117,15 @@ class FakeDocument:
         self.workflow_execution_arn = "arn:aws:states:us-east-1:1:execution:x:y"
         self.serialize_calls = []
 
-    def serialize_document(self, bucket, prefix, _logger):
+    def serialize_document(self, bucket, prefix, _logger=None):
         self.serialize_calls.append((bucket, prefix))
         return {"shape": "compressed", "object_key": OBJECT_KEY}
 
     def to_dict(self):
         return {"shape": "plain", "object_key": OBJECT_KEY}
+
+    def to_json(self):
+        return json.dumps(self.to_dict())
 
 
 class FakeDocumentService:
@@ -1960,6 +1964,20 @@ def drain(mod, url):
     return [json.loads(m["Body"]) for m in received.get("Messages", [])]
 
 
+def drain_attributes(mod, url):
+    """The String message attributes of each queued message."""
+    received = mod.sqs_client.receive_message(
+        QueueUrl=url, MaxNumberOfMessages=10, MessageAttributeNames=["All"]
+    )
+    return [
+        {
+            name: value["StringValue"]
+            for name, value in m.get("MessageAttributes", {}).items()
+        }
+        for m in received.get("Messages", [])
+    ]
+
+
 @pytest.mark.unit
 def test_reprocessing_requeues_the_document_with_its_run_state_cleared(
     mod, queue, monkeypatch
@@ -1987,6 +2005,31 @@ def test_reprocessing_requeues_the_document_with_its_run_state_cleared(
     assert document.output_bucket == "out-bucket"
     assert document.serialize_calls == [("work-bucket", "hitl_complete")]
     assert drain(mod, queue) == [{"shape": "compressed", "object_key": OBJECT_KEY}]
+
+
+@pytest.mark.unit
+def test_the_requeued_message_carries_a_legacy_review_run_plan(mod, queue):
+    """Every message on the document queue carries a plan.
+
+    This one says the run follows a review completed outside the review queues
+    and starts at the beginning, where the per-step skip checks find the
+    document's existing results.
+    """
+    from idp_common.run_plan.models import RunKind, RunPlan, decode
+
+    document = FakeDocument([FakeSection("sec-1")])
+    with patch.object(
+        mod, "create_document_service", return_value=FakeDocumentService(document)
+    ):
+        mod.trigger_reprocessing(OBJECT_KEY)
+
+    (attributes,) = drain_attributes(mod, queue)
+    assert set(attributes) == {"EventType", "ObjectKey", "RunPlan"}
+    assert attributes["EventType"] == "DocumentRunRequested"
+    assert attributes["ObjectKey"] == OBJECT_KEY
+    assert decode(attributes["RunPlan"]) == RunPlan(
+        kind=RunKind.LEGACY_REVIEW, start="beginning"
+    )
 
 
 @pytest.mark.unit

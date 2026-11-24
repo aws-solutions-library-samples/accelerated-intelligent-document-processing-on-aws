@@ -1,8 +1,19 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// Why the document is in review (reason chips) and any escalation note: the one panel
-// above the editor, kept to what the reviewer needs to review.
+// Why the document is in review: first the routing rule that sent it to its queue, with
+// the reason the routing rule gives and the policy rules the document failed; then any
+// escalation or send-to-review note; then the reason chips. The one panel above the
+// editor, kept to what the reviewer needs to review.
+//
+// The reason the document is in review (the routing notice, or the note of whoever sent
+// it to review) is a warning alert: the yellow notice this UI uses wherever something
+// needs the reader's attention before they act (the Test Studio editor's notices, the
+// dialogs' cautions). An escalation note adds to the reason and stays an info alert.
+//
+// The panel stays short. A long routing reason and a long list of failed policy rules
+// are shortened, with the rest one click away (RoutedBy.tsx). The counter in the header
+// counts what the panel lists: the routing notice, the alerts and the failed policy rules.
 //
 // Reasons arrive worst first (largest gap below the threshold), so the first few are
 // the ones to look at. Only TOP_REASONS are shown until the reviewer asks for the
@@ -18,15 +29,17 @@ import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { sharedLabelMessages } from '../common/labels';
 import { EXTRACTION_FAILED_KIND, MISSING_REQUIRED_KIND, reasonText } from './review-api';
+import { PolicyFailureList, RoutedByReason, policyFailureTotal, routedByFallbackText, routedByText } from './RoutedBy';
 import { useFormatters } from '../../i18n/format';
 
 const messages = defineMessages<{
+  title: NoMessageValues;
+  counter: { readonly count: number };
+  escalated: NoMessageValues;
   sentToReview: { readonly reason: string };
   sentBy: { readonly requestedBy: string };
   sentByWithNote: { readonly requestedBy: string; readonly note: string };
   extractionFailed: NoMessageValues;
-  title: NoMessageValues;
-  escalated: NoMessageValues;
   section: { readonly sectionId: string };
   field: { readonly field: string };
   missingValue: NoMessageValues;
@@ -36,6 +49,23 @@ const messages = defineMessages<{
   onlyLowest: { readonly count: number };
   showFewer: NoMessageValues;
 }>({
+  title: {
+    id: 'reviewQueues.taskContext.title',
+    defaultMessage: 'Review Reason',
+    description:
+      'Heading of the panel above the editor of a review item that says why the document is in review: the routing notice first, then one chip per reason.',
+  },
+  counter: {
+    id: 'reviewQueues.taskContext.counter',
+    defaultMessage: '({count, number})',
+    description:
+      'Counter beside the Review Reason heading. {count} is how many things the panel lists: the routing notice, the alerts and the failed policy rules.',
+  },
+  escalated: {
+    id: 'reviewQueues.taskContext.escalated',
+    defaultMessage: 'Escalated',
+    description: "Header of the info alert on an escalated review item; the alert's text is the escalation note, as written.",
+  },
   extractionFailed: {
     id: 'reviewQueues.taskContext.extractionFailed',
     defaultMessage: 'Extraction failed for this section, so it has no extracted data to check.',
@@ -46,7 +76,7 @@ const messages = defineMessages<{
     id: 'reviewQueues.taskContext.sentToReview',
     defaultMessage: 'Sent to review: {reason}',
     description:
-      'Header of the info alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it.',
+      'Header of the alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it.',
   },
   sentBy: {
     id: 'reviewQueues.taskContext.sentBy',
@@ -58,16 +88,6 @@ const messages = defineMessages<{
     defaultMessage: 'By {requestedBy} — {note}',
     description:
       'Body of the Sent to review alert when the sender left a note. {requestedBy} is the user (e-mail) who sent it; {note} is their free-text note.',
-  },
-  title: {
-    id: 'reviewQueues.taskContext.title',
-    defaultMessage: 'Review Reason',
-    description: 'Heading of the panel above the editor of a review item that lists why the document is in review, one chip per reason.',
-  },
-  escalated: {
-    id: 'reviewQueues.taskContext.escalated',
-    defaultMessage: 'Escalated',
-    description: "Header of the info alert on an escalated review item; the alert's text is the escalation note, as written.",
   },
   section: {
     id: 'reviewQueues.taskContext.section',
@@ -135,6 +155,9 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
   const shown = showAll ? item.reasons : item.reasons.slice(0, TOP_REASONS);
   const collapsed = item.reasons.length - shown.length;
   const unlisted = Math.max(item.reasonCount - item.reasons.length, 0);
+  const { routedBy } = item;
+  // What the panel lists: the routing notice, the alerts and the failed policy rules.
+  const listed = (routedBy ? 1 : 0) + item.reasonCount + policyFailureTotal(routedBy);
 
   const handleNextAlert = () => {
     if (!onReasonClick || item.reasons.length === 0) return;
@@ -148,7 +171,7 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
       header={
         <Header
           variant="h2"
-          counter={`(${item.reasonCount})`}
+          counter={intl.formatMessage(messages.counter, { count: listed })}
           actions={
             onReasonClick && item.reasons.length > 0 ? (
               <Button onClick={handleNextAlert}>
@@ -162,13 +185,22 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
       }
     >
       <SpaceBetween size="m">
+        {routedBy && (
+          <Alert type="warning" header={routedByText(intl, routedBy)}>
+            <SpaceBetween size="xs">
+              <RoutedByReason routedBy={routedBy} />
+              {routedByFallbackText(intl, routedBy)}
+              <PolicyFailureList failures={routedBy.policyFailures ?? []} count={policyFailureTotal(routedBy)} />
+            </SpaceBetween>
+          </Alert>
+        )}
         {item.escalated && item.escalationNote && (
           <Alert type="info" header={intl.formatMessage(messages.escalated)}>
             {item.escalationNote}
           </Alert>
         )}
         {item.sentToReview && (
-          <Alert type="info" header={intl.formatMessage(messages.sentToReview, { reason: item.sentToReview.reason })}>
+          <Alert type="warning" header={intl.formatMessage(messages.sentToReview, { reason: item.sentToReview.reason })}>
             {item.sentToReview.note ? (
               <FormattedMessage
                 {...messages.sentByWithNote}
@@ -239,9 +271,12 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
               size="small"
               content={intl.formatMessage(messages.onlyLowest, { count: item.reasons.length })}
             >
-              <Badge color="grey">
-                <FormattedMessage {...messages.moreAlerts} values={{ count: unlisted }} />
-              </Badge>
+              {/* A button, so the popover opens from the keyboard too. */}
+              <Button variant="inline-link">
+                <Badge color="grey">
+                  <FormattedMessage {...messages.moreAlerts} values={{ count: unlisted }} />
+                </Badge>
+              </Button>
             </Popover>
           )}
           {showAll && item.reasons.length > TOP_REASONS && (

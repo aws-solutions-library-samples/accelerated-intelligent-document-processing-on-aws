@@ -582,7 +582,7 @@ def test_build_all_lambda_layers_builds_the_four_layers_and_uploads_each(
 
     assert [name for name, _ in calls] == list(_LAYER_NAMES)
     assert dict(calls) == {
-        "base": ["docs_service", "image"],
+        "base": ["docs_service", "image", "dmn"],
         "reporting": ["reporting"],
         "agents": ["agents"],
         "multi_document_discovery": ["multi_document_discovery"],

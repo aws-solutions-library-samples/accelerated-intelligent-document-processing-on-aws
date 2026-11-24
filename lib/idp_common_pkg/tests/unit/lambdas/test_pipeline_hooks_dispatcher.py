@@ -1179,7 +1179,7 @@ def test_workflow_control_fields_survive_a_hook_round_trip(monkeypatch):
     load -> mutate -> return through idp_common drops them.
 
     Regression: dropping `use_bda` failed the execution outright at
-    RouteByProcessingMode with "Invalid path '$.document.use_bda'". The
+    CheckProcessingMode with "Invalid path '$.document.use_bda'". The
     dispatcher must carry them forward onto the hook's document.
     """
     monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
@@ -1939,7 +1939,7 @@ def test_reachable_hooks_are_never_reported_in_pipeline_mode(monkeypatch):
 def test_the_mode_is_read_from_the_document_and_never_from_the_config(monkeypatch):
     """A config saying `use_bda: true` must NOT make the audit speak.
 
-    `RouteByProcessingMode` switches on `$.document.use_bda`. With that key absent
+    `CheckProcessingMode` switches on `$.document.use_bda`. With that key absent
     the Choice cannot select the BDA branch, so every hook point is in fact about to
     be reached, and consulting the config row — which a hand-started execution or a
     redrive can easily disagree with — could only produce a report naming hooks that
@@ -2054,3 +2054,156 @@ def test_disabled_and_arnless_unreachable_hooks_are_not_reported(monkeypatch):
         None,
     )
     assert "unreachableHooks" not in out
+
+
+# ---------------------------------------------------------------------------
+# What a hook is told about the run (the run plan)
+# ---------------------------------------------------------------------------
+
+_PLANNED_RUN = {
+    "document": {"use_bda": False},
+    "runPlan": {
+        "v": 1,
+        "kind": "saved_edits",
+        "startStep": "extraction",
+        "startAt": "pipeline.extraction.sections",
+        "sections": ["2"],
+        "reviewed": True,
+        "mode": "pipeline",
+    },
+}
+_ABSENT = object()
+
+
+def _hook_payloads(monkeypatch, execution_input=_ABSENT, hooks=None):
+    """Dispatch one postExtraction event; return the payload each hook was sent."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    seen = []
+
+    def _capture(h, payload):
+        seen.append(payload)
+        return _ok({}, h["featureId"])
+
+    _mutation_env(monkeypatch, mod, hooks or [_hook()], _capture)
+    event = {
+        "hookPoint": "postExtraction",
+        "document": {"id": "d1"},
+        "section": "2",
+        "executionArn": "arn:exec",
+    }
+    if execution_input is not _ABSENT:
+        event["executionInput"] = execution_input
+    mod.lambda_handler(event, None)
+    return seen
+
+
+def test_hook_payload_carries_the_run_plan_fields(monkeypatch):
+    (payload,) = _hook_payloads(monkeypatch, _PLANNED_RUN)
+
+    assert payload["runKind"] == "saved_edits"
+    assert payload["startStep"] == "extraction"
+    assert payload["reviewed"] is True
+
+
+@pytest.mark.parametrize(
+    "execution_input",
+    [
+        _ABSENT,
+        None,
+        {},
+        {"document": {"use_bda": False}},
+        {"runPlan": None},
+        {"runPlan": {}},
+        {"runPlan": "not an object"},
+        "not an object",
+    ],
+)
+def test_a_run_without_a_plan_is_unplanned_from_the_beginning(
+    monkeypatch, execution_input
+):
+    """A sender that wrote no plan, or a definition that passes no input."""
+    (payload,) = _hook_payloads(monkeypatch, execution_input)
+
+    assert payload["runKind"] == "unplanned"
+    assert payload["startStep"] == "beginning"
+    assert payload["reviewed"] is False
+
+
+def test_a_completed_review_that_extracts_again_is_not_a_reviewed_run(monkeypatch):
+    """The hook after such an extraction sees values no reviewer has confirmed.
+
+    The plan is the block the queue processor writes for it, so the fields are
+    the ones a hook of that run is sent.
+    """
+    from idp_common.run_plan.asl import to_execution_input
+    from idp_common.run_plan.models import RunKind, RunPlan
+
+    plan = to_execution_input(
+        RunPlan(
+            kind=RunKind.REVIEW_COMPLETED,
+            start="extraction",
+            sections=["2"],
+            cycle_id="0123456789abcdef01234",
+        ),
+        mode="pipeline",
+        policy_rule_validation_enabled=True,
+    )
+
+    (payload,) = _hook_payloads(
+        monkeypatch, {"document": {"use_bda": False}, "runPlan": plan}
+    )
+
+    assert plan["startAt"] == "pipeline.extraction_sections"
+    assert payload["runKind"] == "review_completed"
+    assert payload["startStep"] == "extraction"
+    assert payload["reviewed"] is False
+
+
+def test_reviewed_is_true_only_for_the_plans_own_true(monkeypatch):
+    plan = dict(_PLANNED_RUN["runPlan"], reviewed="true")
+
+    (payload,) = _hook_payloads(monkeypatch, {"runPlan": plan})
+
+    assert payload["reviewed"] is False
+
+
+def test_the_execution_input_is_not_forwarded_to_a_hook(monkeypatch):
+    (payload,) = _hook_payloads(monkeypatch, _PLANNED_RUN)
+
+    assert set(payload) == {
+        "hookPoint",
+        "featureId",
+        "document",
+        "section",
+        "executionArn",
+        "args",
+        "argsMap",
+        "runKind",
+        "startStep",
+        "reviewed",
+    }
+    assert "pipeline.extraction.sections" not in json.dumps(payload)
+
+
+def test_the_run_fields_leave_the_other_payload_fields_as_they_were(monkeypatch):
+    (payload,) = _hook_payloads(monkeypatch, _PLANNED_RUN)
+
+    assert payload["hookPoint"] == "postExtraction"
+    assert payload["featureId"] == "f"
+    assert payload["document"] == {"id": "d1"}
+    assert payload["section"] == "2"
+    assert payload["executionArn"] == "arn:exec"
+    assert payload["args"] == []
+    assert payload["argsMap"] == {}
+
+
+def test_every_hook_at_the_point_gets_the_run_fields(monkeypatch):
+    payloads = _hook_payloads(
+        monkeypatch, _PLANNED_RUN, hooks=[_hook("a"), _hook("b", order=2)]
+    )
+
+    assert [p["featureId"] for p in payloads] == ["a", "b"]
+    assert [(p["runKind"], p["startStep"], p["reviewed"]) for p in payloads] == [
+        ("saved_edits", "extraction", True)
+    ] * 2

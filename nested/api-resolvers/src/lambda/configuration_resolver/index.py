@@ -38,6 +38,11 @@ from idp_common.config.prefix_mappings import (
     resolve_config_assignment,
 )
 from idp_common.config.revisions import RevisionNotRecordedError
+from idp_common.config.routing_models import RoutingConfig
+from idp_common.config.routing_references import (
+    DEFAULT_PROFILES_PER_PAGE,
+    find_queue_references,
+)
 from idp_common.config.tenants import (
     TenantConflict,
     TenantStore,
@@ -55,7 +60,12 @@ from idp_common.config_scope import (
     resolve_allowed_config_versions,
     scope_allows,
 )
+from idp_common.decision_tables.dmn import MAX_DMN_BYTES
+from idp_common.decision_tables.models import DecisionTableError
 from idp_common.metering_units import declared_free_units
+from idp_common.review_queues import routing_dmn
+from idp_common.review_queues.queue_defs import production_queue_lookup
+from idp_common.review_queues.store import create_review_store
 from idp_common.user_scope import tenant_grant_source
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -74,6 +84,45 @@ _USER_SCOPE_CACHE_TTL = 60  # seconds
 
 # Lazy-initialized RuleTranslator (reused across requests within same container)
 _rule_translator = None
+
+# Review queues: None when HITL_TABLE_NAME is unset (a stack with no review
+# table), in which case a routing rule's queue is checked for its form only.
+_REVIEW_STORE = create_review_store()
+
+
+def _routing_write_guard(is_admin):
+    """A ``WriteGuard`` that lets only an Admin change a profile's routing rules.
+
+    Routing decides which documents people review and in which queue, so the
+    ``routing`` section is Admin-only while the rest of a profile stays editable
+    by an Author. The guard compares the section before and after the write, so
+    it holds for every way a save can change it: an edit, a restored revision, a
+    reset to default, a Save as. A profile with nothing stored compares against
+    the built-in table.
+    """
+
+    def guard(before, after, profile):
+        if is_admin:
+            return
+        stored = before.routing if before is not None else RoutingConfig()
+        if stored.model_dump() != after.routing.model_dump():
+            logger.warning(
+                f"Rejecting a change to the routing rules of profile '{profile}': "
+                f"the caller is not an Admin"
+            )
+            raise PermissionError("ROLE: only Admins can change routing rules")
+
+    return guard
+
+
+def _routing_queue_lookup():
+    """Looks up a production review queue by id, or ``None`` with no review table.
+
+    See ``production_queue_lookup`` for what is read and what counts as a queue.
+    """
+    if _REVIEW_STORE is None:
+        return None
+    return production_queue_lookup(_REVIEW_STORE.queue_defs)
 
 
 def _get_caller_info(event):
@@ -144,6 +193,10 @@ _OPERATION_REQUIRED_GROUPS = {
     "listTenants": {"Admin"},
     "putTenant": {"Admin"},
     "deleteTenant": {"Admin"},
+    # Which profiles' routing rules name a review queue: shown to an Admin who is
+    # about to delete or disable it. It reads every profile, so it is Admin-only
+    # like the queue operations themselves.
+    "getReviewQueueReferences": {"Admin"},
     # Admin + Author writes
     "updateConfiguration": {"Admin", "Author"},
     "setActiveVersion": {"Admin", "Author"},
@@ -175,7 +228,15 @@ _OPERATION_REQUIRED_GROUPS = {
     "getModelConfigLimits": {"Admin", "Author", "Viewer"},
     "listConfigurationLibrary": {"Admin", "Author", "Viewer"},
     "getConfigurationLibraryFile": {"Admin", "Author", "Viewer"},
+    # A conversion between a routing section and DMN XML. It reads and writes
+    # nothing: what goes in comes from the caller and what comes out goes back to
+    # them, so everyone who can open a configuration may use it.
+    "convertRoutingDmn": {"Admin", "Author", "Viewer"},
 }
+
+#: ``convertRoutingDmn``'s two directions.
+_TO_DMN = "to_dmn"
+_FROM_DMN = "from_dmn"
 
 
 # Groups entitled to the configuration in full.
@@ -338,6 +399,17 @@ def handler(event, context):
             f"Config scope for {caller['email']}: {allowed_versions or 'unrestricted'}"
         )
 
+    # The two routing operations answer a bad request by raising ``ValueError``,
+    # which the dispatcher returns as a 400 with the message. They are dispatched
+    # here because the block below turns every exception into a
+    # ``{success: false}`` payload, a shape their result types do not have.
+    if operation == "getReviewQueueReferences":
+        return handle_get_review_queue_references(
+            manager, event.get("arguments") or {}, allowed_versions
+        )
+    if operation == "convertRoutingDmn":
+        return handle_convert_routing_dmn(event.get("arguments") or {})
+
     try:
         if operation == "getConfigVersions":
             return handle_get_config_versions(manager, allowed_versions)
@@ -435,17 +507,24 @@ def handler(event, context):
                             "message": f"Access denied: '{operation_name}' is an Admin-only operation",
                         },
                     }
+            # What the saved configuration will not do although the save is
+            # accepted; the manager adds to the list and still returns a bool.
+            collected: list[str] = []
             success = manager.handle_update_custom_configuration(
                 custom_config,
                 version,
                 description,
                 created_by=caller["email"],
+                write_guard=_routing_write_guard(caller["is_admin"]),
+                routing_queue_lookup=_routing_queue_lookup(),
+                warnings=collected,
             )
             return {
                 "success": success,
                 "message": "Configuration updated successfully"
                 if success
                 else "Configuration update failed",
+                "warnings": collected or None,
             }
         elif operation == "setActiveVersion":
             args = event["arguments"]
@@ -524,7 +603,11 @@ def handler(event, context):
                 return handle_get_profile_revision(manager, profile, revision)
             if operation == "restoreConfigProfileRevision":
                 return handle_restore_profile_revision(
-                    manager, profile, revision, caller["email"]
+                    manager,
+                    profile,
+                    revision,
+                    caller["email"],
+                    write_guard=_routing_write_guard(caller["is_admin"]),
                 )
             if operation == "labelConfigProfileRevision":
                 return handle_label_profile_revision(
@@ -696,6 +779,91 @@ def handler(event, context):
                 "message": f"An unexpected error occurred: {str(e)}",
             },
         }
+
+
+def handle_get_review_queue_references(manager, args, allowed_versions):
+    """One page of the routing rules that send documents to a review queue.
+
+    The page covers a number of profiles, not a number of references, so it can
+    be empty and still have a ``nextToken``.
+    """
+    queue_id = args.get("queueId")
+    if not isinstance(queue_id, str) or not queue_id.strip():
+        raise ValueError("BAD_ARGUMENT: queueId is required")
+    limit = args.get("limit")
+    if limit is None:
+        limit = DEFAULT_PROFILES_PER_PAGE
+    elif isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("BAD_ARGUMENT: limit must be a positive integer")
+    cursor = args.get("nextToken")
+    if cursor is not None and not isinstance(cursor, str):
+        raise ValueError("BAD_ARGUMENT: nextToken must be a string")
+    references, next_cursor = find_queue_references(
+        manager,
+        queue_id.strip().lower(),
+        limit=limit,
+        cursor=cursor or None,
+        allowed_versions=allowed_versions,
+    )
+    return {
+        "items": [
+            {
+                "profile": reference.profile,
+                "revision": reference.revision,
+                "published": reference.published,
+                "ruleId": reference.rule_id,
+                "ruleLabel": reference.rule_label or None,
+            }
+            for reference in references
+        ],
+        "nextToken": next_cursor,
+    }
+
+
+def handle_convert_routing_dmn(args):
+    """Convert a routing section to DMN XML, or DMN XML to a routing section.
+
+    ``to_dmn`` takes the routing section as JSON text and returns ``xml``;
+    ``from_dmn`` takes DMN XML and returns ``routing`` as JSON text. Nothing is
+    read or saved: an imported table reaches a profile only when the caller
+    saves it, and is validated then. Input the conversion cannot take is refused
+    with a message that names what is wrong.
+    """
+    direction = args.get("direction")
+    content = args.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("BAD_ARGUMENT: content is required")
+    size = len(content.encode("utf-8"))
+    if size > MAX_DMN_BYTES:
+        raise ValueError(
+            f"TOO_LARGE: the content is {size} bytes; the limit is "
+            f"{MAX_DMN_BYTES} bytes"
+        )
+    if direction == _TO_DMN:
+        try:
+            routing = RoutingConfig.model_validate(json.loads(content))
+        except ValidationError as e:
+            raise ValueError(
+                f"INVALID_ROUTING: the content is not a routing section "
+                f"({e.error_count()} problem(s), the first at "
+                f"{'.'.join(str(part) for part in e.errors()[0]['loc']) or 'the top'})"
+            ) from None
+        except ValueError:
+            raise ValueError("INVALID_ROUTING: the content is not valid JSON") from None
+        try:
+            xml = routing_dmn.export_xml(
+                routing, dmn_version=args.get("dmnVersion") or "1.5"
+            )
+        except DecisionTableError as e:
+            raise ValueError(f"INVALID_ROUTING: {e}") from None
+        return {"xml": xml, "routing": None}
+    if direction == _FROM_DMN:
+        try:
+            routing = routing_dmn.import_xml(content)
+        except DecisionTableError as e:
+            raise ValueError(f"INVALID_DMN: {e}") from None
+        return {"routing": json.dumps(routing.model_dump()), "xml": None}
+    raise ValueError(f"BAD_ARGUMENT: direction must be '{_TO_DMN}' or '{_FROM_DMN}'")
 
 
 def handle_get_configuration(manager, version: str):

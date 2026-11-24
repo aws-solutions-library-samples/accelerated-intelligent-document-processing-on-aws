@@ -19,8 +19,16 @@ import pytest
 from idp_common.models import Document, Section
 from idp_common.reporting.save_reporting_data import SaveReportingData
 from idp_common.review_queues.models import ReviewReportingInfo
+from tests.unit.notifications._cfn_yaml import REPO_ROOT, load_cfn_yaml
 
 _REVIEW_COLUMNS = {"review_status", "reviewed_by", "reviewed_at", "review_queue"}
+
+
+def _glue_columns(table: str) -> list:
+    """The column names of a Glue table the main template declares, in order."""
+    resource = load_cfn_yaml(REPO_ROOT / "template.yaml")["Resources"][table]
+    columns = resource["Properties"]["TableInput"]["StorageDescriptor"]["Columns"]
+    return [column["Name"] for column in columns]
 
 
 def _review(**overrides) -> ReviewReportingInfo:
@@ -90,6 +98,31 @@ class TestSaveDocumentReviews:
         assert row["reviewed_at"] == datetime.datetime(2025, 7, 7, 15, 0)
         assert row["enqueued_at"] == datetime.datetime(2025, 7, 7, 12, 30)
         assert isinstance(row["timestamp"], datetime.datetime)
+        # No routing rule's reason placed this one.
+        assert row["routing_reason"] is None
+
+    def test_the_row_carries_the_routing_reason_as_written(self, s3):
+        doc = Document(id="a.pdf", input_key="a.pdf")
+        reason = "Total {field_value:Invoice:Total} is over {condition_1.value}"
+
+        SaveReportingData("rep").save_document_reviews(
+            doc, _review(routing_reason=reason)
+        )
+
+        (row,) = _written(s3)[1].to_pylist()
+        assert row["routing_reason"] == reason
+
+    def test_the_routing_reason_is_the_last_column(self, s3):
+        """An addition for a table that already has rows: the columns before it
+        keep their positions, in the file and in the Glue table alike."""
+        SaveReportingData("rep").save_document_reviews(
+            Document(id="a.pdf", input_key="a.pdf"), _review(routing_reason="r")
+        )
+
+        written = _written(s3)[1].schema
+        assert written.names[-2:] == ["timestamp", "routing_reason"]
+        assert str(written.field("routing_reason").type) == "string"
+        assert written.names == _glue_columns("DocumentReviewsTable")
 
     def test_the_key_is_deterministic_so_the_final_row_overwrites_phase_one(self, s3):
         doc = Document(

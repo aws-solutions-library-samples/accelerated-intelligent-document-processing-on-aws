@@ -8,8 +8,13 @@ caller comes only from verified identity claims (``_caller_context``); no
 operation accepts a user argument. Errors leave as exactly ``PermissionError``
 (403), ``ValueError`` (400) or ``ResourceNotFound`` (404), because the dispatcher
 maps them by class name.
+
+A call with no identity at all is a direct Lambda invoke, gated by IAM on this
+function's ARN (the SDK and the CLI). It may run the four queue-definition
+operations, as a system Admin; every other operation refuses it.
 """
 
+import json
 import logging
 import os
 from typing import Any, Callable
@@ -18,6 +23,12 @@ import boto3
 from pydantic import ValidationError
 
 from idp_common.api_adapter import ResourceNotFound
+from idp_common.config.configuration_manager import (
+    ConfigurationManager,
+    ConfigurationValidationError,
+)
+from idp_common.config.routing_models import RoutingConfig
+from idp_common.config.routing_validation import refuse_single_outcome_shape
 from idp_common.config_scope import (
     caller_email_from_claims,
     caller_sub_from_claims,
@@ -29,15 +40,18 @@ from idp_common.review_queues import (
     ReviewConflict,
     ReviewItemNotFound,
     ReviewValidationError,
+    routing_step,
 )
 from idp_common.review_queues.annotators import annotator_emails
 from idp_common.review_queues.api_models import (
     ClaimNextArgs,
     CompleteArgs,
+    CreateQueueArgs,
     ItemCycleArgs,
     ItemKeyArgs,
     ListMyWorkArgs,
     ListQueueItemsArgs,
+    ListQueuesArgs,
     MoveArgs,
     MyQueuesArgs,
     NoArgs,
@@ -46,21 +60,37 @@ from idp_common.review_queues.api_models import (
     ReleaseArgs,
     RemoveArgs,
     SaveDraftArgs,
+    SendBackArgs,
+    TestRoutingArgs,
+    UpdateQueueArgs,
     clamp_limit,
     summarize_validation_error,
 )
 from idp_common.review_queues.models import CallerContext, QueueRef
 from idp_common.review_queues.queue_defs import DEFAULT_QUEUE_ID, QueueDefinition
 from idp_common.review_queues.service import create_review_queue_service
+from idp_common.run_plan.mode import resolve_processing_mode
+from idp_common.testset_scope import is_direct_invoke
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 # Module scope so warm invocations reuse them; the service is None when
 # HITL_TABLE_NAME is unset (a wiring fault for this function).
-_SERVICE = create_review_queue_service()
+#
+# The service asks for the mode and the configuration of a profile at a revision
+# when it completes a review: the processing mode of an item that records none,
+# and the steps the configuration has switched on. Read when it is asked, so the
+# configuration manager is built on first use.
+_SERVICE = create_review_queue_service(
+    configuration_of=lambda profile, revision: resolve_processing_mode(
+        _configuration_manager(), profile or "default", revision
+    )
+)
 _DYNAMODB = boto3.resource("dynamodb")
+_LAMBDA = boto3.client("lambda")
 _SCOPE_CACHE: dict = {}
+_CONFIG_MANAGERS: dict = {}
 
 # Annotators work the queues that list them and Reviewers every Production queue: they
 # claim items (or an Admin assigns them) and work their own. Admins manage the queues
@@ -84,6 +114,12 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "claimReviewItem": _WORKERS,
     "claimNextReviewItem": _WORKERS,
     "releaseReviewItem": _WORKERS,
+    # The item's holder sends it back to be processed again; an Admin may for an
+    # item nobody holds. The service checks which of the two the caller is.
+    "sendBackReviewItem": _WORKERS,
+    # What completing the item, or sending it back, will run. For the item's holder,
+    # and for an Admin while the item is open or assigned: the service checks it.
+    "getReviewCompletionPlan": _WORKERS,
     "renewReviewLease": _ADMIN,
     "removeReviewItem": _ADMIN,
     "getReviewQueuesOverview": _ADMIN,
@@ -96,7 +132,22 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "createReviewQueue": _ADMIN,
     "updateReviewQueue": _ADMIN,
     "deleteReviewQueue": _ADMIN,
+    "testRoutingTable": _ADMIN,
 }
+
+#: The operations a direct Lambda invoke (no identity) may run. The SDK and the
+#: CLI administer queues through them; nothing else is offered without a caller.
+_DIRECT_INVOKE_FIELDS = frozenset(
+    {
+        "listReviewQueues",
+        "createReviewQueue",
+        "updateReviewQueue",
+        "deleteReviewQueue",
+    }
+)
+
+#: Who a direct invoke runs as: nobody's claims, so a fixed system Admin.
+_DIRECT_INVOKE_KEY = "iam:direct-invoke"
 
 
 def _groups(event: dict) -> list:
@@ -141,6 +192,17 @@ def _caller_context(event: dict) -> CallerContext:
         groups=groups,
         is_admin=is_admin,
         allowed_versions=allowed_config_versions,
+    )
+
+
+def _system_caller() -> CallerContext:
+    """The caller a direct invoke runs as: an unscoped Admin with no user behind it."""
+    return CallerContext(
+        reviewer_key=_DIRECT_INVOKE_KEY,
+        email="",
+        groups=_ADMIN,
+        is_admin=True,
+        allowed_versions=None,
     )
 
 
@@ -219,6 +281,13 @@ def _complete(c, args):
     return _dump(_SERVICE.complete(c, a.object_key, a.cycle_id, a.checklist, a.note))
 
 
+def _completion_plan(c, args):
+    a = ItemCycleArgs.model_validate(args)
+    # The service admits the item's holder, and an Admin while the item is open or
+    # assigned; it decides the run as completing the item then does.
+    return _dump(_SERVICE.completion_plan(c, a.object_key, a.cycle_id))
+
+
 def _reject(c, args):
     a = RejectArgs.model_validate(args)
     return _dump(_SERVICE.reject(c, a.object_key, a.cycle_id, a.reason, a.note))
@@ -274,38 +343,6 @@ def _queue_view(d: QueueDefinition) -> dict:
     }
 
 
-def _queue_input(raw: Any, existing: QueueDefinition | None = None) -> QueueDefinition:
-    """The definition an input describes.
-
-    ``enabled`` left out keeps the ``existing`` value (an update) or takes the
-    default (a new queue: enabled). A ``confidenceThreshold`` sent by an older
-    client is ignored: queues have no threshold of their own.
-    """
-    data = raw if isinstance(raw, dict) else {}
-    fields = {
-        "id": data.get("id"),
-        "name": data.get("name") or "",
-        "description": data.get("description") or "",
-        "priority": data.get("priority", 50),
-        "checklist": data.get("checklist") or [],
-        "time_limit_minutes": data.get("timeLimitMinutes", 60),
-        "eligible_annotators": data.get("eligibleAnnotators") or [],
-    }
-    if data.get("rejectReasons"):
-        fields["reject_reasons"] = data["rejectReasons"]
-    # Left out, an update keeps the stored list and a new queue gets the defaults.
-    if data.get("skipReasons"):
-        fields["skip_reasons"] = data["skipReasons"]
-    elif existing is not None:
-        fields["skip_reasons"] = list(existing.skip_reasons)
-    for key, name in (("enabled", "enabled"),):
-        if data.get(key) is not None:
-            fields[name] = data[key]
-        elif existing is not None:
-            fields[name] = getattr(existing, name)
-    return QueueDefinition.model_validate(fields)
-
-
 def _list_annotators(c, args):
     """The members of the Cognito Annotator group: who HITL work can be assigned to.
     Reviewers are never assigned work; they claim it."""
@@ -317,60 +354,145 @@ def _list_annotators(c, args):
 
 
 def _list_queues(c, args):
-    NoArgs.model_validate(args)
-    # A fresh, strongly consistent read past this instance's cache: the list is what
-    # an Admin edits a queue from, and the version an update is checked against comes
-    # from it.
-    return [_queue_view(d) for d in _SERVICE.directory.queue_defs.list(fresh=True)]
+    a = ListQueuesArgs.model_validate(args)
+    definitions, next_token = _SERVICE.list_queues(c, a)
+    return {"items": [_queue_view(d) for d in definitions], "nextToken": next_token}
 
 
 def _create_queue(c, args):
-    d = _queue_input(args.get("input"))
-    return _queue_view(_SERVICE.directory.queue_defs.put(d, create=True))
-
-
-def _expected_version(raw: Any) -> int | None:
-    """The ``version`` an update was built from, or None if the caller sent none."""
-    version = raw.get("version") if isinstance(raw, dict) else None
-    if version is None:
-        return None
-    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
-        raise ValueError("BAD_ARGUMENT: version must be a non-negative integer")
-    return version
+    a = CreateQueueArgs.model_validate(args.get("input") or {})
+    return _queue_view(_SERVICE.create_queue(c, a))
 
 
 def _update_queue(c, args):
-    """Replace a queue's definition.
-
-    The input's ``version`` is the one the caller read; if the queue has been written
-    since, the update is refused with ``QUEUE_CHANGED`` rather than undoing that write.
-    A caller that sends no version (an older client) is checked against the version
-    of the consistent read made here: its fields replace whatever that read found,
-    and it is refused only if another write lands between that read and this one,
-    which protects the fields this merges from the stored definition (``enabled``,
-    ``skipReasons``).
-    """
-    raw = args.get("input")
-    queue_id = str((raw or {}).get("id") or "") if isinstance(raw, dict) else ""
-    expected = _expected_version(raw)
-    defs = _SERVICE.directory.queue_defs
-    defs.invalidate()
-    # A consistent read, so the version taken for a caller that sent none is current;
-    # get() as well, which seeds the Default queue if it was never listed.
-    existing = (defs.read_current(queue_id) or defs.get(queue_id)) if queue_id else None
-    d = _queue_input(raw, existing)
-    if expected is None and existing is not None:
-        expected = existing.version
-    return _queue_view(defs.put(d, create=False, expected_version=expected))
+    a = UpdateQueueArgs.model_validate(args.get("input") or {})
+    return _queue_view(_SERVICE.update_queue(c, a))
 
 
 def _delete_queue(c, args):
-    """Delete a queue; its items then move to the Default queue."""
+    """Delete a queue; its items then move to the Default queue.
+
+    The API field is a Boolean. A direct invoke (the SDK and the CLI) is told how
+    many items moved, which is what an operator deleting a queue wants to see.
+    """
     queue_id = str(args.get("id") or "").strip().lower()
     if not queue_id:
         raise ValueError("BAD_ARGUMENT: id is required")
-    _SERVICE.delete_queue(c, queue_id)
-    return True
+    moved = _SERVICE.delete_queue(c, queue_id)
+    return moved if c.reviewer_key == _DIRECT_INVOKE_KEY else True
+
+
+# ------------------------------------------------------------------- send back
+
+
+def _send_back(c, args):
+    """Send a document in review back to be processed again.
+
+    The service says whether this caller may (the item's holder, or an Admin).
+    The run is then asked of the reprocess function, which withdraws the review
+    and queues the document. It is invoked with no identity: this function has
+    authorised the reviewer, who need not be allowed to reprocess documents.
+
+    The call names no step. The reprocess service starts a sent-back run at
+    classification (the beginning in BDA mode).
+    """
+    a = SendBackArgs.model_validate(args)
+    item = _SERVICE.authorize_send_back(c, a.object_key, a.cycle_id)
+    payload = {
+        "info": {"fieldName": "reprocessDocument"},
+        "arguments": {
+            "objectKeys": [a.object_key],
+            "origin": {
+                "kind": "sent_back",
+                "actor": c.email,
+                "cycleId": item.cycle_id,
+                "note": a.note or "",
+            },
+        },
+    }
+    response = _LAMBDA.invoke(
+        FunctionName=os.environ["REPROCESS_FUNCTION_NAME"],
+        InvocationType="RequestResponse",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    body = json.loads(response["Payload"].read() or b"null")
+    if response.get("FunctionError"):
+        detail = body if isinstance(body, dict) else {}
+        logger.error(
+            "The reprocess function failed for a send-back: %s",
+            detail.get("errorType", "error"),
+        )
+        raise RuntimeError("The document could not be sent back")
+    results = body.get("results") if isinstance(body, dict) else None
+    for result in results or []:
+        if isinstance(result, dict) and result.get("objectKey") == a.object_key:
+            return result
+    logger.error("The reprocess function returned no result for a send-back")
+    raise RuntimeError("The document could not be sent back")
+
+
+# --------------------------------------------------------------- test a table
+
+
+def _configuration_manager() -> ConfigurationManager:
+    """A ConfigurationManager over this deployment's table, kept per container."""
+    table_name = os.environ["CONFIGURATION_TABLE_NAME"]
+    if table_name not in _CONFIG_MANAGERS:
+        _CONFIG_MANAGERS[table_name] = ConfigurationManager(table_name=table_name)
+    return _CONFIG_MANAGERS[table_name]
+
+
+def _routing_argument(raw: Any) -> RoutingConfig | None:
+    """The routing section to try: ``None`` when the call sends none.
+
+    A section written with the single outcome is refused, as a save refuses it:
+    the models drop that key, so the table would be tested as "no review".
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raise ValueError("BAD_ARGUMENT: routing is not valid JSON") from None
+    if not isinstance(raw, dict):
+        raise ValueError("BAD_ARGUMENT: routing must be an object")
+    try:
+        refuse_single_outcome_shape(raw)
+    except ConfigurationValidationError as e:
+        raise ValueError(f"INVALID_ROUTING: {e}") from None
+    return RoutingConfig.model_validate(raw)
+
+
+def _test_routing(c, args):
+    """What a routing table decides for a processed document. Changes nothing."""
+    a = TestRoutingArgs.model_validate(args)
+    routing = _routing_argument(a.routing)
+    document = _SERVICE.document_service.get_document(a.object_key)
+    if document is None:
+        raise ResourceNotFound(f"NOT_FOUND: no document '{a.object_key}'")
+    # The configuration at the revision the document is pinned to, and the mode
+    # it selects.
+    resolved = resolve_processing_mode(
+        _configuration_manager(),
+        getattr(document, "config_version", None) or "default",
+        getattr(document, "config_revision", None),
+    )
+    if resolved.config is None:
+        raise ResourceNotFound(
+            "NOT_FOUND: the document's configuration could not be read"
+        )
+    try:
+        result = routing_step.test_table(
+            document,
+            resolved.config,
+            routing,
+            mode=resolved.mode,
+            store=_SERVICE.store,
+        )
+    except ConfigurationValidationError as e:
+        raise ValueError(f"INVALID_ROUTING: {e}") from None
+    return _dump(result)
 
 
 _FIELDS: dict[str, Callable[[CallerContext, dict], Any]] = {
@@ -382,8 +504,10 @@ _FIELDS: dict[str, Callable[[CallerContext, dict], Any]] = {
     "claimNextReviewItem": _claim_next,
     "renewReviewLease": _renew,
     "releaseReviewItem": _release,
+    "sendBackReviewItem": _send_back,
     "saveReviewDraft": _save_draft,
     "completeReviewItem": _complete,
+    "getReviewCompletionPlan": _completion_plan,
     "rejectReviewItem": _reject,
     "removeReviewItem": _remove,
     "getReviewQueuesOverview": _overview,
@@ -396,6 +520,7 @@ _FIELDS: dict[str, Callable[[CallerContext, dict], Any]] = {
     "createReviewQueue": _create_queue,
     "updateReviewQueue": _update_queue,
     "deleteReviewQueue": _delete_queue,
+    "testRoutingTable": _test_routing,
 }
 
 
@@ -407,7 +532,13 @@ def handler(event, context):
     fn = _FIELDS.get(field)
     if fn is None:
         raise ValueError("BAD_ARGUMENT: unsupported field")
-    if not _FIELD_GROUPS[field].intersection(_groups(event)):
+    # An event with no identity is a direct Lambda invoke, admitted by IAM on this
+    # function's ARN. The REST route cannot produce that shape: the dispatcher
+    # rebuilds ``identity`` from the authorizer's verified claims. It runs the
+    # queue-definition operations only; for any other field it has no caller to
+    # act as, and is refused by the group check like a caller in no group.
+    direct = is_direct_invoke(event) and field in _DIRECT_INVOKE_FIELDS
+    if not direct and not _FIELD_GROUPS[field].intersection(_groups(event)):
         logger.warning("Rejecting review-queue request field=%s code=ROLE", field)
         raise PermissionError(
             "ROLE: this operation requires one of "
@@ -415,7 +546,7 @@ def handler(event, context):
         )
     if _SERVICE is None:
         raise RuntimeError("Review queues are not configured")
-    caller = _caller_context(event)
+    caller = _system_caller() if direct else _caller_context(event)
     try:
         return fn(caller, args)
     except ValidationError as e:

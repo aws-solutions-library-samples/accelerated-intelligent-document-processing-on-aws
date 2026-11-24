@@ -23,7 +23,8 @@
  * reference to a scalar or enumerated definition.
  */
 
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { ComponentProps } from 'react';

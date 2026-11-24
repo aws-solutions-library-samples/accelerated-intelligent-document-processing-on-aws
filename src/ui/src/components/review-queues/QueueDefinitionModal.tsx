@@ -5,8 +5,10 @@
 // priority, reminder time limit, enabled switch and eligible Annotators — or a Test
 // Studio queue's settings (the same, less the id, name and switch, which a test set
 // doesn't have: its documents come from the set, not from the pipeline). Queues have
-// no confidence threshold: documents are routed by their confidence alerts. Create
-// mode stays in the component for the API, but Review Management doesn't open it. Every queue's skip reasons, which an Annotator
+// no confidence threshold: the routing rules of a configuration profile decide which
+// queue a document goes to, and name the queue by its id. With no queue the dialog
+// creates one: Review Management opens it that way from its Create queue button. Every
+// queue's skip reasons, which an Annotator
 // picks from when giving an item back, are edited here one per line. A queue's stored
 // checklist and reject reasons are kept as they are; the dialog doesn't edit them.
 //
@@ -86,6 +88,7 @@ const messages = defineMessages<{
   testSetNote: Name;
   idLabel: NoMessageValues;
   idDescription: NoMessageValues;
+  idConstraint: NoMessageValues;
   example: { readonly example: string };
   nameLabel: NoMessageValues;
   nameDescription: NoMessageValues;
@@ -97,6 +100,8 @@ const messages = defineMessages<{
   timeLimitConstraint: Max;
   enabledLabel: NoMessageValues;
   enabledDescription: NoMessageValues;
+  enabledConstraint: NoMessageValues;
+  enabledDefaultConstraint: NoMessageValues;
   enabledOn: NoMessageValues;
   enabledOff: NoMessageValues;
   descriptionLabel: NoMessageValues;
@@ -218,8 +223,10 @@ const messages = defineMessages<{
   },
   defaultQueueNote: {
     id: 'reviewQueues.queueSettings.defaultQueueNote',
-    defaultMessage: 'Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.',
-    description: "Note at the top of the Default queue's Settings dialog. HITL (human in the loop) is the name of a configuration setting.",
+    defaultMessage:
+      'The built-in routing rules send documents here, and so does a routing rule whose own queue is missing or disabled. Documents are held for review only while this queue is enabled.',
+    description:
+      "Note at the top of the Default queue's Settings dialog: which documents the routing rules of a configuration profile send to this queue.",
   },
   testSetNote: {
     id: 'reviewQueues.queueSettings.testSetNote',
@@ -235,6 +242,11 @@ const messages = defineMessages<{
     id: 'reviewQueues.queueSettings.id.description',
     defaultMessage: 'Used in links. It cannot be changed later.',
     description: 'Description of the Queue id field. Keep it to one short line.',
+  },
+  idConstraint: {
+    id: 'reviewQueues.queueSettings.id.constraint',
+    defaultMessage: 'Routing rules name the queue by this id.',
+    description: 'Text under the Queue id field: the routing rules of a configuration profile send documents to a queue by its id.',
   },
   example: {
     id: 'reviewQueues.queueSettings.example',
@@ -264,9 +276,8 @@ const messages = defineMessages<{
   },
   priorityConstraint: {
     id: 'reviewQueues.queueSettings.priority.constraint',
-    defaultMessage:
-      'A whole number. For information: orders the queues and Next item. Kept for when there is more than one queue; with only the Default queue it changes nothing yet.',
-    description: 'Text under the Priority field. Next item is the label of a button; Default is the name of a queue.',
+    defaultMessage: 'A whole number. For information: orders the queues and Next item.',
+    description: 'Text under the Priority field. Next item is the label of a button.',
   },
   timeLimitLabel: {
     id: 'reviewQueues.queueSettings.timeLimit.label',
@@ -292,6 +303,16 @@ const messages = defineMessages<{
     id: 'reviewQueues.queueSettings.enabled.description',
     defaultMessage: 'When off, no documents are added to this queue.',
     description: 'Description of the Enabled switch. Keep it to one short line.',
+  },
+  enabledConstraint: {
+    id: 'reviewQueues.queueSettings.enabled.constraint',
+    defaultMessage: 'Documents a routing rule sends to a disabled queue go to the Default queue instead.',
+    description: 'Text under the Enabled switch of a queue other than the Default queue. Default is the name of a queue.',
+  },
+  enabledDefaultConstraint: {
+    id: 'reviewQueues.queueSettings.enabled.defaultConstraint',
+    defaultMessage: 'While the Default queue is off, no document is held for review.',
+    description: 'Text under the Enabled switch of the Default queue. Default is the name of a queue.',
   },
   enabledOn: {
     id: 'reviewQueues.queueSettings.enabled.on',
@@ -614,6 +635,7 @@ const QueueDefinitionModal = ({
               <FormField
                 label={intl.formatMessage(messages.idLabel)}
                 description={intl.formatMessage(messages.idDescription)}
+                constraintText={intl.formatMessage(messages.idConstraint)}
                 errorText={submitted ? idError : undefined}
               >
                 <Input
@@ -654,7 +676,11 @@ const QueueDefinitionModal = ({
               <Input type="number" inputMode="numeric" value={timeLimit} onChange={({ detail }) => setTimeLimit(detail.value)} />
             </FormField>
             {!testSet && (
-              <FormField label={intl.formatMessage(messages.enabledLabel)} description={intl.formatMessage(messages.enabledDescription)}>
+              <FormField
+                label={intl.formatMessage(messages.enabledLabel)}
+                description={intl.formatMessage(messages.enabledDescription)}
+                constraintText={intl.formatMessage(base?.isDefaultQueue ? messages.enabledDefaultConstraint : messages.enabledConstraint)}
+              >
                 <Toggle checked={enabled} onChange={({ detail }) => setEnabled(detail.checked)}>
                   <FormattedMessage {...(enabled ? messages.enabledOn : messages.enabledOff)} />
                 </Toggle>

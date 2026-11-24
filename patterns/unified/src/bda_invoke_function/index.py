@@ -24,10 +24,17 @@ MAX_RETRIES = 7
 INITIAL_BACKOFF = 2  # seconds
 MAX_BACKOFF = 300   # 5 minutes
 
-# Initialize client
-bda_client = boto3.client('bedrock-data-automation-runtime')
-dynamodb = boto3.resource('dynamodb')
-tracking_table = dynamodb.Table(os.environ['TRACKING_TABLE'])
+# The tracking table, built on first use and kept for the warm invocations that
+# follow. Building it at import needs a region, which a suite that loads this
+# module does not have (patterns/unified/tests/test_handler_imports_are_region_free.py).
+_tracking_table = None
+
+
+def get_tracking_table():
+    global _tracking_table
+    if _tracking_table is None:
+        _tracking_table = boto3.resource('dynamodb').Table(os.environ['TRACKING_TABLE'])
+    return _tracking_table
 
 # def invoke_data_automation(payload: Dict[str, Any]) -> Dict[str, Any]:
 def invoke_data_automation(data_project_arn: str, input_s3_uri: str, output_s3_uri: str) -> Dict[str, Any]:  # pyright: ignore[reportReturnType] - every loop exit returns or re-raises; the implicit fall-through is unreachable
@@ -119,7 +126,7 @@ def track_task_token(object_key: str, task_token: str) -> None:
             'ExpiresAfter': int((datetime.now(timezone.utc) + timedelta(days=1)).timestamp())
         }
         logger.info(f"Recording tasktoken entry: {tracking_item}")
-        tracking_table.put_item(Item=tracking_item)
+        get_tracking_table().put_item(Item=tracking_item)
 
     except Exception as e:
         logger.error(f"Error recording tasktoken record: {e}")
@@ -136,31 +143,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         object_key = document.input_key
         data_project_arn = event['BDAProjectArn']
         task_token = event['taskToken']
-        
-        # Intelligent skip: If document already has sections with extraction data, skip BDA
-        # This supports HITL reprocessing where we only need to re-run Summarization/Evaluation
-        if document.sections and len(document.sections) > 0:
-            has_extraction_data = any(
-                section.extraction_result_uri for section in document.sections
-            )
-            if has_extraction_data:
-                logger.info(f"Skipping BDA for document {object_key} - already has {len(document.sections)} sections with extraction data")
-                # Send task success immediately to continue workflow
-                sfn_client = boto3.client('stepfunctions')
-                sfn_client.send_task_success(
-                    taskToken=task_token,
-                    output=json.dumps({
-                        "metadata": {
-                            "input_bucket": input_bucket,
-                            "object_key": object_key,
-                            "working_bucket": working_bucket,
-                            "output_prefix": object_key,
-                            "skipped": True
-                        },
-                        "document": document.serialize_document(working_bucket, "bda_skip", logger)
-                    })
-                )
-                return {"skipped": True, "object_key": object_key}
         
         track_task_token(object_key, task_token)
 

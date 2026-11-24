@@ -75,8 +75,12 @@ const messages = defineMessages<{
   },
 });
 
-/** Document | Source | Queue | Priority | Age | Top reason, then the row menu. */
+/** The columns the Tasks table offers, in order; the row menu follows them. */
 const TASK_COLUMNS = ['document', 'source', 'queue', 'priority', 'age', 'reason'] as const;
+/** The columns shown until the user changes them in the table's settings; the others are offered there. */
+const DEFAULT_VISIBLE_TASK_COLUMNS = ['document', 'queue', 'age', 'reason'] as const;
+/** The browser storage key of the Tasks table's settings. */
+const TASK_PREFERENCES_KEY = 'my-tasks-preferences';
 
 const MyTasksPage = (): React.JSX.Element => {
   const intl = useIntl();
@@ -133,6 +137,8 @@ const MyTasksPage = (): React.JSX.Element => {
           title={intl.formatMessage(messages.tableTitle)}
           onRowAction={runRowAction}
           columns={TASK_COLUMNS}
+          defaultVisible={DEFAULT_VISIBLE_TASK_COLUMNS}
+          preferencesKey={TASK_PREFERENCES_KEY}
           showSourceFilter
           empty={intl.formatMessage(messages.empty)}
           actions={

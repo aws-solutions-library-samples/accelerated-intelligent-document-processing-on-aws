@@ -23,8 +23,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from idp_common.config.feature_flags import step_enabled
 from idp_common.config_scope import normalize_scope, scope_allows
 from idp_common.dynamodb.client import DynamoDBTransactionCanceledError
+from idp_common.run_plan.models import RunKind, RunPlan, encode
+from idp_common.run_plan.planned import planned_run
+from idp_common.run_plan.restart import RestartDecision, decide_restart
+from idp_common.run_plan.steps import APPLY_REVIEW_CHANGES, EXTRACTION, PIPELINE
 
 from . import keys, status_object
 from . import notify as notify_module
@@ -34,22 +39,30 @@ from .api_models import (
     MAX_DRAFT_DEPTH,
     MAX_NOTE,
     ClaimNextResult,
+    CreateQueueArgs,
+    ListQueuesArgs,
     MyReviewQueues,
+    ReviewCompletionPlanView,
     ReviewDraftView,
     ReviewerLoad,
     ReviewHistoryEntryView,
     ReviewItemDetail,
     ReviewItemPage,
     ReviewItemView,
+    ReviewPolicyFailureView,
     ReviewQueueHealth,
     ReviewQueuesOverview,
     ReviewQueueSummary,
     ReviewReasonView,
+    ReviewRoutedByView,
     ReviewSectionDetail,
     ReviewSendInfoView,
+    UpdateQueueArgs,
+    clamp_limit,
     draft_depth,
 )
 from .directory import QueueDirectory
+from .draft_diff import changed_fields
 from .exceptions import (
     ReviewAccessDenied,
     ReviewConflict,
@@ -64,13 +77,19 @@ from .finalize import (
     finalize_token,
 )
 from .models import (
+    REVIEW_KEY,
     CallerContext,
     DraftRecord,
     QueueRef,
     ReviewItemRecord,
     UserInfo,
 )
-from .queue_defs import DEFAULT_QUEUE_ID, display_name
+from .queue_defs import (
+    DEFAULT_QUEUE_ID,
+    DEFAULT_TIME_LIMIT_MINUTES,
+    QueueDefinition,
+    display_name,
+)
 from .statuses import (
     LIVE_ITEM_STATES,
     TRACKING_REVIEW_ATTRIBUTES,
@@ -99,6 +118,15 @@ CLAIM_NEXT_TIER_PEEK = 5
 CLAIM_NEXT_MAX_PAGES = 10
 #: Draft objects live in the output bucket under the document's review segment.
 DRAFT_KEY_FORMAT = "{doc}/review/drafts/{cycle}/{section}/{revision:06d}.json"
+#: A copy of a section's result as the reviewer saw it, kept when the run after
+#: the review extracts the section again. The step that applies the review reads
+#: it to tell the values the reviewer changed from the ones they left.
+BASE_KEY_FORMAT = "{doc}/review/base/{cycle}/{section}.json"
+#: The most section ids a ``completed`` history entry names.
+MAX_HISTORY_RESTART_SECTIONS = 50
+
+#: "Not read yet", where ``None`` already means "could not be read".
+_UNREAD: Any = object()
 
 DISPOSITION_METRIC = "ReviewDispositions"
 #: History event and metric ``Kind`` of each disposition.
@@ -172,15 +200,46 @@ def _reason_views(
     ]
 
 
+def _routed_by_view(record: ReviewItemRecord) -> Optional[ReviewRoutedByView]:
+    routed = record.routed_by
+    if routed is None:
+        return None
+    return ReviewRoutedByView(
+        table_id=routed.table_id,
+        rule_id=routed.rule_id,
+        rule_label=routed.rule_label,
+        placed_queue=routed.placed_queue,
+        fallback_reason=routed.fallback_reason,
+        inputs=json.dumps(routed.inputs) if routed.inputs else None,
+        # Empty on an item placed before routing rules had a reason.
+        reason=routed.reason or None,
+        reason_source=routed.reason_source or None,
+        policy_failures=[
+            ReviewPolicyFailureView(**failure.model_dump())
+            for failure in routed.policy_failures
+        ],
+        policy_failure_count=routed.policy_failure_count,
+    )
+
+
 def item_view(
-    record: ReviewItemRecord, caller: Optional[CallerContext] = None
+    record: ReviewItemRecord,
+    caller: Optional[CallerContext] = None,
+    *,
+    queue_name: Optional[str] = None,
 ) -> ReviewItemView:
+    """The item as the API returns it.
+
+    ``queue_name`` is the name of the item's queue, where the caller has the
+    queue definitions at hand; it stays ``None`` when the definition is gone.
+    """
     status = review_status_for_state(record.state)
     return ReviewItemView(
         object_key=record.doc_key,
         cycle_id=record.cycle_id,
         profile=record.profile,
         queue=record.queue,
+        queue_name=queue_name,
         priority=record.priority,
         state=record.state,
         review_status=status.value if status else "withdrawn",
@@ -218,31 +277,9 @@ def item_view(
             if record.manual_request is not None
             else None
         ),
+        routed_by=_routed_by_view(record),
+        processing_mode=record.processing_mode,
     )
-
-
-def _leaf_paths(value: Any, prefix: str = "") -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    if isinstance(value, dict):
-        for k, v in value.items():
-            out.update(_leaf_paths(v, f"{prefix}.{k}" if prefix else str(k)))
-    elif isinstance(value, list):
-        for i, v in enumerate(value):
-            out.update(_leaf_paths(v, f"{prefix}[{i}]"))
-    else:
-        out[prefix] = value
-    return out
-
-
-def changed_fields(base: Any, new: Any) -> list[str]:
-    """Leaf paths under ``inference_result`` whose value differs (D71)."""
-    a = _leaf_paths(
-        (base or {}).get("inference_result", {}) if isinstance(base, dict) else {}
-    )
-    b = _leaf_paths(
-        (new or {}).get("inference_result", {}) if isinstance(new, dict) else {}
-    )
-    return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
 
 
 #: The tracking row's review owner. A queue item's assignee is written here, so the
@@ -269,7 +306,13 @@ class ReviewQueueService:
         user_lookup: Optional[Callable[[str], Optional[UserInfo]]] = None,
         output_bucket: str = "",
         document_service: Any = None,
+        configuration_of: Optional[Callable[[str, Optional[int]], Any]] = None,
     ):
+        """``configuration_of(profile, revision)`` returns what
+        ``run_plan.mode.resolve_processing_mode`` returns for a profile at a
+        revision: an object with ``.mode`` and ``.config``. The API resolver
+        passes it; without it the mode of an item that records none is unknown.
+        """
         if s3 is None:
             import idp_common.s3 as s3_module
 
@@ -284,6 +327,7 @@ class ReviewQueueService:
         self.user_lookup = user_lookup
         self.output_bucket = output_bucket
         self.document_service = document_service
+        self.configuration_of = configuration_of
 
     # --------------------------------------------------------------- helpers
 
@@ -300,6 +344,22 @@ class ReviewQueueService:
     def _check_cycle(self, record: ReviewItemRecord, cycle_id: str) -> None:
         if record.cycle_id != cycle_id:
             raise ReviewConflict("STALE_CYCLE", "the item has a newer review cycle")
+
+    def _document(self, object_key: str) -> Any:
+        """The document of an item in review; ``None`` when no loader is wired.
+
+        A document that no longer exists has its review withdrawn, and the call
+        is refused as not found.
+        """
+        if self.document_loader is None:
+            return None
+        document = self.document_loader(object_key)
+        if document is None:
+            self.withdraw(object_key, "document_missing")
+            raise ReviewItemNotFound(
+                "DOCUMENT_NOT_FOUND", "the document no longer exists"
+            )
+        return document
 
     @staticmethod
     def _admits(caller: CallerContext, profile: Optional[str]) -> bool:
@@ -345,6 +405,23 @@ class ReviewQueueService:
     def _rq(self, profile: str):
         """The system-wide queue definitions (``QueuesView``); never ``None``."""
         return self.directory.queues_config(profile)
+
+    def _queue_names(self) -> dict[str, str]:
+        """Each queue's name by id, for the views. Empty when they can't be read."""
+        try:
+            return {d.id: d.name for d in self.directory.queue_defs.list()}
+        except Exception:  # noqa: BLE001 — a name is display only
+            logger.warning("event=review_queue_defs_unavailable", exc_info=True)
+            return {}
+
+    def _views(
+        self, records: Sequence[ReviewItemRecord], caller: CallerContext
+    ) -> list[ReviewItemView]:
+        """The items as views, each with its queue's name."""
+        if not records:
+            return []
+        names = self._queue_names()
+        return [item_view(r, caller, queue_name=names.get(r.queue)) for r in records]
 
     def _history(
         self,
@@ -520,6 +597,7 @@ class ReviewQueueService:
             summaries = list(pool.map(summarise, queues))
         summaries.sort(key=lambda s: (-s.priority, s.profile, s.name))
         from .bulk_settings import effective_sync_limit
+        from .review_routing_setting import review_routing_enabled_provider
         from .routing import default_queue
 
         default = default_queue(self.store)
@@ -531,6 +609,7 @@ class ReviewQueueService:
             ),
             default_queue_enabled=bool(default is not None and default.enabled),
             bulk_skip_sync_limit=effective_sync_limit(),
+            review_routing_enabled=review_routing_enabled_provider().get(),
         )
 
     def _caller_refs(
@@ -583,7 +662,7 @@ class ReviewQueueService:
             # A page can be short, or empty with a token: the items outside the
             # caller's scope are read and left out.
             return ReviewItemPage(
-                items=[item_view(i, caller) for i in items if self._sees(caller, i)],
+                items=self._views([i for i in items if self._sees(caller, i)], caller),
                 next_token=keys.encode_single_cursor(lek) if lek else None,
             )
         positions: dict[str, Optional[dict]] = {}
@@ -648,7 +727,7 @@ class ReviewQueueService:
         # from its start; only a queue read to its end is marked exhausted.
         token = keys.encode_multi_cursor(new_positions) if more else None
         return ReviewItemPage(
-            items=[item_view(c[4], caller) for c in taken], next_token=token
+            items=self._views([c[4] for c in taken], caller), next_token=token
         )
 
     def list_my_work(
@@ -662,7 +741,7 @@ class ReviewQueueService:
             self.repair_counter(caller.reviewer_key)
         # The caller's own items, within their scope as it is now.
         return ReviewItemPage(
-            items=[item_view(i, caller) for i in items if self._sees(caller, i)],
+            items=self._views([i for i in items if self._sees(caller, i)], caller),
             next_token=keys.encode_single_cursor(lek) if lek else None,
         )
 
@@ -671,12 +750,7 @@ class ReviewQueueService:
     ) -> ReviewItemDetail:
         record = self._load(object_key)
         self._check_access(caller, record)
-        document = self.document_loader(object_key) if self.document_loader else None
-        if self.document_loader is not None and document is None:
-            self.withdraw(object_key, "document_missing")
-            raise ReviewItemNotFound(
-                "DOCUMENT_NOT_FOUND", "the document no longer exists"
-            )
+        document = self._document(object_key)
         rq = self._rq(record.profile)
         definition = rq.queue(record.queue)
         drafts = {
@@ -720,7 +794,9 @@ class ReviewQueueService:
             caller, record, my_count, rq.max_claims_per_reviewer
         )
         return ReviewItemDetail(
-            item=item_view(record, caller),
+            item=item_view(
+                record, caller, queue_name=definition.name if definition else None
+            ),
             queue_name=definition.name if definition else display_name(record.queue),
             sections=sections,
             checklist=list(definition.checklist) if definition else [],
@@ -1011,6 +1087,10 @@ class ReviewQueueService:
             raise ReviewValidationError(
                 "BAD_ARGUMENT", "draft data must be a JSON object"
             )
+        # The review record of a section result is written when a completed
+        # review is applied. A posted one is dropped, so a draft cannot mark a
+        # section as reviewed.
+        data = {k: v for k, v in data.items() if k != REVIEW_KEY}
         body = json.dumps(data, separators=(",", ":"))
         if len(body.encode("utf-8")) > MAX_DRAFT_BYTES:
             raise ReviewValidationError(
@@ -1029,17 +1109,14 @@ class ReviewQueueService:
         s3_key = DRAFT_KEY_FORMAT.format(
             doc=object_key, cycle=cycle_id, section=section_id, revision=revision
         )
-        if current is not None:
-            base = self._read_json_uri(f"s3://{self.output_bucket}/{current.s3_key}")
-        else:
-            section = None
-            document = (
-                self.document_loader(object_key) if self.document_loader else None
-            )
-            for s in getattr(document, "sections", None) or []:
-                if str(s.section_id) == section_id:
-                    section = s
-            base = self._read_json_uri(getattr(section, "extraction_result_uri", None))
+        # Always against the stored section result, never the previous draft:
+        # the changed fields then cover every save of the cycle, not the last.
+        section = None
+        document = self.document_loader(object_key) if self.document_loader else None
+        for s in getattr(document, "sections", None) or []:
+            if str(s.section_id) == section_id:
+                section = s
+        base = self._read_json_uri(getattr(section, "extraction_result_uri", None))
         diff = changed_fields(base, data)
         self.s3.write_content(body, self.output_bucket, s3_key, "application/json")
         authors = sorted(set((current.authors if current else [])) | {caller.email})
@@ -1111,6 +1188,13 @@ class ReviewQueueService:
         """The item a disposition applies to: the caller's claim, or any claim (Admin)."""
         record = self._load(object_key)
         self._check_access(caller, record)
+        self._check_disposable(caller, record, cycle_id)
+        return record
+
+    def _check_disposable(
+        self, caller: CallerContext, record: ReviewItemRecord, cycle_id: str
+    ) -> None:
+        """Refuse a disposition of a record that is not the caller's to dispose."""
         self._check_cycle(record, cycle_id)
         if record.state != CLAIMED:
             raise ReviewConflict("INVALID_STATE", f"the item is {record.state}")
@@ -1119,7 +1203,6 @@ class ReviewQueueService:
             raise ReviewAccessDenied(
                 "NOT_LEASE_HOLDER", "you don't hold this item's claim"
             )
-        return record
 
     def _disposition_condition(
         self, caller: CallerContext, record: ReviewItemRecord, now_ms: int
@@ -1143,12 +1226,14 @@ class ReviewQueueService:
         supervised: bool = False,
         note: Optional[str] = None,
         reason: Optional[str] = None,
+        details: Optional[Mapping[str, Any]] = None,
     ) -> ReviewItemView:
         """Move the item to FINALIZING and send its finalize message.
 
         ``supervised`` is an Admin acting on an OPEN or CLAIMED item they need not
         hold (Remove from queue); the write is conditioned on the state read, and
-        a claimant is told their claim ended.
+        a claimant is told their claim ended. ``details`` go into the history
+        entry, with the reason and the note.
         """
         view, _ = self._finalize_item(
             caller,
@@ -1158,6 +1243,7 @@ class ReviewQueueService:
             apply=apply,
             access="supervised" if supervised else "holder",
             details={
+                **dict(details or {}),
                 **({"reason": reason} if reason else {}),
                 **({"note": note} if note else {}),
             },
@@ -1388,14 +1474,198 @@ class ReviewQueueService:
             raise ReviewValidationError(
                 "BAD_ARGUMENT", "the checklist doesn't match the queue's template"
             )
+        # Refused here as the write below refuses it, before anything is read
+        # or copied for a caller who cannot complete the item.
+        self._check_disposable(caller, record, cycle_id)
+        document = self._document(object_key)
+        decision = self._restart_for(record, document)
+        if decision.start == EXTRACTION:
+            # Before the write: once the item is FINALIZING the run may start,
+            # and extraction writes over the results these are copies of.
+            self._keep_base_results(record, document, decision)
 
         def apply(r: ReviewItemRecord) -> None:
             r.checklist = list(checklist) if checklist is not None else None
             r.checklist_template = template
             r.complete_note = note
+            r.restart_step = decision.start
+            r.restart_sections = list(decision.sections)
 
         return self._finalize(
-            caller, object_key, cycle_id, disposition="complete", apply=apply
+            caller,
+            object_key,
+            cycle_id,
+            disposition="complete",
+            apply=apply,
+            note=note,
+            details={
+                "restart_step": decision.start,
+                "restart_sections": list(decision.sections)[
+                    :MAX_HISTORY_RESTART_SECTIONS
+                ],
+            },
+        )
+
+    # ----------------------------------------- the run after a completed review
+
+    def _configuration(self, record: ReviewItemRecord) -> Any:
+        """What ``configuration_of`` returns for the item's profile and revision.
+
+        ``None`` when no resolver was given or it raises.
+        """
+        if self.configuration_of is None:
+            return None
+        try:
+            return self.configuration_of(record.profile, record.config_revision)
+        except Exception:  # noqa: BLE001 — the mode is then unknown, see _mode_of
+            logger.warning("event=review_configuration_unresolved", exc_info=True)
+            return None
+
+    def _mode_of(
+        self, record: ReviewItemRecord, *, resolved: Any = _UNREAD
+    ) -> Optional[str]:
+        """The processing mode the item's document runs in, or ``None``.
+
+        The mode the item recorded when a run placed it. An item placed by hand
+        (Send to review) records none, so its mode is resolved from its profile
+        at its revision. It is unknown (``None``) when there is no resolver, the
+        resolver raises, or the configuration could not be read: the resolver
+        then answers Pipeline mode as a default, which is a guess.
+
+        ``resolved`` is what ``_configuration`` returned, for a caller that has
+        already read it.
+        """
+        if record.processing_mode:
+            return record.processing_mode
+        if resolved is _UNREAD:
+            resolved = self._configuration(record)
+        if resolved is None:
+            return None
+        if getattr(resolved, "config", None) is None:
+            logger.warning("event=review_mode_unknown reason=configuration_unreadable")
+            return None
+        return resolved.mode
+
+    def _restart_for(
+        self, record: ReviewItemRecord, document: Any, *, mode: Any = _UNREAD
+    ) -> RestartDecision:
+        """Where the run after completing this review starts.
+
+        Decided from the document as it now is, against the sections it had when
+        it was placed (``run_plan.restart.decide_restart``). With no known mode
+        the run starts at applying the review's changes and extracts nothing: a
+        guessed Pipeline mode on a BDA document would start it over and lose the
+        reviewer's corrections.
+
+        An extraction start whose sections do not fit a run plan names none,
+        which means every processed section.
+
+        ``mode`` is what ``_mode_of`` returned, for a caller that has it.
+        """
+        if mode is _UNREAD:
+            mode = self._mode_of(record)
+        if mode is None:
+            return RestartDecision(start=APPLY_REVIEW_CHANGES)
+        decision = decide_restart(
+            document,
+            kind=RunKind.REVIEW_COMPLETED,
+            mode=mode,
+            baseline_layout=record.placed_layout or None,
+        )
+        if decision.start != EXTRACTION:
+            return decision
+        try:
+            encode(
+                RunPlan(
+                    kind=RunKind.REVIEW_COMPLETED,
+                    start=EXTRACTION,
+                    sections=list(decision.sections),
+                    cycle_id=record.cycle_id,
+                )
+            )
+        except ValueError:
+            # Too many sections, or a plan over its size limit (RunPlanError and
+            # pydantic's ValidationError are both ValueErrors).
+            return RestartDecision(start=EXTRACTION)
+        return decision
+
+    def _keep_base_results(
+        self, record: ReviewItemRecord, document: Any, decision: RestartDecision
+    ) -> None:
+        """Copy the result of each drafted section the run extracts again.
+
+        A section the run extracts again gets a new result under the same key.
+        Where the reviewer saved a draft for it, the result they started from is
+        copied to ``BASE_KEY_FORMAT`` first. A section with no draft, or with no
+        result, has nothing to keep. A failed copy raises, and the review is not
+        completed: the copy is the same on a second attempt.
+        """
+        from idp_common.utils import parse_s3_uri
+
+        drafted = {
+            draft.section_id
+            for draft in self.store.list_drafts(record.doc_key, record.cycle_id)
+        }
+        if not drafted:
+            return
+        named = set(decision.sections)
+        for section in getattr(document, "sections", None) or []:
+            section_id = str(section.section_id)
+            uri = getattr(section, "extraction_result_uri", None)
+            if (
+                getattr(section, "excluded", False)
+                or (named and section_id not in named)
+                or section_id not in drafted
+                or not uri
+            ):
+                continue
+            bucket, key = parse_s3_uri(uri)
+            self.s3.copy_object(
+                bucket,
+                key,
+                self.output_bucket,
+                BASE_KEY_FORMAT.format(
+                    doc=record.doc_key, cycle=record.cycle_id, section=section_id
+                ),
+            )
+
+    def completion_plan(
+        self, caller: CallerContext, object_key: str, cycle_id: str
+    ) -> ReviewCompletionPlanView:
+        """What finishing the review runs: after Complete, and after Send back.
+
+        Each is the step the run starts at, every step of the run with its state
+        and, for a completion that extracts again, the sections and why. The
+        completion is decided as ``complete`` decides it, so it is what
+        ``complete`` then stores. With no known mode both are listed with the
+        steps of Pipeline mode.
+
+        For the holder of the item, and for an Admin on an item that is open or
+        claimed. Reads only, except that the review of a document that no longer
+        exists is withdrawn, as opening it does.
+        """
+        record = self._holder_or_admin(caller, object_key, cycle_id)
+        document = self._document(object_key)
+        resolved = self._configuration(record)
+        config = getattr(resolved, "config", None)
+        enabled = step_enabled(config) if config is not None else {}
+        # The mode complete() decides with, so this is what it then stores.
+        known_mode = self._mode_of(record, resolved=resolved)
+        decision = self._restart_for(record, document, mode=known_mode)
+        mode = known_mode or PIPELINE
+        sent_back = decide_restart(document, kind=RunKind.SENT_BACK, mode=mode)
+        return ReviewCompletionPlanView(
+            complete=planned_run(
+                decision.start,
+                mode,
+                kind=RunKind.REVIEW_COMPLETED,
+                enabled=enabled,
+                sections=decision.sections,
+                causes=decision.causes,
+            ),
+            send_back=planned_run(
+                sent_back.start, mode, kind=RunKind.SENT_BACK, enabled=enabled
+            ),
         )
 
     def reject(
@@ -1712,6 +1982,90 @@ class ReviewQueueService:
             self.notify.claim_released(new, former_email, "move")
         return item_view(new, caller)
 
+    # --------------------------------------------------- queue administration
+
+    @staticmethod
+    def _definition(
+        args: Any, existing: Optional[QueueDefinition] = None
+    ) -> QueueDefinition:
+        """The definition the arguments describe.
+
+        What is left out takes the default for a new queue. An update keeps the
+        stored ``enabled`` and ``skip_reasons`` when they are left out.
+        """
+        fields: dict[str, Any] = {
+            "id": args.id,
+            "name": args.name or "",
+            "description": args.description or "",
+            "priority": 50 if args.priority is None else args.priority,
+            "checklist": args.checklist or [],
+            "time_limit_minutes": (
+                DEFAULT_TIME_LIMIT_MINUTES
+                if args.time_limit_minutes is None
+                else args.time_limit_minutes
+            ),
+            "eligible_annotators": args.eligible_annotators or [],
+        }
+        if args.reject_reasons:
+            fields["reject_reasons"] = args.reject_reasons
+        if args.skip_reasons:
+            fields["skip_reasons"] = args.skip_reasons
+        elif existing is not None:
+            fields["skip_reasons"] = list(existing.skip_reasons)
+        if args.enabled is not None:
+            fields["enabled"] = args.enabled
+        elif existing is not None:
+            fields["enabled"] = existing.enabled
+        return QueueDefinition.model_validate(fields)
+
+    def create_queue(
+        self, caller: CallerContext, args: CreateQueueArgs
+    ) -> QueueDefinition:
+        """Create a queue (Admin). Refused when the id is taken (``QUEUE_EXISTS``)."""
+        self._require_admin(caller)
+        return self.directory.queue_defs.put(self._definition(args), create=True)
+
+    def update_queue(
+        self, caller: CallerContext, args: UpdateQueueArgs
+    ) -> QueueDefinition:
+        """Replace a queue's definition (Admin).
+
+        ``args.version`` is the version the caller read; if the queue has been
+        written since, the update is refused with ``QUEUE_CHANGED`` rather than
+        undoing that write. A caller that sends no version is checked against the
+        version of the consistent read made here: its fields replace whatever that
+        read found, and it is refused only if another write lands between that
+        read and this one, which protects the fields this merges from the stored
+        definition (``enabled``, ``skip_reasons``).
+        """
+        self._require_admin(caller)
+        defs = self.directory.queue_defs
+        defs.invalidate()
+        queue_id = args.id.strip().lower()
+        # A consistent read, so the version taken for a caller that sent none is
+        # current; get() as well, which seeds the Default queue if it was never
+        # listed.
+        existing = defs.read_current(queue_id) or defs.get(queue_id)
+        definition = self._definition(args, existing)
+        expected = args.version
+        if expected is None and existing is not None:
+            expected = existing.version
+        return defs.put(definition, create=False, expected_version=expected)
+
+    def list_queues(
+        self, caller: CallerContext, args: ListQueuesArgs
+    ) -> tuple[list[QueueDefinition], Optional[str]]:
+        """One page of the queue definitions, by id, and the next page's token (Admin).
+
+        Read past this process's cache and strongly consistent: the list is what
+        an Admin edits a queue from, and the version an update is checked against
+        comes from it.
+        """
+        self._require_admin(caller)
+        return self.directory.queue_defs.list_page(
+            clamp_limit(args.limit), args.next_token, fresh=True
+        )
+
     def delete_queue(self, caller: CallerContext, queue_id: str) -> int:
         """Admin: delete a queue, moving its items to Default; return how many.
 
@@ -1858,11 +2212,33 @@ class ReviewQueueService:
 
     # -------------------------------------------------------------- system
 
-    def withdraw(self, doc_key: str, reason: str) -> bool:
-        """Withdraw a live item (abort, reprocess, supersede, missing document)."""
+    def withdraw(
+        self,
+        doc_key: str,
+        reason: str,
+        *,
+        actor: Optional[str] = None,
+        expected_cycle: Optional[str] = None,
+        history_event: Optional[str] = None,
+        details: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        """Withdraw a live item (abort, reprocess, supersede, missing document).
+
+        Returns False when the document has no live item. The history entry is
+        ``withdrawn`` with the reason, unless ``history_event`` names another
+        event (a send-back); ``actor`` and ``details`` go into the entry.
+
+        With ``expected_cycle``, a live item of another cycle raises
+        ``ReviewConflict`` (``CYCLE_CHANGED``) and nothing is changed: the caller
+        acted on a review that has since been replaced.
+        """
         old = self.store.get_item(doc_key)
         if old is None or old.state not in {s.value for s in LIVE_ITEM_STATES}:
             return False
+        if expected_cycle is not None and old.cycle_id != expected_cycle:
+            raise ReviewConflict(
+                "CYCLE_CHANGED", "the document has a newer review cycle"
+            )
         _, now_ms, now_iso = self._now()
         new = old.model_copy(deep=True)
         former_key, former_email = (
@@ -1878,24 +2254,76 @@ class ReviewQueueService:
             else []
         )
         extra.extend(
-            self._history(new, "withdrawn", None, {"reason": reason}, now_ms, now_iso)
+            self._history(
+                new,
+                history_event or "withdrawn",
+                actor,
+                {"reason": reason, **dict(details or {})},
+                now_ms,
+                now_iso,
+            )
         )
         try:
             self._write(old, new, extra_txn=extra)
         except DynamoDBTransactionCanceledError:
             # Raced with another writer: try once more from a fresh read.
-            return self._withdraw_retry(doc_key, reason)
+            return self._withdraw_retry(
+                doc_key,
+                reason,
+                actor=actor,
+                expected_cycle=expected_cycle,
+                history_event=history_event,
+                details=details,
+            )
         self._clear_outputs(doc_key)
         if reason == "reprocessed" and former_email:
             self.notify.claim_released(new, former_email, "reprocessed")
         logger.info("event=review_withdrawn reason=%s", reason)
         return True
 
-    def _withdraw_retry(self, doc_key: str, reason: str) -> bool:
+    def _withdraw_retry(self, doc_key: str, reason: str, **options: Any) -> bool:
         current = self.store.get_item(doc_key)
         if current is None or current.state not in {s.value for s in LIVE_ITEM_STATES}:
             return False
-        return self.withdraw(doc_key, reason)
+        return self.withdraw(doc_key, reason, **options)
+
+    def authorize_send_back(
+        self, caller: CallerContext, object_key: str, cycle_id: str
+    ) -> ReviewItemRecord:
+        """The item a caller may send back to be processed again.
+
+        The holder of the item may, and an Admin may for an item that is open or
+        claimed. Anyone else is refused, and so is an item in another state: a
+        review that is being finalized or has ended cannot be sent back.
+
+        This only authorises. The caller then asks the reprocess service for the
+        run, which withdraws the review.
+        """
+        return self._holder_or_admin(caller, object_key, cycle_id)
+
+    def _holder_or_admin(
+        self, caller: CallerContext, object_key: str, cycle_id: str
+    ) -> ReviewItemRecord:
+        """The item, for its holder, or for an Admin while it is open or claimed.
+
+        Anyone else is refused (``NOT_LEASE_HOLDER``), and so is an item in
+        another state or of another cycle. Changes nothing.
+        """
+        record = self._load(object_key)
+        self._check_access(caller, record)
+        self._check_cycle(record, cycle_id)
+        if caller.is_admin:
+            if record.state not in (OPEN, CLAIMED):
+                raise ReviewConflict("INVALID_STATE", f"the item is {record.state}")
+            return record
+        if record.state != CLAIMED:
+            raise ReviewConflict("INVALID_STATE", f"the item is {record.state}")
+        if record.owner_key != caller.reviewer_key:
+            logger.warning("Rejecting review-queue operation: NOT_LEASE_HOLDER")
+            raise ReviewAccessDenied(
+                "NOT_LEASE_HOLDER", "you don't hold this item's claim"
+            )
+        return record
 
     def _clear_outputs(self, doc_key: str) -> None:
         if self.output_bucket:
@@ -1974,8 +2402,14 @@ def create_resubmitter(document_service: Any = None) -> DocumentResubmitter:
     )
 
 
-def create_review_queue_service() -> Optional[ReviewQueueService]:
-    """The service from the environment, or ``None`` when no table is configured."""
+def create_review_queue_service(
+    configuration_of: Optional[Callable[[str, Optional[int]], Any]] = None,
+) -> Optional[ReviewQueueService]:
+    """The service from the environment, or ``None`` when no table is configured.
+
+    ``configuration_of`` is passed to the service; only the review queues
+    resolver, which completes reviews, gives one.
+    """
     store = create_review_store()
     if store is None:
         return None
@@ -1991,4 +2425,5 @@ def create_review_queue_service() -> Optional[ReviewQueueService]:
         user_lookup=cognito_user_lookup(pool) if pool else None,
         output_bucket=os.environ.get("OUTPUT_BUCKET", ""),
         document_service=documents,
+        configuration_of=configuration_of,
     )

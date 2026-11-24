@@ -50,6 +50,7 @@ from pydantic import (
 from pydantic import field_validator as _pydantic_field_validator
 from typing_extensions import Self
 
+from idp_common.config.routing_models import RoutingConfig
 from idp_common.regional_models import (
     CLASSIFICATION_MODEL_ID,
     regional_default,
@@ -3847,7 +3848,7 @@ The GenAI IDP system processes documents through an AWS Step Functions state mac
 - Evaluation Stage (optional): Scores extraction accuracy against ground truth
 
 BDA Alternative Branch:
-- InvokeBDA → BDA Completion (EventBridge-triggered) → BDA ProcessResults
+- InvokeDataAutomationStep → BDA Completion (EventBridge-triggered) → BDA_AssembleDocumentStep
 - BDA jobs are asynchronous; failures may appear in EventBridge delivery or the BDA service itself
 
 Key AWS services involved:
@@ -4078,7 +4079,7 @@ The GenAI IDP system processes documents through an AWS Step Functions state mac
 - Evaluation Stage (optional): Scores extraction accuracy against ground truth
 
 BDA Alternative Branch:
-- InvokeBDA → BDA Completion (EventBridge-triggered) → BDA ProcessResults
+- InvokeDataAutomationStep → BDA Completion (EventBridge-triggered) → BDA_AssembleDocumentStep
 - BDA jobs are asynchronous; failures may appear in EventBridge delivery or the BDA service itself
 
 Key AWS services involved:
@@ -5729,6 +5730,11 @@ class IDPConfig(BaseModel):
     hitl: HITLConfig = Field(
         default_factory=HITLConfig,
         description="Human-in-the-Loop review configuration (v0.6, top-level)",
+    )
+    routing: RoutingConfig = Field(
+        default_factory=RoutingConfig,
+        description="Review routing: one decision table evaluated after policy "
+        "rule validation",
     )
     summarization: SummarizationConfig = Field(
         default_factory=SummarizationConfig,

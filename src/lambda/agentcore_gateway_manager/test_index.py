@@ -27,6 +27,7 @@ is not a test dependency of this repository and is replaced by a recording fake.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -287,3 +288,98 @@ def test_the_delete_event_still_succeeds_when_cleanup_fails(
     index.handler({"RequestType": "Delete", "ResourceProperties": _props()}, None)
 
     assert [status for status, _ in sent] == [index.cfnresponse.SUCCESS]
+
+
+# --- the tool schema ------------------------------------------------------------
+
+
+def _schema_problems(tools) -> str:
+    """What the service's own model says is wrong with a tool schema, or ``""``.
+
+    The gateway target is created and updated with this schema as
+    ``toolSchema.inlinePayload``. botocore validates the request against the
+    service model before it is sent, and a key the model does not have fails the
+    call, and with it the stack operation this custom resource runs in.
+    """
+    from botocore.validate import ParamValidator
+
+    model = boto3.client(
+        "bedrock-agentcore-control", region_name=REGION
+    ).meta.service_model
+    shape = (
+        model.operation_model("CreateGatewayTarget")
+        .input_shape.members["targetConfiguration"]
+        .members["mcp"]
+        .members["lambda"]
+        .members["toolSchema"]
+    )
+    report = ParamValidator().validate({"inlinePayload": tools}, shape)
+    return report.generate_report() if report.has_errors() else ""
+
+
+@pytest.mark.unit
+def test_the_tool_schema_is_one_the_service_accepts(index):
+    assert _schema_problems(index.IDP_TOOLS_SCHEMA) == ""
+
+
+@pytest.mark.unit
+def test_a_key_the_service_does_not_have_is_caught(index):
+    """``enum`` is the key most likely to be reached for: the schema has none."""
+    tools = [
+        {
+            "name": "reprocess",
+            "description": "x",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"step": {"type": "string", "enum": ["a", "b"]}},
+            },
+        }
+    ]
+
+    assert "enum" in _schema_problems(tools)
+
+
+def _reprocess_properties(index) -> dict:
+    tools = {tool["name"]: tool for tool in index.IDP_TOOLS_SCHEMA}
+    return tools["reprocess"]["inputSchema"]["properties"]
+
+
+def _listed(description: str, after: str) -> list:
+    """The comma-separated values a description lists after a phrase, up to the
+    full stop."""
+    listed = description.split(after, 1)[1].split(".", 1)[0]
+    return [value.strip() for value in listed.split(",")]
+
+
+@pytest.mark.unit
+def test_the_reprocess_step_values_are_the_generated_catalogue(index):
+    catalog = json.loads((_HERE / "run_steps.json").read_text())
+    expected = [
+        *(step["id"] for step in catalog["steps"]),
+        *catalog["aliases"],
+        catalog["resume"],
+    ]
+
+    assert index.REPROCESS_START_VALUES == expected
+    step = _reprocess_properties(index)["step"]
+    assert step["type"] == "string"
+    assert _listed(step["description"], "One of:") == expected
+
+
+@pytest.mark.unit
+def test_the_reprocess_skip_values_are_the_optional_steps(index):
+    catalog = json.loads((_HERE / "run_steps.json").read_text())
+    expected = [step["id"] for step in catalog["steps"] if not step["required"]]
+
+    assert expected, "no optional step: the skip argument would offer nothing"
+    assert index.REPROCESS_SKIP_VALUES == expected
+    skip = _reprocess_properties(index)["skip"]
+    assert (skip["type"], skip["items"]) == ("array", {"type": "string"})
+    assert _listed(skip["description"], "Any of:") == expected
+
+
+@pytest.mark.unit
+def test_only_the_step_is_required_to_reprocess(index):
+    tools = {tool["name"]: tool for tool in index.IDP_TOOLS_SCHEMA}
+
+    assert tools["reprocess"]["inputSchema"]["required"] == ["step"]

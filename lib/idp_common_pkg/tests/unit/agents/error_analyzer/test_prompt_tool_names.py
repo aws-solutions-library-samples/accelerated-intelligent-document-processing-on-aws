@@ -108,6 +108,10 @@ NON_TOOL_IDENTIFIERS = {
         "A key in search_cloudwatch_logs results; the evidence template asks for its "
         "full value."
     ),
+    "BDA_AssembleDocumentStep": (
+        "The name of a Step Functions state, the last one of the BDA branch; the "
+        "prompt names it so the model can match it against an execution's history."
+    ),
 }
 
 

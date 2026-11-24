@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT-0
 
 """Smoke test: run RulesDiscovery with the shipped defaults in
-base-rule-discovery.yaml against the medicare_respiratory_pa_packet.pdf
-sample and assert a real model's extracted rules reach the rule-validation
-runtime intact.
+base-rule-discovery.yaml against the bank statement review policy
+(samples/rule-validation/bank-statement-review-policy.pdf) and assert a real
+model's extracted rules reach the rule-validation runtime intact.
 
 This test is marked 'integration' because it actually calls Bedrock. Skip
 it in CI unless AWS_REGION and Bedrock access are available; the
@@ -62,6 +62,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from idp_common.discovery.rules_discovery import RulesDiscovery
 from tests.unit.discovery.rule_discovery_contract import (
@@ -71,14 +72,17 @@ from tests.unit.discovery.rule_discovery_contract import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3].parent
 SAMPLE_PDF = (
-    REPO_ROOT / "samples" / "rule-validation" / "medicare_respiratory_pa_packet.pdf"
+    REPO_ROOT / "samples" / "rule-validation" / "bank-statement-review-policy.pdf"
 )
+#: The preset that holds the policy's rules word for word: how many the policy
+#: prints is read from it.
+PRESET = REPO_ROOT / "config_library" / "unified" / "rule-validation" / "config.yaml"
 
 
 @pytest.mark.integration
-def test_rules_discovery_with_defaults_against_medicare_sample():
-    """Confirm base-rule-discovery.yaml defaults produce valid rules for a real
-    medicare PA packet sample."""
+def test_rules_discovery_with_defaults_against_the_bank_statement_policy():
+    """Confirm base-rule-discovery.yaml defaults produce valid rules for the
+    policy document of the rule validation sample."""
     assert SAMPLE_PDF.exists(), f"Sample PDF missing: {SAMPLE_PDF}"
     cfg = load_shipped_rule_discovery_config()
 
@@ -101,13 +105,21 @@ def test_rules_discovery_with_defaults_against_medicare_sample():
     # into what RuleValidationService would actually evaluate.
     total_rules = assert_discovered_rules_are_runtime_consumable(rules, cfg)
 
-    # The model-dependent half, which is why this tier exists. Medicare policy
-    # manuals typically yield dozens of rules; anything under 10 suggests the
-    # prompt or model defaults regressed.
-    print(
-        f"\nSmoke test result: {len(rules)} rule class(es), {total_rules} total rules"
+    # The model-dependent half, which is why this tier exists. The policy prints
+    # each of its rules under a number of its own, so a run should find about as
+    # many as it prints. A model may merge two neighbours; one that returns
+    # under two thirds of them suggests the prompt or model defaults regressed.
+    printed = sum(
+        len(policy["rule_properties"])
+        for policy in yaml.safe_load(PRESET.read_text(encoding="utf-8"))[
+            "policy_classes"
+        ]
     )
-    assert total_rules >= 10, (
-        f"Only {total_rules} rules extracted from medicare PA packet; "
-        "the default prompt/model may have regressed."
+    print(
+        f"\nSmoke test result: {len(rules)} rule class(es), {total_rules} total "
+        f"rules, of {printed} the policy prints"
+    )
+    assert total_rules >= printed * 2 // 3, (
+        f"Only {total_rules} of the {printed} rules the policy prints were "
+        "extracted; the default prompt/model may have regressed."
     )

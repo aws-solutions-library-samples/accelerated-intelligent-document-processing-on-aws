@@ -515,6 +515,7 @@ def test_a_canada_upload_drops_what_canada_cannot_call(cbd):
 #: Every literal configuration the suite uploads through regional_config_file().
 SUITE_CONFIGS = [
     NUVEEN,
+    REPO_ROOT / "scripts" / "sdlc" / "config" / "review-routing-off.yaml",
     REPO_ROOT / "config_library" / "unified" / "lending-package-sample" / "config.yaml",
     REPO_ROOT / "config_library" / "unified" / "rule-validation" / "config.yaml",
 ]

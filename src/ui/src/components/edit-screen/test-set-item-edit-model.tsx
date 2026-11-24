@@ -40,7 +40,7 @@ import {
   mayChangeClassFor,
   versionBadgeText,
 } from '../test-studio/annotation-edit-flags';
-import type { EditAction } from './EditScreen';
+import type { EditAction, ReviewOutcomeAction } from './EditScreen';
 import { EditPageError, editPageErrorText, editScreenSharedMessages } from './edit-messages';
 import type { EditModel, EditNavigation, ReviewActivity } from './edit-model';
 import { useTestSetItemEdit } from './test-set-item-edit-adapter';
@@ -344,7 +344,7 @@ const messages = defineMessages<{
  * What a test-set item's failed action was trying to do: a phrase placed in the shared
  * error sentence.
  */
-const failedActionMessages = defineMessages<Record<EditAction, NoMessageValues>>({
+const failedActionMessages = defineMessages<Record<Exclude<EditAction, ReviewOutcomeAction>, NoMessageValues>>({
   claim: {
     id: 'testStudio.itemEdit.action.claim',
     defaultMessage: 'claim this document',
@@ -780,10 +780,15 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
       failures: {
         surface: 'flash',
         // The page's own error is worded here; any other is passed on as describeApiError reads it.
+        // Reject and send-back end a Production review; this mode offers neither, so neither can fail here.
         describe: (action, err) =>
           err instanceof NotReviewedYet
             ? err.message
-            : describeApiError(err instanceof EditPageError ? editPageErrorText(err, intl) : err, failedActionMessages[action], intl),
+            : describeApiError(
+                err instanceof EditPageError ? editPageErrorText(err, intl) : err,
+                failedActionMessages[action === 'reject' || action === 'send-back' ? 'process' : action],
+                intl,
+              ),
         // A failed claim has re-read the document already.
         after: (action) => {
           if (action !== 'claim') void reload();

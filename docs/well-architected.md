@@ -123,8 +123,8 @@ ingestion, queue depth, the concurrency counter and workflow outcomes, and one i
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: 25 Lambda functions
-across the two main templates — 10 in `template.yaml` and 15 in
+Distributed tracing is instrumented, not merely recommended: 27 Lambda functions
+across the two main templates — 10 in `template.yaml` and 17 in
 `patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
 optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
 section (`seller-entitlement-service` is the exception). In the two main templates the
@@ -260,7 +260,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-182 operations. 172 of them require Cognito group membership and 2
+189 operations. 179 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 28 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -349,12 +349,12 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the twelve templates that make up the solution and its optional
-extensions, 132 IAM policy statements are written against `Resource: "*"` — 54 in
-`template.yaml`, 39 in `patterns/unified/template.yaml`, 8 in
+extensions, 134 IAM policy statements are written against `Resource: "*"` — 54 in
+`template.yaml`, 41 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
-API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 29
-of the 128, and the X-Ray read actions, `textract:DetectDocumentText` and
+API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 44
+of the 133, and the X-Ray read actions, `textract:DetectDocumentText` and
 `textract:AnalyzeDocument` are account-scoped in the same way. The rest have not been
 audited statement by statement, so treat the number as a surface to review rather than as a
 count of findings. A permissions boundary is the practical lever for narrowing whatever you

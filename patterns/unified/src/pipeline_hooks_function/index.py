@@ -157,12 +157,12 @@ _MAX_INLINE_DOC_BYTES = 5 * 1024 * 1024
 # (see src/lambda/queue_processor/index.py) purely so the state machine can read
 # them via JSONPath:
 #
-#   $.document.use_bda          -> RouteByProcessingMode Choice
-#   $.document.bda_project_arn  -> BDA_InvokeDataAutomation Parameters
+#   $.document.use_bda          -> CheckProcessingMode Choice
+#   $.document.bda_project_arn  -> InvokeDataAutomationStep Parameters
 #
 # Because they are not Document fields, a hook doing the natural
 # load -> mutate -> return round-trip through idp_common drops them. Losing
-# `use_bda` makes RouteByProcessingMode fail the execution outright
+# `use_bda` makes CheckProcessingMode fail the execution outright
 # ("Invalid path '$.document.use_bda'"), so the dispatcher carries them forward
 # from the inbound payload onto any hook-returned document. A hook that
 # deliberately sets one keeps its value; only absent keys are back-filled.
@@ -176,14 +176,15 @@ _COMPRESSED_DOC_PREFIX = "compressed_documents/"
 
 # Fields the STATE MACHINE reads straight off the document payload via JSONPath:
 #
-#   $.document.num_pages                        -> BDA_CheckExistingData Choice
+#   $.document.num_pages                        -> CheckExistingBdaData Choice
 #   $.document.status                           -> (BDA branch)
-#   $.ClassificationResult.document.sections    -> ProcessSections Map ItemsPath
+#   $.ClassificationResult.document.sections    -> SelectAllSections (the section
+#                                                  ids ProcessSections iterates)
 #
 # The dispatcher's own inline path always emits them, as does idp_common's
 # Document.compress(), but a hand-rolled compressed reference need not. An
 # absent one is not a hook error the workflow can survive — an unresolvable
-# ItemsPath/Choice path fails the execution with States.Runtime — so they are
+# Parameters/Choice path fails the execution with States.Runtime — so they are
 # back-filled from the previous document rather than left missing.
 _REQUIRED_WRAPPER_FIELDS = ("num_pages", "status", "sections")
 
@@ -193,9 +194,11 @@ _REQUIRED_WRAPPER_FIELDS = ("num_pages", "status", "sections")
 # nested under a processing step), and each holds a SINGLE FLAT hook rather than
 # a list (see _FLAT_HOOK_POINTS):
 #
-#   preprocessing  — runs FIRST, before the BDA/pipeline routing decision, so it
-#                    fires in both processing modes and even when OCR is
-#                    disabled. Operates on the source document.
+#   preprocessing  — the first step of a run from the beginning, before the
+#                    BDA/pipeline choice, so it fires in both processing modes
+#                    and even when OCR is disabled. Operates on the source
+#                    document. A run whose plan starts at a later step does not
+#                    pass it.
 #   postprocessing — runs LAST, after evaluation and before the workflow's
 #                    terminal state, on the shared tail so it too fires in both
 #                    processing modes. Operates on the finished document, and a
@@ -591,7 +594,7 @@ def _coerce_bool(raw: Any) -> Optional[bool]:
 
 
 def _resolve_use_bda(document: Any) -> Optional[bool]:
-    """Which branch RouteByProcessingMode will take, or None if undeterminable.
+    """Which branch CheckProcessingMode will take, or None if undeterminable.
 
     Read from the DOCUMENT and nowhere else, because `$.document.use_bda` is the
     path the Choice itself switches on (the queue processor injects it from the
@@ -905,7 +908,7 @@ def _resolve_updated_document(
     # Carry forward the state machine's routing control fields, which are not
     # Document model fields and so are dropped by any hook that round-trips the
     # document through idp_common. Without this, losing `use_bda` fails the
-    # execution at RouteByProcessingMode.
+    # execution at CheckProcessingMode.
     #
     # Same treatment for the wrapper fields the state machine reads via JSONPath
     # (num_pages / status / sections): the dispatcher's inline path and
@@ -988,6 +991,26 @@ def _noop(point: Any, document: Any, version: Optional[str] = None) -> Dict[str,
     return out
 
 
+def _run_fields(execution_input: Any) -> Dict[str, Any]:
+    """What a hook is told about the run it is called in.
+
+    Read from the ``runPlan`` of the execution input the state machine passes as
+    ``executionInput``: the kind of run, the step it started at, and whether a
+    reviewer has been through the document. A run with no plan (its sender wrote
+    none, or it started under a definition that does not pass its input) is
+    ``unplanned``, from the ``beginning``, and not reviewed. The execution input
+    itself is not forwarded to a hook.
+    """
+    plan = execution_input.get("runPlan") if isinstance(execution_input, dict) else None
+    if not isinstance(plan, dict):
+        plan = {}
+    return {
+        "runKind": plan.get("kind") or "unplanned",
+        "startStep": plan.get("startStep") or "beginning",
+        "reviewed": plan.get("reviewed") is True,
+    }
+
+
 def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
     point = event.get("hookPoint")
     inbound_document = event.get("document")
@@ -1046,6 +1069,7 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
     # is what the dispatcher hands back for the next workflow step.
     current_document: Any = inbound_document
     updated_by: List[str] = []
+    run_fields = _run_fields(event.get("executionInput"))
     for h in hooks:
         # Provide args both as the raw list and a flattened {key: value} map for
         # hook convenience. Values are strings; the hook parses as needed.
@@ -1063,6 +1087,7 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
             "executionArn": event.get("executionArn"),
             "args": args_list,
             "argsMap": args_map,
+            **run_fields,
         }
         r = _invoke_hook(h, payload)
         if h.get("onErrorInvalid") is not None:

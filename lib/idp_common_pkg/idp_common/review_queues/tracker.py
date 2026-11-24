@@ -9,7 +9,10 @@ Write order (D17):
   reporting → run record (``review_phase1``) → tracking review attributes →
   ``review/status.json`` = ``in_review`` → activation (HOLDING → OPEN, only for
   this execution) → registry → debounced notice. ``in_review`` exists before the
-  item is claimable, and a redelivered event can't reactivate anything.
+  item is claimable, and a redelivered event can't reactivate anything. A run
+  that follows a completed review and ends held again (a routing rule placed the
+  reviewed document in a queue) is a hold too: its input carries a finalize
+  token, and its output says ``HITL_IN_PROGRESS``, which decides.
 * **Finalize** (SUCCEEDED): document status (with the phase-1 metering merged) →
   reporting (finalize-only metering) → run record (``review_final``; none for
   rejected) → tracking review attributes → status object **last** → item
@@ -57,16 +60,21 @@ def finalize_token_of(input_data: Any) -> Optional[str]:
 
 
 def classify_run(input_data: Any, output_data: Any, workflow_status: str) -> RunKind:
-    """``finalize`` (input carries a token), ``hold`` (SUCCEEDED at the review point) or ``none``."""
+    """``hold`` (SUCCEEDED at the review point), ``finalize`` (input carries a token) or ``none``.
+
+    The hold is tested first: a finalize run that a routing rule held again
+    carries a token and ends at the review point, and it is the new placement
+    that has to be activated.
+    """
     from idp_common.models import Status, document_wrapper_status
 
-    if finalize_token_of(input_data):
-        return "finalize"
     if (
         workflow_status == "SUCCEEDED"
         and document_wrapper_status(output_data) == Status.HITL_IN_PROGRESS.value
     ):
         return "hold"
+    if finalize_token_of(input_data):
+        return "finalize"
     return "none"
 
 
@@ -107,12 +115,29 @@ def apply_overrides(ctx: TrackerReviewContext, processed_doc: Any) -> tuple[Any,
     finalize while ``metering`` keeps only the finalize run's own usage. The
     reporting copy is taken before the baseline changes and has the same own
     usage, so reporting never counts phase 1 twice.
+
+    A hold whose item carries the usage of earlier runs (a reviewed document
+    placed in a queue again) is treated the same way: the carried usage goes
+    into the baseline, and reporting gets a copy taken before.
     """
     from idp_common.utils import merge_metering_data
 
     if ctx.kind == "hold":
         processed_doc.hitl_status = ReviewStatus.IN_REVIEW.value
-        return processed_doc, processed_doc
+        carried_json = ctx.item.carried_metering_json
+        if not carried_json:
+            return processed_doc, processed_doc
+        reporting_doc = copy.deepcopy(processed_doc)
+        carried: dict = {}
+        try:
+            carried = json.loads(carried_json)
+        except (TypeError, ValueError):
+            logger.warning("event=review_carried_metering_unreadable")
+        processed_doc.metering_baseline = merge_metering_data(
+            copy.deepcopy(carried),
+            copy.deepcopy(getattr(processed_doc, "metering_baseline", {}) or {}),
+        )
+        return processed_doc, reporting_doc
     processed_doc.hitl_status = (
         ReviewStatus.REJECTED.value
         if ctx.outcome == "rejected"
@@ -130,6 +155,16 @@ def apply_overrides(ctx: TrackerReviewContext, processed_doc: Any) -> tuple[Any,
         copy.deepcopy(getattr(processed_doc, "metering_baseline", {}) or {}),
     )
     return processed_doc, reporting_doc
+
+
+def _top_reason_kind(item: Any) -> Optional[str]:
+    """The first reason's kind; ``routing_rule`` for an item a rule placed with
+    no confidence reason; ``None`` when there is neither."""
+    if item.reasons:
+        return item.reasons[0].kind
+    if item.routed_by is not None and item.routed_by.rule_id:
+        return "routing_rule"
+    return None
 
 
 def reporting_info(ctx: TrackerReviewContext) -> ReviewReportingInfo:
@@ -152,11 +187,16 @@ def reporting_info(ctx: TrackerReviewContext) -> ReviewReportingInfo:
         reviewed_at=item.disposed_at if ctx.kind == "finalize" else None,
         enqueued_at=item.enqueued_at,
         reason_count=item.reason_count,
-        top_reason_kind=item.reasons[0].kind if item.reasons else None,
+        top_reason_kind=_top_reason_kind(item),
         reject_reason=item.reject_reason if ctx.outcome == "rejected" else None,
         escalated=item.escalated,
         machine_run_id=item.phase1_run_id,
         final_run_id=None,
+        # As written, placeholders unfilled: reporting is read across profiles,
+        # so the reason goes there without the document's values.
+        routing_reason=(
+            item.routed_by.reason_template or None if item.routed_by else None
+        ),
     )
 
 
@@ -194,18 +234,47 @@ def after_completion(
         target = _activation_queue(store, item)
         if target is not None:
             item = item.model_copy(update=target)
+        routed_by = item.routed_by
         document_service.update_review_attributes(
             doc_key,
             {
                 "ReviewQueue": item.queue,
+                "ReviewQueueName": _queue_name(store, item.queue),
                 "ReviewCycleId": item.cycle_id,
                 "ReviewStatusUri": _status_uri(output_bucket, doc_key),
+                **(
+                    {
+                        # With the reason and the failed policy rules, so the
+                        # document status has them without reading the item.
+                        "ReviewRoutedBy": {
+                            "tableId": routed_by.table_id,
+                            "ruleId": routed_by.rule_id,
+                            "ruleLabel": routed_by.rule_label,
+                            "reason": routed_by.reason,
+                            "policyFailures": [
+                                {
+                                    "ruleId": failure.rule_id,
+                                    "policy": failure.policy,
+                                    "name": failure.name,
+                                    "reason": failure.reason,
+                                    "pages": list(failure.pages),
+                                }
+                                for failure in routed_by.policy_failures
+                            ],
+                            "policyFailureCount": routed_by.policy_failure_count,
+                        }
+                    }
+                    if routed_by is not None
+                    else {}
+                ),
             },
             remove_attrs=(
                 "HITLReviewedBy",
                 "HITLReviewedByEmail",
                 "ReviewDisposedAt",
                 "ReviewRejectReason",
+                # An item no rule placed must not show the rule of an earlier one.
+                *(() if routed_by is not None else ("ReviewRoutedBy",)),
             ),
         )
         machine_ref = run_ref
@@ -377,6 +446,18 @@ def after_completion(
         names={"#st": "State"},
     )
     logger.info("event=review_finalized outcome=%s", ctx.outcome)
+
+
+def _queue_name(store: Any, queue_id: str) -> str:
+    """The queue's name, or its id when its definition cannot be read."""
+    from .routing import queue_definitions
+
+    try:
+        definition = queue_definitions(store).get(queue_id)
+    except Exception:  # noqa: BLE001 — a name is display only
+        logger.warning("event=review_queue_defs_unavailable", exc_info=True)
+        return queue_id
+    return definition.name if definition is not None and definition.name else queue_id
 
 
 def _activation_queue(store: Any, item: Any) -> Optional[dict[str, Any]]:

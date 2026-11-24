@@ -48,7 +48,7 @@ export const policyGroupMessages = defineMessages<{
   },
   placeholder: {
     id: 'discovery.policyGroup.placeholder',
-    defaultMessage: 'e.g. NCCI Policy Manual',
+    defaultMessage: 'e.g. Bank Statement Review Policy',
     description: 'Placeholder of the policy group field on the Policy Discovery upload form. Keep the example name untranslated.',
   },
   constraint: {

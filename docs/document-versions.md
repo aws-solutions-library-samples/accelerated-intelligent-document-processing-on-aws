@@ -71,6 +71,61 @@ s3://<output-bucket>/loan-12345/package.pdf/
     └── 20250707T141530Z-exec-b/manifest.json   ← version 2 (current)
 ```
 
+## Reprocessing
+
+Reprocessing a document starts a new run, and the run becomes a new version when it
+completes. A reprocess does not have to start over. In the web UI's **Reprocess**
+dialog, with `idp-cli reprocess --step`, with the SDK and with the MCP `reprocess`
+tool, you choose the step the run starts at:
+
+| Start at | The run does | Kept from the earlier run |
+|---|---|---|
+| Beginning (OCR in Pipeline mode) | Every step | Nothing; the output is cleared, except the version history |
+| Classification (Pipeline mode) | Classification and every later step | Page text and images |
+| Extraction (Pipeline mode) | Extraction and every later step | Pages, classes and sections |
+| Assessment (Pipeline mode) | Assessment and every later step | The extracted values |
+| Policy Rule Validation | Policy rule validation, Review Routing, summarization, evaluation | Extraction and assessment results |
+| Summarization | Review Routing, summarization, evaluation | The policy rule validation result as well |
+| Evaluation | Review Routing, evaluation | The summary as well |
+
+- **What a start step clears.** The outputs of the start step and of every later step
+  are cleared before the run; what the earlier steps produced is reused. A document
+  in a review queue has its review withdrawn.
+- **Which steps are offered.** A step is available when the document has the output of
+  the steps before it. In BDA mode a run starts at the beginning, at Policy Rule
+  Validation or later; Classification, Extraction and Assessment are steps of Pipeline
+  mode. A document that is being processed, or that the malware scan held or refused,
+  cannot be reprocessed. The dialog shows why a step is not available.
+- **Skipping steps.** With the CLI, the SDK and the MCP tool, a run can also leave out
+  optional steps (assessment, policy rule validation, summarization, evaluation). A
+  skipped step keeps the output it has.
+- **A failed document** can be restarted with **Resume from the failed step**
+  (`--step resume`): the run starts at the first step whose output is missing.
+- **Another configuration.** A different profile, and a revision with a preprocessing
+  hook or another processing mode, start at the beginning only (see
+  [Reprocessing from a later step](./configuration-profiles.md#reprocessing-from-a-later-step)).
+- **Several documents.** Each document gets its own result: queued, or not queued with
+  the reason. One document that cannot be reprocessed does not stop the others.
+
+A run that starts later is routed like any other when it reaches the Review Routing
+step (see [Review Routing](./review-routing.md)), and fires the hooks of the steps it
+does. The Processing Flow viewer shows the steps it left out as **Skipped**.
+
+**Runs that follow a review.** A reprocess is the one run whose start step a person
+chooses. The runs that follow a review start where the system decides. Like a
+reprocess, such a run becomes a new version when it completes:
+
+| Run | Starts at | The run does | Kept from the earlier run |
+|---|---|---|---|
+| Review completed | Apply Review Changes | Apply Review Changes (the reviewer's corrections are written onto the extracted values), policy rule validation, Review Routing, summarization, evaluation | Pages, classes, sections and the extracted values, with the corrections on them |
+| Review completed after the page grouping was changed (Pipeline mode) | Extraction, for the sections that were added, whose pages changed or that have no extracted values | Extraction and assessment of those sections, Apply Review Changes (the corrections saved for them are set on the new values), then the steps above | Pages and classes; the values of the other sections |
+| Review sent back | Classification in Pipeline mode; the beginning in BDA mode, and for a document whose page text or images are missing | That step and every later step. The review's corrections and any page regrouping are discarded | Page text and images, when the run starts at classification |
+| Review removed or skipped | Policy rule validation | Policy rule validation, Review Routing (which does not hold the document again), summarization, evaluation | The machine's extracted values |
+| Review rejected | — | Nothing: the document ends `REJECTED` | Everything |
+
+The dialog that finishes a review lists the steps of the first three before the
+reviewer confirms. See [How a review ends](./review-queues.md#how-a-review-ends).
+
 ## Retention
 
 Document versions are retained for the stack's **`DataRetentionInDays`** period.
@@ -106,8 +161,8 @@ can:
   the page (the **More Actions** items, such as **Edit Page Grouping**, **Re-extract
   Sections**, **Use As Evaluation Baseline** and **Reprocess**) is
   disabled with the reason "Not available while you view a past version…", and so
-  are **Refresh** and **Edit**. **Reports › Rule Validation Summary** is unavailable,
-  because rule validation results aren't kept for past versions.
+  are **Refresh** and **Edit**. **Reports › Policy Rule Validation Summary** is unavailable,
+  because policy rule validation results aren't kept for past versions.
 - **Compare any two versions** — select two rows and choose *Compare selected*
   to see a section-by-section, field-level diff of their extraction results
   (values are read from each run's pinned S3 versions, so the comparison is

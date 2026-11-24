@@ -23,7 +23,7 @@
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
     "files": 125,
-    "findings": 3969
+    "findings": 3967
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -52,7 +52,7 @@
     "src/ui/src/components/configuration-layout/ConfigBuilder.tsx": 45,
     "src/ui/src/components/configuration-layout/ConfigRevisionHistoryPanel.tsx": 53,
     "src/ui/src/components/configuration-layout/ConfigurationComparison.tsx": 18,
-    "src/ui/src/components/configuration-layout/ConfigurationLayout.tsx": 277,
+    "src/ui/src/components/configuration-layout/ConfigurationLayout.tsx": 276,
     "src/ui/src/components/configuration-layout/ConfigurationVersionsTable.tsx": 47,
     "src/ui/src/components/configuration-layout/PromptPreview.tsx": 113,
     "src/ui/src/components/configuration-layout/tools-panel.tsx": 44,
@@ -90,7 +90,7 @@
     "src/ui/src/components/json-schema-builder/SchemaBuilder.tsx": 133,
     "src/ui/src/components/json-schema-builder/SchemaCanvas.tsx": 15,
     "src/ui/src/components/json-schema-builder/SchemaDiagram.tsx": 9,
-    "src/ui/src/components/json-schema-builder/SchemaInspector.tsx": 149,
+    "src/ui/src/components/json-schema-builder/SchemaInspector.tsx": 148,
     "src/ui/src/components/json-schema-builder/SchemaPreviewTabs.tsx": 23,
     "src/ui/src/components/json-schema-builder/StandardClassCatalog.tsx": 13,
     "src/ui/src/components/json-schema-builder/constraints/ArrayConstraints.tsx": 19,

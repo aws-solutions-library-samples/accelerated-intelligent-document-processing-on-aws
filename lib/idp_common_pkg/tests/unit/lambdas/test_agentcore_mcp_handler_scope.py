@@ -11,10 +11,13 @@ Two halves:
   writes. The SDK client is a fake recording what the tool asked of it, and the
   tracking-table lookup is the three-way ``document_scope`` contract (profile,
   ``None``, ``ABSENT``), so what is under test is the tool's use of the scope, not
-  the SDK.
+  the SDK. The reprocess tool does not go through the SDK: it invokes the stack's
+  reprocess resolver for the caller, and the Lambda client is a fake recording
+  each invoke.
 """
 
 import importlib
+import io
 import json
 import os
 import sys
@@ -191,12 +194,6 @@ class FakeBatch:
             "count": len(self.ids),
         }
 
-    def reprocess(self, **kwargs):
-        self.calls.append(("reprocess", kwargs))
-        return SimpleNamespace(
-            documents_queued=len(kwargs.get("document_ids") or []), documents_failed=0
-        )
-
     def get_status(self, batch_id):
         self.calls.append(("get_status", batch_id))
         if batch_id == "missing":
@@ -313,29 +310,282 @@ def test_get_results_batch_with_nothing_in_scope_reads_as_missing(sdk, lookup):
     assert hidden["message"].replace("x", "missing") == missing["message"]
 
 
-def test_reprocess_refuses_the_whole_request_for_one_document_outside_scope(
-    sdk, lookup
+# --- the reprocess tool ----------------------------------------------------------
+
+REPROCESS_ARN = "arn:aws:lambda:us-east-1:111122223333:function:idp-ReprocessResolver"
+AUTHOR = caller(roles=("Author",))
+SCOPED_AUTHOR = caller(roles=("Author",), scope=["acme-*"])
+
+
+class FakeResolver:
+    """The reprocess resolver behind ``Invoke``: records each event, queues each
+    document, or answers as scripted."""
+
+    def __init__(self):
+        self.events = []
+        self.function_names = []
+        self.errors = {}
+        self.refuse = {}
+
+    def invoke(self, FunctionName, InvocationType, Payload):
+        assert InvocationType == "RequestResponse"
+        self.function_names.append(FunctionName)
+        event = json.loads(Payload)
+        self.events.append(event)
+        error = self.errors.get(len(self.events))
+        if error is not None:
+            body = {"errorType": error[0], "errorMessage": error[1]}
+            return {
+                "FunctionError": "Unhandled",
+                "Payload": io.BytesIO(json.dumps(body).encode()),
+            }
+        results = []
+        for key in event["arguments"]["objectKeys"]:
+            if key in self.refuse:
+                results.append(
+                    {
+                        "objectKey": key,
+                        "status": "REFUSED",
+                        "startStep": None,
+                        "reason": self.refuse[key],
+                        "message": f"{key} cannot be processed again",
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "objectKey": key,
+                        "status": "QUEUED",
+                        "startStep": "extraction",
+                        "reason": None,
+                        "message": None,
+                    }
+                )
+        queued = sum(1 for result in results if result["status"] == "QUEUED")
+        body = {"queued": queued, "results": results}
+        return {"Payload": io.BytesIO(json.dumps(body).encode())}
+
+    @property
+    def keys(self):
+        return [
+            key for event in self.events for key in event["arguments"]["objectKeys"]
+        ]
+
+
+@pytest.fixture
+def resolver(monkeypatch):
+    module = tool_module("batch_reprocess")
+    fake = FakeResolver()
+    monkeypatch.setattr(module, "_lambda", lambda: fake)
+    monkeypatch.setenv("REPROCESS_FUNCTION_ARN", REPROCESS_ARN)
+    return fake
+
+
+def reprocess_tool():
+    return tool_module("batch_reprocess").BatchReprocessTool()
+
+
+def test_reprocess_invokes_the_resolver_for_the_caller_with_no_identity(
+    sdk, lookup, resolver
 ):
-    tool = tool_module("batch_reprocess").BatchReprocessTool()
-    out = tool.execute(step="extraction", document_ids="a.pdf,g.pdf", caller=SCOPED)
-    assert out["success"] is False
-    assert not [c for c in sdk.calls if c[0] == "reprocess"]
+    out = reprocess_tool().execute(
+        step="extraction", document_ids="a.pdf, b.pdf", caller=SCOPED_AUTHOR
+    )
+
+    assert out["success"] is True
+    assert resolver.function_names == [REPROCESS_ARN]
+    [event] = resolver.events
+    assert "identity" not in event
+    assert event["info"] == {"fieldName": "reprocessDocument"}
+    assert event["arguments"] == {
+        "objectKeys": ["a.pdf", "b.pdf"],
+        "startStep": "extraction",
+    }
+    assert event["actingCaller"] == SCOPED_AUTHOR.to_payload()
+    assert event["actingCaller"]["roles"] == ["Author"]
+    assert event["actingCaller"]["scope"] == ["acme-*"]
 
 
-def test_reprocess_of_a_batch_runs_exactly_the_checked_documents(sdk, lookup):
-    tool = tool_module("batch_reprocess").BatchReprocessTool()
-    out = tool.execute(step="extraction", batch_id="x", caller=caller(scope=["*"]))
+def test_reprocess_returns_each_documents_result(sdk, lookup, resolver):
+    resolver.refuse = {"b.pdf": "MALWARE_GATE"}
+
+    out = reprocess_tool().execute(
+        step="extraction", document_ids="a.pdf,b.pdf", caller=AUTHOR
+    )
+
+    assert out["success"] is True
+    assert (out["documents_queued"], out["documents_failed"]) == (1, 1)
+    assert out["summary"] == {"queued": 1, "failed": 1}
+    assert out["results"] == [
+        {
+            "document_id": "a.pdf",
+            "status": "QUEUED",
+            "start_step": "extraction",
+            "reason": None,
+            "message": None,
+        },
+        {
+            "document_id": "b.pdf",
+            "status": "REFUSED",
+            "start_step": None,
+            "reason": "MALWARE_GATE",
+            "message": "b.pdf cannot be processed again",
+        },
+    ]
+    assert "1 were not queued" in out["message"]
+
+
+@pytest.mark.parametrize(
+    "skip", [["summarization", "evaluation"], "summarization, evaluation"]
+)
+def test_reprocess_passes_the_steps_to_skip(sdk, lookup, resolver, skip):
+    reprocess_tool().execute(
+        step="resume", document_ids="a.pdf", skip=skip, caller=AUTHOR
+    )
+
+    assert resolver.events[0]["arguments"] == {
+        "objectKeys": ["a.pdf"],
+        "startStep": "resume",
+        "skipSteps": ["summarization", "evaluation"],
+    }
+
+
+@pytest.mark.parametrize(
+    "who", [caller(), caller(roles=("Reviewer",)), caller(roles=())]
+)
+def test_reprocess_refuses_a_caller_with_no_reprocess_role_before_any_invoke(
+    sdk, lookup, resolver, who
+):
+    out = reprocess_tool().execute(step="extraction", document_ids="a.pdf", caller=who)
+
+    assert out["success"] is False and "does not permit" in out["error"]
+    assert resolver.events == [] and sdk.calls == []
+
+
+def test_reprocess_refuses_a_caller_whose_write_tools_are_off(sdk, lookup, resolver):
+    out = reprocess_tool().execute(
+        step="extraction",
+        document_ids="a.pdf",
+        caller=caller(roles=("Author",), write=False),
+    )
+
+    assert out["success"] is False and "write tools" in out["error"]
+    assert resolver.events == []
+
+
+@pytest.mark.parametrize("step", ["nonsense", "", "apply_review_changes", "OCR"])
+def test_reprocess_refuses_an_unknown_step_before_any_invoke(
+    sdk, lookup, resolver, step
+):
+    out = reprocess_tool().execute(step=step, document_ids="a.pdf", caller=AUTHOR)
+
+    assert out["success"] is False and "not a step" in out["error"]
+    assert resolver.events == [] and sdk.calls == []
+
+
+@pytest.mark.parametrize("skip", [["extraction"], ["nonsense"], "beginning"])
+def test_reprocess_refuses_a_step_that_cannot_be_skipped(sdk, lookup, resolver, skip):
+    out = reprocess_tool().execute(
+        step="extraction", document_ids="a.pdf", skip=skip, caller=AUTHOR
+    )
+
+    assert out["success"] is False and "cannot be skipped" in out["error"]
+    assert resolver.events == []
+
+
+def test_reprocess_refuses_the_whole_request_for_one_document_outside_scope(
+    sdk, lookup, resolver
+):
+    out = reprocess_tool().execute(
+        step="extraction", document_ids="a.pdf,g.pdf", caller=SCOPED_AUTHOR
+    )
+    assert out["success"] is False and "Unauthorized" in out["error"]
+    assert resolver.events == []
+
+
+def test_reprocess_of_a_batch_runs_exactly_the_checked_documents(sdk, lookup, resolver):
+    out = reprocess_tool().execute(
+        step="extraction", batch_id="x", caller=caller(roles=("Author",), scope=["*"])
+    )
     assert out["success"] is True and out["batch_id"] == "x"
-    reprocess = [c for c in sdk.calls if c[0] == "reprocess"][0][1]
-    assert reprocess["batch_id"] is None
-    assert reprocess["document_ids"] == ["a.pdf", "g.pdf", "b.pdf"]
+    assert resolver.keys == ["a.pdf", "g.pdf", "b.pdf"]
+    assert ("get_document_ids", "x") in sdk.calls
 
 
-def test_reprocess_of_a_batch_with_a_document_outside_scope_is_refused(sdk, lookup):
-    tool = tool_module("batch_reprocess").BatchReprocessTool()
-    out = tool.execute(step="extraction", batch_id="x", caller=SCOPED)
+def test_reprocess_of_a_batch_with_a_document_outside_scope_is_refused(
+    sdk, lookup, resolver
+):
+    out = reprocess_tool().execute(
+        step="extraction", batch_id="x", caller=SCOPED_AUTHOR
+    )
     assert out["success"] is False
-    assert not [c for c in sdk.calls if c[0] == "reprocess"]
+    assert resolver.events == []
+
+
+def test_reprocess_of_a_batch_for_an_unscoped_caller_expands_the_batch(
+    sdk, lookup, resolver
+):
+    """The resolver takes documents, so the batch is expanded for every caller."""
+    out = reprocess_tool().execute(step="extraction", batch_id="x", caller=AUTHOR)
+
+    assert out["documents_queued"] == 3
+    assert resolver.keys == ["a.pdf", "g.pdf", "b.pdf"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [{}, {"document_ids": "a.pdf", "batch_id": "x"}, {"document_ids": " , "}],
+)
+def test_reprocess_needs_documents_or_a_batch_and_not_both(
+    sdk, lookup, resolver, arguments
+):
+    out = reprocess_tool().execute(step="extraction", caller=AUTHOR, **arguments)
+
+    assert out["success"] is False
+    assert resolver.events == []
+
+
+@pytest.mark.parametrize(
+    "error", [("PermissionError", "Access denied: out of scope"), ("KeyError", "'x'")]
+)
+def test_reprocess_reports_a_request_the_resolver_refuses_or_fails_on(
+    sdk, lookup, resolver, error
+):
+    resolver.errors = {1: error}
+
+    out = reprocess_tool().execute(
+        step="extraction", document_ids="a.pdf", caller=AUTHOR
+    )
+
+    assert out == {"success": False, "error": error[1], "step": "extraction"}
+
+
+def test_reprocess_sends_many_documents_in_bounded_requests_each_for_the_caller(
+    sdk, lookup, resolver, monkeypatch
+):
+    from idp_common.run_plan.resolver_requests import DOCUMENTS_PER_REQUEST
+
+    keys = [f"d{n}.pdf" for n in range(DOCUMENTS_PER_REQUEST + 2)]
+
+    out = reprocess_tool().execute(
+        step="extraction", document_ids=",".join(keys), caller=AUTHOR
+    )
+
+    assert out["documents_queued"] == len(keys)
+    assert [len(e["arguments"]["objectKeys"]) for e in resolver.events] == [
+        DOCUMENTS_PER_REQUEST,
+        2,
+    ]
+    assert all(e["actingCaller"] == AUTHOR.to_payload() for e in resolver.events)
+    assert all("identity" not in e for e in resolver.events)
+
+
+def test_reprocess_reads_no_sdk_reprocess():
+    """The tool holds no copy of the reprocess and reaches none through the SDK."""
+    source = open(os.path.join(HANDLER_DIR, "tools", "batch_reprocess.py")).read()
+
+    assert "batch.reprocess" not in source and "batch.rerun" not in source
+    assert "REPROCESS_FUNCTION_ARN" in source
 
 
 def test_process_from_an_s3_location_is_refused_to_a_scoped_caller(sdk):

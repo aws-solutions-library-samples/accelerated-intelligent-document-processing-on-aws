@@ -352,6 +352,204 @@ def test_recent_completions_shows_the_review_status_of_a_routed_document():
     assert _cells(table, 2) == ["rejected"]
 
 
+@pytest.mark.unit
+def test_recent_completions_names_the_review_queue_when_it_is_recorded():
+    table = display.create_recent_completions_table(
+        _status_data(
+            total=1,
+            completed=[_doc(review_status="complete", review_queue="Claims")],
+        )
+    )
+
+    assert _cells(table, 2) == ["complete (Claims)"]
+    assert "complete (Claims)" in _render(table)
+
+
+@pytest.mark.unit
+def test_recent_completions_shows_a_dash_for_a_document_that_was_never_routed():
+    table = display.create_recent_completions_table(
+        _status_data(total=1, completed=[_doc(review_queue="Claims")])
+    )
+
+    assert _cells(table, 2) == ["—"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("routed_by", "text"),
+    [
+        (
+            {"ruleId": "claims-over-1000", "ruleLabel": "Claims over 1000"},
+            "rule 'Claims over 1000'",
+        ),
+        ({"ruleId": "claims-over-1000", "ruleLabel": ""}, "rule 'claims-over-1000'"),
+        (
+            {"tableId": "review-routing", "ruleId": ""},
+            "the routing table's default outcome",
+        ),
+        (
+            {
+                "ruleId": "r1",
+                "ruleLabel": "Bank checks",
+                "fallbackReason": "queue_missing",
+            },
+            "rule 'Bank checks' (fell back to the Default queue: queue_missing)",
+        ),
+        (None, ""),
+        ({}, ""),
+        ("claims", ""),
+    ],
+)
+def test_routed_by_is_said_in_a_line(routed_by, text):
+    assert display.routed_by_text(routed_by) == text
+
+
+@pytest.mark.unit
+def test_json_for_one_document_carries_its_queue_and_what_placed_it_there():
+    doc = _doc(
+        status="COMPLETED",
+        num_sections=1,
+        review_status="in_review",
+        review_queue="Claims",
+        routed_by="rule 'Claims over 1000'",
+    )
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(total=1, completed=[doc]), _stats(total=1, completed=1)
+        )
+    )
+
+    assert payload["review_queue"] == "Claims"
+    assert payload["routed_by"] == "rule 'Claims over 1000'"
+
+
+@pytest.mark.unit
+def test_json_for_one_document_has_no_routing_keys_when_nothing_is_recorded():
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(total=1, completed=[_doc(num_sections=1)]),
+            _stats(total=1, completed=1),
+        )
+    )
+
+    assert "review_queue" not in payload and "routed_by" not in payload
+    assert not {"routing_reason", "policy_failures", "policy_failure_count"} & set(
+        payload
+    )
+
+
+_POLICY_FAILURES = [
+    {
+        "rule_id": "claims.max_amount",
+        "policy": "claims",
+        "name": "max_amount",
+        "reason": "The amount is over the policy limit.",
+        "pages": [2, 3],
+    }
+]
+
+
+@pytest.mark.unit
+def test_json_for_one_document_carries_its_reason_and_failed_policy_rules():
+    doc = _doc(
+        status="COMPLETED",
+        num_sections=1,
+        review_status="in_review",
+        review_queue="Claims",
+        routed_by="rule 'Claims over 1000'",
+        routing_reason="Total 1200 is over 1000",
+        policy_failures=_POLICY_FAILURES,
+        policy_failure_count=14,
+    )
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(total=1, completed=[doc]), _stats(total=1, completed=1)
+        )
+    )
+
+    assert payload["routing_reason"] == "Total 1200 is over 1000"
+    assert payload["policy_failures"] == _POLICY_FAILURES
+    # Of every failed policy rule: the list holds the first of them.
+    assert payload["policy_failure_count"] == 14
+
+
+@pytest.mark.unit
+def test_json_for_one_document_with_a_reason_and_no_failed_policy_rule():
+    doc = _doc(num_sections=1, review_status="in_review", routing_reason="Check it")
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(total=1, completed=[doc]), _stats(total=1, completed=1)
+        )
+    )
+
+    assert payload["routing_reason"] == "Check it"
+    assert "policy_failures" not in payload and "policy_failure_count" not in payload
+
+
+@pytest.mark.unit
+def test_the_final_summary_of_one_document_prints_its_reason_and_failed_rules(capsys):
+    doc = _doc(
+        review_status="in_review",
+        review_queue="Claims",
+        routed_by="rule 'R'",
+        routing_reason="Total 1200 is over 1000",
+        policy_failures=_POLICY_FAILURES,
+        policy_failure_count=14,
+    )
+
+    display.show_final_status_summary(
+        _status_data(total=1, completed=[doc]), _stats(total=1, completed=1)
+    )
+
+    out = capsys.readouterr().out
+    assert "Reason: Total 1200 is over 1000" in out
+    assert "Failed policy rules: 14" in out
+    assert (
+        out.index("Routed by")
+        < out.index("Reason:")
+        < out.index("Failed policy rules")
+        < out.index("FINAL STATUS")
+    )
+
+
+@pytest.mark.unit
+def test_a_reason_is_printed_as_text_not_as_markup(capsys):
+    """It holds a routing rule's text and extracted values; brackets in either
+    are characters, not console styling."""
+    doc = _doc(review_status="in_review", routing_reason="Code [bold]A1[/bold] [x]")
+
+    display.show_final_status_summary(
+        _status_data(total=1, completed=[doc]), _stats(total=1, completed=1)
+    )
+
+    assert "Reason: Code [bold]A1[/bold] [x]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_the_final_summary_of_one_document_prints_its_queue_and_what_placed_it(capsys):
+    doc = _doc(review_status="in_review", review_queue="Claims", routed_by="rule 'R'")
+
+    display.show_final_status_summary(
+        _status_data(total=1, completed=[doc]), _stats(total=1, completed=1)
+    )
+
+    out = capsys.readouterr().out
+    assert "Review queue: Claims" in out
+    assert "Routed by: rule 'R'" in out
+    assert out.index("Review queue") < out.index("FINAL STATUS")
+
+
+@pytest.mark.unit
+def test_the_final_summary_prints_no_routing_line_when_nothing_is_recorded(capsys):
+    display.show_final_status_summary(
+        _status_data(total=1, completed=[_doc()]), _stats(total=1, completed=1)
+    )
+
+    out = capsys.readouterr().out
+    assert "Review queue" not in out and "Routed by" not in out
+    assert "Reason:" not in out and "Failed policy rules" not in out
+
+
 # ---------------------------------------------------------------------------
 # create_failures_table
 # ---------------------------------------------------------------------------

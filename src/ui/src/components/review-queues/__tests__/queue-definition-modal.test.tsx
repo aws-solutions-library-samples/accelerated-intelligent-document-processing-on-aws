@@ -282,10 +282,31 @@ describe('the queue dialog', () => {
     expect(labels).not.toContain('Confidence threshold');
   });
 
-  it('describes the Default queue as where documents with confidence alerts arrive', () => {
+  it('describes the Default queue as what the built-in rules and a missing or disabled queue send documents to', () => {
     open({ queue: queue({ id: 'default', name: 'Default', isDefaultQueue: true }) });
-    expect(modal().findContent().getElement().textContent).toContain(
-      'Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.',
+    const text = modal().findContent().getElement().textContent ?? '';
+    expect(text).toContain(
+      'The built-in routing rules send documents here, and so does a routing rule whose own queue is missing or disabled. Documents are held for review only while this queue is enabled.',
+    );
+    expect(text).not.toContain('HITL');
+    expect(field('Enabled').findConstraint()!.getElement().textContent).toBe(
+      'While the Default queue is off, no document is held for review.',
+    );
+  });
+
+  it('says of another queue that routing rules name it by its id, and where its documents go while it is off', () => {
+    open({ queue: queue() });
+    expect(alerts()).toHaveLength(0);
+    expect(field('Queue id').findConstraint()!.getElement().textContent).toBe('Routing rules name the queue by this id.');
+    expect(field('Enabled').findConstraint()!.getElement().textContent).toBe(
+      'Documents a routing rule sends to a disabled queue go to the Default queue instead.',
+    );
+  });
+
+  it('does not say that priority waits for a second queue', () => {
+    open({ queue: queue() });
+    expect(field('Priority').findConstraint()!.getElement().textContent).toBe(
+      'A whole number. For information: orders the queues and Next item.',
     );
   });
 
