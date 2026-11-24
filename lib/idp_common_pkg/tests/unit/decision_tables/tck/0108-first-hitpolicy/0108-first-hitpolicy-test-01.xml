@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testCases xmlns="http://www.omg.org/spec/DMN/20160719/testcase" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+	<modelName>0108-first-hitpolicy.dmn</modelName>
+	<labels>
+		<label>Compliance Level 2</label>
+		<label>Item Definition</label>
+		<label>Hit Policy: FIRST</label>
+		<label>Decision Table: Multiple Output</label>
+		<label>Data Type: String</label>
+		<label>Data Type: Number</label>
+		<label>Data Type: Boolean</label>
+		<label>Data Type: Structure</label>
+	</labels>
+	<testCase id="001">
+		<inputNode name="Age">
+			<value xsi:type="xsd:decimal">19</value>
+		</inputNode>
+		<inputNode name="RiskCategory">
+			<value xsi:type="xsd:string">Medium</value>
+		</inputNode>
+		<inputNode name="isAffordable">
+			<value xsi:type="xsd:boolean">true</value>
+		</inputNode>
+		<resultNode name="Approval" type="decision">
+			<expected>
+				<component name="Status">
+					<value xsi:type="xsd:string">Approved</value>
+				</component>
+				<component name="Rate">
+					<value xsi:type="xsd:string">Best</value>
+				</component>
+			</expected>
+		</resultNode>
+	</testCase>
+	<testCase id="002">
+		<inputNode name="Age">
+			<value xsi:type="xsd:decimal">13</value>
+		</inputNode>
+		<inputNode name="RiskCategory">
+			<value xsi:type="xsd:string">Medium</value>
+		</inputNode>
+		<inputNode name="isAffordable">
+			<value xsi:type="xsd:boolean">true</value>
+		</inputNode>
+		<resultNode name="Approval" type="decision">
+			<expected>
+				<component name="Status">
+					<value xsi:type="xsd:string">Approved</value>
+				</component>
+				<component name="Rate">
+					<value xsi:type="xsd:string">Standard</value>
+				</component>
+			</expected>
+		</resultNode>
+	</testCase>
+	<testCase id="003">
+		<inputNode name="Age">
+			<value xsi:type="xsd:decimal">10</value>
+		</inputNode>
+		<inputNode name="RiskCategory">
+			<value xsi:type="xsd:string">Low</value>
+		</inputNode>
+		<inputNode name="isAffordable">
+			<value xsi:type="xsd:boolean">true</value>
+		</inputNode>
+		<resultNode name="Approval" type="decision">
+			<expected>
+				<component name="Status">
+					<value xsi:type="xsd:string">Declined</value>
+				</component>
+				<component name="Rate">
+					<value xsi:type="xsd:string">Standard</value>
+				</component>
+			</expected>
+		</resultNode>
+	</testCase>
+</testCases>

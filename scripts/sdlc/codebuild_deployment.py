@@ -1151,6 +1151,38 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
 _REGIONAL_CONFIGS: dict[tuple[str, str], str] = {}
 
 
+#: Sets `hitl.enabled: false` and nothing else. A new stack has Review Routing
+#: on, and a document that needs review then waits in a review queue for a
+#: reviewer, which no test deployment has.
+REVIEW_ROUTING_OFF_CONFIG = "scripts/sdlc/config/review-routing-off.yaml"
+
+
+def switch_off_review_routing(stack_name, region=None):
+    """Switch Review Routing off in the default profile of a test deployment.
+
+    Uploads REVIEW_ROUTING_OFF_CONFIG to the `default` profile, which changes
+    that one setting and keeps the rest of the profile. Profiles a step creates
+    afterwards start from `default`, so they are off too. Run it once the stack
+    is deployed and before the first document is processed.
+
+    Returns {"success": True}, or {"success": False, "error": ...} when the
+    upload did not exit 0.
+    """
+    region_flag = f" --region {region}" if region else ""
+    cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file(REVIEW_ROUTING_OFF_CONFIG)} --config-version default{region_flag}"
+    result = run_command(cmd, check=False)
+    returncode = getattr(result, "returncode", 0)
+    if returncode != 0:
+        output = getattr(result, "stderr", "") or getattr(result, "stdout", "") or ""
+        detail = output.strip().splitlines()[-1] if output.strip() else "no output"
+        return {
+            "success": False,
+            "error": f"the configuration upload exited {returncode}: {detail}",
+        }
+    print("✅ Review Routing is off in the default profile")
+    return {"success": True}
+
+
 #: The long-lived review stack the MR UX test (scripts/sdlc/ai_ux_test.py) runs
 #: against, updated in place by the SCHEDULED build only. Its membership of
 #: SWEEP_EXEMPT_STACK_NAMES is what keeps the Step 0 stack sweep off it and its
@@ -1905,12 +1937,14 @@ def test_step5_rule_validation(stack_name):
     print("Step 5: Testing rule validation...")
     config_version = "rule-validation"
     config_path = "config_library/unified/rule-validation/config.yaml"
-    sample_file = "medicare_respiratory_pa_packet.pdf"
-    sample_dir = "samples/rule-validation"
+    # The bank statement the preset's policy rules are written for. Its name is
+    # what makes every policy class of the preset apply to it.
+    sample_file = "bank-statement-multipage.pdf"
+    sample_dir = "samples"
     batch_id = "test-rules"
-    verify_string = "global_periods"
+    verify_string = "statement_identity"
     result_location = "rule_validation/sections/section_1_responses.json"
-    content_path = "responses.global_periods.0.policy_type"
+    content_path = "responses.statement_identity.0.policy_type"
 
     print(f"Uploading rule validation config from: {config_path}")
     cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file(config_path)} --config-version {config_version}"
@@ -4001,9 +4035,10 @@ def test_step14_pipeline_hooks(stack_name):
         # Two traps here, both hit in real pipeline runs:
         #
         # 1. Step 14 shares this state machine with the other parallel steps, and
-        #    since PreprocessingHook is StartAt and PostprocessingHook is on the
-        #    shared tail, EVERY execution emits both hook results (invoked=0 for a
-        #    hook-less config). Matching on hook point alone latches onto a
+        #    since PreprocessingHook is the first Task state a run from the
+        #    beginning enters and PostprocessingHook is on the shared tail, EVERY
+        #    such execution emits both hook results (invoked=0 for a hook-less
+        #    config). Matching on hook point alone latches onto a
         #    foreign execution. So the target execution is identified by its
         #    INPUT's config_version — only our document is pinned to it — via a
         #    cheap describe_execution, with no history scan at all.
@@ -4730,6 +4765,9 @@ TERRAFORM_REPLAN_LISTED_CHANGES = 25
 TERRAFORM_CONVERGENCE_STEP = "Step 2b: Terraform re-plan after apply is empty"
 #: The step_results row a Terraform run refused before the steps reports under.
 TERRAFORM_STEPS_REFUSED_ROW = "Steps not started (too little build time left)"
+#: The step_results row a run reports under when Review Routing could not be
+#: switched off, so the steps were not started.
+REVIEW_ROUTING_OFF_ROW = "Steps not started (Review Routing could not be switched off)"
 
 #: The resource-parity check (check_terraform_parity): a CloudFormation twin of
 #: the same commit, deployed beside the Terraform deployment, compared with it by
@@ -6841,6 +6879,35 @@ def deploy_and_test_stack(
                         },
                     },
                 }
+
+        # The stack is new, so Review Routing is on, and a document that needs
+        # review would wait for a reviewer instead of completing. No step
+        # reviews one, so the steps run with it off.
+        switched = switch_off_review_routing(stack_name)
+        if not switched.get("success"):
+            error = (
+                "Could not switch Review Routing off in the default profile: "
+                f"{switched.get('error')}"
+            )
+            print(f"❌ Not starting the steps: {error}")
+            refused = {
+                "stack_name": stack_name,
+                "success": False,
+                "failure_type": "deploy",
+                "error": error,
+                "convergence_failed": convergence_failed,
+                "parity_failed": parity_failed,
+                # A failed row of its own, as for the refusal above: the summary
+                # reads the rows in preference to `success`, so a re-plan row that
+                # passed would otherwise render this run as a pass.
+                "step_results": {
+                    **convergence_rows,
+                    REVIEW_ROUTING_OFF_ROW: {"status": "failed", "error": error},
+                },
+            }
+            if terraform is not None:
+                refused["iac"] = IAC_TERRAFORM
+            return refused
 
         # Run tests 3-10 in parallel (Step 4 BDA now uses config-sync-bda + --config-version, no activation race)
         print(f"\n{'=' * 80}")

@@ -29,6 +29,7 @@ exclude = [
 # prompts. tests/unit/config/test_default_prompt_files.py builds a wheel to check.
 "idp_common.config.system_defaults" = ["*.yaml", "*.md", "prompts/**/*.txt"]
 "idp_common.discovery.prompts" = ["*.jinja2"]
+"idp_common.review_queues" = ["status_object.schema.json"]
 "idp_common.rule_validation.z3.config" = ["*.yaml"]
 
 [project]
@@ -76,6 +77,21 @@ review_queues = []
 # dependencies; Pillow scales page images to the size the model reads.
 decision_model = [
   "Pillow==13.0.0",
+]
+
+# Run plans (idp_common.run_plan): where a run starts and which steps it skips.
+# pydantic and boto3 are base dependencies
+run_plan = []
+
+# Decision tables (idp_common.decision_tables): models, unary tests and the
+# engine. pydantic is a base dependency. Reading and writing DMN XML is the
+# separate `dmn` extra, so a Lambda that only evaluates tables installs no parser.
+decision_tables = []
+
+# DMN XML import and export (idp_common.decision_tables.dmn). defusedxml parses
+# the uploaded file with DTDs and entities refused.
+dmn = [
+  "defusedxml==0.7.1",
 ]
 
 # Development only dependencies
@@ -326,7 +342,9 @@ test = [
   "pypdfium2>=5.5.0",
 ]
 
-# Full package with all dependencies
+# Full package with all dependencies. The extras that declare no dependency of
+# their own (core, notifications, review_queues, run_plan, decision_tables) add
+# nothing here.
 all = [
   "stickler-eval[docsplit]==1.0.2",
   "munkres==1.1.4",  # see the evaluation extra
@@ -355,6 +373,7 @@ all = [
   "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",  # cap rationale: see the [agents] extra
   "jsonschema>=4.0.0",
   "PyJWT[crypto]>=2.10.1",  # see the [agents] extra
+  "defusedxml==0.7.1",      # see the [dmn] extra
   # "s3fs==2023.12.2" - - disabled till we fix package dependencies
 ]
 agentic-extraction = [

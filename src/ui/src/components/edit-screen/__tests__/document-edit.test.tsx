@@ -111,6 +111,18 @@ const rawDoc = (over: Record<string, unknown> = {}) => ({
 
 const queryOf = (call: unknown[]) => String((call[0] as { query: string }).query);
 const processCalls = () => graphql.mock.calls.filter((c) => queryOf(c).includes('processChanges'));
+const planCalls = () => graphql.mock.calls.filter((c) => queryOf(c).includes('getProcessChangesPlan'));
+/** What the server says Process Changes will run for the document: it starts at policy rule validation. */
+const PROCESS_CHANGES_PLAN = {
+  mode: 'pipeline',
+  startStep: 'policy_rule_validation',
+  steps: [
+    { id: 'beginning', label: 'Beginning', state: 'skipped' },
+    { id: 'policy_rule_validation', label: 'Policy Rule Validation', state: 'run' },
+    { id: 'summarization', label: 'Summarization', state: 'run' },
+  ],
+  sections: [],
+};
 
 const renderEditor = async (seed?: DirectEditOptions['seed'], path = '/documents/in%2Fdoc.pdf/edit') => {
   renderWithIntl(
@@ -153,6 +165,7 @@ beforeEach(() => {
     isAnnotatorOnly: false,
   });
   graphql.mockReset().mockImplementation(async (req: { query: string }) => {
+    if (req.query.includes('getProcessChangesPlan')) return { data: { getProcessChangesPlan: PROCESS_CHANGES_PLAN } };
     if (req.query.includes('processChanges')) return { data: { processChanges: { success: true } } };
     if (req.query.includes('copyToBaseline')) return { data: { copyToBaseline: { success: true, message: 'started' } } };
     return { data: { getDocument: server.doc } };
@@ -183,7 +196,7 @@ describe('the direct edit', () => {
     await renderEditor();
     expect(menuNames()).toEqual(['Reports', 'More Actions']);
     expect(barButtonLabels()).toEqual(['Refresh', 'Cancel', 'Save', 'Process Changes']);
-    expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Processing Report']);
+    expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Policy Rule Validation Summary', 'Processing Report']);
     expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Use As Evaluation Baseline']);
     expect(regroupItem()).toMatchObject({ disabled: false });
     expect(editorProps!.isReadOnly).toBe(false);
@@ -263,6 +276,17 @@ describe('the direct edit', () => {
     expect(processCalls()).toHaveLength(0);
     const modal = createWrapper(document.body).findModal()!;
     expect(modal.findHeader().getElement().textContent).toBe('Confirm Reprocessing');
+    // The dialog shows the steps the server answers for this document; the screen names none itself.
+    await waitFor(() => expect(modal.findContent().getElement().textContent).toContain('Starts at Policy Rule Validation'));
+    expect(planCalls().map((c) => (c[0] as { variables: unknown }).variables)).toEqual([{ objectKey: 'in/doc.pdf' }]);
+    expect(
+      modal
+        .findContent()
+        .findList()!
+        .findItems()
+        .map((item) => item.getElement().textContent),
+    ).toEqual(['OCR (beginning)Skipped', 'Policy Rule ValidationRuns', 'SummarizationRuns']);
+    expect(processCalls()).toHaveLength(0);
     modal
       .findFooter()!
       .findAllButtons()
@@ -416,6 +440,39 @@ describe('the direct edit', () => {
       disabled: true,
       disabledReason: 'This document has no summary',
     });
+  });
+
+  it('offers the Policy Rule Validation Summary on a document that has the report, and opens it', async () => {
+    server.doc = rawDoc({ RuleValidationResultUri: 's3://out/in/doc.pdf/rule_validation/consolidated/consolidated_summary.md' });
+    await renderEditor();
+    expect(menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary')).toMatchObject({ disabled: false });
+    chooseMenuItem('Reports', 'Policy Rule Validation Summary');
+    const modal = createWrapper(document.body)
+      .findAllModals()
+      .find((m) => m.isVisible() && m.findHeader().getElement().textContent === 'Policy Rule Validation Summary')!;
+    expect(modal.findContent().getElement().querySelector('[data-testid="summary-report"]')!.textContent).toBe(
+      's3://out/in/doc.pdf/rule_validation/consolidated/consolidated_summary.md',
+    );
+  });
+
+  it('keeps the Policy Rule Validation Summary, disabled, when the document has no such report', async () => {
+    await renderEditor();
+    expect(menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary')).toMatchObject({
+      disabled: true,
+      disabledReason: 'This document has no policy rule validation summary',
+    });
+  });
+
+  it('offers the Policy Rule Validation Summary on a document in a review queue, where Summary waits', async () => {
+    server.doc = rawDoc({
+      HITLStatus: 'in_review',
+      ObjectStatus: 'HITL_IN_PROGRESS',
+      SummaryReportUri: 's3://x/summary.md',
+      RuleValidationResultUri: 's3://x/rules.md',
+    });
+    await renderEditor();
+    expect(menuItems('Reports').find((i) => i.text === 'Summary')).toMatchObject({ disabled: true });
+    expect(menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary')).toMatchObject({ disabled: false });
   });
 
   it('copies a finished document to the evaluation baseline, for an Admin or Author', async () => {

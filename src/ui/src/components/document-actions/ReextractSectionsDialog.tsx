@@ -89,7 +89,7 @@ const messages = defineMessages<{
   warning: {
     id: 'documentActions.reextract.warning',
     defaultMessage:
-      'These sections are extracted again: {sections}. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.',
+      'These sections are extracted again: {sections}. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.',
     description:
       'Warning in the Re-extract Sections dialog once sections are chosen: what re-extracting replaces. {sections} lists the chosen sections, each worded as "Section <number>", separated by commas. OCR (optical character recognition) and classification are processing steps.',
   },

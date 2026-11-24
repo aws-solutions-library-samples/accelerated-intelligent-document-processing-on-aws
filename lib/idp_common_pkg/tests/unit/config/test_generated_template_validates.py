@@ -26,6 +26,7 @@ from idp_common.config.merge_utils import (
     template_sections,
     validate_config,
 )
+from idp_common.config.models import IDPConfig
 
 PROMPT_KEYS = ("system_prompt", "task_prompt", "user_prompt")
 
@@ -175,10 +176,10 @@ def test_the_derived_section_universe_is_not_empty():
 # #1691), each with its own reason. ``all`` copies each section's default values,
 # and an uploaded file is merged over the stack's preset or the profile's current
 # configuration rather than over the system defaults, so a section in ``all``
-# reverts whatever that configuration changed in it. For these three the revert
-# would switch a feature on or off, so they keep the deployment's own setting
-# unless asked for by name. A section placed in neither ``all`` nor here is
-# unaccounted for and fails the closure test below.
+# reverts whatever that configuration changed in it. For these the revert would
+# switch a feature on or off, or replace rules an Admin wrote, so they keep the
+# deployment's own setting unless asked for by name. A section placed in neither
+# ``all`` nor here is unaccounted for and fails the closure test below.
 EXCLUDED_FROM_ALL = {
     "rule_validation": (
         "on in the system defaults and off in most presets, so adding it would "
@@ -191,6 +192,10 @@ EXCLUDED_FROM_ALL = {
     "hitl": (
         "off in the system defaults, so adding it would switch human review off "
         "on any profile where an administrator had turned it on"
+    ),
+    "routing": (
+        "an uploaded file that asks for every section would replace an Admin's "
+        "routing rules with the built-in table"
     ),
 }
 
@@ -525,6 +530,25 @@ def test_no_template_carries_an_empty_list(pattern, features, include_prompts):
     )
 
     assert _empty_lists(template) == set()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern", VALID_PATTERNS)
+def test_an_empty_list_inside_a_section_is_left_out(pattern):
+    """The routing table's default outcome has ``actions: []`` in the system
+    defaults ("the document is not reviewed"). The template leaves that key out
+    and keeps the rest of the outcome, and a routing rule keeps its actions."""
+    template = yaml.safe_load(
+        generate_config_template(features=["routing"], pattern=pattern)
+    )
+
+    table = template["routing"]["tables"][0]
+    assert "actions" not in table["default_outcome"]
+    assert "reason" in table["default_outcome"]
+    assert all(rule["actions"] for rule in table["rules"])
+    # Read back, the template still means "not reviewed" for the default outcome.
+    config = IDPConfig(**template)
+    assert config.routing.tables[0].default_outcome.actions == []
 
 
 @pytest.mark.unit

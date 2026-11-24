@@ -1,0 +1,138 @@
+{
+  "steps": [
+    {
+      "id": "beginning",
+      "label": "Beginning",
+      "required": true,
+      "modes": [
+        "pipeline",
+        "bda"
+      ],
+      "states": {
+        "pipeline": [
+          "OCRStep"
+        ],
+        "bda": [
+          "InvokeDataAutomationStep",
+          "BDA_AssembleDocumentStep",
+          "AssembleExistingDocumentStep"
+        ]
+      }
+    },
+    {
+      "id": "classification",
+      "label": "Classification",
+      "required": true,
+      "modes": [
+        "pipeline"
+      ],
+      "states": {
+        "pipeline": [
+          "ClassificationStep"
+        ]
+      }
+    },
+    {
+      "id": "extraction",
+      "label": "Extraction",
+      "required": true,
+      "modes": [
+        "pipeline"
+      ],
+      "states": {
+        "pipeline": [
+          "ExtractionPlanStep",
+          "ShardExtractionStep",
+          "ExtractionMergeStep",
+          "ExtractionStep"
+        ]
+      }
+    },
+    {
+      "id": "assessment",
+      "label": "Assessment",
+      "required": false,
+      "modes": [
+        "pipeline"
+      ],
+      "states": {
+        "pipeline": [
+          "AssessmentStep"
+        ]
+      }
+    },
+    {
+      "id": "policy_rule_validation",
+      "label": "Policy Rule Validation",
+      "required": false,
+      "modes": [
+        "pipeline",
+        "bda"
+      ],
+      "states": {
+        "pipeline": [
+          "PolicyClassificationStep",
+          "PolicyRuleValidationStep",
+          "PolicyRuleConsolidationStep"
+        ],
+        "bda": [
+          "PolicyClassificationStep",
+          "PolicyRuleValidationStep",
+          "PolicyRuleConsolidationStep"
+        ]
+      }
+    },
+    {
+      "id": "summarization",
+      "label": "Summarization",
+      "required": false,
+      "modes": [
+        "pipeline",
+        "bda"
+      ],
+      "states": {
+        "pipeline": [
+          "SummarizationStep"
+        ],
+        "bda": [
+          "SummarizationStep"
+        ]
+      }
+    },
+    {
+      "id": "evaluation",
+      "label": "Evaluation",
+      "required": false,
+      "modes": [
+        "pipeline",
+        "bda"
+      ],
+      "states": {
+        "pipeline": [
+          "EvaluationStep"
+        ],
+        "bda": [
+          "EvaluationStep"
+        ]
+      }
+    }
+  ],
+  "display_steps": [
+    {
+      "id": "apply_review_changes",
+      "label": "Apply Review Changes",
+      "before": "policy_rule_validation",
+      "review_completed_only": true
+    },
+    {
+      "id": "review_routing",
+      "label": "Review Routing",
+      "before": "summarization",
+      "review_completed_only": false
+    }
+  ],
+  "aliases": {
+    "ocr": "beginning"
+  },
+  "resume": "resume"
+}

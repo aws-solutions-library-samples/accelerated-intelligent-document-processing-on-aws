@@ -10,7 +10,8 @@
  * existing values, and overwrites invalid values with "llm".
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 import type { ComponentProps } from 'react';
 import { IntlProvider } from 'react-intl';

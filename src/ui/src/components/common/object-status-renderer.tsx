@@ -29,6 +29,10 @@ const IN_FLIGHT = new Set([
   'EXTRACTING',
   'ASSESSING',
   'POSTPROCESSING',
+  // Policy rule validation: classifying the policy, validating the rules, consolidating.
+  'RULE_VALIDATION_POLICY_CLASSIFICATION',
+  'RULE_VALIDATION',
+  'RULE_VALIDATION_ORCHESTRATOR',
   'SUMMARIZING',
   'EVALUATING',
 ]);

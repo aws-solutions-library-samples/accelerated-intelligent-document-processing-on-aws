@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useContext, createContext } from 'react';
 import { Document } from '../types/documents';
-import type { DocumentDetailsOptions, DocumentView } from '../hooks/use-graphql-api';
+import type { DocumentDetailsOptions, DocumentView, ReprocessDocuments } from '../hooks/use-graphql-api';
 
 export type { DocumentView };
 
@@ -31,7 +31,7 @@ export interface DocumentsContextValue {
   latestTruncated: boolean;
   toolsOpen: boolean;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
-  reprocessDocuments: (objectKeys: string[], version?: string, revision?: number) => Promise<unknown>;
+  reprocessDocuments: ReprocessDocuments;
   abortWorkflows: (objectKeys: string[]) => Promise<unknown>;
 }
 

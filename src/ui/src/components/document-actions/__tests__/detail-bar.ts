@@ -11,7 +11,7 @@ export const DETAIL_MENUS = ['Reports', 'More Actions'] as const;
 export const DETAIL_ITEM_IDS: Record<string, string> = {
   Summary: 'summary',
   'Evaluation Report': 'evaluation',
-  'Rule Validation Summary': 'rule-validation',
+  'Policy Rule Validation Summary': 'rule-validation',
   'Estimated Cost': 'cost',
   'Processing Flow': 'flow',
   'Edit Page Grouping': 'regroup',

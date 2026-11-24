@@ -374,6 +374,43 @@ class TestDocumentInFlight:
         assert env.result_exists()
         assert env.queued() == 0
 
+    @pytest.mark.parametrize(
+        "status",
+        ["RUNNING", "QUEUED", "EXTRACTING", "CLASSIFYING", "OCR", "RULE_VALIDATION"],
+    )
+    def test_an_admin_is_refused_while_the_document_is_processing(self, env, status):
+        """Process Changes queues a run, and a second run beside one in progress
+        would have both write the document. The refusal is about the document's
+        state, so it applies to an Admin too, and nothing is written."""
+        _seed(env, **_owned(), ObjectStatus=status)
+        with pytest.raises(ValueError, match="^RUN_IN_PROGRESS: ") as refused:
+            _call(env, groups=("Admin",), username="admin", email="admin@example.com")
+        # A refusal (400 through the dispatcher), not a processing error.
+        assert env.mod._is_refusal(refused.value)
+        assert status in str(refused.value)
+        row = env.row()
+        assert row["ObjectStatus"] == status
+        assert row["HITLStatus"] == "InProgress"
+        assert "HITLReviewedBy" not in row
+        assert env.result_exists()
+        assert env.queued() == 0
+
+    @pytest.mark.parametrize(
+        "status", ["QUARANTINED", "MALWARE_SCAN_FAILED", "MALWARE_SCANNING"]
+    )
+    def test_an_admin_cannot_requeue_a_document_the_malware_gate_holds(
+        self, env, status
+    ):
+        """A run does not go back through the ingest gate, so queueing one here
+        would hand a file nothing has cleared to OCR and Bedrock."""
+        _seed(env, ObjectStatus=status)
+        with pytest.raises(ValueError, match="^MALWARE_GATE: ") as refused:
+            _call(env, groups=("Admin",), username="admin", email="admin@example.com")
+        assert env.mod._is_refusal(refused.value)
+        assert env.row()["ObjectStatus"] == status
+        assert env.result_exists()
+        assert env.queued() == 0
+
 
 @pytest.mark.unit
 class TestConfigScope:
@@ -483,7 +520,6 @@ class TestStillAllowed:
             pytest.param({}, id="no-review"),
             pytest.param(_owned(HITLStatus="Review Completed"), id="finished"),
             pytest.param(_owned(HITLStatus="rejected"), id="queue-rejected"),
-            pytest.param({**_owned(), "ObjectStatus": "RUNNING"}, id="in-flight"),
         ],
     )
     def test_an_admin_is_unaffected(self, env, case):

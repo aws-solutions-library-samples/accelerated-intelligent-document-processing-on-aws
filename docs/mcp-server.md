@@ -213,15 +213,23 @@ Process documents from S3 or base64 content. To process documents via S3:
 
 ### reprocess
 
-Reprocess documents from classification or extraction steps.
+Process documents again, starting at a pipeline step. The run produces the output of
+that step and of every later step again; what the earlier steps produced is kept. The
+tool asks the stack's reprocess function to do the work, as the web UI, the SDK and the
+CLI do, so it offers the same steps and refuses the same requests (see
+[Reprocessing](./document-versions.md#reprocessing)).
 
 **Input Schema:**
 ```json
 {
   "step": {
     "type": "string",
-    "enum": ["classification", "extraction"],
-    "description": "Pipeline step to reprocess from"
+    "description": "Pipeline step to start at. One of: beginning, classification, extraction, assessment, policy_rule_validation, summarization, evaluation, ocr, resume. 'ocr' is the beginning; 'resume' starts each document at the first step it has no output for. In BDA mode 'classification' and 'extraction' mean the beginning, and 'assessment' does not exist."
+  },
+  "skip": {
+    "type": "array",
+    "items": { "type": "string" },
+    "description": "Optional steps to leave out of the run; their existing output is kept. Any of: assessment, policy_rule_validation, summarization, evaluation."
   },
   "document_ids": {
     "type": "string",
@@ -238,16 +246,34 @@ Reprocess documents from classification or extraction steps.
 }
 ```
 
+`step` is required. The step names are listed in the description rather than as an
+`enum`, and a value outside the list is refused by the server with `UNKNOWN_STEP`.
+
 **Output Schema:**
 ```json
 {
   "success": "boolean",
   "batch_id": "string",
   "documents_queued": "integer",
+  "documents_failed": "integer",
   "step": "string",
+  "summary": { "queued": "integer", "failed": "integer" },
+  "results": [
+    {
+      "document_id": "string",
+      "status": "QUEUED | REFUSED | FAILED",
+      "start_step": "string",
+      "reason": "string",
+      "message": "string"
+    }
+  ],
   "message": "string"
 }
 ```
+
+A document the server refuses (it is being processed, it lacks the output of the
+earlier steps, the step does not exist in its processing mode) is reported in
+`results` with its reason; it does not fail the call or stop the other documents.
 
 **Example Request:**
 ```json
@@ -257,6 +283,7 @@ Reprocess documents from classification or extraction steps.
     "name": "reprocess",
     "arguments": {
       "step": "extraction",
+      "skip": ["evaluation"],
       "batch_id": "mcp-batch-20250124-143000-5c1d9e2a"
     }
   }
@@ -269,8 +296,13 @@ Reprocess documents from classification or extraction steps.
   "success": true,
   "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
   "documents_queued": 5,
+  "documents_failed": 0,
   "step": "extraction",
-  "message": "Successfully queued 5 documents for extraction reprocessing"
+  "summary": { "queued": 5, "failed": 0 },
+  "results": [
+    { "document_id": "mcp-batch-20250124-143000-5c1d9e2a/invoice-1.pdf", "status": "QUEUED", "start_step": "extraction" }
+  ],
+  "message": "Queued 5 of 5 documents for reprocessing from extraction"
 }
 ```
 
@@ -441,8 +473,9 @@ no error-detail field either way. What you get instead is the **count** of failu
 
 `all_complete` is `true` once no document is queued or running. A document
 waiting for human review (`awaiting_review`, status `HITL_IN_PROGRESS`) counts as
-settled, because nothing more happens to it until a reviewer completes or rejects
-it in the web UI's review queues, so an agent polling this tool stops rather than
+settled, because nothing more happens to it until its review ends in the web UI's
+review queues (completed, rejected or sent back), so an agent polling this tool
+stops rather than
 waiting on a person. It does not mean every document has an outcome: check
 `awaiting_review` before treating the batch's results as final.
 `progress.percentage` is the share of documents that **completed**, so it stays
@@ -710,8 +743,8 @@ the functions' IAM roles bound what the server as a whole can reach:
 
 - The MCP handler reads the tracking and configuration tables, reads and writes the
   Input, Output, Reporting and MCP content buckets (processing copies documents into
-  the Input bucket), and may delete only in the Output bucket (reprocessing replaces
-  a document's earlier section results). It runs the analytics agent for `search`
+  the Input bucket), and may invoke the stack's reprocess function, which does the
+  clearing and queueing of a reprocess; the handler itself deletes nothing. It runs the analytics agent for `search`
   against the reporting database.
 - The caller interceptor reads the user pool (`AdminGetUser`), the Users table, the
   credential registry and its signing key, and nothing else.

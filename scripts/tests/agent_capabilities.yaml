@@ -206,20 +206,22 @@ roles:
       - {kind: write, bucket: OutputBucket, key: /*/summary/fulltext.txt,
          uses: Chat with Document caches the assembled text at
            <document key>/summary/fulltext.txt}
-  # The MCP handler's batch tools upload, read, reprocess and clean up documents
-  # through idp_sdk; its S3 scope is the batch tools' and is declared as granted.
+  # The MCP handler's batch tools upload and read documents through idp_sdk; its S3
+  # scope is the batch tools' and is declared as granted. It deletes nothing: the
+  # reprocess tool invokes the reprocess resolver, which clears and queues a
+  # document under its own role.
   AgentCoreMCPHandlerFunction:
     template: template.yaml
     object_access:
       - {kind: read, bucket: InputBucket, key: /*, uses: batch tools read uploaded documents}
       - {kind: read, bucket: OutputBucket, key: /*, uses: get_results reads processing output}
       - {kind: write, bucket: InputBucket, key: /*, uses: batch_run uploads documents}
-      - {kind: write, bucket: OutputBucket, key: /*, uses: batch_reprocess rewrites output}
+      - {kind: write, bucket: OutputBucket, key: /*,
+         uses: "batch_run records the batch at cli-batches/<batch id>/metadata.json
+           (idp_sdk batch_processor, _store_batch_metadata)"}
       - {kind: write, bucket: MCPContentBucket, key: /*, uses: batch_run stages content under temp/}
       - {kind: write, bucket: ReportingBucket, key: /*,
          uses: "search runs Athena, which writes results with the caller's credentials"}
-      - {kind: delete, bucket: OutputBucket, key: /*,
-         uses: batch_reprocess clears prior output (idp_sdk rerun_processor)}
   ExtractionFunction:
     template: patterns/unified/template.yaml
     object_access:

@@ -22,7 +22,7 @@ same class of fact.
 
 The sample-file fixtures are deliberately arranged so that the order
 ``iter_sample_files`` yields differs from the order ``generate_sample_file_list``
-returns (a top-level ``rule-validation.pdf`` beside the ``rule-validation/``
+returns (a top-level ``review-routing.pdf`` beside the ``review-routing/``
 batch directory sorts differently before and after the final sort). A fixture
 whose walk order already matches the assertion cannot tell a correct
 implementation from one that forgot to sort.
@@ -461,7 +461,7 @@ def test_an_unreadable_bucket_warns_and_continues_without_uploading(
 def _samples_tree(root):
     """A samples/ tree covering every selection rule, in an awkward order.
 
-    ``rule-validation.pdf`` sits beside the ``rule-validation/`` batch directory
+    ``review-routing.pdf`` sits beside the ``review-routing/`` batch directory
     on purpose: ``.`` (0x2E) sorts before ``/`` (0x2F), so the final sorted list
     puts the file first while the directory walk yields it second. That is what
     makes the difference between ``iter_sample_files`` and
@@ -471,9 +471,10 @@ def _samples_tree(root):
     _write(s / "alpha.PDF", "%PDF upper-case extension")
     _write(s / "zebra.webp", "webp bytes")
     _write(s / "report.xlsx", "not a document")
-    _write(s / "rule-validation.pdf", "%PDF top level")
-    _write(s / "rule-validation" / "rv_a.tiff", "tiff bytes")
-    _write(s / "rule-validation" / "notes.md", "prose")
+    _write(s / "review-routing.pdf", "%PDF top level")
+    _write(s / "review-routing" / "rr_a.tiff", "tiff bytes")
+    _write(s / "review-routing" / "notes.md", "prose")
+    _write(s / "rule-validation" / "policy.pdf", "%PDF a policy document")
     _write(s / "w2" / "W2_10.pdf", "%PDF ten")
     _write(s / "w2" / "W2_2.pdf", "%PDF two")
     _write(s / "w2" / "nested" / "deep.pdf", "%PDF nested")
@@ -486,8 +487,9 @@ def test_iter_sample_files_yields_directory_walk_order(tmp_path, monkeypatch):
 
     Every rule is exercised by the fixture: an upper-case extension is accepted,
     a non-document extension is dropped, an unknown subdirectory is dropped
-    whole (this is what keeps ``external-mcp-client/`` and the lambda-hook
-    samples out of the release), and a batch directory is read one level deep
+    whole (this is what keeps ``external-mcp-client/``, the lambda-hook samples
+    and the policy document of ``rule-validation/`` out of the release), and a
+    batch directory is read one level deep
     only, so ``w2/nested/deep.pdf`` does not ship.
     """
     monkeypatch.chdir(tmp_path)
@@ -495,8 +497,8 @@ def test_iter_sample_files_yields_directory_walk_order(tmp_path, monkeypatch):
 
     assert list(_publisher().iter_sample_files()) == [
         "alpha.PDF",
-        "rule-validation/rv_a.tiff",
-        "rule-validation.pdf",
+        "review-routing/rr_a.tiff",
+        "review-routing.pdf",
         "w2/W2_10.pdf",
         "w2/W2_2.pdf",
         "zebra.webp",
@@ -509,16 +511,16 @@ def test_generate_sample_file_list_sorts_what_the_walk_yields(tmp_path, monkeypa
     An unsorted list would churn between publishes on filesystems whose
     ``listdir`` order differs, which changes the template's bytes and forces a
     needless ``CopySampleFiles`` custom-resource re-run on every deploy. Note the
-    result is NOT the walk order above — ``rule-validation.pdf`` moves ahead of
-    ``rule-validation/rv_a.tiff``.
+    result is NOT the walk order above — ``review-routing.pdf`` moves ahead of
+    ``review-routing/rr_a.tiff``.
     """
     monkeypatch.chdir(tmp_path)
     _samples_tree(tmp_path)
 
     assert _publisher().generate_sample_file_list() == [
         "alpha.PDF",
-        "rule-validation.pdf",
-        "rule-validation/rv_a.tiff",
+        "review-routing.pdf",
+        "review-routing/rr_a.tiff",
         "w2/W2_10.pdf",
         "w2/W2_2.pdf",
         "zebra.webp",
@@ -597,8 +599,8 @@ def test_samples_are_uploaded_under_the_versioned_samples_prefix(
 
     assert _keys(s3) == [
         f"{_PREFIX_AND_VERSION}/samples/alpha.PDF",
-        f"{_PREFIX_AND_VERSION}/samples/rule-validation.pdf",
-        f"{_PREFIX_AND_VERSION}/samples/rule-validation/rv_a.tiff",
+        f"{_PREFIX_AND_VERSION}/samples/review-routing.pdf",
+        f"{_PREFIX_AND_VERSION}/samples/review-routing/rr_a.tiff",
         f"{_PREFIX_AND_VERSION}/samples/w2/W2_10.pdf",
         f"{_PREFIX_AND_VERSION}/samples/w2/W2_2.pdf",
         f"{_PREFIX_AND_VERSION}/samples/zebra.webp",
@@ -610,8 +612,8 @@ def test_samples_are_uploaded_under_the_versioned_samples_prefix(
         == (samples / "w2" / "W2_2.pdf").read_bytes()
     )
     assert (
-        _body(s3, f"{_PREFIX_AND_VERSION}/samples/rule-validation.pdf")
-        == (samples / "rule-validation.pdf").read_bytes()
+        _body(s3, f"{_PREFIX_AND_VERSION}/samples/review-routing.pdf")
+        == (samples / "review-routing.pdf").read_bytes()
     )
 
 

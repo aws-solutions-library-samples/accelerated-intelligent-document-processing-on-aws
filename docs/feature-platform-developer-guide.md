@@ -505,9 +505,9 @@ processed as though it had succeeded, with no signal
 ([#919](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/919)).
 
 ⚠️ **Three of the seven hook points do not exist in BDA mode, so a `fail` policy
-there has nothing to gate.** Walking the ASL graph from `StartAt` down each side
-of the `RouteByProcessingMode` Choice: `PreprocessingHook` precedes the Choice, so
-it runs in both modes; the BDA branch (`BDA_CheckExistingData`) reaches only
+there has nothing to gate.** Walking the ASL graph from `PreprocessingHook` down each
+side of the `CheckProcessingMode` Choice: `PreprocessingHook` precedes the Choice, so
+it runs in both modes; the BDA branch (`CheckExistingBdaData`) reaches only
 `PostRuleValidationHook`, `PostSummarizationHook` and `PostprocessingHook`; the
 Pipeline branch (`OCRStep`) additionally reaches `PostOcrHook`,
 `PostClassificationHook` and — inside the `ProcessSections` Map —
@@ -559,10 +559,41 @@ succeeded. Two more things to know about this point:
 - It runs **inside** the execution, so a slow hook extends per-document latency
   and holds a concurrency slot. For fire-and-forget delivery use the
   [EventBridge post-processing hook](post-processing-lambda-hook.md) instead.
-- It fires **while HITL review is pending** (and again after review completes),
-  so branch on the document's `hitl_status` / `hitl_triggered` /
+- A document held in a **review queue** does not reach it while it waits: the
+  hook fires on the run after the review. A document reviewed outside a review
+  queue (the Default review queue is disabled) is not held, so the hook fires
+  **while that review is pending** and again after it completes; for those,
+  branch on the document's `hitl_status` / `hitl_triggered` /
   `hitl_sections_pending` fields — remembering they are omitted when falsy, so
-  absent means "no HITL" — and make the hook idempotent.
+  absent means "no HITL". Make the hook idempotent either way. See
+  [When hooks fire](feature-platform.md#when-hooks-fire).
+
+**A hook does not fire on every run.** A run starts at the step its run plan names
+(a reprocess from a later step, the run after a completed review) and fires the
+hooks of the steps it does. The payload's `runKind`, `startStep` and `reviewed`
+fields say which run the hook is in. In particular:
+
+- `postRuleValidation` fires before a document is held for review and again after
+  the review is completed. A hook that should act on the values a reviewer
+  confirmed checks `reviewed`, not `runKind`: the run after a completed review
+  carries `runKind` `review_completed` in both cases below, and `reviewed` tells
+  them apart. The
+  [Health Insurance Review sample](../feature-platform/sample-health-insurance-review/)
+  (0.2.3) stores both fields with each result for that reason.
+  - The run applies the reviewer's corrections to the existing values
+    (`startStep` `apply_review_changes`): `reviewed` is `true`.
+  - The run extracts sections again first, because the reviewer added a section or
+    changed a section's pages, or a section has no extracted values (`startStep`
+    `extraction`, Pipeline mode): `reviewed` is `false`. The newly extracted values
+    are not confirmed by a reviewer, although the corrections saved for those
+    sections are set on them before policy rule validation runs. The routing rules
+    can then hold the document again.
+- `preprocessing`, `postOcr` and `postClassification` do not fire on the run after
+  a completed review. `postExtraction` fires on it only for a section it extracts
+  again.
+- A document that is sent back is processed again from classification (from the
+  beginning in BDA mode), with `runKind` `sent_back` and `reviewed` `false`, and
+  fires the hooks of every step that run does.
 
 Because each of these points holds a *single* hook, only one feature can own it:
 registering over another feature's hook is refused rather than silently

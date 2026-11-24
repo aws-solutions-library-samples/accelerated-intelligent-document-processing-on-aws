@@ -85,19 +85,191 @@ def test_the_mode_router_and_its_two_branch_entries_are_found_by_shape():
     The router is located by the Choice VARIABLE, not by state name, so a rename
     keeps the table honest instead of quietly producing an empty one.
     """
-    assert TABLE["router"] == "RouteByProcessingMode", (
+    assert TABLE["router"] == "CheckProcessingMode", (
         f"the Choice switching on {GEN.ROUTER_VARIABLE} is "
         f"{TABLE['router']!r}; if the router was deliberately renamed, update the "
         f"docs that name it as well as this expectation"
     )
     assert TABLE["entries"] == {
-        "bda": "BDA_CheckExistingData",
+        "bda": "CheckExistingBdaData",
         "pipeline": "OCRStep",
     }, (
         f"the branch entry states changed to {TABLE['entries']}. The reachability "
         f"table is derived from these two walks, so the per-mode sets below now "
         f"describe different branches than the docs do."
     )
+
+
+# ---------------------------------------------------------------------------
+# The run-plan dispatcher: the graph starts at a Choice on the plan's start
+# ---------------------------------------------------------------------------
+
+#: Entry id -> where a run with that start enters. `beginning` has no rule: it is
+#: the dispatcher's Default.
+PLAN_ENTRY_TARGETS = {
+    "pipeline.classification": "StartAtClassification",
+    "pipeline.extraction": "StartAtExtraction",
+    "pipeline.extraction_sections": "StartAtExtractionForSections",
+    "pipeline.assessment": "StartAtAssessment",
+    "apply_review_changes": "ApplyReviewChangesStep",
+    "policy_rule_validation": "StartAtPolicyRuleValidation",
+    "rejected": "SetRejectedStatus",
+}
+
+
+def _plan_rule(entry: str, target: str) -> dict:
+    """A dispatcher rule in the definition's guarded form."""
+    return {
+        "And": [
+            {"Variable": GEN.PLAN_START_VARIABLE, "IsPresent": True},
+            {"Variable": GEN.PLAN_START_VARIABLE, "StringEquals": entry},
+        ],
+        "Next": target,
+    }
+
+
+def _retarget(asl: dict, entry: str, target: str) -> None:
+    """Point the dispatcher rule of `entry` at another state."""
+    for rule in asl["States"][TABLE["dispatcher"]]["Choices"]:
+        if GEN._entry_id(rule) == entry:
+            rule["Next"] = target
+            return
+    raise AssertionError(f"no dispatcher rule for {entry}")
+
+
+@pytest.mark.unit
+def test_the_run_plan_dispatcher_is_found_and_the_walk_starts_at_its_default():
+    """Non-vacuity guard for everything the dispatcher cases below assert.
+
+    The dispatcher is located by being `StartAt` and by the variable its rules
+    read, not by its name. The table is derived from where a run WITHOUT a plan
+    starts, so the rules are not part of any mode's walk.
+    """
+    assert TABLE["dispatcher"] == "CheckRunPlan"
+    assert TABLE["start"] == "PreprocessingHook"
+    assert TABLE["plan_entries"] == PLAN_ENTRY_TARGETS
+
+
+@pytest.mark.unit
+def test_the_table_is_the_one_a_graph_without_a_dispatcher_gives():
+    """The dispatcher changes where runs can start, not what a mode reaches.
+
+    Deriving from the same graph with `StartAt` set to the dispatcher's Default
+    (no dispatcher to find) must give the same per-mode sets, or the dispatcher's
+    rules leaked into a mode's walk.
+    """
+    asl = GEN.load_asl()
+    asl["StartAt"] = TABLE["start"]
+
+    plain = GEN.derive(asl)
+
+    assert plain["dispatcher"] is None
+    for key in ("always_states", "states_by_mode", "points_by_mode", "all_points"):
+        assert plain[key] == TABLE[key], key
+
+
+@pytest.mark.unit
+def test_a_start_entry_that_is_a_hook_state_is_refused():
+    asl = GEN.load_asl()
+    _retarget(asl, "policy_rule_validation", "PostRuleValidationHook")
+
+    with pytest.raises(SystemExit, match="must not start at a\\s+hook"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_a_start_entry_that_can_reach_the_preprocessing_hook_is_refused():
+    """Only a run from the beginning passes the hook ahead of the mode choice."""
+    asl = GEN.load_asl()
+    # Not the hook itself (that is the case above): a state that leads back to it.
+    asl["States"]["StartAtClassification"]["Next"] = "PreprocessingHook"
+
+    with pytest.raises(SystemExit, match="only a run from the beginning passes"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_a_shared_start_entry_that_reaches_a_pipeline_only_hook_is_refused():
+    """An entry both modes use must stay inside the hooks both modes reach.
+
+    `apply_review_changes` runs in BDA mode too. Sent into the Pipeline branch it
+    would fire `postClassification` for a BDA configuration, which the table says
+    cannot happen.
+    """
+    asl = GEN.load_asl()
+    _retarget(asl, "apply_review_changes", "ClassificationStep")
+
+    with pytest.raises(SystemExit, match="both processing modes reach"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_a_pipeline_start_entry_that_reaches_a_bda_only_hook_is_refused():
+    """A `pipeline.` entry must stay inside the hooks Pipeline mode reaches."""
+    asl = GEN.load_asl()
+    states = asl["States"]
+    # A hook only the BDA branch has: after the assembly of a document that
+    # already has its data.
+    states["PostBdaAssemblyHook"] = {
+        "Type": "Task",
+        "Resource": "arn:${Partition}:states:::lambda:invoke",
+        "Parameters": {
+            "FunctionName": "${" + GEN.DISPATCHER_SUBSTITUTION + "}",
+            "Payload": {"hookPoint": "postBdaAssembly"},
+        },
+        "Next": states["AssembleExistingDocumentStep"]["Next"],
+    }
+    states["AssembleExistingDocumentStep"]["Next"] = "PostBdaAssemblyHook"
+    # The graph is still derivable: the new hook is a BDA-only point.
+    assert "postBdaAssembly" in GEN.derive(asl)["points_by_mode"]["bda"]
+
+    _retarget(asl, "pipeline.assessment", "AssembleExistingDocumentStep")
+
+    with pytest.raises(SystemExit, match="Pipeline mode reaches"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_a_start_choice_that_mixes_the_plan_with_another_variable_is_refused():
+    """Where a run from the beginning starts would otherwise be a guess."""
+    asl = GEN.load_asl()
+    asl["States"][TABLE["dispatcher"]]["Choices"].append(
+        {"Variable": "$.document.priority", "StringEquals": "high", "Next": "OCRStep"}
+    )
+
+    with pytest.raises(SystemExit, match="not purely the\\s+run-plan dispatcher"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_a_dispatcher_without_a_default_reports_what_is_missing():
+    asl = GEN.load_asl()
+    del asl["States"][TABLE["dispatcher"]]["Default"]
+
+    with pytest.raises(SystemExit, match="where a run without a plan starts"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_two_rules_for_one_entry_are_refused():
+    asl = GEN.load_asl()
+    asl["States"][TABLE["dispatcher"]]["Choices"].append(
+        _plan_rule("rejected", "WorkflowComplete")
+    )
+
+    with pytest.raises(SystemExit, match="two rules for the entry `rejected`"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_a_dispatcher_rule_that_names_no_entry_is_refused():
+    asl = GEN.load_asl()
+    asl["States"][TABLE["dispatcher"]]["Choices"].append(
+        {"Variable": GEN.PLAN_START_VARIABLE, "IsPresent": True, "Next": "OCRStep"}
+    )
+
+    with pytest.raises(SystemExit, match="entry it stands for cannot be read"):
+        GEN.derive(asl)
 
 
 @pytest.mark.unit

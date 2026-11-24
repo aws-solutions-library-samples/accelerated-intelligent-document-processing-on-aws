@@ -255,6 +255,14 @@ class TestConvertTypeBool:
     def test_an_int_is_taken_as_truthiness(self, value, expected):
         assert self._convert(value) is expected
 
+    @pytest.mark.parametrize("value", [1.5, ["yes"], {"answer": True}])
+    def test_a_value_that_is_neither_bool_text_nor_int_is_refused(self, value):
+        # A float or a container has no documented reading as a Bool; taking its
+        # truthiness would turn any non-empty list into a definite "yes".
+        with pytest.raises(ExtractionError) as excinfo:
+            self._convert(value)
+        assert f"Cannot convert {type(value).__name__} to Bool" in str(excinfo.value)
+
 
 @pytest.mark.unit
 class TestConvertTypeStringAndUnknown:
@@ -270,6 +278,10 @@ class TestConvertTypeStringAndUnknown:
         # The String type is used for identity comparisons like a state code or a
         # policy number, so normalising it would change what a rule matches.
         assert self._convert("  John  Doe  ") == "  John  Doe  "
+
+    @pytest.mark.parametrize("value,text", [(42, "42"), (1.5, "1.5"), (True, "True")])
+    def test_a_value_that_is_not_text_is_given_as_its_text(self, value, text):
+        assert self._convert(value) == text
 
     def test_none_returns_none_rather_than_the_text_none(self):
         # The caller handles None before reaching here; this is the defensive path,
@@ -362,6 +374,44 @@ class TestExtractValues:
             path_mappings=[],
         )
         assert DataExtractor().extract_values(rule, {"doc": {}}) == {}
+
+    def test_an_unexpected_error_walking_a_path_names_the_rule_and_the_path(
+        self, monkeypatch
+    ):
+        # Anything a walk raises that is not an ExtractionError already is reported
+        # as one, with the context an operator needs to find the mapping.
+        def broken(self, data, path, rule_id, path_cache=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(DataExtractor, "_extract_path", broken)
+        with pytest.raises(ExtractionError) as excinfo:
+            _extract(
+                [Parameter(name="balance", type="Real")],
+                [("balance", "doc.balance")],
+                {"doc": {"balance": 1}},
+            )
+        error = excinfo.value
+        assert "Unexpected error extracting path: boom" in str(error)
+        assert (error.operation, error.rule_id) == ("extract_path", "r1")
+        assert (error.parameter_name, error.data_path) == ("balance", "doc.balance")
+
+    def test_an_unexpected_error_converting_a_value_names_the_rule_and_the_path(
+        self, monkeypatch
+    ):
+        def broken(self, value, expected_type, rule_id=None, name=None, path=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(DataExtractor, "_convert_type", broken)
+        with pytest.raises(ExtractionError) as excinfo:
+            _extract(
+                [Parameter(name="balance", type="Real")],
+                [("balance", "doc.balance")],
+                {"doc": {"balance": 1}},
+            )
+        error = excinfo.value
+        assert "Unexpected error converting type: boom" in str(error)
+        assert (error.operation, error.rule_id) == ("convert_type", "r1")
+        assert (error.parameter_name, error.data_path) == ("balance", "doc.balance")
 
     def test_a_zero_reading_is_extracted_rather_than_treated_as_missing(self):
         # The required-parameter check tests `value is None`, so a legitimate zero

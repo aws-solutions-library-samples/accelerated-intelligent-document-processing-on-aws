@@ -34,7 +34,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Literal, Mapping, Optional
+from collections import Counter
+from typing import Any, Collection, Literal, Mapping, Optional
 
 from .models import ReviewReason
 
@@ -65,7 +66,7 @@ def _class_schema(config: Any, doc_class: Optional[str]) -> Optional[Mapping[str
     return find_class_schema(doc_class, getattr(config, "classes", None))
 
 
-def _route_missing_required(config: Any) -> bool:
+def route_missing_required_fields(config: Any) -> bool:
     """``config.hitl.route_missing_required_fields``; on when unset."""
     hitl = getattr(config, "hitl", None) if config is not None else None
     value = getattr(hitl, "route_missing_required_fields", None)
@@ -100,7 +101,7 @@ def failed_extraction_issue(section: Any) -> Optional[Any]:
     return None
 
 
-def _hitl_threshold(config: Any) -> float:
+def hitl_threshold(config: Any) -> float:
     """``config.hitl.confidence_threshold``, or the default when it is unset."""
     hitl = getattr(config, "hitl", None) if config is not None else None
     value = _num(getattr(hitl, "confidence_threshold", None))
@@ -112,17 +113,25 @@ def build_reasons(
     config: Any = None,
     *,
     mode: Literal["pipeline", "bda"],
+    confirmed_sections: Collection[str] = (),
 ) -> list[ReviewReason]:
     """Every reason for the document's sections, worst first (callers truncate).
 
     ``config`` supplies the schema titles used as field labels and, in BDA mode,
     ``hitl.confidence_threshold`` for the blueprint confidence.
+
+    A section whose id is in ``confirmed_sections`` gives no reason: a reviewer
+    has confirmed its values, so its alerts and missing fields no longer ask for
+    a review.
     """
     reasons: list[ReviewReason] = []
-    route_missing = _route_missing_required(config)
-    default_threshold = _hitl_threshold(config)
+    route_missing = route_missing_required_fields(config)
+    default_threshold = hitl_threshold(config)
+    confirmed = {str(section_id) for section_id in confirmed_sections}
     for section in list(getattr(document, "sections", None) or []):
         section_id = str(section.section_id)
+        if section_id in confirmed:
+            continue
         schema = _class_schema(config, getattr(section, "classification", None))
         failed = failed_extraction_issue(section)
         if failed is not None:
@@ -181,7 +190,7 @@ def build_reasons(
                 )
         if mode == "bda":
             confidence = _num(getattr(section, "confidence", None))
-            threshold = _hitl_threshold(config)
+            threshold = hitl_threshold(config)
             unscored = confidence is None and bool(
                 getattr(section, "blueprint_unscored", False)
             )
@@ -206,6 +215,38 @@ def build_reasons(
         )
     )
     return reasons
+
+
+def count_confidence_reasons(
+    document: Any,
+    config: Any = None,
+    *,
+    mode: Literal["pipeline", "bda"],
+    confirmed_sections: Collection[str] = (),
+) -> int:
+    """How many confidence reasons the document has: the alert count routing reads.
+
+    The ``low_confidence`` and ``blueprint_confidence`` reasons ``build_reasons``
+    gives, with one difference. A section's alert list can be a capped subset (the
+    tracking row stores what fits, and the true figure beside it), so a section
+    counts the larger of its low-confidence reasons and its
+    ``confidence_alert_total``. Sections in ``confirmed_sections`` count nothing.
+    """
+    reasons = build_reasons(
+        document, config, mode=mode, confirmed_sections=confirmed_sections
+    )
+    low_confidence = Counter(
+        r.section_id for r in reasons if r.kind == "low_confidence"
+    )
+    total = sum(1 for r in reasons if r.kind == "blueprint_confidence")
+    confirmed = {str(section_id) for section_id in confirmed_sections}
+    for section in list(getattr(document, "sections", None) or []):
+        section_id = str(section.section_id)
+        if section_id in confirmed:
+            continue
+        stored = _num(getattr(section, "confidence_alert_total", None)) or 0
+        total += max(low_confidence.get(section_id, 0), int(stored))
+    return total
 
 
 def _section_order(section_id: str) -> tuple[int, Any]:

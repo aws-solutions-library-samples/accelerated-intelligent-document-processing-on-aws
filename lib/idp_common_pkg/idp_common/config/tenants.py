@@ -402,6 +402,25 @@ def resolve_grants(
     return {"outcome": GRANT_TENANT, "tenant": matched[0], "reason": None}
 
 
+def eligible_tenant_ids(
+    values: Iterable[str], tenants: Sequence[Mapping[str, Any]]
+) -> List[str]:
+    """The ids of every tenant a user's grant values give them, sorted.
+
+    :func:`resolve_grants` answers "which one tenant", and refuses two or more. This
+    answers "which tenants", for ``TenantSelection=UserSelect``, where a user who
+    holds several chooses one of them. Values that grant nothing are ignored.
+    """
+    wanted = {str(v) for v in values if v}
+    return sorted(
+        {
+            normalize_tenant(t)["tenantId"]
+            for t in tenants
+            if wanted & set(normalize_tenant(t)["grantedBy"])
+        }
+    )
+
+
 def mapping_rejection_reason(
     prefix: str, profile: str, tenants: Sequence[Mapping[str, Any]]
 ) -> Optional[str]:

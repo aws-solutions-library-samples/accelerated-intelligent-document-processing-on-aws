@@ -5,8 +5,12 @@
  * The edit page over hand-built models. What has to hold: the loading text and the
  * failure Alert (with Retry) come from the model; a ready model's bar is what the model
  * says; Save saves through the editor and toasts the model's message; Process Changes
- * with a confirmation saves unsaved edits first, asks, then runs and leaves; without one
- * it runs and leaves, dropping the finished work item from Tasks; a failure is shown
+ * with a confirmation saves unsaved edits first, asks (showing the steps the server
+ * says the run will do, read for the document on the page), then runs and leaves; without one
+ * it runs and leaves, dropping the finished work item from Tasks; for a review it asks how
+ * the review ends, reading what each ending runs for the item the model names, completes
+ * through the model's process and sends back through the model's send-back with the note
+ * and nothing else; the Reports menu offers the policy report the model describes; a failure is shown
  * where the model says (inline notice or flash bar), or not at all when the model says
  * it is reported elsewhere; Edit Page Grouping opens only when the model's check allows it,
  * and a save error stays inside the open board; Skip passes the reason and note; Claim
@@ -16,13 +20,16 @@
 import React from 'react';
 import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const setErrorMessage = vi.fn();
 const setSuccessMessage = vi.fn();
 const exit = vi.fn();
+const getReviewCompletionPlan = vi.fn();
+const getProcessChangesPlan = vi.fn();
 const controller = { save: vi.fn(), discard: vi.fn(), isDirty: vi.fn() };
 let editorProps: Record<string, unknown> | null = null;
 let boardProps: Record<string, unknown> | null = null;
@@ -32,6 +39,11 @@ vi.mock('../use-edit-exit', () => ({ default: () => exit }));
 vi.mock('../../review-queues/ReviewQueuesLayout', () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock('../../../hooks/use-page-thumbnails', () => ({ default: () => ({ urls: {}, failure: null }) }));
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
+// What each ending of a review runs, and what Process Changes runs, as the server answers them.
+vi.mock('../../run-plan/run-plan-api', () => ({
+  getReviewCompletionPlan: (...a: unknown[]) => getReviewCompletionPlan(...a),
+  getProcessChangesPlan: (...a: unknown[]) => getProcessChangesPlan(...a),
+}));
 vi.mock('../SectionEditor', () => ({
   default: (props: Record<string, unknown>) => {
     editorProps = props;
@@ -59,6 +71,7 @@ vi.mock('../../common/PageGroupingEditor', () => ({
 
 import EditPage from '../EditPage';
 import type { EditModel, EditReady } from '../edit-model';
+import type { PlannedRun } from '../../../graphql/generated/operation-types';
 import { barButtonLabels, menuItems } from './edit-bar';
 import { chooseRegroup } from './regroup-stand-in';
 
@@ -109,6 +122,14 @@ const button = (text: string) =>
     .findAllButtons()
     .find((b) => (b.findTextRegion()?.getElement().textContent ?? b.getElement().textContent) === text)!;
 
+/** A run the server plans: one step, which it does. */
+const PLANNED: PlannedRun = {
+  mode: 'bda',
+  startStep: 'summarization',
+  steps: [{ id: 'summarization', label: 'Summarization', state: 'run' }],
+  sections: [],
+};
+
 beforeEach(() => {
   document.body.innerHTML = '';
   editorProps = null;
@@ -116,6 +137,8 @@ beforeEach(() => {
   setErrorMessage.mockReset();
   setSuccessMessage.mockReset();
   exit.mockReset();
+  getReviewCompletionPlan.mockReset().mockResolvedValue({ complete: PLANNED, sendBack: PLANNED });
+  getProcessChangesPlan.mockReset().mockResolvedValue(PLANNED);
   controller.save.mockReset().mockResolvedValue(true);
   controller.isDirty.mockReset().mockReturnValue(false);
 });
@@ -154,7 +177,7 @@ describe('the edit page', () => {
     const leave = { to: '/documents/in%2Fa.pdf', message: 'Processing.' };
     const run = vi.fn().mockResolvedValue(leave);
     controller.isDirty.mockReturnValue(true);
-    renderPage(ready({ process: { confirm: { kind: 'reprocess', bdaMode: false }, run } }));
+    renderPage(ready({ process: { confirm: { kind: 'reprocess' }, run } }));
     button('Process Changes').click();
     await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
     expect(run).not.toHaveBeenCalled();
@@ -167,6 +190,10 @@ describe('the edit page', () => {
           .some((b) => b.getElement().textContent === 'Confirm & Process'),
       );
     expect(modal).toBeDefined();
+    // The dialog shows the steps the server answers for the document on the page; the page names none.
+    await waitFor(() => expect(modal!.findContent().getElement().textContent).toContain('Starts at Summarization'));
+    expect(getProcessChangesPlan.mock.calls).toEqual([['in/a.pdf']]);
+    expect(run).not.toHaveBeenCalled();
     await act(async () =>
       modal!
         .findFooter()!
@@ -188,8 +215,9 @@ describe('the edit page', () => {
     expect(run).not.toHaveBeenCalled();
     expect(modal.findHeader().getElement().textContent).toBe('Open a new version and save ground truth');
     expect(modal.findContent().getElement().textContent).toContain('opens the next version of this test set');
-    // Not the reprocessing copy.
-    expect(modal.findContent().getElement().textContent).not.toContain('evaluation and summarization');
+    // Not the reprocessing dialog: no steps of a run are read or listed.
+    expect(modal.findContent().getElement().textContent).not.toContain('Steps of the run');
+    expect(getProcessChangesPlan).not.toHaveBeenCalled();
     await act(async () =>
       modal
         .findFooter()!
@@ -198,6 +226,101 @@ describe('the edit page', () => {
         .click(),
     );
     await waitFor(() => expect(exit).toHaveBeenCalledWith(leave));
+  });
+
+  describe('finishing a review', () => {
+    const REVIEW = { kind: 'review-completion' as const, objectKey: 'in/a.pdf', cycleId: 'c9' };
+    const completion = () =>
+      createWrapper(document.body)
+        .findAllModals()
+        .find((m) => m.isVisible() && m.findHeader().getElement().textContent === 'Finish the review');
+    const completionButton = (text: string) =>
+      completion()!
+        .findFooter()!
+        .findAllButtons()
+        .find((b) => b.getElement().textContent === text)!;
+    /** Press Process Changes, and wait for the dialog and for what it reads. */
+    const openCompletion = async () => {
+      button('Process Changes').click();
+      await waitFor(() => expect(completion()).toBeDefined());
+      await waitFor(() => expect(completion()!.findContent().findStatusIndicator('[class*="status-loading"]')).toBeNull());
+    };
+
+    it('asks how the review ends, reading what each ending runs for the item the model names, then completes and leaves', async () => {
+      const leave = { to: '/q', message: 'Completed.' };
+      const run = vi.fn().mockResolvedValue(leave);
+      const sendBack = { run: vi.fn() };
+      renderPage(ready({ process: { confirm: REVIEW, run }, sendBack }));
+      await openCompletion();
+
+      expect(getReviewCompletionPlan).toHaveBeenCalledTimes(1);
+      expect(getReviewCompletionPlan).toHaveBeenCalledWith('in/a.pdf', 'c9');
+      expect(completion()!.findContent().getElement().textContent).toContain('Starts at Summarization');
+      // Nothing runs until the ending is confirmed.
+      expect(run).not.toHaveBeenCalled();
+
+      await act(async () => completionButton('Complete review').click());
+
+      await waitFor(() => expect(exit).toHaveBeenCalledWith(leave));
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(sendBack.run).not.toHaveBeenCalled();
+    });
+
+    it('sends the document back through the model with the note and nothing else, then leaves', async () => {
+      const leave = { to: '/q', message: 'Sent back.' };
+      const run = vi.fn();
+      const sendBack = { run: vi.fn().mockResolvedValue(leave) };
+      renderPage(ready({ process: { confirm: REVIEW, run }, sendBack }));
+      await openCompletion();
+      act(() => completion()!.findContent().findRadioGroup()!.findInputByValue('send-back')!.click());
+      act(() => completion()!.findContent().findTextarea()!.setTextareaValue('too dark to read'));
+
+      await act(async () => completionButton('Send back').click());
+
+      await waitFor(() => expect(exit).toHaveBeenCalledWith(leave));
+      // The note only: the page has no step to pass on.
+      expect(sendBack.run.mock.calls).toEqual([['too dark to read']]);
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('offers completing only when the model has no send-back', async () => {
+      renderPage(ready({ process: { confirm: REVIEW, run: vi.fn() } }));
+      await openCompletion();
+
+      expect(
+        completion()!
+          .findContent()
+          .findRadioGroup()!
+          .findButtons()
+          .map((b) => b.findNativeInput().getElement().value),
+      ).toEqual(['complete']);
+    });
+  });
+
+  it('offers the policy report the model describes in Reports: available, unavailable with its reason, or not at all', () => {
+    const withPolicyReport = (ruleValidation: EditReady['header']['ruleValidation']): EditModel => {
+      const model = ready();
+      if (model.state.kind === 'ready') model.state.header = { ...model.state.header, ruleValidation };
+      return model;
+    };
+    const item = () => menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary');
+
+    renderPage(
+      withPolicyReport({ reportUri: 's3://o/in/a.pdf/rules.md', unavailableReason: 'This document has no policy rule validation summary' }),
+    );
+    expect(item()).toEqual({ text: 'Policy Rule Validation Summary', disabled: false, disabledReason: null });
+
+    document.body.innerHTML = '';
+    renderPage(withPolicyReport({ unavailableReason: 'This document has no policy rule validation summary' }));
+    expect(item()).toEqual({
+      text: 'Policy Rule Validation Summary',
+      disabled: true,
+      disabledReason: 'This document has no policy rule validation summary',
+    });
+
+    document.body.innerHTML = '';
+    renderPage(withPolicyReport(undefined));
+    expect(item()).toBeUndefined();
   });
 
   it('without a confirmation, runs and leaves with the work item settled', async () => {

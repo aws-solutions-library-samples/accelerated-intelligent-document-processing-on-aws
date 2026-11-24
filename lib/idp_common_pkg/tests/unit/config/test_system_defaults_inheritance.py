@@ -219,6 +219,9 @@ def test_pattern_1_resolves_to_the_key_set_the_v06_split_implies():
     expected = (PRE_V06_PATTERN_1_TOP_LEVEL_KEYS - {"assessment"}) | {
         "extraction",
         "hitl",
+        # Added after the split: the review routing table, which BDA mode
+        # evaluates as pipeline mode does (base-routing.yaml).
+        "routing",
     }
     assert set(load_system_defaults("pattern-1")) == expected
 

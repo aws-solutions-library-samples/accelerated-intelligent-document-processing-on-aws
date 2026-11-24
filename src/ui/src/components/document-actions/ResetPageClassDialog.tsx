@@ -97,8 +97,9 @@ const messages = defineMessages<{
   reviewCompleted: {
     id: 'documentActions.resetPageClass.reviewCompleted',
     defaultMessage:
-      'If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.',
-    description: "Item of the list in the Reset Page Class dialog's warning: what a reset does to the document's review.",
+      'If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.',
+    description:
+      "Item of the list in the Reset Page Class dialog's warning: what a reset does to the document's review and to its policy rule validation results.",
   },
 });
 

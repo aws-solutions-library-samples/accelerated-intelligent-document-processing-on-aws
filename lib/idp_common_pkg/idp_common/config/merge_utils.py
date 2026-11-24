@@ -51,7 +51,8 @@ VALID_PATTERNS = ["pattern-1", "pattern-2"]
 # so every setting written is reset there (``summarization`` and ``evaluation``
 # switch back on where a preset turned them off). ``all`` leaves
 # out ``hitl``, ``chat`` and ``rule_validation`` on purpose so that reset does not
-# also switch those features on or off (issue #1691).
+# also switch those features on or off (issue #1691), and ``routing`` so that it
+# does not replace a profile's routing rules with the built-in table.
 FEATURE_SETS = {
     "min": ["classification", "extraction", "classes"],
     "core": ["ocr", "classification", "extraction", "classes"],
@@ -744,6 +745,22 @@ def _template_header(
     return "\n".join(lines) + "\n\n"
 
 
+def _without_empty_lists(value: Any) -> Any:
+    """``value`` with every dictionary key that holds an empty list left out.
+
+    Applied at any depth, inside dictionaries and inside the items of a list.
+    A template must not carry an empty list: an uploaded file is merged over a
+    profile's configuration, and a list there is replaced rather than merged.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _without_empty_lists(item) for key, item in value.items() if item != []
+        }
+    if isinstance(value, list):
+        return [_without_empty_lists(item) for item in value]
+    return value
+
+
 def generate_config_template(
     features: Union[str, List[str]] = "min",
     pattern: str = "pattern-2",
@@ -788,7 +805,10 @@ def generate_config_template(
             if defaults[section] == []:
                 empty.append(section)
                 continue
-            section_data = deepcopy(defaults[section])
+            # The same holds for a list the defaults leave empty inside a
+            # section (a routing table's default outcome has ``actions: []``):
+            # the key is left out, and the reader's default is that empty list.
+            section_data = _without_empty_lists(deepcopy(defaults[section]))
 
             # Optionally strip prompts for cleaner output
             if not include_prompts:

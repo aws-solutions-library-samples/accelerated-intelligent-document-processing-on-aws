@@ -4,15 +4,29 @@
 """postRuleValidation pipeline hook — derives a claim status per document.
 
 The host's pipeline-hooks dispatcher (patterns/unified/src/
-pipeline_hooks_function) invokes this Lambda after rule validation completes,
-with the payload:
+pipeline_hooks_function) invokes this Lambda after policy rule validation, in
+every run that reaches that step, with the payload:
 
     {
       "hookPoint": "postRuleValidation",
       "featureId": "sample-health-insurance-review",
       "document": { ... },          # usually a compressed reference, see below
-      "executionArn": "arn:...:execution:..."
+      "executionArn": "arn:...:execution:...",
+      "runKind": "new_upload",      # what started the run; "unplanned" if absent
+      "startStep": "beginning",     # the step the run started at
+      "reviewed": false             # true when the run validates reviewed values
     }
+
+A document that is held for review reaches the step twice: in the run that
+places it in a review queue (`reviewed` false), and again in the run that
+follows the completed review (`runKind` "review_completed"). The second write
+replaces the first, so the row describes the document after the review. That
+second run carries `reviewed` true when it applies the reviewer's corrections
+to the existing results and validates the corrected values. When it extracts
+sections again (the reviewer changed the pages of a section, or a section has
+no result), it carries `reviewed` false, because the newly extracted values are
+not reviewer-confirmed. A document whose review is rejected never has the
+second run: it keeps the row written before the review, with `reviewed` false.
 
 `document` is almost always a *compressed reference* — the host serializes
 Document state to its Working bucket and passes
@@ -192,6 +206,11 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         "summaryJsonUri": summary_uri,
         "summaryMdUri": summary_uri[: -len(".json")] + ".md",
         "executionArn": event.get("executionArn") or "",
+        # Whether a reviewer had completed a review when this status was derived,
+        # and what kind of run derived it (a dispatcher that sends neither is an
+        # older host: not reviewed, and "unplanned").
+        "reviewed": bool(event.get("reviewed", False)),
+        "runKind": event.get("runKind") or "unplanned",
         "updatedAt": _now(),
     }
     table.put_item(Item=item)

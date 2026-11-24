@@ -4,7 +4,9 @@
 /**
  * The Production adapter's Refresh. What has to hold: it reads the review item, then the
  * document; a failed item read throws (for the bar to report) rather than turning the
- * page into its load error, and the document is not read.
+ * page into its load error, and the document is not read. The adapter also keeps the
+ * document's policy rule validation report, from the document it was seeded with and
+ * from each later read, for the Reports menu.
  */
 
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -45,6 +47,31 @@ describe('the Production adapter', () => {
     order.length = 0;
     await act(() => hook.result.current.refresh());
     expect(order).toEqual(['getReviewItem', 'getDocument']);
+  });
+
+  it("keeps the document's policy rule validation report from the document read", async () => {
+    graphql.mockResolvedValue({
+      data: { getDocument: { ObjectKey: 'in/w2.pdf', Pages: [], Sections: [], RuleValidationResultUri: 's3://out/in/w2.pdf/rules.md' } },
+    });
+    const hook = renderHook(() => useProductionItemEdit('in/w2.pdf'));
+
+    await waitFor(() => expect(hook.result.current.ruleValidationResultUri).toBe('s3://out/in/w2.pdf/rules.md'));
+  });
+
+  it('takes the policy rule validation report from the seed without a read, then from the next read', async () => {
+    type Seed = NonNullable<Parameters<typeof useProductionItemEdit>[1]>;
+    const seed = {
+      detail: DETAIL,
+      document: { ObjectKey: 'in/w2.pdf', Pages: [], Sections: [], RuleValidationResultUri: 's3://out/in/w2.pdf/seeded.md' },
+    } as unknown as Seed;
+    const hook = renderHook(() => useProductionItemEdit('in/w2.pdf', seed));
+
+    expect(hook.result.current.ruleValidationResultUri).toBe('s3://out/in/w2.pdf/seeded.md');
+    expect(order).toEqual([]);
+
+    // A document with no policy report (the default answer here) has none after the read.
+    await act(() => hook.result.current.refreshDocument());
+    expect(hook.result.current.ruleValidationResultUri).toBeNull();
   });
 
   it('a failed item read throws, leaves the load error alone and reads no document', async () => {

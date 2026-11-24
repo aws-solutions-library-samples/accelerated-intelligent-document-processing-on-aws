@@ -230,9 +230,69 @@ the opaque strings that grant that tenant, such as an Entra app-role value or an
 group name. A value may grant only one tenant, and a tenant takes at most three. When
 the values a user holds grant **two or more** tenants, the user is granted **none**:
 their scope becomes `!no-tenant-granted` and the sign-in logs a warning naming the
-tenants. There is no active-tenant selector, so a person who works for two tenants
-needs two accounts. Values that grant no tenant are ignored, because the same claim
-also carries the user's functional roles.
+tenants. By default there is no active-tenant selector, so a person who works for two
+tenants needs two accounts; [Letting a user choose among their
+tenants](#letting-a-user-choose-among-their-tenants) turns the choice on. Values that
+grant no tenant are ignored, because the same claim also carries the user's functional
+roles.
+
+### Letting a user choose among their tenants
+
+Set **`TenantSelection=UserSelect`** (default `Disabled`) so a user the claim grants two
+or more tenants chooses which one is active, instead of being granted none. It requires
+`TenantGrantSource=IdpClaim`: the tenants offered are the ones the claim grants, so under
+`Manual` or `Api` there is nothing to choose from, and the template refuses the
+combination.
+
+**What happens**
+
+1. At each fresh sign-in the trigger still grants a user with two or more tenants the
+   scope `!no-tenant-granted`, and also records the matching tenant ids on the user's
+   record (`eligibleTenants`). A user with fewer than two has no list; one who drops
+   to one tenant has it removed.
+2. The web UI sees that the user has no active tenant and two or more to choose from,
+   and shows **Choose a tenant** in place of the app. The only other option is **Sign
+   out**; there is no way to dismiss the page into an app that would show nothing.
+3. The choice calls `selectActiveTenant`, which scopes the user to that tenant's profile
+   pattern, exactly as a one-tenant grant would. The page reloads.
+4. A tenant switcher then appears in the navigation bar, and the user can change tenants
+   from it. Each change asks for confirmation.
+
+**Rules the server enforces**
+
+- Nobody chooses for another user. `selectActiveTenant` takes only a tenant id and acts
+  on the record of the caller's verified token. An Admin does not select tenants for
+  users, and an Admin who calls it is refused, because Admins are never scoped.
+- A user can choose only among `eligibleTenants`, which only the sign-in trigger writes,
+  from the claim. The write repeats that check, so a selection cannot land on a list the
+  trigger has just rewritten. A tenant removed in the identity provider stays selectable
+  until the user's next fresh sign-in, the same timing as every other grant.
+- Each fresh sign-in resets the active tenant to none. The user chooses again, or the
+  browser applies the choice it remembers (below).
+- Under `TenantSelection=Disabled` the operation is refused and `getMyProfile` does not
+  report a list, so the UI never offers a choice the server would refuse.
+
+**The remembered choice.** After a selection, the browser keeps the tenant and the
+user's id in `sessionStorage`. On the next load in that tab, if the user has no active
+tenant and the remembered tenant is still on offer, the page applies it without asking.
+This is a convenience only: the server checks every selection, so an edited or stale
+value costs one refused request and then the page asks. It is per tab, cleared on sign
+out, and never used for a different user.
+
+**What a user should know**
+
+- The active tenant is stored on the user's record, so it applies to **every session of
+  that user**, not only the tab where it was chosen. Choosing in one tab changes the
+  others.
+- Resolvers cache a user's scope for up to about a minute, so right after a choice or a
+  switch some requests can still answer for the previous scope.
+- A review item held under one tenant cannot be opened after switching to another, as
+  with any narrowing of a user's scope.
+
+**What it does not isolate.** A user entitled to two tenants can read both, one at a
+time. Anything stored per user rather than per document is visible under whichever
+tenant is active: chat sessions, inbox messages and the like are not tagged with a
+tenant. Use two accounts where that matters.
 
 ### Granting from the identity provider's claim
 

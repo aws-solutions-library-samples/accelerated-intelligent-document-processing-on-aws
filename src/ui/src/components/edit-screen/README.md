@@ -81,12 +81,50 @@ Fields** controls; it is not in the bar's More Actions.
   `FieldFocusRequest` (`field-focus.ts`); a new nonce repeats the same field.
   `SectionEditor` opens the section, expands the groups above the field, scrolls it into
   view and focuses its input.
-- **Process Changes.** `EditProcess.confirm` says what to ask first:
-  `{ kind: 'reprocess', bdaMode }` for a direct edit (Confirm Reprocessing), and
-  `{ kind: 'version' }` for a Test Studio item when no draft version of the set is open,
-  shown by `ProcessChangesConfirmModal` with `variant="version"`. Omitted, it runs at once:
-  a Production item, or a Test Studio item whose draft version is already open. Test
-  Studio editing is draft-first: Save stores a draft and opens no version.
+- **Process Changes.** `EditProcess.confirm` (`EditProcessConfirm`) says what to ask
+  first, after the open section's edits are saved. Omitted, it runs at once: a Test
+  Studio item whose draft version is already open. Test Studio editing is draft-first:
+  Save stores a draft and opens no version.
+
+  | `confirm`                                           | Mode                                               | The dialog                                                                                                                                               |
+  | --------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `{ kind: 'reprocess' }`                             | Direct edit                                        | `ProcessChangesConfirmModal`, which reads the steps of the run for the document on the page (`getProcessChangesPlan`) and shows them with `PlannedSteps` |
+  | `{ kind: 'version' }`                               | Test Studio item, no draft version of the set open | `ProcessChangesConfirmModal` with `variant="version"`                                                                                                    |
+  | `{ kind: 'review-completion', objectKey, cycleId }` | Production item                                    | `ReviewCompletionModal` (`../review-queues/`)                                                                                                            |
+
+## Finishing a review
+
+A Production item's Process Changes opens `ReviewCompletionModal`, the dialog that
+finishes a review. The reviewer chooses the ending, **Complete the review** or **Send
+back for reprocessing**, and nothing else. The page holds no start step and offers
+none: the server decides where the run starts, and
+`../run-plan/__tests__/no-held-start-step.test.ts` pins that no component keeps one.
+
+- **What the dialog shows.** One read, `getReviewCompletionPlan(objectKey, cycleId)`
+  (`../run-plan/run-plan-api.ts`, through the `usePlannedRun` hook), answers both
+  endings while the dialog is open. `PlannedSteps` (`../run-plan/PlannedSteps.tsx`)
+  shows the ending chosen: the step the run starts at, every step with its state
+  (Runs, Skipped, Not enabled) and the sections extracted again with their causes.
+  The step labels are `stepMessageIn(stepId, mode)` of `StartStepPicker.tsx`, the
+  UI's one set of step names.
+- **A failed read does not block the review.** `PlannedSteps` shows a warning with
+  Retry, and Complete review stays enabled.
+- **What completing runs.** `EditProcess.run` completes the item
+  (`completeReviewItem`). The server starts the run at Apply Review Changes, or at
+  extraction for the sections the reviewer added or whose pages they changed, and
+  applies the review after that extraction. The board's consequence text
+  (`regroupConsequence` in `production-item-edit-model.tsx`) tells the reviewer so
+  before they regroup.
+- **Send back.** `EditSendBack.run(note?)` calls `sendBackItem(item, note)`, which
+  sends no start step. The model offers it (`sendBack`) to whoever may finish the
+  item; the dialog shows the option when the model does (`canSendBack`). A refusal
+  is shown inside the dialog.
+- **BDA mode.** `regroupDisabledReason` is `BDA_REGROUP_REASON`
+  (`document-edit-status.ts`) for an item whose `processingMode` is `bda`: a BDA run
+  cannot extract a section again, and the server refuses the regroup.
+- **Reports.** `EditDocumentHeader.ruleValidation` (`reportUri`, or
+  `unavailableReason`) gives the bar its Policy Rule Validation Summary item, in the
+  direct edit and the Production item; `EditScreen` opens it in `DocumentReportDialog`.
 
 ## The breadcrumbs
 

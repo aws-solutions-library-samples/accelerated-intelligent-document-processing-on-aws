@@ -36,6 +36,7 @@ from collections.abc import Iterator
 from typing import Any, Callable
 
 from idp_common import utils
+from idp_common.field_values import _is_populated_value
 
 logger = logging.getLogger(__name__)
 
@@ -762,24 +763,6 @@ def _missing_row_indices(assessment_list: Any, data_list: Any) -> list[int]:
         return []
     n = min(len(assessment_list), len(data_list))
     return [i for i in range(n) if _row_confidence_missing(assessment_list[i])]
-
-
-def _is_populated_value(value: Any) -> bool:
-    """True when an extracted value is something a confidence score can be *about*.
-
-    An absent value needs no assessment, and demanding one would make every
-    sparsely-populated form report a shortfall: the measured section in #1474
-    defines ten fields and populates six, and the four empty ones are correctly
-    unscored. Empty strings and empty containers count as absent for the same
-    reason — extraction emits them for "field not found on the page".
-    """
-    if value is None:
-        return False
-    if isinstance(value, str) and not value.strip():
-        return False
-    if isinstance(value, (dict, list)) and not value:
-        return False
-    return True
 
 
 def _missing_scalar_fields(assessment: Any, extraction_results: Any) -> list[str]:

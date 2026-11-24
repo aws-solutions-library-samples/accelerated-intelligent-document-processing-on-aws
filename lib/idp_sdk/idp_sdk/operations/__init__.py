@@ -14,6 +14,7 @@ from .fit_check import FitCheckOperation
 from .manifest import ManifestOperation
 from .mcp import McpOperation
 from .publish import PublishOperation
+from .review_queues import ReviewQueueOperation
 from .search import SearchOperation
 from .stack import StackOperation
 from .tenancy import TenancyOperation
@@ -31,6 +32,7 @@ __all__ = [
     "FitCheckOperation",
     "ManifestOperation",
     "PublishOperation",
+    "ReviewQueueOperation",
     "SearchOperation",
     "StackOperation",
     "McpOperation",

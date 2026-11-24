@@ -161,7 +161,7 @@ The connector dynamically discovers and exposes all tools from the IDP MCP Serve
 |------|-------------|
 | `search` | Natural language queries on processed document analytics (e.g., "How many invoices failed last week?") |
 | `process` | Submit documents for processing from an S3 URI |
-| `reprocess` | Re-run documents through the classification or extraction pipeline steps |
+| `reprocess` | Process documents again, starting at a chosen pipeline step and optionally skipping later optional steps |
 | `status` | Check processing status of a batch (total, completed, in-progress, failed counts) |
 | `get_results` | Retrieve extracted fields, confidence scores, and metadata for processed documents |
 

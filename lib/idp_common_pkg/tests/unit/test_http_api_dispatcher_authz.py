@@ -374,6 +374,10 @@ TIGHTENED_TO_ANY_GROUP = (
     "deleteAgentJob",
     "deleteChatSession",
     "sendChatDocumentMessage",
+    # Writes the caller's own configuration scope (TenantSelection=UserSelect). A
+    # caller in no group is refused: one who holds a tenant role but no functional
+    # role is locked out of the application and has nothing to choose a tenant for.
+    "selectActiveTenant",
     # document content, and the means of obtaining it
     "getFileContents",
     "getFilePresignedUrl",

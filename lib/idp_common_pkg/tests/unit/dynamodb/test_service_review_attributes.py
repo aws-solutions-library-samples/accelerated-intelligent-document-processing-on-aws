@@ -85,6 +85,39 @@ class TestUpdateReviewAttributes:
 
 
 @pytest.mark.unit
+class TestRemoveAttributes:
+    """``update_document`` sets attributes and removes none, so a caller that
+    cleared part of a document removes what held it (a reprocess from a later
+    step, ``idp_common.run_plan.reprocess``)."""
+
+    def setup_method(self):
+        self.client = Mock()
+        self.service = DocumentDynamoDBService(dynamodb_client=self.client)
+
+    def test_the_named_attributes_are_removed_from_an_existing_row(self):
+        self.service.remove_attributes(
+            "batch/a.pdf", ["SummaryReportUri", "EvaluationStatus"]
+        )
+
+        self.client.update_item.assert_called_once()
+        kwargs = self.client.update_item.call_args.kwargs
+        assert kwargs["key"] == {"PK": "doc#batch/a.pdf", "SK": "none"}
+        assert kwargs["update_expression"] == "REMOVE #r0, #r1"
+        assert kwargs["expression_attribute_names"] == {
+            "#r0": "SummaryReportUri",
+            "#r1": "EvaluationStatus",
+        }
+        assert kwargs["expression_attribute_values"] is None
+        # Never creates a row.
+        assert kwargs["condition_expression"] == "attribute_exists(PK)"
+
+    def test_no_names_makes_no_call(self):
+        self.service.remove_attributes("a.pdf", ())
+
+        self.client.update_item.assert_not_called()
+
+
+@pytest.mark.unit
 class TestRunKind:
     def setup_method(self):
         self.client = Mock()

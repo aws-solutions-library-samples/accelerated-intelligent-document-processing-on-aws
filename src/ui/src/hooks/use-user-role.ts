@@ -41,6 +41,10 @@ export const APP_GROUPS = ['Admin', 'Author', 'Reviewer', 'Annotator', 'Viewer']
 interface ProfileScope {
   allowedConfigVersions: string[] | null;
   allowedTestSets: string[] | null;
+  /** The tenant the scope was granted for, when an identity provider or entitlement push granted it. */
+  scopeTenant: string | null;
+  /** The tenants the user may choose between (`TenantSelection=UserSelect`); empty otherwise. */
+  eligibleTenants: string[];
 }
 
 /**
@@ -68,9 +72,12 @@ const fetchProfileScopeUncached = async (): Promise<ProfileScope> => {
   const profile = result.data.getMyProfile;
   const versions = (profile?.allowedConfigVersions ?? []).filter((v): v is string => v !== null);
   const sets = (profile?.allowedTestSets ?? []).filter((v): v is string => v !== null);
+  const eligible = (profile?.eligibleTenants ?? []).filter((v): v is string => !!v);
   return {
     allowedConfigVersions: versions.length > 0 ? versions : null,
     allowedTestSets: sets.length > 0 ? sets : null,
+    scopeTenant: profile?.scopeTenant ?? null,
+    eligibleTenants: eligible,
   };
 };
 
@@ -136,6 +143,16 @@ interface UserRoleReturn {
    */
   allowedTestSets: string[] | null;
   /**
+   * The tenants the caller may choose between, when the identity provider grants
+   * them two or more and the stack runs `TenantSelection=UserSelect`. Empty for
+   * everyone else, including every Admin.
+   */
+  eligibleTenants: string[];
+  /** The tenant currently active for the caller, or `null` when none is. */
+  activeTenant: string | null;
+  /** The signed-in user's Cognito `sub`, or `null` before the session is read. */
+  subject: string | null;
+  /**
    * True once loading has finished and the caller is in NONE of `APP_GROUPS`.
    *
    * This is not the same as `groups.length === 0`: the claim can carry a group
@@ -191,6 +208,9 @@ const useUserRole = (): UserRoleReturn => {
   const [groups, setGroups] = useState<string[]>([]);
   const [allowedConfigVersions, setAllowedConfigVersions] = useState<string[] | null>(null);
   const [allowedTestSets, setAllowedTestSets] = useState<string[] | null>(null);
+  const [eligibleTenants, setEligibleTenants] = useState<string[]>([]);
+  const [activeTenant, setActiveTenant] = useState<string | null>(null);
+  const [sessionSubject, setSessionSubject] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState(false);
   const [loading, setLoading] = useState(true);
   // Bumped by `retrySession`, and the effect's only dependency. The effect is still
@@ -256,6 +276,7 @@ const useUserRole = (): UserRoleReturn => {
         }
 
         setGroups(groupsArray);
+        setSessionSubject((session?.tokens?.idToken?.payload?.sub as string | undefined) ?? null);
 
         // Fetch user profile for allowedConfigVersions (skip for Admin - always unrestricted)
         if (!groupsArray.includes('Admin')) {
@@ -269,6 +290,8 @@ const useUserRole = (): UserRoleReturn => {
             const scope = subject ? await fetchProfileScopeShared(subject) : await fetchProfileScopeUncached();
             if (scope.allowedConfigVersions) setAllowedConfigVersions(scope.allowedConfigVersions);
             if (scope.allowedTestSets) setAllowedTestSets(scope.allowedTestSets);
+            setEligibleTenants(scope.eligibleTenants);
+            setActiveTenant(scope.scopeTenant);
           } catch (profileErr) {
             console.warn('Could not fetch user profile for scope:', profileErr);
             // Non-critical - default to unrestricted
@@ -351,6 +374,9 @@ const useUserRole = (): UserRoleReturn => {
     isQueueWorker,
     allowedConfigVersions,
     allowedTestSets,
+    eligibleTenants,
+    activeTenant,
+    subject: sessionSubject,
     hasNoRole,
     sessionError,
     retrySession,

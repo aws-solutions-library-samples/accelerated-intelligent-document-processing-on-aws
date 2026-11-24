@@ -36,11 +36,7 @@ const MEASURED_JUDGE_CALLS: Array<[string, number, number]> = [
   ['healthcare-multisection-package', 8, 7],
   ['healthcare-multisection-package', 9, 9],
   ['lending-package-sample', 1, 2],
-  ['rule-validation', 0, 1],
-  ['rule-validation', 1, 5],
-  ['rule-validation', 2, 12],
-  ['rule-validation', 3, 5],
-  ['rule-validation', 4, 1],
+  ['review-routing-showcase', 2, 2],
 ];
 const UNMEASURABLE: Array<[string, number]> = [
   ['bank-statement-sample', 0],

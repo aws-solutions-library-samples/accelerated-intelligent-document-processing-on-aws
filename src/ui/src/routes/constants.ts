@@ -9,6 +9,13 @@ export const REDIRECT_URL_PARAM = 'redirect';
 export const DOCUMENTS_KB_QUERY_PATH = `${DOCUMENTS_PATH}/query`;
 export const DOCUMENTS_ANALYTICS_PATH = `${DOCUMENTS_PATH}/agents`;
 export const CONFIGURATION_PATH = `${DOCUMENTS_PATH}/config`;
+/** `?tab=` value of the configuration page's Routing tab. */
+export const CONFIGURATION_ROUTING_TAB = 'routing';
+/** Hash-link helper: href for the Routing tab of one configuration profile. */
+export const configurationRoutingHref = (profile: string): string => {
+  const params = new URLSearchParams({ version: profile, tab: CONFIGURATION_ROUTING_TAB });
+  return `#${CONFIGURATION_PATH}?${params.toString()}`;
+};
 export const PRICING_PATH = `${DOCUMENTS_PATH}/pricing`;
 export const MODEL_CONFIG_LIMITS_PATH = `${DOCUMENTS_PATH}/model-limits`;
 export const UPLOAD_DOCUMENT_PATH = `${DOCUMENTS_PATH}/upload`;

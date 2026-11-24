@@ -5,13 +5,14 @@
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from idp_common.models import DOCUMENT_STATUS_VALUES
 from idp_sdk._core.document_processor import _section_instances
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
     IDPConfigurationError,
+    IDPError,
     IDPProcessingError,
     IDPResourceNotFoundError,
 )
@@ -469,54 +470,96 @@ class BatchOperation:
 
     def reprocess(
         self,
-        step: Union[str, RerunStep],
+        step: Union[str, RerunStep] = RerunStep.BEGINNING,
         document_ids: Optional[List[str]] = None,
         batch_id: Optional[str] = None,
+        *,
+        skip: Sequence[Union[str, RerunStep]] = (),
+        version: Optional[str] = None,
+        revision: Optional[int] = None,
         stack_name: Optional[str] = None,
         **kwargs,
     ) -> BatchReprocessResult:
-        """Reprocess existing documents from a specific step.
+        """Process existing documents again, starting at a step.
+
+        The stack's reprocess resolver does the work for each document: it
+        checks that the document can start at the step, clears the outputs the
+        run will produce again and queues it. A document that cannot be
+        processed again does not stop the others: it is reported in
+        ``results`` (and ``failed_documents``) with the reason.
 
         Args:
-            step: Pipeline step to reprocess from
+            step: The step to start at: a ``RerunStep`` or its value
+                (``beginning``, ``ocr``, ``classification``, ``extraction``,
+                ``assessment``, ``policy_rule_validation``, ``summarization``,
+                ``evaluation``, or ``resume`` for the first step with no output)
             document_ids: List of document IDs to reprocess
             batch_id: Batch ID (will reprocess all documents in batch)
+            skip: Optional steps to leave out of the run (``assessment``,
+                ``policy_rule_validation``, ``summarization``, ``evaluation``)
+            version: Configuration profile to process the documents under
+            revision: Revision of that profile
             stack_name: Optional stack name override
             **kwargs: Additional parameters
 
         Returns:
-            BatchReprocessResult with reprocess statistics
+            BatchReprocessResult with the counts and one result per document
+
+        Raises:
+            IDPConfigurationError: neither ``document_ids`` nor ``batch_id``
+            IDPValidationError: ``step`` or ``skip`` names no such step
+            IDPResourceNotFoundError: the batch does not exist, or the stack
+                has no reprocess resolver output
+            ReprocessRefusedError: the server refused the request as a whole
+            IDPProcessingError: the request failed
         """
-        from idp_sdk._core.rerun_processor import RerunProcessor
+        from idp_sdk._core import reprocess as server
 
         name = self._client._require_stack(stack_name)
-        step_str = step.value if isinstance(step, RerunStep) else step
+        start = server.step_value(step)
+        skipped = server.skip_values(skip)
 
         if not document_ids and not batch_id:
             raise IDPConfigurationError("Must specify either document_ids or batch_id")
 
+        if batch_id and not document_ids:
+            document_ids = self.get_document_ids(batch_id, stack_name=name)
+
         try:
-            processor = RerunProcessor(stack_name=name, region=self._client._region)
-
-            if batch_id and not document_ids:
-                document_ids = processor.get_batch_document_ids(batch_id)
-
-            result = processor.rerun_documents(
-                document_ids=document_ids, step=step_str, monitor=False
+            results = server.reprocess(
+                name,
+                self._client._region,
+                list(document_ids or []),
+                start,
+                skipped,
+                version=version,
+                revision=revision,
             )
-
-            return BatchReprocessResult(
-                documents_queued=result.get("documents_queued", 0),
-                documents_failed=result.get("documents_failed", 0),
-                failed_documents=result.get("failed_documents", []),
-                step=RerunStep(step_str),
-            )
+        except IDPError:
+            raise
         except Exception as e:
             raise IDPProcessingError(f"Reprocess failed: {e}") from e
 
+        not_queued = [result for result in results if not result.queued]
+        return BatchReprocessResult(
+            documents_queued=len(results) - len(not_queued),
+            documents_failed=len(not_queued),
+            failed_documents=[
+                {
+                    "object_key": result.document_id,
+                    "error": result.message or result.reason or result.status,
+                    "status": result.status,
+                    "reason": result.reason or "",
+                }
+                for result in not_queued
+            ],
+            step=RerunStep(start),
+            results=results,
+        )
+
     def rerun(
         self,
-        step: Union[str, RerunStep],
+        step: Union[str, RerunStep] = RerunStep.BEGINNING,
         document_ids: Optional[List[str]] = None,
         batch_id: Optional[str] = None,
         stack_name: Optional[str] = None,

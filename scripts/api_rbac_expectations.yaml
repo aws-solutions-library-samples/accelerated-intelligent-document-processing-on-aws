@@ -436,7 +436,20 @@ operations:
     document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py
+    scope_enforced_in: handler
     args: { objectKeys: ["__nope__"] }
+    note: >-
+      Queues documents to run again from startStep (the beginning when omitted), leaving out skipSteps. Returns how many were queued and a result for each document; a document that cannot run as asked is REFUSED in its own result and does not fail the call. A document or a profile outside the caller's scope refuses the whole call with a 403.
+  getReprocessOptions:
+    groups: [Admin, Author]
+    kind: read
+    document_scope_checked: true
+    scope_checked: true
+    enforced_in: nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py
+    scope_enforced_in: handler
+    args: { objectKeys: ["__x__"] }
+    note: >-
+      For each document, its processing mode and the steps a reprocess can start at. It reads the tracking row and the configuration and changes nothing. The groups and the scope checks are reprocessDocument's, because the answer names the document's profile-dependent steps: a document outside the caller's scope refuses the call.
   abortWorkflow:
     groups: [Admin, Author]
     kind: mutation
@@ -535,6 +548,20 @@ operations:
     kind: mutation
     enforced_in: *cfg
     args: { ruleDescription: "" }
+  getReviewQueueReferences:
+    groups: [Admin]
+    kind: read
+    enforced_in: *cfg
+    args: { queueId: "__nope__" }
+    note: >-
+      Lists the routing rules, in every configuration profile, that send documents to a review queue: what an Admin is shown before deleting or disabling it. Admin only, like the queue operations, because it reads every profile and names their rules.
+  convertRoutingDmn:
+    groups: [Admin, Author, Viewer]
+    kind: read
+    enforced_in: *cfg
+    args: { direction: "from_dmn", content: "<x/>" }
+    note: >-
+      Converts a routing section to DMN XML or DMN XML to a routing section. It reads no profile and saves nothing: the input comes from the caller and the output goes back to them, so every role that can open a configuration may use it. The args are XML that is not a decision table, which an allowed caller is answered with a 400.
   deleteConfigVersion:
     groups: [Admin]
     kind: mutation
@@ -1134,6 +1161,15 @@ operations:
     scope_enforced_in: _assert_caller_may_process
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__x__", modifiedSections: [] }
+  getProcessChangesPlan:
+    groups: [Admin, Reviewer]
+    kind: read
+    scope_checked: true
+    scope_enforced_in: _assert_caller_may_process
+    enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
+    args: { objectKey: "__x__" }
+    note: >-
+      Where Process Changes would start for the document as saved and the steps the run executes, with the same group, scope and review-ownership checks as processChanges; reads only. Returns step ids, labels and section ids. A nonexistent key is a benign 404.
   completeSectionReview:
     # Annotator annotates test-set ground truth; the resolver additionally
     # requires the document's test set to be in their allowedTestSets.
@@ -1586,6 +1622,15 @@ operations:
     args: { objectKey: "__x__" }
     note: >-
       One queue item, its reasons, drafts and history. An Annotator or a Reviewer may open, read-only until they claim it, an item in a queue they work (every Production queue for a Reviewer), or an item they hold (NOT_A_MEMBER otherwise), and only when the item's own profile is in their allowedConfigVersions (OUT_OF_SCOPE otherwise). A nonexistent key is a benign 404.
+  getReviewCompletionPlan:
+    groups: [Admin, Annotator, Reviewer]
+    kind: read
+    enforced_in: *rq
+    scope_checked: true
+    scope_enforced_in: _caller_context
+    args: { objectKey: "__x__", cycleId: "000000000000000000000" }
+    note: >-
+      What finishing a review runs: the start step, the steps of the run and the sections extracted again, for completing and for sending back. For the holder of the item, and for an Admin on an item that is open or assigned (NOT_LEASE_HOLDER otherwise), and only when the item's own profile is in the caller's allowedConfigVersions. Reads the item, the document's tracking row and the configuration revision it is pinned to; returns step ids, labels and section ids, no document content. A nonexistent key is a benign 404.
   claimReviewItem:
     groups: [Admin, Annotator, Reviewer]
     kind: mutation
@@ -1649,6 +1694,15 @@ operations:
     args: { objectKey: "__x__", cycleId: "000000000000000000000", reason: "Other (see note)" }
     note: >-
       Rejects an item assigned to the caller with a reason from the queue's list; the document ends REJECTED.
+  sendBackReviewItem:
+    groups: [Admin, Annotator, Reviewer]
+    kind: mutation
+    enforced_in: *rq
+    scope_checked: true
+    scope_enforced_in: _caller_context
+    args: { objectKey: "__x__", cycleId: "000000000000000000000" }
+    note: >-
+      Sends a document in review back to be processed again, starting at classification (the beginning in BDA mode); the call names no step. The review is withdrawn and its corrections are not kept. For the holder of the item, and for an Admin on an item that is open or assigned: the service refuses anyone else. The run is asked of the reprocess function by a direct invoke, so the caller needs no reprocess permission of their own.
   removeReviewItem:
     groups: [Admin]
     kind: mutation
@@ -1704,7 +1758,14 @@ operations:
     enforced_in: *rq
     args: {}
     note: >-
-      Lists the system-wide queue definitions. Admin only.
+      Lists the system-wide queue definitions, a page at a time in id order (limit, nextToken). Admin only.
+  testRoutingTable:
+    groups: [Admin]
+    kind: read
+    enforced_in: *rq
+    args: { objectKey: "__x__" }
+    note: >-
+      Says what a routing table decides for a processed document: the rule that matches, the queue and the inputs read. With routing omitted it tests the configuration the document is pinned to; otherwise the routing section sent. It places nothing and writes nothing. Admin only, as editing routing rules is.
   createReviewQueue:
     groups: [Admin]
     kind: mutation
@@ -1757,6 +1818,23 @@ operations:
     # caller is refused (by the mode check, or as user-not-found) and nothing is
     # written.
     args: { email: "__no@no.invalid" }
+  selectActiveTenant:
+    groups: ANY_GROUP
+    kind: mutation
+    ownership: true
+    enforced_in: src/lambda/user_management/index.py
+    # No tenant argument can name another user: the handler acts on the row of the
+    # verified token's `sub`, and only among that row's `eligibleTenants`, which the
+    # sign-in trigger writes from the identity provider's claim. The probe tenant is
+    # not declared, so an allowed caller is refused and nothing is written.
+    args: { tenantId: "__no_such_tenant__" }
+    note: >-
+      ANY_GROUP, not ANY: it writes the caller's own configuration scope, so a caller
+      in no group is refused. Every user who can choose a tenant holds a group, because
+      one in no group is locked out of the application altogether. Admins pass the
+      dispatcher and are refused by the handler, since they are never scoped.
+      `ownership: true` because own-record-only is record ownership: there is no
+      user-identifying argument.
   listUsers:
     groups: [Admin]
     kind: read

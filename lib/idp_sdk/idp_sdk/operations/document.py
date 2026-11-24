@@ -5,7 +5,7 @@
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import boto3
 from botocore.exceptions import ClientError
@@ -13,6 +13,7 @@ from botocore.exceptions import ClientError
 from idp_sdk._core.ids import generate_timestamped_id
 from idp_sdk.exceptions import (
     IDPConfigurationError,
+    IDPError,
     IDPProcessingError,
     IDPResourceNotFoundError,
 )
@@ -26,6 +27,7 @@ from idp_sdk.models import (
     DocumentReprocessResult,
     DocumentStatus,
     DocumentUploadResult,
+    ReprocessOption,
     RerunStep,
     ReviewInfo,
 )
@@ -289,46 +291,118 @@ class DocumentOperation:
     def reprocess(
         self,
         document_id: str,
-        step: Union[str, RerunStep],
+        step: Union[str, RerunStep] = RerunStep.BEGINNING,
+        *,
+        skip: Sequence[Union[str, RerunStep]] = (),
+        version: Optional[str] = None,
+        revision: Optional[int] = None,
         stack_name: Optional[str] = None,
         **kwargs,
     ) -> DocumentReprocessResult:
-        """Reprocess a single document from a specific step.
+        """Process a document again, starting at a step.
+
+        The stack's reprocess resolver does the work: it checks that the
+        document can start at the step, clears the outputs the run will
+        produce again and queues the document.
 
         Args:
             document_id: Document identifier (S3 key)
-            step: Pipeline step to reprocess from (e.g., 'classification', 'extraction')
+            step: The step to start at: a ``RerunStep`` or its value
+                (``beginning``, ``ocr``, ``classification``, ``extraction``,
+                ``assessment``, ``policy_rule_validation``, ``summarization``,
+                ``evaluation``, or ``resume`` for the first step with no output)
+            skip: Optional steps to leave out of the run (``assessment``,
+                ``policy_rule_validation``, ``summarization``, ``evaluation``)
+            version: Configuration profile to process the document under
+            revision: Revision of that profile
             stack_name: Optional stack name override
             **kwargs: Additional parameters
 
         Returns:
-            DocumentReprocessResult with reprocess status
+            DocumentReprocessResult. ``queued`` is false when the document was
+            refused or failed; ``status``, ``reason`` and ``message`` say why.
+
+        Raises:
+            IDPValidationError: ``step`` or ``skip`` names no such step
+            ReprocessRefusedError: the server refused the request as a whole
+            IDPResourceNotFoundError: the stack has no reprocess resolver output
+            IDPProcessingError: the request failed
         """
-        from idp_sdk._core.rerun_processor import RerunProcessor
+        from idp_sdk._core import reprocess as server
 
         name = self._client._require_stack(stack_name)
-        step_str = step.value if isinstance(step, RerunStep) else step
-
+        start = server.step_value(step)
+        skipped = server.skip_values(skip)
         try:
-            processor = RerunProcessor(stack_name=name, region=self._client._region)
-            result = processor.rerun_documents(
-                document_ids=[document_id], step=step_str, monitor=False
+            results = server.reprocess(
+                name,
+                self._client._region,
+                [document_id],
+                start,
+                skipped,
+                version=version,
+                revision=revision,
             )
-
-            queued = result.get("documents_queued", 0) > 0
-
-            return DocumentReprocessResult(
-                document_id=document_id,
-                step=RerunStep(step_str),
-                queued=queued,
-            )
+        except IDPError:
+            raise
         except Exception as e:
             raise IDPProcessingError(f"Reprocess failed: {e}") from e
+        if not results:
+            raise IDPProcessingError(
+                f"Reprocess returned no result for document {document_id}"
+            )
+        return results[0]
+
+    def reprocess_options(
+        self,
+        document_ids: Union[str, Sequence[str]],
+        *,
+        version: Optional[str] = None,
+        revision: Optional[int] = None,
+        stack_name: Optional[str] = None,
+    ) -> List[ReprocessOption]:
+        """For each document, the steps a reprocess can start at.
+
+        Reads only. The answer depends on the document's processing mode and on
+        what it already has: a step whose input is missing is not available,
+        and ``reason`` carries the code that says why.
+
+        Args:
+            document_ids: One document identifier or several
+            version: Configuration profile the reprocess would name
+            revision: Revision of that profile
+            stack_name: Optional stack name override
+
+        Returns:
+            One ReprocessOption per document, in the order given
+
+        Raises:
+            ReprocessRefusedError: the server refused the request
+            IDPResourceNotFoundError: the stack has no reprocess resolver output
+            IDPProcessingError: the request failed
+        """
+        from idp_sdk._core import reprocess as server
+
+        name = self._client._require_stack(stack_name)
+        if isinstance(document_ids, str):
+            document_ids = [document_ids]
+        try:
+            return server.reprocess_options(
+                name,
+                self._client._region,
+                list(document_ids),
+                version=version,
+                revision=revision,
+            )
+        except IDPError:
+            raise
+        except Exception as e:
+            raise IDPProcessingError(f"Reprocess options failed: {e}") from e
 
     def rerun(
         self,
         document_id: str,
-        step: Union[str, RerunStep],
+        step: Union[str, RerunStep] = RerunStep.BEGINNING,
         stack_name: Optional[str] = None,
         **kwargs,
     ) -> DocumentReprocessResult:

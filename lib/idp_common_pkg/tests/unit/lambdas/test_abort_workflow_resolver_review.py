@@ -61,3 +61,50 @@ class TestAbortReviewStatuses:
 
         assert result["abortedCount"] == 1
         assert doc_service.update_document.call_args.args[0].status is Status.ABORTED
+
+
+@pytest.mark.unit
+class TestAbortDuringPolicyRuleValidation:
+    """Policy rule validation runs before review routing, so a document can sit in
+    one of its three statuses for as long as the stage takes."""
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            Status.RULE_VALIDATION_POLICY_CLASSIFICATION,
+            Status.RULE_VALIDATION,
+            Status.RULE_VALIDATION_ORCHESTRATOR,
+        ],
+    )
+    def test_a_document_in_policy_rule_validation_can_be_aborted(
+        self, doc_service, status
+    ):
+        doc_service.get_document.return_value = _doc(status)
+
+        result = abort_index.handler(_event(["a.pdf"]), None)
+
+        assert result["abortedCount"] == 1
+        assert not result["errors"]
+        assert doc_service.update_document.call_args.args[0].status is Status.ABORTED
+
+    def test_every_status_a_running_document_can_have_is_abortable(self):
+        """A status a step sets while the workflow runs, and that is not abortable,
+        leaves a document nobody can stop."""
+        running = {
+            Status.QUEUED,
+            Status.RUNNING,
+            Status.PREPROCESSING,
+            Status.OCR,
+            Status.CLASSIFYING,
+            Status.EXTRACTING,
+            Status.ASSESSING,
+            Status.POSTPROCESSING,
+            Status.RULE_VALIDATION_POLICY_CLASSIFICATION,
+            Status.RULE_VALIDATION,
+            Status.RULE_VALIDATION_ORCHESTRATOR,
+            Status.HITL_IN_PROGRESS,
+            Status.SUMMARIZING,
+            Status.EVALUATING,
+        }
+
+        assert running <= abort_index.ABORTABLE_STATUSES

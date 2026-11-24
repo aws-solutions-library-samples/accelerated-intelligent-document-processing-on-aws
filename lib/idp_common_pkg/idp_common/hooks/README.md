@@ -116,7 +116,8 @@ outright rather than degrading. Set one explicitly to override:
 - `use_bda`, `bda_project_arn` — injected by the queue processor from the
   resolved config; drive the BDA/pipeline routing Choice.
 - `num_pages`, `status`, `sections` — compressed-wrapper metadata read by
-  `BDA_CheckExistingData` and `ProcessSections`' `ItemsPath`.
+  `CheckExistingBdaData` and by `SelectAllSections`, which takes the section ids
+  `ProcessSections` iterates.
   `updated_document_result()` always emits these, so this only matters if you
   hand-roll a reference.
 
@@ -145,16 +146,76 @@ Where a mutation reaches depends on the point:
 | `postOcr` | Whole document + page results | Classification onward |
 | `postClassification` | Whole document | The section Map fan-out and everything after |
 | `postExtraction` | **A single section** (runs inside the Map) | Assessment; only `sections[0]` + `metering` merge into the final document |
-| `postRuleValidation` | Whole document | Summarization, evaluation, final output |
+| `postRuleValidation` | Whole document | Review routing, summarization, evaluation, final output |
 | `postSummarization` | Whole document | Evaluation and the final workflow output |
 | `postprocessing` | Whole document, fully processed | Nothing downstream — but it IS the workflow output, so it reaches the tracking row, reporting, and the UI |
 
 `postprocessing` runs last (after evaluation) and, like `preprocessing`, is a
 standalone single-hook point. Two caveats there: `halt` is not actionable (the
 dispatcher reports `haltIgnored`), and a mutation cannot set a terminal
-`status` — a successful execution is forced to `COMPLETED`. It also fires while
-a HITL review is pending, so branch on the document's `hitl_status` /
-`hitl_triggered` fields (absent means no HITL) and keep the hook idempotent.
+`status` — a successful execution is forced to `COMPLETED`.
+
+## When a hook fires, and which run it is in
+
+A hook fires when a run **does** its step. Every run has a run plan
+([`run_plan`](../run_plan/README.md)) that says where it starts and which optional
+steps it skips, so a hook is not invoked on every run of a document:
+
+- A run that starts at a later step (a reprocess from extraction, the run after a
+  completed review) does not pass the hook points of the steps before its start.
+  `preprocessing` is passed only by a run that starts at the beginning.
+- The run after a completed review starts at the apply-review step and passes
+  `postRuleValidation`, `postSummarization` and `postprocessing`. When it has to
+  extract sections again first (Pipeline mode: the reviewer added a section or
+  changed a section's pages, or a section has no result), it starts at extraction
+  instead: it passes `postExtraction` for each section it extracts, then applies
+  the review, then passes the same three points. `postExtraction` in that run sees
+  the newly extracted values before the reviewer's corrections are set on them.
+- A document that is sent back runs again from classification (from the beginning
+  in BDA mode) and passes the points of every step that run does.
+- A step the run plan skips fires no hook. A step the configuration turns off
+  still fires its hook.
+- A document that the routing step holds in a review queue ends its run there,
+  after `postRuleValidation` and before `postSummarization`. The run after the
+  review passes `postRuleValidation` again (policy rule validation runs again on
+  the corrected values), then `postSummarization` and `postprocessing`. A rejected
+  review starts no step and fires no hook.
+- A document reviewed outside a review queue (review enabled in the configuration
+  while the Default review queue is disabled) is not held: its run goes on to
+  `postprocessing` while the review is pending, and the document runs again from
+  the beginning afterwards. For it, branch on the document's `hitl_status` /
+  `hitl_triggered` fields (absent means no review).
+
+The dispatcher adds three top-level fields to the event, read from the execution
+input's `runPlan`, so a hook can tell the runs apart:
+
+| Field | Value |
+|---|---|
+| `runKind` | `new_upload`, `reprocess`, `saved_edits`, `review_completed`, `review_rejected`, `review_skipped`, `sent_back`, `restart_failed` or `legacy_review`; `unplanned` when the run has no plan |
+| `startStep` | The step the run started at (`beginning`, `classification`, `extraction`, `assessment`, `policy_rule_validation`, `summarization`, `evaluation`, or `apply_review_changes`); `beginning` when the run has no plan |
+| `reviewed` | `true` when the document's review was completed and this run does not extract again; `false` otherwise |
+
+`reviewed` is not the same as "this run follows a completed review". The run after
+a completed review always carries `runKind` `review_completed`:
+
+| The run | `startStep` | `reviewed` |
+|---|---|---|
+| Applies the reviewer's corrections to the existing results | `apply_review_changes` | `true` |
+| Extracts sections again first, then applies the review | `extraction` | `false`: the newly extracted values are not confirmed by a reviewer |
+
+A hook that acts only on reviewer-confirmed values therefore tests `reviewed`, not
+`runKind`. In the second case the routing step can hold the document again, and the
+hook is passed once more on the run after that review.
+
+```python
+def lambda_handler(event, context):
+    document = load_hook_document(event)
+    if event["hookPoint"] == "postRuleValidation" and not event.get("reviewed", False):
+        # The values may still change in a review. Record, do not deliver.
+        ...
+```
+
+Keep a hook idempotent whatever the run: a reprocess passes its point again.
 
 ## See also
 

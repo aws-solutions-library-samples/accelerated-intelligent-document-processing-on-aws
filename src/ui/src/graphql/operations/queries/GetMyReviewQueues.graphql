@@ -20,6 +20,7 @@ query GetMyReviewQueues($itemLimit: Int) {
     myClaimCount
     defaultQueueEnabled
     bulkSkipSyncLimit
+    reviewRoutingEnabled
     items {
       items {
         objectKey
@@ -59,6 +60,25 @@ query GetMyReviewQueues($itemLimit: Int) {
           note
           requestedBy
           requestedAt
+        }
+        queueName
+        routedBy {
+          tableId
+          ruleId
+          ruleLabel
+          placedQueue
+          fallbackReason
+          inputs
+          reason
+          reasonSource
+          policyFailures {
+            ruleId
+            policy
+            name
+            reason
+            pages
+          }
+          policyFailureCount
         }
       }
       nextToken

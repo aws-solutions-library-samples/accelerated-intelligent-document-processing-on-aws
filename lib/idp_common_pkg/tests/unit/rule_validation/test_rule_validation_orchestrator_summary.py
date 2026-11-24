@@ -926,13 +926,13 @@ class TestFormatSummaryAsMarkdown:
 
     def test_the_document_id_becomes_the_title(self):
         markdown = _service()._format_summary_as_markdown(_summary_for_markdown())
-        assert "# Rule Validation Summary: lending_package.pdf" in markdown
+        assert "# Policy Rule Validation Summary: lending_package.pdf" in markdown
 
     def test_a_missing_document_id_falls_back_to_a_generic_title(self):
         markdown = _service()._format_summary_as_markdown(
             _summary_for_markdown(document_id=None)
         )
-        assert "# Rule Validation Summary:" in markdown
+        assert "# Policy Rule Validation Summary:" in markdown
 
     def test_the_overall_counts_are_shown(self):
         markdown = _service()._format_summary_as_markdown(_summary_for_markdown())
@@ -1097,7 +1097,7 @@ class TestFormatSummaryAsMarkdown:
     def test_a_summary_with_nothing_in_it_still_produces_a_document(self):
         markdown = _service()._format_summary_as_markdown({})
         assert markdown.startswith("<style>")
-        assert "# Rule Validation Summary: Document" in markdown
+        assert "# Policy Rule Validation Summary: Document" in markdown
 
     def test_the_generated_summary_feeds_the_formatter_without_adaptation(self):
         # The two methods are used back to back in save_consolidated_summary, so
@@ -1287,7 +1287,7 @@ class TestSectionResultPersistence:
                 _summary_for_markdown(), "doc", "bucket"
             )
         markdown = s3_mock.write_content.call_args_list[1][0][0]
-        assert "# Rule Validation Summary: lending_package.pdf" in markdown
+        assert "# Policy Rule Validation Summary: lending_package.pdf" in markdown
 
 
 @pytest.mark.unit
@@ -1489,21 +1489,16 @@ class TestConsolidationReadsWhatThisRunWrote:
             self.THIS_RUN
         ]
 
-    def test_the_section_count_agrees_with_what_the_loader_read(self):
-        """The count and the load must apply the SAME rule to a key.
+    def test_a_key_that_is_not_a_section_result_is_not_read(self):
+        """The loader reads a key only when it is a section result.
 
-        The loader required `_responses.json` **and** `section_` while the count checked
-        only the suffix, so a key the loader skipped was still counted. Measured with
-        two keys under the right prefix where one lacks `section_`: one object read,
-        count 2, LLM summarization branch taken for a single-section document — the same
-        wrong-branch cost as the defect this change is about, arriving through a
-        different dropped key.
+        The loader requires `_responses.json` **and** `section_`. A key under the
+        right prefix that lacks `section_` is not a section's output, so it must not
+        be read into the consolidation.
 
         Not reachable from the pipeline, which always writes
         `section_<id>_responses.json`, but reachable through `section_uris`, which is a
-        documented parameter. Both call sites now share one predicate, and this asserts
-        the consequence rather than the sharing, so an inlined copy that drifts fails
-        here too.
+        documented parameter.
         """
         service = _service()
         uris = [
@@ -1527,14 +1522,6 @@ class TestConsolidationReadsWhatThisRunWrote:
             service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
             service._process_z3_cross_section_rules = _async_identity
 
-            summarized = {"called": False}
-
-            async def _never(*args, **kwargs):
-                summarized["called"] = True
-                return {}
-
-            service._summarize_responses_with_llm = _never
-
             import asyncio
 
             asyncio.run(
@@ -1546,19 +1533,14 @@ class TestConsolidationReadsWhatThisRunWrote:
         assert s3_mock.get_json_content.call_count == 1, (
             "the loader read a key it should have skipped"
         )
-        assert not summarized["called"], (
-            "a single-section document was routed through LLM summarization because a "
-            "key the loader skipped was still counted"
-        )
+        service._generate_consolidated_summary.assert_called_once()
 
-    def test_a_dropped_uri_does_not_count_towards_the_section_total(self):
-        """The count must come from the keys that were READ, not from the raw list.
+    def test_a_dropped_uri_is_not_read_and_the_prefix_is_not_listed(self):
+        """A URI naming another bucket is dropped, and nothing else stands in for it.
 
-        One real URI plus one naming another bucket reads **one** object. Counting the
-        raw list reports two, which crosses `num_sections > 1` and routes a
-        single-section document through LLM summarization — a Bedrock call and its
-        latency, bought by a URI that was discarded. That is the same defect this
-        change exists to remove, reintroduced on the defensive path.
+        One real URI plus one naming another bucket reads **one** object, and the
+        prefix is not listed to make up the difference: listing it is what let a
+        previous run's object into the consolidation.
 
         The key resolution also happens once rather than twice, so the warning for a
         dropped URI is logged once: two identical warnings read as two bad objects.
@@ -1584,14 +1566,6 @@ class TestConsolidationReadsWhatThisRunWrote:
             service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
             service._process_z3_cross_section_rules = _async_identity
 
-            summarized = {"called": False}
-
-            async def _never(*args, **kwargs):
-                summarized["called"] = True
-                return {}
-
-            service._summarize_responses_with_llm = _never
-
             import asyncio
 
             asyncio.run(
@@ -1601,23 +1575,18 @@ class TestConsolidationReadsWhatThisRunWrote:
             )
 
         assert s3_mock.get_json_content.call_count == 1, "read more than the one key"
-        assert not summarized["called"], (
-            "a single-section document was routed through LLM summarization because "
-            "the dropped URI was counted"
-        )
         service._generate_consolidated_summary.assert_called_once()
         assert s3_mock.find_matching_files.call_count == 0, (
             "the prefix was listed even though a list was supplied"
         )
 
-    def test_the_section_count_comes_from_the_list_too(self):
-        """The prefix was listed twice, and the second one chooses the code path.
+    def test_only_this_runs_section_reaches_the_summary(self):
+        """With a list, the prefix is not consulted for anything.
 
-        ``num_sections`` drives ``needs_summarization``: a stale object pushes the
-        count past 1, so a single-section document is routed through LLM
-        summarization. That is a cost and latency difference layered on top of the
-        wrong verdicts, and it is a second reader of the same prefix, so fixing only
-        the first would have left it.
+        The prefix used to be listed a second time, to count the sections. A
+        survivor from a previous run then changed what was consolidated. Nothing
+        reads the prefix now when the run supplies its list: the summary is built
+        from this run's section alone.
         """
         service = _service()
         one_uri = [f"s3://bucket/{self.THIS_RUN}"]
@@ -1633,7 +1602,7 @@ class TestConsolidationReadsWhatThisRunWrote:
             captured = {}
 
             def _record(all_responses, *args, **kwargs):
-                captured["count"] = len(all_responses)
+                captured["responses"] = all_responses
                 return {}
 
             service.save_policy_type_responses = MagicMock(return_value=[])
@@ -1649,10 +1618,11 @@ class TestConsolidationReadsWhatThisRunWrote:
                 )
             )
 
-        # One section and no chunking, so the no-LLM branch ran: it is the only path
-        # that reaches _generate_consolidated_summary directly.
         service._generate_consolidated_summary.assert_called_once()
-        assert captured["count"] == 1
+        assert [r["recommendation"] for r in captured["responses"]["Lending"]] == [
+            "Pass"
+        ]
+        assert s3_mock.find_matching_files.call_count == 0
 
 
 async def _async_identity(all_responses, config):

@@ -467,6 +467,11 @@ def suite(cbd, monkeypatch, tmp_path):
     monkeypatch.setattr(cbd, "SEQUENTIAL_TEST_STEPS", [])
     monkeypatch.setattr(cbd, "ALL_TEST_STEPS", steps)
     monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda started: None)
+    # The steps run with Review Routing off (a new stack turns it on); the upload
+    # that switches it off is covered in test_review_routing_off_config.py.
+    monkeypatch.setattr(
+        cbd, "switch_off_review_routing", lambda stack, region=None: {"success": True}
+    )
     run = cbd.TerraformRun(
         module_url="https://example.test/m.zip",
         directory=str(tmp_path / "run"),

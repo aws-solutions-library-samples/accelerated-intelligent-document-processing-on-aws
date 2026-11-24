@@ -3,5 +3,11 @@ mutation ProcessChanges($objectKey: String!, $modifiedSections: [ModifiedSection
     success
     message
     processingJobId
+    startStep
+    steps {
+      id
+      label
+      state
+    }
   }
 }

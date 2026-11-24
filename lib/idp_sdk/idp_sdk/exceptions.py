@@ -79,6 +79,26 @@ class IDPResourceNotFoundError(IDPError):
     pass
 
 
+class ReprocessRefusedError(IDPError):
+    """
+    Raised when the server refuses a whole reprocess request.
+
+    A document that cannot be processed again is not an error: it comes back as
+    that document's result, with a reason. This is raised when the request
+    itself is refused and nothing was queued.
+
+    Examples:
+        - A prefix mapping refuses the configuration profile that was asked for
+        - The request names a step or a profile revision that does not exist
+
+    ``reason`` is the name of the error the server raised.
+    """
+
+    def __init__(self, message: str, reason: str = ""):
+        self.reason = reason
+        super().__init__(message)
+
+
 class IDPTimeoutError(IDPError):
     """
     Raised when an operation times out.

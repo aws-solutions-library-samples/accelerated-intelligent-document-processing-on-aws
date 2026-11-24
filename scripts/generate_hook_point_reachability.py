@@ -5,11 +5,18 @@
 """Derive which pipeline hook points each processing mode reaches, from the ASL.
 
 `patterns/unified/statemachine/workflow.asl.json` is the only authority on which
-hook points a document actually passes through: the `RouteByProcessingMode`
+hook points a document actually passes through: the `CheckProcessingMode`
 Choice splits the graph into a BDA branch and a Pipeline branch, and three of the
 seven hook points (`postOcr`, `postClassification`, `postExtraction`) exist only
 on the Pipeline side. A hook registered at one of those while the configuration
 sets `use_bda: true` can never fire — including its `onError: fail` gate (#982).
+
+The graph starts at a second Choice, `CheckRunPlan`, which sends a run whose plan
+names a later step straight to that step. The table describes a run from the
+beginning (that Choice's `Default`), which is the run that reaches the most hook
+points: a run that starts later reaches a subset of its mode's set. That subset
+claim is asserted here, per rule, so a start entry cannot be added that fires a
+hook the table says its mode does not have.
 
 Three components need that table, and none of them can read the ASL at runtime:
 
@@ -71,6 +78,13 @@ DISPATCHER_SUBSTITUTION = "PipelineHooksDispatcherLambdaArn"
 # variable it switches on rather than by state name means a rename cannot
 # silently turn this into "no router, no table".
 ROUTER_VARIABLE = "$.document.use_bda"
+
+# The execution-input path the run-plan dispatcher switches on. The dispatcher is
+# found by this variable and by being the graph's `StartAt`, not by its name.
+PLAN_START_VARIABLE = "$$.Execution.Input.runPlan.startAt"
+
+# Entry ids that exist in Pipeline mode only start with this.
+PIPELINE_ENTRY_PREFIX = "pipeline."
 
 
 def load_asl(path: Path = ASL_PATH) -> dict[str, Any]:
@@ -215,11 +229,142 @@ def find_router(states: dict[str, Any]) -> str:
     return matches[0]
 
 
+def _variables(rule: dict[str, Any]) -> set[str]:
+    """Every `Variable` a Choice rule reads, through `And`, `Or` and `Not`."""
+    found: set[str] = set()
+    if isinstance(rule.get("Variable"), str):
+        found.add(rule["Variable"])
+    for key in ("And", "Or"):
+        for member in rule.get(key) or []:
+            found |= _variables(member)
+    if isinstance(rule.get("Not"), dict):
+        found |= _variables(rule["Not"])
+    return found
+
+
+def _entry_id(rule: dict[str, Any]) -> str | None:
+    """The entry id a dispatcher rule matches: what it compares `startAt` with."""
+    if rule.get("Variable") == PLAN_START_VARIABLE and isinstance(
+        rule.get("StringEquals"), str
+    ):
+        return rule["StringEquals"]
+    for member in rule.get("And") or []:
+        entry = _entry_id(member)
+        if entry is not None:
+            return entry
+    return None
+
+
+def find_dispatcher(asl: dict[str, Any]) -> str | None:
+    """The run-plan dispatcher: `StartAt`, when every rule of it reads the plan.
+
+    `None` for a graph that starts at an ordinary state. A `StartAt` Choice that
+    reads the plan in some rules and something else in others is refused: which
+    of its ways on is "a run from the beginning" would be a guess, and the whole
+    table hangs on that.
+    """
+    start = asl["States"].get(asl["StartAt"]) or {}
+    if start.get("Type") != "Choice":
+        return None
+    reads = [_variables(rule) for rule in start.get("Choices") or []]
+    if not any(PLAN_START_VARIABLE in variables for variables in reads):
+        return None
+    if not all(variables == {PLAN_START_VARIABLE} for variables in reads):
+        raise SystemExit(
+            f"the StartAt Choice {asl['StartAt']} reads `{PLAN_START_VARIABLE}` in "
+            f"some rules and other variables in others, so it is not purely the "
+            f"run-plan dispatcher and where a run from the beginning starts cannot "
+            f"be derived. Keep the dispatcher's rules on the plan's start alone."
+        )
+    return asl["StartAt"]
+
+
+def dispatcher_rules(asl: dict[str, Any], dispatcher: str) -> dict[str, str]:
+    """{entry id: target state} for every rule of the run-plan dispatcher."""
+    rules: dict[str, str] = {}
+    for rule in asl["States"][dispatcher].get("Choices") or []:
+        entry = _entry_id(rule)
+        if entry is None or not isinstance(rule.get("Next"), str):
+            raise SystemExit(
+                f"a rule of the run-plan dispatcher {dispatcher} does not compare "
+                f"`{PLAN_START_VARIABLE}` with a string, or has no Next, so the "
+                f"entry it stands for cannot be read"
+            )
+        if entry in rules:
+            raise SystemExit(
+                f"the run-plan dispatcher {dispatcher} has two rules for the entry "
+                f"`{entry}`; only the first could ever match"
+            )
+        rules[entry] = rule["Next"]
+    return rules
+
+
+def check_plan_entries(
+    asl: dict[str, Any],
+    dispatcher: str,
+    hooks: dict[str, str],
+    always_scope: set[str],
+    bda_scope: set[str],
+    pipeline_scope: set[str],
+) -> None:
+    """Fail generation when a start entry would fire a hook its mode lacks.
+
+    The table is derived from a run from the beginning. It stays true for a run
+    that starts later only if such a run reaches a SUBSET of the hook states its
+    mode reaches, and never starts at a hook or runs the hook that precedes the
+    mode choice (it would work on a document that hook has not seen as its first
+    step, or see it twice). Each of those is asserted per rule.
+    """
+    states = asl["States"]
+    hook_names = set(hooks)
+    before_the_router = {name for name in hook_names if name in always_scope}
+    pipeline_hooks = {name for name in hook_names if name in pipeline_scope}
+    shared_hooks = pipeline_hooks & {name for name in hook_names if name in bda_scope}
+    for entry, target in dispatcher_rules(asl, dispatcher).items():
+        if target in hook_names:
+            raise SystemExit(
+                f"the run-plan dispatcher {dispatcher} sends the entry `{entry}` "
+                f"straight to the hook state {target}. A run must not start at a "
+                f"hook: start it at the step, and let the step's hook follow."
+            )
+        reached = {name for name in reachable(states, target) if name in hook_names}
+        early = sorted(reached & before_the_router)
+        if early:
+            raise SystemExit(
+                f"a run that starts at the entry `{entry}` ({target}) can reach "
+                f"{', '.join(early)}, which only a run from the beginning passes "
+                f"(it is ahead of the processing-mode choice)."
+            )
+        allowed = (
+            pipeline_hooks if entry.startswith(PIPELINE_ENTRY_PREFIX) else shared_hooks
+        )
+        extra = sorted(reached - allowed)
+        if extra:
+            mode = (
+                "Pipeline mode reaches"
+                if entry.startswith(PIPELINE_ENTRY_PREFIX)
+                else "both processing modes reach"
+            )
+            raise SystemExit(
+                f"a run that starts at the entry `{entry}` ({target}) can reach "
+                f"{', '.join(extra)}, which is not among the hook states {mode}. "
+                f"The reachability table would then tell a BDA configuration that "
+                f"a hook cannot run when a planned run fires it. An entry that "
+                f"exists in Pipeline mode only has an id starting with "
+                f"`{PIPELINE_ENTRY_PREFIX}`."
+            )
+
+
 def derive(asl: dict[str, Any]) -> dict[str, Any]:
     """The reachability table: hook states and hook points, per processing mode.
 
-    A mode's scope is the walk from `StartAt` with the OTHER branch's entry state
-    blocked. That phrasing answers the question every consumer actually asks — "does
+    A mode's scope is the walk from where a run from the beginning starts, with
+    the OTHER branch's entry state blocked. That start is `StartAt`, or the
+    `Default` of the run-plan dispatcher when the graph starts at one
+    (`find_dispatcher`); the dispatcher's rules are not followed, and
+    `check_plan_entries` asserts instead that a run entering through one reaches
+    no hook state outside its mode's scope.
+    That phrasing answers the question every consumer actually asks — "does
     this mode reach this point?" — rather than the narrower "what is reachable from
     the branch entry", which by construction excludes everything upstream of the
     Choice and would report `preprocessing` as unreachable in both modes.
@@ -255,11 +400,23 @@ def derive(asl: dict[str, Any]) -> dict[str, Any]:
             f"of Default."
         )
     pipeline_entry = states[router]["Default"]
+    dispatcher = find_dispatcher(asl)
     start = asl["StartAt"]
+    if dispatcher is not None:
+        if not isinstance(states[dispatcher].get("Default"), str):
+            raise SystemExit(
+                f"the run-plan dispatcher {dispatcher} has no string `Default`, so "
+                f"where a run without a plan starts is unknown"
+            )
+        start = states[dispatcher]["Default"]
 
     always_scope = reachable(states, start, blocked=frozenset({router}))
     bda_scope = reachable(states, start, blocked=frozenset({pipeline_entry}))
     pipeline_scope = reachable(states, start, blocked=frozenset({bda_entry}))
+    if dispatcher is not None:
+        check_plan_entries(
+            asl, dispatcher, hooks, always_scope, bda_scope, pipeline_scope
+        )
 
     def state_names(scope: set[str]) -> list[str]:
         return sorted(name for name in hooks if name in scope)
@@ -269,6 +426,11 @@ def derive(asl: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "router": router,
+        "dispatcher": dispatcher,
+        "start": start,
+        "plan_entries": (
+            dispatcher_rules(asl, dispatcher) if dispatcher is not None else {}
+        ),
         "entries": {"bda": bda_entry, "pipeline": pipeline_entry},
         "always_states": state_names(always_scope),
         "states_by_mode": {
@@ -302,6 +464,20 @@ def render(table: dict[str, Any]) -> str:
     router = table["router"]
     bda_entry = table["entries"]["bda"]
     pipeline_entry = table["entries"]["pipeline"]
+    start = table["start"]
+    walk_start = (
+        f"`{start}` (where a run without a run plan starts: the\n"
+        f"Default of the `{table['dispatcher']}` Choice)"
+        if table.get("dispatcher")
+        else "the state machine's `StartAt`"
+    )
+    planned_runs = (
+        "\nA run whose plan starts at a later step enters after some of these points and\n"
+        "reaches a subset of its mode's set; the generator fails if a start entry could\n"
+        "reach a hook state outside it.\n"
+        if table.get("dispatcher")
+        else ""
+    )
     rows = "\n".join(
         f"#   {point:<20} bda={'yes' if point in table['points_by_mode']['bda'] else 'NO '}"
         f"  pipeline={'yes' if point in table['points_by_mode']['pipeline'] else 'NO '}"
@@ -317,13 +493,13 @@ GENERATED FILE — do not edit. Regenerate with:
     python3 scripts/generate_hook_point_reachability.py
 
 Derived from patterns/unified/statemachine/workflow.asl.json. Each mode's set is
-the walk from the state machine's `StartAt` with the OTHER branch of the
+the walk from {walk_start} with the OTHER branch of the
 `{router}` Choice (`{ROUTER_VARIABLE} BooleanEquals true`
 -> `{bda_entry}`; Default -> `{pipeline_entry}`)
 blocked, descending into any Map or Parallel. So a hook point ahead of the Choice
 is reported under BOTH modes, which is what a caller asking "does this mode reach
 this point?" needs.
-
+{planned_runs}
 {rows}
 
 BDA performs OCR, classification and extraction inside one Bedrock Data

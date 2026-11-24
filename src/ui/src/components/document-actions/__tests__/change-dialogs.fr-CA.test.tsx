@@ -538,7 +538,7 @@ describe('the change dialogs and action reasons under en', () => {
     ]);
     expect(choose(modal, '2', '1')).toEqual(['Section 2', 'Section 1']);
     expect(warning(modal).text).toBe(
-      'These sections are extracted again: Section 1, Section 2. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.',
+      'These sections are extracted again: Section 1, Section 2. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.',
     );
     await act(async () => footerButton(modal, 'Re-extract').click());
     await waitFor(() => expect(state.app.setSuccessMessage).toHaveBeenCalledWith('Re-extracting sections 1, 2 of packet.pdf.'));
@@ -564,11 +564,11 @@ describe('the change dialogs and action reasons under en', () => {
         "Resetting a page's class classifies the whole document again:" +
         'Every page is classified again, so pages can move to other sections and sections can be added or removed.' +
         'Every section is rebuilt and extracted again. Values corrected by hand in any section, not only the ones holding these pages, are replaced.' +
-        'If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.',
+        'If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.',
       items: [
         'Every page is classified again, so pages can move to other sections and sections can be added or removed.',
         'Every section is rebuilt and extracted again. Values corrected by hand in any section, not only the ones holding these pages, are replaced.',
-        'If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.',
+        'If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.',
       ],
     });
     expect(footer(modal)).toEqual([
@@ -593,7 +593,7 @@ describe('the change dialogs and action reasons under en', () => {
     expect(reasonsOf(enBar.menuItems('Reports'))).toEqual({
       summary: 'Available when processing finishes',
       evaluation: 'This document has no evaluation report',
-      'rule-validation': 'This document has no rule validation summary',
+      'rule-validation': 'This document has no policy rule validation summary',
       cost: 'This document has no cost data yet',
       flow: 'This document has no processing run to show',
     });

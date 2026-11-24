@@ -99,6 +99,11 @@
       "Annotator",
       "Reviewer"
     ],
+    "convertRoutingDmn": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
     "copyToBaseline": [
       "Admin",
       "Author"
@@ -334,10 +339,26 @@
       "Author",
       "Viewer"
     ],
+    "getProcessChangesPlan": [
+      "Admin",
+      "Reviewer"
+    ],
+    "getReprocessOptions": [
+      "Admin",
+      "Author"
+    ],
+    "getReviewCompletionPlan": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
     "getReviewItem": [
       "Admin",
       "Annotator",
       "Reviewer"
+    ],
+    "getReviewQueueReferences": [
+      "Admin"
     ],
     "getReviewQueuesOverview": [
       "Admin"
@@ -636,10 +657,22 @@
       "Annotator",
       "Author"
     ],
+    "selectActiveTenant": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "sendAgentChatMessage": [
       "Admin",
       "Author",
       "Viewer"
+    ],
+    "sendBackReviewItem": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
     ],
     "sendChatDocumentMessage": [
       "Admin",
@@ -696,6 +729,9 @@
       "Author"
     ],
     "takeOverReviewItem": [
+      "Admin"
+    ],
+    "testRoutingTable": [
       "Admin"
     ],
     "unassignTestSetDocuments": [

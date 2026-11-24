@@ -20,6 +20,7 @@ import { getDocumentConfidenceAlertCount } from '../common/confidence-alerts-uti
 import { getDocumentMissingRequiredFieldCount, resolveMissingRequiredFieldCount } from '../common/missing-required-fields-utils';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import { getMalwareScanView } from '../common/malware-scan';
+import type { ReviewRoutedBy } from '../common/map-document-attributes';
 import { renderObjectStatus, statusLabel } from '../common/object-status-renderer';
 import DocumentVersionsPanel from './DocumentVersionsPanel';
 import type { DocumentVersionDetail } from './DocumentVersionsPanel';
@@ -34,6 +35,7 @@ import DocumentPageHeader from '../common/DocumentPageHeader';
 import FileViewer from '../document-viewer/FileViewer';
 import EditorNotices from '../edit-screen/EditorNotices';
 import { documentName } from '../review-queues/review-api';
+import { RoutedByReason, routedByText } from '../review-queues/RoutedBy';
 import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
@@ -76,6 +78,10 @@ interface MappedDocument {
   hitlReviewOwnerEmail?: string;
   hitlReviewedBy?: string;
   hitlReviewedByEmail?: string;
+  /** The review queue the document is, or was last, in, and the routing rule that sent it there. */
+  reviewQueue?: string | null;
+  reviewQueueName?: string | null;
+  reviewRoutedBy?: ReviewRoutedBy | null;
   mergedConfig?: Record<string, unknown>;
   // Declared rather than left to the index signature below, so a typo in one of
   // these names is a type error here instead of a field that silently reads
@@ -185,6 +191,8 @@ const fieldLabels = defineMessages<{
   missingRequiredFields: NoMessageValues;
   summary: NoMessageValues;
   malwareScan: NoMessageValues;
+  reviewQueue: NoMessageValues;
+  routingReason: NoMessageValues;
 }>({
   documentId: {
     id: 'documents.panel.field.documentId',
@@ -265,6 +273,18 @@ const fieldLabels = defineMessages<{
     id: 'documents.panel.field.malwareScan',
     defaultMessage: 'Malware scan',
     description: 'Document Details field label for the malware-scan verdict.',
+  },
+  reviewQueue: {
+    id: 'documents.panel.field.reviewQueue',
+    defaultMessage: 'Review queue',
+    description:
+      'Document Details field label for the review queue the document is, or was last, in. The routing rule that sent it there is shown under the name of the queue.',
+  },
+  routingReason: {
+    id: 'documents.panel.field.routingReason',
+    defaultMessage: 'Routing reason',
+    description:
+      'Document Details field label for the reason the routing rule gave for sending the document to its review queue, with the values the document had.',
   },
 });
 
@@ -415,6 +435,14 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
       <Field label={intl.formatMessage(fieldLabels.reviewStatus)}>{renderHitlStatus(item, undefined, intl)}</Field>
       <Field label={intl.formatMessage(fieldLabels.reviewOwner)}>{item.hitlReviewOwnerEmail || item.hitlReviewOwner || '-'}</Field>
       <Field label={intl.formatMessage(fieldLabels.reviewCompletedBy)}>{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</Field>
+      {/*
+        Where routing sent the document, shown when it went to a queue: the queue, with
+        the routing rule that sent it there under its name (in the words the review
+        pages use), then the reason the routing rule gave.
+      */}
+      {item.reviewQueue && <ReviewQueueField item={item} />}
+      {/* A Boolean, not the reason: an empty text would take a place in the grid. */}
+      {!!item.reviewRoutedBy?.reason && <RoutingReasonField routedBy={item.reviewRoutedBy} />}
       {skipAll && (
         <Field label={intl.formatMessage(fieldLabels.skipReason)}>
           {skipAll.reason}
@@ -437,6 +465,34 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
       <MalwareScanAttribute item={item} />
       <CallerAttributesField entries={item.callerAttributes} />
     </ColumnLayout>
+  );
+};
+
+/**
+ * The review queue the document is, or was last, in, with the routing rule that sent
+ * it there under the name of the queue.
+ */
+const ReviewQueueField = ({ item }: { item: MappedDocument }): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Field label={intl.formatMessage(fieldLabels.reviewQueue)}>
+      {item.reviewQueueName || item.reviewQueue}
+      {item.reviewRoutedBy && (
+        <Box fontSize="body-s" color="text-body-secondary">
+          {routedByText(intl, item.reviewRoutedBy)}
+        </Box>
+      )}
+    </Field>
+  );
+};
+
+/** The reason the routing rule gave for sending the document to its review queue. */
+const RoutingReasonField = ({ routedBy }: { routedBy: ReviewRoutedBy }): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Field label={intl.formatMessage(fieldLabels.routingReason)}>
+      <RoutedByReason routedBy={routedBy} />
+    </Field>
   );
 };
 

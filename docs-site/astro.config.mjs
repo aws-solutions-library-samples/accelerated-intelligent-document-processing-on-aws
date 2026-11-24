@@ -119,6 +119,7 @@ export default defineConfig({
             { label: "Few-Shot Examples", slug: "few-shot-examples" },
             { label: "Human-in-the-Loop Review", slug: "human-review" },
             { label: "Review Queues", slug: "review-queues" },
+            { label: "Review Routing", slug: "review-routing" },
             { label: "Rule Validation", slug: "rule-validation" },
             { label: "Missing Page Handling", slug: "missing-page-handling" },
             {
@@ -335,6 +336,10 @@ export default defineConfig({
         {
           label: "Migration",
           items: [
+            {
+              label: "v0.6.15 → v0.6.16 Migration",
+              slug: "migration-v0615-to-v0616",
+            },
             {
               label: "v0.6.12 → v0.6.13 Migration",
               slug: "migration-v0612-to-v0613",

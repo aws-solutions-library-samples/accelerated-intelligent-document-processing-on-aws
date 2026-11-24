@@ -36,7 +36,7 @@
       "name": "Ensure AWS Lambda function is configured to validate code-signing",
       "reason": "Accepted. No function in the templates has a CodeSigningConfigArn (the solution publishes no signing profile), and the generated functions match; code signing is a deployment choice that needs a signing profile and a signed artifact pipeline. Includes the four bridge functions of the custom-resource bridge the translator adds to every module with custom resources (terraform/translator/idp_tf/static_files.py).",
       "counts": {
-        "aws_lambda_function": 143
+        "aws_lambda_function": 145
       }
     },
     "CKV_AWS_310": {

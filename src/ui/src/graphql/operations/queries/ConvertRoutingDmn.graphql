@@ -1,0 +1,6 @@
+query ConvertRoutingDmn($direction: String!, $content: String!, $dmnVersion: String) {
+  convertRoutingDmn(direction: $direction, content: $content, dmnVersion: $dmnVersion) {
+    routing
+    xml
+  }
+}

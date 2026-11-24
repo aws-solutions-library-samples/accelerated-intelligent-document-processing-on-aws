@@ -9,6 +9,7 @@ import os
 import boto3
 from idp_common import s3, utils
 from idp_common.config import get_config
+from idp_common.config.feature_flags import policy_rule_validation_enabled
 from idp_common.docs_service import create_document_service
 from idp_common.document_failure import (
     POSTPROCESSING_STAGE,
@@ -21,6 +22,7 @@ from idp_common.document_failure import (
 from idp_common.models import Document, HitlMetadata, Status
 from idp_common.review_queues.routing import (
     legacy_section_triggers,
+    recognize_finalize,
     review_mode,
     route_for_review,
 )
@@ -62,12 +64,55 @@ def legacy_review_finished(hitl_status):
     ) or hitl_status == "COMPLETED"
 
 
+def mark_for_legacy_review(document, section, *, hitl_enabled, execution_id):
+    """Record a legacy HITL review for a section that asks for one.
+
+    Returns True when the section triggers a review (HITL on and the section has
+    confidence alerts), having added its entry to ``document.hitl_metadata``.
+    """
+    if not legacy_section_triggers(section, hitl_enabled=hitl_enabled):
+        return False
+    logger.info(
+        f"Section {section.section_id} has {len(section.confidence_threshold_alerts)} confidence threshold alerts - marking for HITL review"
+    )
+
+    # Create HITL metadata entry for in-house portal review
+    section_page_numbers = list(range(1, len(section.page_ids) + 1))
+    hitl_metadata = HitlMetadata(
+        execution_id=execution_id,
+        record_number=int(section.section_id),
+        bp_match=True,
+        extraction_bp_name=section.classification,
+        hitl_triggered=True,
+        page_array=section_page_numbers,
+    )
+    document.hitl_metadata.append(hitl_metadata)
+    return True
+
+
+def merge_sections(base_sections, result_sections):
+    """The document's sections after the Map: its results over the base, by id.
+
+    A run plan that names sections sends only those through the Map, so the
+    others stay as the document had them, in the document's order. A result for
+    a section the document did not have follows them, in result order. With a
+    Map over every section this is the result list, as it was before run plans.
+    """
+    by_id = {section.section_id: section for section in result_sections}
+    base_ids = {section.section_id for section in base_sections}
+    return [by_id.get(section.section_id, section) for section in base_sections] + [
+        section for section in result_sections if section.section_id not in base_ids
+    ]
+
+
 def handler(event, context):
     """
     Consolidates the results from multiple extraction steps into a single output.
 
     Args:
-        event: Contains the document metadata and extraction results array
+        event: Contains the document metadata and extraction results array.
+            ``routing_step: true`` says the state machine has a routing step of
+            its own, so this step makes no review decision.
         context: Lambda context
 
     Returns:
@@ -90,6 +135,10 @@ def handler(event, context):
     config = get_config(as_model=True, version=config_version, revision=config_revision)
 
     extraction_results = event.get("ExtractionResults", [])
+    # Sent by a state machine definition that has a routing step (RoutingStep).
+    # A run that started under the definition before it does not send it, and
+    # gets the review decision from this step as it always did.
+    routing_step = bool(event.get("routing_step"))
     execution_arn = event.get("execution_arn", "")
     execution_id = execution_arn.split(":")[-1] if execution_arn else "unknown"
 
@@ -114,7 +163,10 @@ def handler(event, context):
     logger.info(f"Updating document status to {document.status}")
     document_service.update_document(document)
 
-    # Clear sections list to rebuild from extraction results
+    # The sections the document arrived with, and the ones the Map returned in
+    # result order: the section list is rebuilt from both after the loop.
+    base_sections = list(document.sections)
+    result_sections = []
     document.sections = []
     validation_errors = []
     hitl_triggered = False
@@ -150,30 +202,17 @@ def handler(event, context):
                     f"section.confidence_threshold_alerts: {section.confidence_threshold_alerts}"
                 )
                 logger.info(f"is_hitl_enabled: {hitl_enabled}")
-                document.sections.append(section)
+                result_sections.append(section)
 
                 # Check if HITL review is needed for this section (legacy flow;
-                # with review queues the routing below decides instead)
-                if route_mode == "legacy" and legacy_section_triggers(
-                    section, hitl_enabled=hitl_enabled
+                # with review queues the routing decides instead)
+                if route_mode == "legacy" and mark_for_legacy_review(
+                    document,
+                    section,
+                    hitl_enabled=hitl_enabled,
+                    execution_id=execution_id,
                 ):
-                    logger.info(
-                        f"Section {section.section_id} has {len(section.confidence_threshold_alerts)} confidence threshold alerts"
-                        " or a failed extraction - marking for HITL review"
-                    )
                     hitl_triggered = True
-
-                    # Create HITL metadata entry for in-house portal review
-                    section_page_numbers = list(range(1, len(section.page_ids) + 1))
-                    hitl_metadata = HitlMetadata(
-                        execution_id=execution_id,
-                        record_number=int(section.section_id),
-                        bp_match=True,
-                        extraction_bp_name=section.classification,
-                        hitl_triggered=True,
-                        page_array=section_page_numbers,
-                    )
-                    document.hitl_metadata.append(hitl_metadata)
 
                 # Create metadata file for section output
                 if section.extraction_result_uri:
@@ -210,6 +249,24 @@ def handler(event, context):
             document.metering = utils.merge_metering_data(
                 document.metering, section_document.metering
             )
+
+    # Results over the base document's sections, by id (see merge_sections). A
+    # section the Map did not return is asked the legacy review question here,
+    # as the Map results were above.
+    document.sections = merge_sections(base_sections, result_sections)
+    returned = {id(section) for section in result_sections}
+    for section in document.sections:
+        if (
+            id(section) not in returned
+            and route_mode == "legacy"
+            and mark_for_legacy_review(
+                document,
+                section,
+                hitl_enabled=hitl_enabled,
+                execution_id=execution_id,
+            )
+        ):
+            hitl_triggered = True
 
     # Create metadata files for pages
     for page_id, page in document.pages.items():
@@ -253,17 +310,10 @@ def handler(event, context):
     logger.info(f"Updating document status to {document.status}")
     document_service.update_document(document)
 
-    # Check if rule validation is enabled in config AND has rules configured
-    rule_validation_enabled = False
-    if hasattr(config, 'rule_validation'):
-        rule_validation_enabled = config.rule_validation.enabled
-        if rule_validation_enabled:
-            policy_classes = getattr(config, 'policy_classes', None) or []
-            if len(policy_classes) == 0:
-                logger.info("Rule validation is enabled but no policy_classes configured - skipping rule validation")
-                rule_validation_enabled = False
-        logger.info(f"Rule validation enabled: {rule_validation_enabled}")
-    
+    # Policy rule validation runs when it is enabled AND policies are configured
+    rule_validation_enabled = policy_rule_validation_enabled(config)
+    logger.info(f"Rule validation enabled: {rule_validation_enabled}")
+
     # Return the completed document with compression
     response = {
         "document": document.serialize_document(
@@ -313,6 +363,21 @@ def handler(event, context):
             diagnoses=section_diagnoses,
         )
         raise failure
+
+    # Review queues, under a definition with a routing step: the routing step
+    # decides where the document goes, and this step adds no key. What stays here
+    # is the finalize run of a completed review that started without a run plan
+    # (queued before the upgrade): the reviewer's corrections are written to the
+    # section results before policy rule validation reads them.
+    if route_mode == "queues" and routing_step:
+        recognize_finalize(
+            document,
+            _REVIEW_STORE,
+            execution_arn,
+            apply=True,
+            output_bucket=document.output_bucket or os.environ.get("OUTPUT_BUCKET"),
+        )
+        return response
 
     # Review queues: enqueue last, after the validation raise above, so a failed
     # run never leaves a claimable item (feature off adds no keys).

@@ -16,6 +16,7 @@ import {
   reprocessDocument,
   abortWorkflow,
 } from '../graphql/generated';
+import type { ReprocessDocumentMutationVariables, ReprocessDocumentResult } from '../graphql/generated/operation-types';
 import { DOCUMENT_LIST_SHARDS_PER_DAY, LATEST_PERIODS } from '../components/document-list/documents-table-config';
 import { Document } from '../types/documents';
 import { describeApiError, isNetworkError } from './utils/graphql-error';
@@ -166,9 +167,21 @@ interface UseGraphQlApiReturn {
   setDocumentView: React.Dispatch<React.SetStateAction<DocumentView>>;
   latestTruncated: boolean;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
-  reprocessDocuments: (objectKeys: string[], version?: string) => Promise<unknown>;
+  reprocessDocuments: ReprocessDocuments;
   abortWorkflows: (objectKeys: string[]) => Promise<unknown>;
 }
+
+/**
+ * Reprocess documents, optionally under another profile and revision and from a later
+ * step. Resolves each document's result (queued, refused or failed, with the reason),
+ * or false when the request itself failed, which has then been reported.
+ */
+export type ReprocessDocuments = (
+  objectKeys: string[],
+  version?: string,
+  revision?: number,
+  startStep?: string,
+) => Promise<ReprocessDocumentResult[] | false>;
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface DocumentListItem {
@@ -572,14 +585,15 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
     }
   };
 
-  const reprocessDocuments = async (objectKeys: string[], version?: string, revision?: number): Promise<unknown> => {
+  const reprocessDocuments: ReprocessDocuments = async (objectKeys, version, revision, startStep) => {
     try {
-      const variables: { objectKeys: string[]; version?: string; revision?: number } = { objectKeys };
+      const variables: ReprocessDocumentMutationVariables = { objectKeys };
       if (version) variables.version = version;
       if (revision !== undefined) variables.revision = revision;
+      if (startStep) variables.startStep = startStep;
       const result = await client.graphql({ query: reprocessDocument, variables });
       setIsDocumentsListLoading(true);
-      return result.data.reprocessDocument;
+      return result.data.reprocessDocument.results;
     } catch (error) {
       setErrorMessage(intl.formatMessage(messages.reprocessFailed));
       logger.error('Error reprocessing documents', error);
