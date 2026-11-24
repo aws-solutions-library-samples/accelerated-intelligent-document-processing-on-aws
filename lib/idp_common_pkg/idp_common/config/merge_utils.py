@@ -366,6 +366,94 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
     return content if content is not None else {}
 
 
+#: The one key of a ``{_file: <path>}`` mapping in a system defaults file, which
+#: stands for the text of ``<path>``. See :func:`_resolve_file_references`.
+FILE_REFERENCE_KEY = "_file"
+
+#: Where a defaults file's ``_file`` references may point, relative to the
+#: system_defaults directory, and the one suffix they may name. Both are packaged
+#: (``pyproject.toml`` ``package-data`` and ``MANIFEST.in``), and
+#: ``tests/unit/config/test_default_prompt_files.py`` builds a wheel to prove it.
+DEFAULT_PROMPTS_DIR = "prompts"
+DEFAULT_PROMPT_SUFFIX = ".txt"
+
+
+def _read_referenced_file(reference: Any, defaults_dir: Path) -> str:
+    """The text a ``{_file: <reference>}`` mapping stands for.
+
+    The file's text with one trailing newline removed, so a prompt file can end
+    in a newline like any text file and still resolve to the string the
+    ``|-``/``>-`` block it replaced held. Read in text mode, so a CRLF checkout
+    (``core.autocrlf``) resolves to the same LF text a YAML scalar would. The
+    path is relative to
+    ``defaults_dir``, must stay inside its ``prompts/`` directory and must end in
+    ``.txt``: those are the files the package ships, so a reference outside them
+    would resolve in a checkout and fail in the Lambda layer.
+    """
+    if not isinstance(reference, str) or not reference:
+        raise ValueError(
+            f"A {{{FILE_REFERENCE_KEY}: ...}} reference in the system defaults must "
+            f"be a non-empty relative path, got {reference!r}"
+        )
+    prompts_root = (defaults_dir / DEFAULT_PROMPTS_DIR).resolve()
+    target = (defaults_dir / reference).resolve()
+    # An absolute path, a `..` climb and a symlink out of prompts/ all resolve
+    # outside prompts_root; prompts/ itself has no `.txt` suffix.
+    if (
+        not target.is_relative_to(prompts_root)
+        or target.suffix != DEFAULT_PROMPT_SUFFIX
+    ):
+        raise ValueError(
+            f"System defaults file reference {reference!r} must name a "
+            f"'{DEFAULT_PROMPT_SUFFIX}' file under '{DEFAULT_PROMPTS_DIR}/'"
+        )
+    if not target.is_file():
+        raise FileNotFoundError(f"Referenced defaults file not found: {target}")
+    text = target.read_text(encoding="utf-8")
+    return text[:-1] if text.endswith("\n") else text
+
+
+def _resolve_file_references(node: Any, defaults_dir: Path) -> Any:
+    """Replace every ``{_file: <path>}`` mapping in ``node`` with that file's text.
+
+    Applied to each system defaults file as it is read, BEFORE inheritance and
+    merging, so everything downstream — the merged defaults, a preset merged
+    over them, the stored Default record, an exported or generated configuration
+    — carries the prompt text and never the reference (GitHub #1652). Only the
+    shipped defaults are resolved: an operator's configuration never is, so no
+    configuration can make this read a file.
+
+    A mapping that holds ``_file`` beside any other key is refused rather than
+    resolved or merged, because either reading would silently drop something.
+    """
+    if isinstance(node, dict):
+        if FILE_REFERENCE_KEY in node:
+            if len(node) != 1:
+                raise ValueError(
+                    f"A {{{FILE_REFERENCE_KEY}: ...}} mapping in the system defaults "
+                    f"must hold no other key, got {sorted(node)}"
+                )
+            return _read_referenced_file(node[FILE_REFERENCE_KEY], defaults_dir)
+        return {
+            key: _resolve_file_references(value, defaults_dir)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_resolve_file_references(item, defaults_dir) for item in node]
+    return node
+
+
+def load_system_defaults_file(name: str) -> Dict[str, Any]:
+    """One system defaults file, as written but with its file references resolved.
+
+    For a reader that needs a single ``base-*.yaml`` rather than a pattern's
+    merged defaults; ``_inherits`` is left in place. Reading the YAML directly
+    would return ``{_file: ...}`` mappings where the prompts are.
+    """
+    defaults_dir = get_system_defaults_dir()
+    return _resolve_file_references(load_yaml_file(defaults_dir / name), defaults_dir)
+
+
 def _resolve_inheritance(
     config: Dict[str, Any],
     defaults_dir: Path,
@@ -415,7 +503,9 @@ def _resolve_inheritance(
             raise FileNotFoundError(f"Inherited file not found: {inherit_path}")
 
         # Load inherited config and recursively resolve its inheritance
-        inherited_config = load_yaml_file(inherit_path)
+        inherited_config = _resolve_file_references(
+            load_yaml_file(inherit_path), defaults_dir
+        )
         inherited_config = _resolve_inheritance(
             inherited_config, defaults_dir, resolved_files.copy()
         )
@@ -457,7 +547,9 @@ def load_system_defaults(pattern: str = "pattern-2") -> Dict[str, Any]:
 
     # Load pattern-specific defaults
     pattern_path = defaults_dir / f"{pattern}.yaml"
-    pattern_config = load_yaml_file(pattern_path)
+    pattern_config = _resolve_file_references(
+        load_yaml_file(pattern_path), defaults_dir
+    )
 
     # Recursively resolve all inheritance
     result = _resolve_inheritance(pattern_config, defaults_dir)
@@ -909,7 +1001,11 @@ def validate_config(
     sent_prompts = strip_prompt_comments_in_config(merged)
     _validate_task_prompt_placeholders(sent_prompts, result)
     _validate_confidence_prompt_as_sent(validated, merged, result)
+    _validate_document_image_placeholders(validated, sent_prompts, result)
     _validate_schema_fields(config.get("classes", []), result)
+    _validate_fallback_class(validated, result)
+    _validate_page_order(validated, result)
+    _validate_agentic_flag_against_mode(config, validated, result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
     # and the runtime reads `config.extraction.agentic.enabled` off this same model.
@@ -1101,9 +1197,11 @@ def _load_valid_bedrock_models() -> set:
 # absent, each for its own reason:
 #
 # - ``classification.split_then_classify.section_classification.embeddings.model``
-#   and ``discovery.multi_document.embedding_model_id`` name embedding models,
-#   and pricing.yaml prices none: the shipped default ``us.cohere.embed-v4:0`` is
-#   not in it, so checking either would refuse the default configuration.
+#   and ``discovery.multi_document.embedding_model_id`` name embedding models.
+#   pricing.yaml prices the Cohere Embed v4 profiles the defaults resolve to, but
+#   both fields also take Titan Multimodal Embeddings, which the embeddings client
+#   supports and pricing.yaml does not list, so checking either would refuse a
+#   supported configuration.
 # - The per-class ``x-aws-idp-evaluation-model-name`` is the name of the Stickler
 #   model class the evaluator builds, not a Bedrock model.
 #
@@ -1666,12 +1764,8 @@ def _validate_confidence_prompt_as_sent(
     this does too: the placeholder check above skips an empty one, so an explicit
     ``""`` used to pass. When the prompt carries ``{DOCUMENT_IMAGE}`` the service applies
     ``document_image_placeholder_error`` to it, and this applies the same rule.
-
-    Classification and extraction are not checked for this, because they do not
-    refuse a repeated ``{DOCUMENT_IMAGE}``: they log a warning and fall back.
-    Classification's context-pages and packet prompts then send the images after
-    the text; extraction and classification's page prompt send the text without the
-    images.
+    Classification and extraction prompts get the same rule from
+    ``_validate_document_image_placeholders``.
 
     Skipped when the confidence block turns scoring off, as the placeholder check
     above is, because the prompt is then never sent.
@@ -1680,9 +1774,11 @@ def _validate_confidence_prompt_as_sent(
         return
 
     from idp_common.config import without_prompt_comments
-    from idp_common.extraction.prompt_assembly import (
+    from idp_common.document_image_placeholder import (
         DOCUMENT_IMAGE_PLACEHOLDER,
         document_image_placeholder_error,
+    )
+    from idp_common.extraction.prompt_assembly import (
         geometry_requires_llm_boxes,
         select_confidence_task_prompt,
     )
@@ -1711,6 +1807,117 @@ def _validate_confidence_prompt_as_sent(
             result["valid"] = False
             result["errors"].append(
                 f"{path}: {error} The confidence pass refuses a document otherwise."
+            )
+
+
+def _validate_document_image_placeholders(
+    validated: Any, sent_prompts: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Refuse a classification or extraction prompt that repeats ``{DOCUMENT_IMAGE}``.
+
+    Both services refuse such a prompt on every document
+    (``check_document_image_placeholder``), so this refuses it before it is used.
+    The prompts judged are the ones sent, with prompt comments removed:
+
+    - classification: each prompt the active strategy sends
+      (``_classification_task_prompts``), judged as
+      ``classification_task_prompt_as_sent`` returns it — the function the service
+      builds the prompt with, so the modality rewrite and the class-confidence
+      block it splices in are counted exactly as the service counts them. The
+      section-classification prompt is skipped when the decision model labels
+      every section (``section_prompt_can_be_sent``), because it is then never
+      sent. An empty prompt is judged as the shipped one the service sends in its
+      place (``shipped_classification_prompt``), except the combined page prompt,
+      which has no such fallback.
+    - extraction: the prompt ``select_extraction_task_prompt`` chooses, both with
+      and without integrated confidence (a Simple section on a class with list
+      fields falls back to the plain prompt), and each class's
+      ``x-aws-idp-extraction-task-prompt``, which replaces it for that class.
+    """
+    from idp_common.classification.service import (
+        STAGE_CLASSIFICATION,
+        STAGE_SECTION_CLASSIFICATION,
+        STAGE_SPLITTING,
+        classification_task_prompt_as_sent,
+        shipped_classification_prompt,
+    )
+    from idp_common.config import without_prompt_comments
+    from idp_common.config.schema_constants import (
+        ID_FIELD,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+    from idp_common.document_image_placeholder import (
+        DOCUMENT_IMAGE_PLACEHOLDER,
+        document_image_placeholder_error,
+        section_prompt_can_be_sent,
+    )
+    from idp_common.extraction.prompt_assembly import select_extraction_task_prompt
+
+    section = validated.classification.split_then_classify.section_classification
+    section_sent = section_prompt_can_be_sent(
+        section.method, section.low_confidence.on_low_confidence
+    )
+    num_classes = len(sent_prompts.get("classes") or [])
+    judged: List[tuple] = []
+    for path, prompt, _ in _classification_task_prompts(sent_prompts):
+        if path.startswith(
+            "classification.split_then_classify.section_classification."
+        ):
+            if not section_sent:
+                continue  # the decision model labels every section; never sent
+            stage = STAGE_SECTION_CLASSIFICATION
+        elif path.startswith("classification.split_then_classify.splitting."):
+            stage = STAGE_SPLITTING
+        else:
+            stage = STAGE_CLASSIFICATION
+        if not prompt and not path.startswith("classification.combined.page."):
+            # An empty stage prompt is sent as the shipped one (``_stage_prompt``);
+            # only the combined page prompt has no fallback.
+            prompt = shipped_classification_prompt(*path.split(".")[1:])
+        if prompt:
+            # What the service builds from the prompt before sending it.
+            prompt = classification_task_prompt_as_sent(
+                prompt, validated.classification, stage, num_classes
+            )
+        judged.append((path, prompt, "classification"))
+
+    extraction = without_prompt_comments(validated, as_model=True).extraction
+    plain = select_extraction_task_prompt(extraction, integrated_ok=False)
+    judged.append(("extraction.task_prompt", plain, "extraction"))
+    integrated = select_extraction_task_prompt(extraction)
+    if integrated != plain:
+        judged.append(
+            (
+                "the integrated-confidence extraction prompt "
+                "(extraction.task_prompt_extraction_with_confidence or "
+                "task_prompt_extraction_with_confidence_topk, with "
+                "extraction.geometry.task_prompt_bbox appended in the LLM-box "
+                "geometry modes)",
+                integrated,
+                "extraction",
+            )
+        )
+    for cls in sent_prompts.get("classes") or []:
+        if isinstance(cls, dict) and cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
+            cid = cls.get(ID_FIELD) or cls.get(X_AWS_IDP_DOCUMENT_TYPE) or "?"
+            judged.append(
+                (
+                    f"class {cid} {X_AWS_IDP_EXTRACTION_TASK_PROMPT}",
+                    cls[X_AWS_IDP_EXTRACTION_TASK_PROMPT],
+                    "extraction",
+                )
+            )
+
+    for path, prompt, service in judged:
+        if not isinstance(prompt, str) or DOCUMENT_IMAGE_PLACEHOLDER not in prompt:
+            continue
+        error = document_image_placeholder_error(prompt)
+        if error:
+            result["valid"] = False
+            result["errors"].append(
+                f"{path}: {error} {service.capitalize()} refuses every document "
+                "otherwise."
             )
 
 
@@ -1838,6 +2045,123 @@ def _validate_task_prompt_placeholders(
                 result["valid"] = False
                 # `replace`, not `format`: the messages hold literal braces.
                 result["errors"].append(error_message.replace("{path}", path))
+
+
+def _validate_fallback_class(validated: Any, result: Dict[str, Any]) -> None:
+    """Warn when ``classification.fallback_class`` names no configured class.
+
+    The fallback is the class a page or section is given when its class cannot be
+    decided (validation retries ran out, or a non-LLM section classifier was not
+    confident). The built-in ``unclassified`` is the default and every shipped
+    preset uses it; any other name has to be one of the configured classes for the
+    pages it lands on to have an extraction schema. A name no class declares (a
+    typo, a renamed class, or a catch-all such as ``other`` that was never
+    defined) is stored on the section as written, and extraction then has nothing
+    to extract against, so those pages yield no data.
+
+    A warning, not an error: extraction treats a section carrying the configured
+    fallback the way it treats ``unclassified`` (no fields, no error), so such a
+    configuration runs today and an error would make ``idp-cli config-upload``
+    refuse it. The check reads the validated model, so a pre-0.9
+    ``invalidClassFallback`` is judged after it was migrated, and compares names
+    exactly, as the classification service does. A class list in the legacy
+    ``name``/``attributes`` format is converted first, as
+    ``ConfigurationRecord.from_dynamodb_item`` converts it before the service
+    reads it; ``IDPConfig.model_validate`` alone does not.
+    """
+    from difflib import get_close_matches
+
+    from idp_common.config.migration import is_legacy_format, migrate_legacy_to_schema
+    from idp_common.config.schema_constants import (
+        UNCLASSIFIED_CLASS,
+        X_AWS_IDP_DOCUMENT_TYPE,
+    )
+
+    fallback = validated.classification.fallback_class
+    if fallback == UNCLASSIFIED_CLASS:
+        return
+    classes = list(validated.classes or [])
+    if classes and is_legacy_format(classes):
+        classes = migrate_legacy_to_schema(classes)
+    names = [
+        str(c.get(X_AWS_IDP_DOCUMENT_TYPE))
+        for c in classes
+        if isinstance(c, dict) and c.get(X_AWS_IDP_DOCUMENT_TYPE)
+    ]
+    if fallback in names:
+        return
+    by_lower = {n.lower(): n for n in names}
+    near = by_lower.get(fallback.lower()) or next(
+        iter(get_close_matches(fallback, names, n=1, cutoff=0.8)), None
+    )
+    hint = f" Did you mean '{near}'?" if near else ""
+    result["warnings"].append(
+        f"classification.fallback_class '{fallback}' (invalidClassFallback in the "
+        f"pre-0.9 layout) is not one of the configured "
+        f"classes, so a page or section given the fallback has no extraction "
+        f"schema and nothing is extracted from it. Name a configured class, or use "
+        f"the built-in '{UNCLASSIFIED_CLASS}'.{hint}"
+    )
+
+
+def _validate_page_order(validated: Any, result: Dict[str, Any]) -> None:
+    """Warn when ``document_shape.pageOrder: printed_page_numbers`` cannot act.
+
+    The page numbers are read from the OCR text classification already has, so the
+    setting does nothing with no OCR text (``ocr.backend: none``) and nothing in
+    BDA mode, where the pipeline's classification step does not run. Neither is
+    an error: the documents are still classified, in scan order. The first case
+    also records a ``classification_page_order_not_applied`` warning on every
+    multi-page document, which is the cost worth knowing before saving it.
+    """
+    if validated.classification.document_shape.pageOrder != "printed_page_numbers":
+        return
+    if validated.use_bda:
+        result["warnings"].append(
+            "classification.document_shape.pageOrder is 'printed_page_numbers', "
+            "but use_bda is true and BDA mode does not run the classification step "
+            "that reads page numbers, so pages keep their scan order."
+        )
+    elif str(validated.ocr.backend).lower() == "none":
+        result["warnings"].append(
+            "classification.document_shape.pageOrder is 'printed_page_numbers', "
+            "but ocr.backend is 'none', so there is no OCR text to read page numbers "
+            "from: every multi-page document keeps its scan order and carries a "
+            "classification_page_order_not_applied warning."
+        )
+
+
+def _validate_agentic_flag_against_mode(
+    config: Dict[str, Any], validated: Any, result: Dict[str, Any]
+) -> None:
+    """Warn when ``agentic.enabled: true`` is overridden by ``extraction.mode``.
+
+    ``extraction.mode`` decides the extraction path whenever it is set, and
+    ``agentic.enabled`` is derived from it (``reconcile_mode_and_agentic``). A
+    configuration downloaded in full carries ``mode: simple``, so adding
+    ``agentic.enabled: true`` to it runs simple extraction, and nothing in a result
+    says so except ``extraction_method: traditional``.
+
+    Only that direction is reported. The same full download also carries
+    ``agentic.enabled: false``, so following the documented fix, setting
+    ``mode: advanced``, submits a false flag beside an advanced mode, and a warning
+    there would tell the author to undo a correct edit. The flag is read with the
+    migration's ``_coerce_bool``, which agrees with how Pydantic parses it.
+    """
+    from idp_common.config.migrations.v05_to_v06 import _coerce_bool
+
+    extraction = config.get("extraction")
+    agentic = extraction.get("agentic") if isinstance(extraction, dict) else None
+    if not isinstance(agentic, dict) or agentic.get("enabled") is None:
+        return
+    if not _coerce_bool(agentic["enabled"]) or validated.extraction.agentic.enabled:
+        return
+    result["warnings"].append(
+        "extraction.agentic.enabled is true, but extraction.mode is "
+        f"'{validated.extraction.mode}', and the mode decides the extraction path, so "
+        "extraction will run in simple mode. Set extraction.mode: advanced to run "
+        "advanced extraction."
+    )
 
 
 def _validate_schema_fields(
@@ -2097,7 +2421,7 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
                     f"{section_name}.max_tokens ({max_tokens}) exceeds model limit ({model_limit:,}) "
                     f"for {model_id}. "
                     f"Reduce max_tokens to {model_limit:,} or less, or choose a different model. "
-                    f"Model limits: Claude 4.x=64,000, Nova=10,000, Claude 3.x=8,192"
+                    f"Model limits: Claude 4.x=64,000, Nova=10,000 (Nova 2 Lite=64,000), Claude 3.x=8,192"
                 )
         except Exception as e:
             logger.warning(

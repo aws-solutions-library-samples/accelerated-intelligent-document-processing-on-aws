@@ -12,6 +12,8 @@ import useFeatureEntitlement from '../../hooks/use-feature-entitlement';
 import useFeatureLaunchUrl from '../../hooks/use-feature-launch-url';
 import useSubscribeFeature from '../../hooks/use-subscribe-feature';
 import useUnsubscribeFeature from '../../hooks/use-unsubscribe-feature';
+import { DEFAULT_LOCALE } from '../../i18n/locales';
+import { useOptionalLocale } from '../../i18n/LocaleProvider';
 import type { FeatureContext } from '../../types/feature-platform';
 // Region this stack runs in — used only to name the Region in the
 // "not available in <region>" message. The server-side catalog resolver is
@@ -88,6 +90,7 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
   const { fetch: fetchLaunchUrl, loading: launchLoading, error: launchError } = useFeatureLaunchUrl();
   const { subscribe, loading: subscribing, error: subscribeError } = useSubscribeFeature();
   const { unsubscribe, loading: cancelling, error: cancelError } = useUnsubscribeFeature();
+  const locale = useOptionalLocale()?.locale ?? DEFAULT_LOCALE;
 
   const installed = useMemo(() => byId(featureId), [byId, featureId]);
   const catalogEntry = useMemo(() => catalogById(featureId), [catalogById, featureId]);
@@ -292,6 +295,7 @@ const FeaturePage: React.FC<FeaturePageProps> = ({ featureIdOverride, groups, ma
     // verified subscription, and collapsing them into `uiAccessAllowed: true`
     // is what makes that flag unusable as a licence gate.
     entitlementVerified: isVerifiedEntitlement(state, entitlementSource),
+    locale,
   };
 
   const featureContent = (

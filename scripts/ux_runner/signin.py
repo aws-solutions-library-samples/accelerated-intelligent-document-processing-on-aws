@@ -35,6 +35,19 @@ behind, and the session is confirmed to have survived it.
 The selectors are inferred from Amplify UI v6's sign-in form, not measured
 against every version of it; a form they do not match fails here, by name,
 rather than in the middle of a recording.
+
+Switching the UI's language
+---------------------------
+A screen review needs the signed-in UI in another locale, and the model cannot
+run page JavaScript, so :func:`set_locale` does it the way the UI records a
+user's choice: it writes the locale under ``idp-locale`` in ``localStorage`` and
+reloads. The locale is one of :data:`REVIEW_LOCALES`, a constant, never text a
+model or a page chose. The page counts as switched only once ``<html lang>``
+names the locale and the sidebar's stack-name link no longer starts with its
+English label, because the UI sets ``lang`` at once while the catalog loads in
+the background, shows English until it arrives, and keeps English when it fails
+to load. It runs after :func:`page_facts` has read the sidebar, whose labels it
+strips only in English.
 """
 
 from __future__ import annotations
@@ -63,6 +76,13 @@ SUBMIT_SELECTORS = ('button[type="submit"]',)
 #: The ``localStorage`` key the UI sets when the welcome page is dismissed
 #: (``WELCOME_DISMISSED_KEY`` in ``src/ui/src/routes/constants.ts``).
 WELCOME_DISMISSED_KEY = "idp-welcome-dismissed"
+#: The ``localStorage`` key the UI keeps the user's locale under
+#: (``LOCALE_STORAGE_KEY`` in ``src/ui/src/i18n/locales.ts``).
+LOCALE_STORAGE_KEY = "idp-locale"
+#: The locales :func:`set_locale` switches to: the one being translated, and the
+#: pseudo-locale that shows text bypassing the catalog. The UI offers a locale
+#: only when its build holds that catalog.
+REVIEW_LOCALES: tuple[str, ...] = ("fr-CA", "en-XA")
 #: The sidebar's Deployment Info items :func:`page_facts` reads, by fact: the
 #: ``href`` of each one's link and the label its text starts with.
 #: ``src/ui/src/components/genaiidp-layout/navigation.tsx`` renders each as a link
@@ -181,6 +201,14 @@ _FACTS_JS = (
     )
     + "w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio, "
     f"url: String(location.href).slice(0, {_URL_LIMIT}) }}; }})()"
+)
+_STACK_LINK_QUERY = json.dumps('a[href="' + DEPLOYMENT_INFO_LINKS["stack"][0] + '"]')
+_LOCALE_JS = (
+    "(() => { "
+    f"const el = document.querySelector({_STACK_LINK_QUERY}); "
+    "return { "
+    f"lang: String(document.documentElement.lang || '').slice(0, {_FACT_LIMIT}), "
+    f"label: el ? String(el.textContent || '').slice(0, {_FACT_LIMIT}) : null }}; }})()"
 )
 
 
@@ -345,6 +373,99 @@ def sign_in(
     except Exception as exc:
         detail = _page_text(_scrub(str(exc), persona), _ALERT_LIMIT)
         raise SignInError(f"sign-in failed: {type(exc).__name__}: {detail}") from None
+
+
+def _locale_problem(value: Any, locale: str) -> str:
+    """Why the page does not show ``locale`` yet, or ``""`` once it does.
+
+    Each reason is fixed text: the page's values are compared, never quoted.
+    """
+    shown = value if isinstance(value, dict) else {}
+    if shown.get("lang") != locale:
+        return f"<html lang> is not {locale}"
+    label = shown.get("label")
+    if not isinstance(label, str):
+        return "the sidebar shows no stack name"
+    if _page_text(label, _FACT_LIMIT).startswith(DEPLOYMENT_INFO_LINKS["stack"][1]):
+        return "the sidebar still reads in English"
+    return ""
+
+
+def _set_locale(
+    session: chrome.CdpLike,
+    locale: str,
+    *,
+    base_url: str,
+    timeout: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> None:
+    deadline = clock() + timeout
+    prefix = _origin_prefix(base_url)
+    session.call("Page.enable")
+    session.call("Runtime.enable")
+    chrome.evaluate(
+        session,
+        f"localStorage.setItem({json.dumps(LOCALE_STORAGE_KEY)}, {json.dumps(locale)})",
+    )
+    _navigate(session, "Page.reload", {"ignoreCache": True})
+    _wait_until_loaded(
+        session, prefix, deadline=deadline, timeout=timeout, sleep=sleep, clock=clock
+    )
+    if not _signed_in(_state(session)):
+        raise SignInError(
+            f"the session did not survive the reload that switched the UI to {locale}"
+        )
+    while True:
+        problem = _locale_problem(chrome.evaluate(session, _LOCALE_JS), locale)
+        if not problem:
+            return
+        if clock() >= deadline:
+            raise SignInError(
+                f"the UI did not switch to {locale} within {timeout:g} s ({problem}); "
+                f"is {locale} in this build?"
+            )
+        sleep(_POLL_SECONDS)
+
+
+def set_locale(
+    session: chrome.CdpLike,
+    locale: str,
+    *,
+    base_url: str = paths.UI_ORIGIN + "/",
+    timeout: float = 60.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Switch the signed-in UI at ``base_url`` to ``locale``, or raise in ``timeout`` s.
+
+    ``locale`` must be one of :data:`REVIEW_LOCALES`; anything else is refused
+    before the session is used. The session may be a fresh one on the signed-in
+    page, so both domains are enabled first. The locale is written where the UI
+    keeps the user's choice and the page is reloaded; the session must survive
+    the reload, and then ``<html lang>`` must name the locale and the sidebar's
+    stack name must have left its English label, which is when the catalog has
+    arrived (see the module docstring). Every failure is a :class:`SignInError`;
+    Chrome's or the page's own words in it are cut to 160 printable characters.
+    """
+    if locale not in REVIEW_LOCALES:
+        raise SignInError(f"the UI locale must be one of {', '.join(REVIEW_LOCALES)}")
+    try:
+        _set_locale(
+            session,
+            locale,
+            base_url=base_url,
+            timeout=timeout,
+            sleep=sleep,
+            clock=clock,
+        )
+    except SignInError:
+        raise
+    except Exception as exc:
+        detail = _page_text(str(exc), _ALERT_LIMIT)
+        raise SignInError(
+            f"switching the UI to {locale} failed: {type(exc).__name__}: {detail}"
+        ) from None
 
 
 @dataclass(frozen=True)

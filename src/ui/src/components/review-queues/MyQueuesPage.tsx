@@ -13,24 +13,147 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { TableProps } from '@cloudscape-design/components';
 import { Alert, Badge, Box, Button, ContentLayout, Header, Link, Pagination, Table, TextFilter } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import usePolling from '../../hooks/use-polling';
 import useUserRole from '../../hooks/use-user-role';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { useFormatters } from '../../i18n/format';
-import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
+import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../../utils/date-time';
 import { productionQueuePath, testSetQueuePath } from '../../routes/constants';
 import type { ReviewQueueSummary, TestSetQueueSummary } from '../../graphql/generated/operation-types';
-import { paginationLabels } from '../common/labels';
-import { TableNoMatchState, getFilterCounterText } from '../common/table';
+import { usePaginationLabels } from '../common/labels';
+import { TableNoMatchState, filterCounterText } from '../common/table';
 import { QUEUES_POLL_INTERVAL_MS } from './QueuesPage';
 import { fetchMyReviewQueues } from './review-api';
 import { listTestSetQueues } from './reviewer-assignment';
-import { SOURCE_LABELS } from './work-items';
+import { workSourceLabel } from './work-items';
 import type { WorkSource } from './work-items';
 
 const logger = new ConsoleLogger('MyQueuesPage');
+
+const messages = defineMessages<{
+  title: NoMessageValues;
+  description: NoMessageValues;
+  refreshAriaLabel: NoMessageValues;
+  refresh: NoMessageValues;
+  loadedWarning: NoMessageValues;
+  loadError: NoMessageValues;
+  loadQueuesAction: NoMessageValues;
+  retry: NoMessageValues;
+  loading: NoMessageValues;
+  tableTitle: NoMessageValues;
+  find: NoMessageValues;
+  empty: NoMessageValues;
+  columnQueue: NoMessageValues;
+  columnSource: NoMessageValues;
+  columnItems: NoMessageValues;
+  columnPending: NoMessageValues;
+  columnMine: NoMessageValues;
+  columnOldest: NoMessageValues;
+  columnPriority: NoMessageValues;
+}>({
+  title: {
+    id: 'reviewQueues.myQueues.title',
+    defaultMessage: 'Queues',
+    description: 'Heading of Home › Queues, the review queues that list the reader as an Annotator.',
+  },
+  description: {
+    id: 'reviewQueues.myQueues.description',
+    defaultMessage:
+      'The queues you are listed on. Open a queue to see its items; open any item to view it, and claim one to work it in Tasks.',
+    description: 'Description under the Home › Queues heading. Tasks is the name of the Home › Tasks page.',
+  },
+  refreshAriaLabel: {
+    id: 'reviewQueues.myQueues.refreshAriaLabel',
+    defaultMessage: 'Refresh queues',
+    description: 'Screen-reader label of the Refresh button on Home › Queues.',
+  },
+  refresh: {
+    id: 'reviewQueues.myQueues.refresh',
+    defaultMessage: 'Refresh',
+    description: 'Button on Home › Queues that reloads the queues.',
+  },
+  loadedWarning: {
+    id: 'reviewQueues.myQueues.loadedWarning',
+    defaultMessage: 'Showing the last loaded queues',
+    description: 'Header of the warning on Home › Queues when refreshing the queues failed but earlier ones are still shown.',
+  },
+  loadError: {
+    id: 'reviewQueues.myQueues.loadError',
+    defaultMessage: "Couldn't load your queues",
+    description: 'Header of the error on Home › Queues when the queues could not be loaded at all.',
+  },
+  loadQueuesAction: {
+    id: 'reviewQueues.myQueues.loadQueuesAction',
+    defaultMessage: 'load your queues',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the queues on Home › Queues cannot be loaded.',
+  },
+  retry: {
+    id: 'reviewQueues.myQueues.retry',
+    defaultMessage: 'Retry',
+    description: 'Button of the Home › Queues load warning that loads the queues again.',
+  },
+  loading: {
+    id: 'reviewQueues.myQueues.loading',
+    defaultMessage: 'Loading queues',
+    description: 'Shown in the Home › Queues table while the queues load.',
+  },
+  tableTitle: {
+    id: 'reviewQueues.myQueues.tableTitle',
+    defaultMessage: 'Your queues',
+    description: 'Title of the table on Home › Queues.',
+  },
+  find: {
+    id: 'reviewQueues.myQueues.find',
+    defaultMessage: 'Find queues',
+    description: "Placeholder and screen-reader label of the Home › Queues table's text filter.",
+  },
+  empty: {
+    id: 'reviewQueues.myQueues.empty',
+    defaultMessage:
+      "No queues list you yet. An Admin adds you to a queue's Eligible Annotators in Review Management; its queue then appears here.",
+    description:
+      'Shown in the Home › Queues table when no queue lists the reader. Eligible Annotators names a setting of a queue, and Review Management a page of the app.',
+  },
+  columnQueue: {
+    id: 'reviewQueues.myQueues.column.queue',
+    defaultMessage: 'Queue',
+    description: "Column header of the Home › Queues table: the queue's name, as a link to its page.",
+  },
+  columnSource: {
+    id: 'reviewQueues.myQueues.column.source',
+    defaultMessage: 'Source',
+    description: 'Column header of the Home › Queues table: whether the queue is a production review queue or a Test Studio test set.',
+  },
+  columnItems: {
+    id: 'reviewQueues.myQueues.column.items',
+    defaultMessage: 'Items',
+    description: 'Column header of the Home › Queues table: how many items the queue holds.',
+  },
+  columnPending: {
+    id: 'reviewQueues.myQueues.column.pending',
+    defaultMessage: 'Pending',
+    description: 'Column header of the Home › Queues table: how many of its items no one is assigned to yet.',
+  },
+  columnMine: {
+    id: 'reviewQueues.myQueues.column.mine',
+    defaultMessage: 'Assigned to you',
+    description: 'Column header of the Home › Queues table: how many of its items are assigned to the reader.',
+  },
+  columnOldest: {
+    id: 'reviewQueues.myQueues.column.oldest',
+    defaultMessage: 'Oldest waiting',
+    description: 'Column header of the Home › Queues table: how long its oldest waiting item has waited.',
+  },
+  columnPriority: {
+    id: 'reviewQueues.myQueues.column.priority',
+    defaultMessage: 'Priority',
+    description: "Column header of the Home › Queues table: the queue's priority, a number.",
+  },
+});
 
 export interface MyQueueRow {
   id: string;
@@ -76,50 +199,75 @@ export const fromTestSetQueue = (q: TestSetQueueSummary, mine: number | null): M
 
 const count = (n: number | null): React.ReactNode => (n == null ? '—' : n);
 const byNumber = (pick: (r: MyQueueRow) => number | null) => (a: MyQueueRow, b: MyQueueRow) => (pick(a) ?? -1) - (pick(b) ?? -1);
+// One instance each, whatever the language, so a sorted table stays sorted when it changes.
+const byItems = byNumber((r) => r.items);
+const byPending = byNumber((r) => r.pending);
+const byMine = byNumber((r) => r.mine);
+const byPriority = byNumber((r) => r.priority);
 
 /** The oldest waiting time in the UI locale; a column's `cell` cannot call a hook, so this is a component. */
 const OldestWaitingCell = ({ at }: { at: string }): React.JSX.Element => {
+  const intl = useIntl();
   const { locale } = useFormatters();
-  return <span title={formatDateTime(at, locale)}>{formatRelativeTime(at, locale)}</span>;
+  return (
+    <span title={formatDateTime(at, locale)}>
+      {formatRelativeTime(at, locale, undefined, intl.formatMessage(relativeTimeMessages.justNow))}
+    </span>
+  );
 };
 
-const COLUMNS: TableProps.ColumnDefinition<MyQueueRow>[] = [
-  {
-    id: 'name',
-    header: 'Queue',
-    isRowHeader: true,
-    sortingField: 'name',
-    cell: (row) => (
-      <Link href={row.href} variant="primary">
-        {row.name}
-      </Link>
-    ),
-  },
-  {
-    id: 'source',
-    header: 'Source',
-    width: 140,
-    sortingField: 'source',
-    cell: (row) => <Badge color={row.source === 'production' ? 'blue' : 'grey'}>{SOURCE_LABELS[row.source]}</Badge>,
-  },
-  { id: 'items', header: 'Items', cell: (row) => count(row.items), sortingComparator: byNumber((r) => r.items) },
-  { id: 'pending', header: 'Pending', cell: (row) => count(row.pending), sortingComparator: byNumber((r) => r.pending) },
-  { id: 'mine', header: 'Assigned to you', cell: (row) => count(row.mine), sortingComparator: byNumber((r) => r.mine) },
-  {
-    id: 'oldest',
-    header: 'Oldest waiting',
-    cell: (row) => (row.oldestEnqueuedAt ? <OldestWaitingCell at={row.oldestEnqueuedAt} /> : '—'),
-  },
-  { id: 'priority', header: 'Priority', cell: (row) => row.priority ?? '—', sortingComparator: byNumber((r) => r.priority) },
-];
-
 const MyQueuesPage = (): React.JSX.Element => {
+  const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const reviewWork = useOptionalReviewWork();
   const { canWorkTestSetQueues, loading: roleLoading } = useUserRole();
   const [production, setProduction] = useState<ReviewQueueSummary[] | null>(null);
   const [testSets, setTestSets] = useState<TestSetQueueSummary[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  const columns = useMemo<TableProps.ColumnDefinition<MyQueueRow>[]>(
+    () => [
+      {
+        id: 'name',
+        header: intl.formatMessage(messages.columnQueue),
+        isRowHeader: true,
+        sortingField: 'name',
+        cell: (row) => (
+          <Link href={row.href} variant="primary">
+            {row.name}
+          </Link>
+        ),
+      },
+      {
+        id: 'source',
+        header: intl.formatMessage(messages.columnSource),
+        width: 140,
+        sortingField: 'source',
+        cell: (row) => <Badge color={row.source === 'production' ? 'blue' : 'grey'}>{workSourceLabel(row.source, intl)}</Badge>,
+      },
+      { id: 'items', header: intl.formatMessage(messages.columnItems), cell: (row) => count(row.items), sortingComparator: byItems },
+      {
+        id: 'pending',
+        header: intl.formatMessage(messages.columnPending),
+        cell: (row) => count(row.pending),
+        sortingComparator: byPending,
+      },
+      { id: 'mine', header: intl.formatMessage(messages.columnMine), cell: (row) => count(row.mine), sortingComparator: byMine },
+      {
+        id: 'oldest',
+        header: intl.formatMessage(messages.columnOldest),
+        cell: (row) => (row.oldestEnqueuedAt ? <OldestWaitingCell at={row.oldestEnqueuedAt} /> : '—'),
+      },
+      {
+        id: 'priority',
+        header: intl.formatMessage(messages.columnPriority),
+        cell: (row) => row.priority ?? '—',
+        sortingComparator: byPriority,
+      },
+    ],
+    [intl],
+  );
 
   const load = useCallback(async () => {
     const [mine, sets] = await Promise.allSettled([
@@ -158,12 +306,12 @@ const MyQueuesPage = (): React.JSX.Element => {
     filtering: {
       empty: (
         <Box textAlign="center" color="inherit" padding="s">
-          No queues list you yet. An Admin adds you to a queue&apos;s Eligible Annotators in Review Management; its queue then appears here.
+          <FormattedMessage {...messages.empty} />
         </Box>
       ),
       noMatch: <TableNoMatchState onClearFilter={() => collectionActions.setFiltering('')} />,
       filteringFunction: (row, text) =>
-        [row.name, row.description ?? '', SOURCE_LABELS[row.source]].some((v) => v.toLowerCase().includes(text.toLowerCase())),
+        [row.name, row.description ?? '', workSourceLabel(row.source, intl)].some((v) => v.toLowerCase().includes(text.toLowerCase())),
     },
     pagination: { pageSize: 25 },
     sorting: {},
@@ -186,14 +334,19 @@ const MyQueuesPage = (): React.JSX.Element => {
       header={
         <Header
           variant="h1"
-          description="The queues you are listed on. Open a queue to see its items; open any item to view it, and claim one to work it in Tasks."
+          description={intl.formatMessage(messages.description)}
           actions={
-            <Button iconName="refresh" ariaLabel="Refresh queues" loading={refreshing} onClick={() => void refresh()}>
-              Refresh
+            <Button
+              iconName="refresh"
+              ariaLabel={intl.formatMessage(messages.refreshAriaLabel)}
+              loading={refreshing}
+              onClick={() => void refresh()}
+            >
+              <FormattedMessage {...messages.refresh} />
             </Button>
           }
         >
-          Queues
+          <FormattedMessage {...messages.title} />
         </Header>
       }
     >
@@ -201,10 +354,14 @@ const MyQueuesPage = (): React.JSX.Element => {
         <Box margin={{ bottom: 'l' }}>
           <Alert
             type={loaded ? 'warning' : 'error'}
-            header={loaded ? 'Showing the last loaded queues' : "Couldn't load your queues"}
-            action={<Button onClick={() => void refresh()}>Retry</Button>}
+            header={intl.formatMessage(loaded ? messages.loadedWarning : messages.loadError)}
+            action={
+              <Button onClick={() => void refresh()}>
+                <FormattedMessage {...messages.retry} />
+              </Button>
+            }
           >
-            {describeApiError(error, 'load your queues')}
+            {describeApiError(error, messages.loadQueuesAction, intl)}
           </Alert>
         </Box>
       )}
@@ -213,16 +370,20 @@ const MyQueuesPage = (): React.JSX.Element => {
         variant="container"
         items={items}
         trackBy="id"
-        columnDefinitions={COLUMNS}
+        columnDefinitions={columns}
         loading={initial || (refreshing && rows.length === 0)}
-        loadingText="Loading queues"
-        header={<Header counter={initial ? undefined : `(${rows.length})`}>Your queues</Header>}
+        loadingText={intl.formatMessage(messages.loading)}
+        header={
+          <Header counter={initial ? undefined : `(${rows.length})`}>
+            <FormattedMessage {...messages.tableTitle} />
+          </Header>
+        }
         filter={
           <TextFilter
             {...filterProps}
-            filteringPlaceholder="Find queues"
-            filteringAriaLabel="Find queues"
-            countText={getFilterCounterText(filteredItemsCount ?? 0)}
+            filteringPlaceholder={intl.formatMessage(messages.find)}
+            filteringAriaLabel={intl.formatMessage(messages.find)}
+            countText={filterCounterText(intl, filteredItemsCount ?? 0)}
           />
         }
         pagination={<Pagination {...paginationProps} ariaLabels={paginationLabels} />}

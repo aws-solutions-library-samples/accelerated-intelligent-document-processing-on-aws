@@ -20,9 +20,13 @@
  * or a plain button is left alone.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 export const useUnsavedChangesGuard = (hasUnsavedChanges: boolean, message: string): void => {
+  // Read at the click, so a new message (in another language) does not subscribe the
+  // listeners again.
+  const messageRef = useRef(message);
+  messageRef.current = message;
   useEffect(() => {
     if (!hasUnsavedChanges) return undefined;
 
@@ -48,7 +52,7 @@ export const useUnsavedChangesGuard = (hasUnsavedChanges: boolean, message: stri
       // Navigating to where we already are discards nothing.
       if (href.slice(1) === window.location.hash.slice(1)) return;
 
-      if (!window.confirm(message)) {
+      if (!window.confirm(messageRef.current)) {
         event.preventDefault();
         event.stopPropagation();
       }
@@ -60,7 +64,7 @@ export const useUnsavedChangesGuard = (hasUnsavedChanges: boolean, message: stri
       window.removeEventListener('beforeunload', onBeforeUnload);
       document.removeEventListener('click', onClickCapture, true);
     };
-  }, [hasUnsavedChanges, message]);
+  }, [hasUnsavedChanges]);
 };
 
 export default useUnsavedChangesGuard;

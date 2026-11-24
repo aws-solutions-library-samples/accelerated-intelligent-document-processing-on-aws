@@ -1230,7 +1230,7 @@ _UPLOAD_FROM_COMPUTER = (
     '    uid=4_5 button "Configuration Profile" expandable haspopup="listbox"',
     '    uid=4_6 button "Choose files"',
     '    uid=4_7 StaticText "Drop files to upload"',
-    '    uid=4_8 button "Upload (1 files)"',
+    '    uid=4_8 button "Upload (1 file)"',
 )
 _UPLOAD_SAMPLE = (
     '    uid=4_1 heading "Upload Documents" level="2"',
@@ -1243,7 +1243,7 @@ _UPLOAD_SAMPLE = (
 _UPLOAD_SOURCES = (
     "'Choose files'",
     "'Process sample'",
-    "`Upload ${",
+    "one {Upload (# file)}",
     "Optional folder prefix (e.g., invoices/2024)",
 )
 
@@ -1310,7 +1310,7 @@ def test_the_upload_page_still_refuses_its_own_commit_controls() -> None:
     assert local.control_of(uid_of(local, "link", "Browse catalog")) is None
     assert local.control_of("4_2") is None
     assert local.control_of("4_6") == ("commit_point", "Choose files")
-    assert local.control_of("4_8") == ("commit_point", "Upload (1 files)")
+    assert local.control_of("4_8") == ("commit_point", "Upload (1 file)")
     assert local.pressed("enter") == (
         "commit_point",
         "Enter in Optional folder prefix (e.g., invoices/2024)",
@@ -1643,7 +1643,7 @@ def test_the_relay_forwards_a_followed_link_and_refuses_the_page_it_opens(
     assert reply_text(refused) == story_relay.COMMIT_POINT_TEXT
     assert (rig.last()["refused"], rig.last()["label"]) == (
         "commit_point",
-        "Upload (1 files)",
+        "Upload (1 file)",
     )
     clicks = [call for call in rig.tool_calls() if call["name"] == "click"]
     assert [call["arguments"]["uid"] for call in clicks] == [UPLOAD_LINK]
@@ -1795,8 +1795,8 @@ _EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
 #: The edit page's read-only notice, which offers Claim beside the bar's own.
 _EDIT_PAGE = "components/edit-screen/EditPage.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
-#: The edit screen names Process Changes with one shared constant (common/labels.ts).
-_PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
+#: The edit screen names Process Changes with one shared message (common/labels.ts).
+_PROCESS_CHANGES = "sharedLabelMessages.processChanges"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
 _MCP = "components/mcp-configuration/McpConfigurationLayout.tsx"
@@ -1874,8 +1874,10 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_DETAIL_ACTIONS, "Start Review"),
     ),
     "ClaimReviewItem": (
-        Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
-        Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
+        Shipped(
+            _QUEUE, "Claim (2)", source="counted(intl.formatMessage(messages.claim)"
+        ),
+        Shipped(_QUEUE, "Claim", source="text: intl.formatMessage(messages.claim)"),
         Shipped(_FRAME, "Claim"),
         Shipped(_EDIT_PAGE, "Claim"),
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
@@ -1935,14 +1937,14 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(
             "components/document-agents-layout/AgentQueryInput.tsx",
             "Delete query: What is in this document?",
-            source="`Delete query: ${displayText}`",
+            source="defaultMessage: 'Delete query: {query}'",
         ),
     ),
     "DeleteChatSession": (
         Shipped(
             "components/agent-chat/AgentChatHistoryDropdown.tsx",
             "Delete chat session: Where do I start?",
-            source="`Delete chat session: ${displayText}`",
+            source="defaultMessage: 'Delete chat session: {title}'",
         ),
     ),
     "DeleteConfigPrefixMapping": (Shipped(_MAPPINGS, "Delete"),),
@@ -1992,7 +1994,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/user-management/UserManagementLayout.tsx", "Delete"),
     ),
     "ForceReleaseReviewItem": (
-        Shipped(_SUPERVISOR, "Unassign", source='label="Unassign"', inside_dialog=True),
+        Shipped(
+            _SUPERVISOR,
+            "Unassign",
+            source="defaultMessage: 'Unassign'",
+            inside_dialog=True,
+        ),
     ),
     "GenerateDraftLabels": (
         Shipped(
@@ -2026,7 +2033,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_INBOX, "Mark as unread"),
     ),
     "MoveReviewItem": (
-        Shipped(_SUPERVISOR, "Move", source='label="Move"', inside_dialog=True),
+        Shipped(
+            _SUPERVISOR, "Move", source="defaultMessage: 'Move'", inside_dialog=True
+        ),
     ),
     # Draft-first: Process Changes opens the version, confirmed in its dialog while no
     # draft version is open, and at once when one is.
@@ -2041,11 +2050,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "PauseCircuitBreaker": (
         Shipped(_BREAKER, "Pause processing"),
-        Shipped(_BREAKER, "Pause", source="confirmLabel: 'Pause'"),
+        Shipped(_BREAKER, "Pause", source="defaultMessage: 'Pause'"),
     ),
     "ProbeCircuitBreaker": (
         Shipped(_BREAKER, "Probe recovery"),
-        Shipped(_BREAKER, "Probe", source="confirmLabel: 'Probe'"),
+        Shipped(_BREAKER, "Probe", source="defaultMessage: 'Probe'"),
     ),
     "ProcessChanges": (
         Shipped(
@@ -2079,7 +2088,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "RemoveReviewItem": (
-        Shipped(_SUPERVISOR, "Remove", source='label="Remove"', inside_dialog=True),
+        Shipped(
+            _SUPERVISOR, "Remove", source="defaultMessage: 'Remove'", inside_dialog=True
+        ),
     ),
     "ReprocessDocument": (
         Shipped("components/common/ReprocessDocumentModal.tsx", "Reprocess"),
@@ -2100,7 +2111,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "ResumeCircuitBreaker": (
         Shipped(_BREAKER, "Resume processing"),
-        Shipped(_BREAKER, "Resume", source="confirmLabel: 'Resume'"),
+        Shipped(_BREAKER, "Resume", source="defaultMessage: 'Resume'"),
     ),
     "RevokeMcpCredential": (
         Shipped(_MCP, "Revoke", source="'Revoke'", inside_dialog=True),
@@ -2230,7 +2241,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/discovery/DiscoveryPanel.tsx", "Start Discovery"),
     ),
     "UploadDocument": (
-        Shipped(_UPLOAD, "Upload (1 files)", source="`Upload ${"),
+        Shipped(_UPLOAD, "Upload (1 file)", source="one {Upload (# file)}"),
         Shipped(_EDIT_TEXT, "Save and Reprocess", inside_dialog=True),
         Shipped(
             "components/pages-panel/PageTextEditorModal.tsx",
@@ -2510,8 +2521,10 @@ CLAIM_CALL_SITES: dict[tuple[str, str], tuple[Shipped, ...]] = {
         Shipped(_EDIT_PAGE, "Claim"),
     ),
     (_QUEUE, "ReviewQueuePage.claim"): (
-        Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
-        Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
+        Shipped(
+            _QUEUE, "Claim (2)", source="counted(intl.formatMessage(messages.claim)"
+        ),
+        Shipped(_QUEUE, "Claim", source="text: intl.formatMessage(messages.claim)"),
     ),
     (_QUEUE, "ReviewQueuePage.claimNext"): (Shipped(_QUEUE, "Next item"),),
     (_ANNOTATE, "AnnotationQueuePage.handleClaim"): (

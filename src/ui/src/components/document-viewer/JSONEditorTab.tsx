@@ -18,8 +18,181 @@ import {
   Multiselect,
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 import { valueSourceLabel } from '../common/labels';
+
+const messages = defineMessages<{
+  sectionInferenceResult: NoMessageValues;
+  sectionDocumentClass: NoMessageValues;
+  sectionSplitDocument: NoMessageValues;
+  sectionExplainabilityInfo: NoMessageValues;
+  sectionMetadata: NoMessageValues;
+  sectionEditHistory: NoMessageValues;
+  invalidJson: { readonly detail: string };
+  cannotFormat: { readonly detail: string };
+  titleViewer: { readonly strong: MessageTag };
+  titleEditor: { readonly strong: MessageTag };
+  selectSections: NoMessageValues;
+  showEvaluation: NoMessageValues;
+  lines: { readonly count: number };
+  copyPrediction: NoMessageValues;
+  copyBaseline: NoMessageValues;
+  format: NoMessageValues;
+  copied: NoMessageValues;
+  noPrediction: NoMessageValues;
+  noBaseline: NoMessageValues;
+  expectedBaseline: NoMessageValues;
+  noBaselineTitle: NoMessageValues;
+  noBaselineBody: NoMessageValues;
+}>({
+  sectionInferenceResult: {
+    id: 'documents.jsonEditor.section.inferenceResult',
+    defaultMessage: 'Extracted data',
+    description:
+      "Description of the inference_result option of the section picker in the JSON Editor tab of the edit page's section editor (inference_result is the JSON key, shown as is).",
+  },
+  sectionDocumentClass: {
+    id: 'documents.jsonEditor.section.documentClass',
+    defaultMessage: 'Classification result',
+    description:
+      "Description of the document_class option of the section picker in the JSON Editor tab of the edit page's section editor (document_class is the JSON key, shown as is).",
+  },
+  sectionSplitDocument: {
+    id: 'documents.jsonEditor.section.splitDocument',
+    defaultMessage: 'Splitting info',
+    description:
+      "Description of the split_document option of the section picker in the JSON Editor tab of the edit page's section editor (split_document is the JSON key, shown as is).",
+  },
+  sectionExplainabilityInfo: {
+    id: 'documents.jsonEditor.section.explainabilityInfo',
+    defaultMessage: 'Confidence & bounding boxes',
+    description:
+      "Description of the explainability_info option of the section picker in the JSON Editor tab of the edit page's section editor (explainability_info is the JSON key, shown as is).",
+  },
+  sectionMetadata: {
+    id: 'documents.jsonEditor.section.metadata',
+    defaultMessage: 'Document metadata',
+    description:
+      "Description of the metadata option of the section picker in the JSON Editor tab of the edit page's section editor (metadata is the JSON key, shown as is).",
+  },
+  sectionEditHistory: {
+    id: 'documents.jsonEditor.section.editHistory',
+    defaultMessage: 'Edit history',
+    description:
+      "Description of the _editHistory option of the section picker in the JSON Editor tab of the edit page's section editor (_editHistory is the JSON key, shown as is).",
+  },
+  invalidJson: {
+    id: 'documents.jsonEditor.invalidJson',
+    defaultMessage: 'Invalid JSON: {detail}',
+    description:
+      "Error in a panel of the JSON Editor tab of the edit page's section editor when the panel's text is not valid JSON. {detail} is the JSON parser's own message, shown as is.",
+  },
+  cannotFormat: {
+    id: 'documents.jsonEditor.cannotFormat',
+    defaultMessage: 'Cannot format: {detail}',
+    description:
+      "Error in a panel of the JSON Editor tab of the edit page's section editor when Format cannot read the panel's text as JSON. {detail} is the JSON parser's own message, shown as is.",
+  },
+  titleViewer: {
+    id: 'documents.jsonEditor.titleViewer',
+    defaultMessage: '<strong>JSON Viewer</strong> - View the raw JSON data.',
+    description:
+      "Line at the top of the JSON Editor tab of the edit page's section editor when the section is read-only. The <strong> tags mark the bold name.",
+  },
+  titleEditor: {
+    id: 'documents.jsonEditor.titleEditor',
+    defaultMessage: '<strong>JSON Editor</strong> - View and edit the raw JSON data.',
+    description:
+      "Line at the top of the JSON Editor tab of the edit page's section editor when the section can be edited. The <strong> tags mark the bold name.",
+  },
+  selectSections: {
+    id: 'documents.jsonEditor.selectSections',
+    defaultMessage: 'Select JSON sections',
+    description:
+      "Placeholder of the picker, in the JSON Editor tab of the edit page's section editor, that chooses which parts of the JSON to show.",
+  },
+  showEvaluation: {
+    id: 'documents.jsonEditor.showEvaluation',
+    defaultMessage: 'Show Evaluation',
+    description:
+      "Toggle in the JSON Editor tab of the edit page's section editor; when on, the evaluation baseline's JSON shows beside the values.",
+  },
+  lines: {
+    id: 'documents.jsonEditor.lines',
+    defaultMessage: '{count, plural, one {# line} other {# lines}}',
+    description:
+      "Badge in the header of a panel of the JSON Editor tab of the edit page's section editor. {count} is the number of lines of the panel's text.",
+  },
+  copyPrediction: {
+    id: 'documents.jsonEditor.copyPrediction',
+    defaultMessage: 'Copy prediction JSON',
+    description:
+      "Screen-reader label of the button that copies the values panel's JSON, in the JSON Editor tab of the edit page's section editor.",
+  },
+  copyBaseline: {
+    id: 'documents.jsonEditor.copyBaseline',
+    defaultMessage: 'Copy baseline JSON',
+    description:
+      "Screen-reader label of the button that copies the evaluation baseline panel's JSON, in the JSON Editor tab of the edit page's section editor.",
+  },
+  format: {
+    id: 'documents.jsonEditor.format',
+    defaultMessage: 'Format',
+    description:
+      "Button above a panel of the JSON Editor tab of the edit page's section editor that lays out the panel's JSON with indentation.",
+  },
+  copied: {
+    id: 'documents.jsonEditor.copied',
+    defaultMessage: '✓ Copied',
+    description:
+      "Shown beside a panel's title in the JSON Editor tab of the edit page's section editor for two seconds after its JSON was copied.",
+  },
+  noPrediction: {
+    id: 'documents.jsonEditor.noPrediction',
+    defaultMessage: 'No prediction data available',
+    description: "Placeholder of the values panel's text area in the JSON Editor tab of the edit page's section editor, when it is empty.",
+  },
+  noBaseline: {
+    id: 'documents.jsonEditor.noBaseline',
+    defaultMessage: 'No baseline data available',
+    description:
+      "Placeholder of the evaluation baseline panel's text area in the JSON Editor tab of the edit page's section editor, when it is empty.",
+  },
+  expectedBaseline: {
+    id: 'documents.jsonEditor.expectedBaseline',
+    defaultMessage: 'Expected (Baseline)',
+    description: "Title of the evaluation baseline panel in the JSON Editor tab of the edit page's section editor.",
+  },
+  noBaselineTitle: {
+    id: 'documents.jsonEditor.noBaselineTitle',
+    defaultMessage: 'No Baseline Data',
+    description:
+      "Heading in the evaluation baseline panel of the JSON Editor tab of the edit page's section editor when the panel is on and the open section has no baseline.",
+  },
+  noBaselineBody: {
+    id: 'documents.jsonEditor.noBaselineBody',
+    defaultMessage:
+      'Baseline data is not available for this section. Use "Use as Evaluation Baseline" to create baseline data from current predictions.',
+    description:
+      "Text under No Baseline Data in the JSON Editor tab of the edit page's section editor. The quoted name is the More Actions item that copies the document's results into its evaluation baseline.",
+  },
+});
+
+/** A JSON panel's error: what failed, and the JSON parser's own message. */
+interface JsonError {
+  kind: 'invalid' | 'cannotFormat';
+  detail: string;
+}
+
+/** The sentence of each error a JSON panel shows. */
+const jsonErrorMessages: Record<JsonError['kind'], TypedMessageDescriptor<{ readonly detail: string }>> = {
+  invalid: messages.invalidJson,
+  cannotFormat: messages.cannotFormat,
+};
+
+/** Renders a `<strong>...</strong>` element value: the name at the start of the tab's top line. */
+const strong = (chunks: React.ReactNode[]): React.JSX.Element => <strong>{chunks}</strong>;
 
 interface JSONEditorTabProps {
   predictionData: Record<string, unknown> | null;
@@ -40,16 +213,6 @@ const logger = new ConsoleLogger('JSONEditorTab');
 /**
  * JSONEditorTab - Full-width JSON editor with side-by-side view of predictions and baseline
  */
-// Available JSON section options
-const _SECTION_OPTIONS = [
-  { label: 'inference_result', value: 'inference_result', description: 'Extracted data from the document' },
-  { label: 'document_class', value: 'document_class', description: 'Document classification result' },
-  { label: 'split_document', value: 'split_document', description: 'Document splitting information' },
-  { label: 'explainability_info', value: 'explainability_info', description: 'Confidence and bounding box data' },
-  { label: 'metadata', value: 'metadata', description: 'Document metadata' },
-  { label: '_editHistory', value: '_editHistory', description: 'Edit history for this document' },
-];
-
 const JSONEditorTab = ({
   predictionData,
   baselineData,
@@ -60,10 +223,11 @@ const JSONEditorTab = ({
   onShowBaselineChange,
   isBaselineAvailable,
   loadingEvaluation,
-  predictionTitle = valueSourceLabel(null).panelTitle,
+  predictionTitle,
 }: JSONEditorTabProps): React.JSX.Element => {
-  const [predictionError, setPredictionError] = useState<string | null>(null);
-  const [baselineError, setBaselineError] = useState<string | null>(null);
+  const intl = useIntl();
+  const [predictionError, setPredictionError] = useState<JsonError | null>(null);
+  const [baselineError, setBaselineError] = useState<JsonError | null>(null);
   const [copySuccess, setCopySuccess] = useState<string | null>(null);
 
   // Section selection state - default to inference_result only
@@ -78,26 +242,34 @@ const JSONEditorTab = ({
 
     // Check for each possible section (handle both naming conventions)
     if (data.inference_result || data.inferenceResult) {
-      available.push({ label: 'inference_result', value: 'inference_result', description: 'Extracted data' });
+      available.push({
+        label: 'inference_result',
+        value: 'inference_result',
+        description: intl.formatMessage(messages.sectionInferenceResult),
+      });
     }
     if (data.document_class || data.documentClass) {
-      available.push({ label: 'document_class', value: 'document_class', description: 'Classification result' });
+      available.push({ label: 'document_class', value: 'document_class', description: intl.formatMessage(messages.sectionDocumentClass) });
     }
     if (data.split_document || data.splitDocument) {
-      available.push({ label: 'split_document', value: 'split_document', description: 'Splitting info' });
+      available.push({ label: 'split_document', value: 'split_document', description: intl.formatMessage(messages.sectionSplitDocument) });
     }
     if (data.explainability_info || data.explainabilityInfo) {
-      available.push({ label: 'explainability_info', value: 'explainability_info', description: 'Confidence & bounding boxes' });
+      available.push({
+        label: 'explainability_info',
+        value: 'explainability_info',
+        description: intl.formatMessage(messages.sectionExplainabilityInfo),
+      });
     }
     if (data.metadata) {
-      available.push({ label: 'metadata', value: 'metadata', description: 'Document metadata' });
+      available.push({ label: 'metadata', value: 'metadata', description: intl.formatMessage(messages.sectionMetadata) });
     }
     if (data._editHistory) {
-      available.push({ label: '_editHistory', value: '_editHistory', description: 'Edit history' });
+      available.push({ label: '_editHistory', value: '_editHistory', description: intl.formatMessage(messages.sectionEditHistory) });
     }
 
     return available;
-  }, [predictionData]);
+  }, [predictionData, intl]);
 
   // Format JSON for display based on selected sections
   const formattedPrediction = useMemo((): string => {
@@ -201,7 +373,7 @@ const JSONEditorTab = ({
         onPredictionChange(parsed);
       }
     } catch (e) {
-      setPredictionError(`Invalid JSON: ${(e as Error).message}`);
+      setPredictionError({ kind: 'invalid', detail: (e as Error).message });
     }
   };
 
@@ -216,7 +388,7 @@ const JSONEditorTab = ({
         onBaselineChange(parsed);
       }
     } catch (e) {
-      setBaselineError(`Invalid JSON: ${(e as Error).message}`);
+      setBaselineError({ kind: 'invalid', detail: (e as Error).message });
     }
   };
 
@@ -245,9 +417,9 @@ const JSONEditorTab = ({
       }
     } catch (e) {
       if (type === 'prediction') {
-        setPredictionError(`Cannot format: ${(e as Error).message}`);
+        setPredictionError({ kind: 'cannotFormat', detail: (e as Error).message });
       } else {
-        setBaselineError(`Cannot format: ${(e as Error).message}`);
+        setBaselineError({ kind: 'cannotFormat', detail: (e as Error).message });
       }
     }
   };
@@ -263,7 +435,11 @@ const JSONEditorTab = ({
         <Box>
           <SpaceBetween direction="horizontal" size="m" alignItems="center">
             <Box>
-              <strong>JSON {isReadOnly ? 'Viewer' : 'Editor'}</strong> - {isReadOnly ? 'View' : 'View and edit'} the raw JSON data.
+              {isReadOnly ? (
+                <FormattedMessage {...messages.titleViewer} values={{ strong }} />
+              ) : (
+                <FormattedMessage {...messages.titleEditor} values={{ strong }} />
+              )}
             </Box>
             <Box {...({ style: { marginLeft: 'auto' } } as Record<string, unknown>)}>
               <SpaceBetween direction="horizontal" size="m" alignItems="center">
@@ -274,11 +450,11 @@ const JSONEditorTab = ({
                     onChange={({ detail }) => {
                       // Ensure at least one section is selected
                       if (detail.selectedOptions.length > 0) {
-                        setSelectedSections(detail.selectedOptions as import('@cloudscape-design/components').MultiselectProps.Option[]);
+                        setSelectedSections(detail.selectedOptions as MultiselectProps.Option[]);
                       }
                     }}
                     options={availableSections}
-                    placeholder="Select JSON sections"
+                    placeholder={intl.formatMessage(messages.selectSections)}
                     tokenLimit={2}
                     hideTokens={false}
                   />
@@ -295,7 +471,7 @@ const JSONEditorTab = ({
                     }}
                     disabled={loadingEvaluation || !baselineData}
                   >
-                    Show Evaluation
+                    <FormattedMessage {...messages.showEvaluation} />
                   </Toggle>
                 )}
               </SpaceBetween>
@@ -311,25 +487,27 @@ const JSONEditorTab = ({
                 variant="h3"
                 actions={
                   <SpaceBetween direction="horizontal" size="xs">
-                    <Badge color={predictionError ? 'red' : 'green'}>{predictionLines} lines</Badge>
+                    <Badge color={predictionError ? 'red' : 'green'}>
+                      <FormattedMessage {...messages.lines} values={{ count: predictionLines }} />
+                    </Badge>
                     <Button
                       variant="icon"
                       iconName="copy"
                       onClick={() => handleCopy(localPrediction, 'Prediction')}
-                      ariaLabel="Copy prediction JSON"
+                      ariaLabel={intl.formatMessage(messages.copyPrediction)}
                     />
                     {!isReadOnly && (
                       <Button variant="normal" onClick={() => handleFormat('prediction')}>
-                        Format
+                        <FormattedMessage {...messages.format} />
                       </Button>
                     )}
                   </SpaceBetween>
                 }
               >
-                {predictionTitle}
+                {predictionTitle ?? valueSourceLabel(intl, null).panelTitle}
                 {copySuccess === 'Prediction' && (
                   <Box variant="span" color="text-status-success" margin={{ left: 's' }}>
-                    ✓ Copied
+                    <FormattedMessage {...messages.copied} />
                   </Box>
                 )}
               </Header>
@@ -337,7 +515,7 @@ const JSONEditorTab = ({
           >
             {predictionError && (
               <Alert type="error" dismissible onDismiss={() => setPredictionError(null)}>
-                {predictionError}
+                <FormattedMessage {...jsonErrorMessages[predictionError.kind]} values={{ detail: predictionError.detail }} />
               </Alert>
             )}
             <div className={isReadOnly ? 'json-editor-readonly' : ''}>
@@ -347,7 +525,7 @@ const JSONEditorTab = ({
                 readOnly={isReadOnly}
                 rows={Math.min(Math.max(predictionLines, 20), 40)}
                 spellcheck={false}
-                placeholder="No prediction data available"
+                placeholder={intl.formatMessage(messages.noPrediction)}
               />
               {isReadOnly && (
                 <style>{`
@@ -368,25 +546,27 @@ const JSONEditorTab = ({
                   variant="h3"
                   actions={
                     <SpaceBetween direction="horizontal" size="xs">
-                      <Badge color={baselineError ? 'red' : 'blue'}>{baselineLines} lines</Badge>
+                      <Badge color={baselineError ? 'red' : 'blue'}>
+                        <FormattedMessage {...messages.lines} values={{ count: baselineLines }} />
+                      </Badge>
                       <Button
                         variant="icon"
                         iconName="copy"
                         onClick={() => handleCopy(localBaseline, 'Baseline')}
-                        ariaLabel="Copy baseline JSON"
+                        ariaLabel={intl.formatMessage(messages.copyBaseline)}
                       />
                       {!isReadOnly && (
                         <Button variant="normal" onClick={() => handleFormat('baseline')}>
-                          Format
+                          <FormattedMessage {...messages.format} />
                         </Button>
                       )}
                     </SpaceBetween>
                   }
                 >
-                  Expected (Baseline)
+                  <FormattedMessage {...messages.expectedBaseline} />
                   {copySuccess === 'Baseline' && (
                     <Box variant="span" color="text-status-success" margin={{ left: 's' }}>
-                      ✓ Copied
+                      <FormattedMessage {...messages.copied} />
                     </Box>
                   )}
                 </Header>
@@ -394,7 +574,7 @@ const JSONEditorTab = ({
             >
               {baselineError && (
                 <Alert type="error" dismissible onDismiss={() => setBaselineError(null)}>
-                  {baselineError}
+                  <FormattedMessage {...jsonErrorMessages[baselineError.kind]} values={{ detail: baselineError.detail }} />
                 </Alert>
               )}
               <div className={isReadOnly ? 'json-editor-readonly' : ''}>
@@ -404,7 +584,7 @@ const JSONEditorTab = ({
                   readOnly={isReadOnly}
                   rows={Math.min(Math.max(baselineLines, 20), 40)}
                   spellcheck={false}
-                  placeholder="No baseline data available"
+                  placeholder={intl.formatMessage(messages.noBaseline)}
                 />
               </div>
             </Container>
@@ -412,13 +592,20 @@ const JSONEditorTab = ({
 
           {/* Placeholder when baseline not enabled */}
           {showBaseline && !baselineData && (
-            <Container header={<Header variant="h3">Expected (Baseline)</Header>}>
+            <Container
+              header={
+                <Header variant="h3">
+                  <FormattedMessage {...messages.expectedBaseline} />
+                </Header>
+              }
+            >
               <Box padding="xl" textAlign="center" color="text-body-secondary">
                 <SpaceBetween size="s">
-                  <Box variant="h4">No Baseline Data</Box>
+                  <Box variant="h4">
+                    <FormattedMessage {...messages.noBaselineTitle} />
+                  </Box>
                   <Box>
-                    Baseline data is not available for this section. Use &quot;Use as Evaluation Baseline&quot; to create baseline data from
-                    current predictions.
+                    <FormattedMessage {...messages.noBaselineBody} />
                   </Box>
                 </SpaceBetween>
               </Box>

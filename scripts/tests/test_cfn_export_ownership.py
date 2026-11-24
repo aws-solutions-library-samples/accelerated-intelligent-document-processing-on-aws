@@ -113,6 +113,7 @@ EXPECTED_HOST_SOURCES = {
 # all of its imports and exports with it.
 EXPECTED_EXTENSION_SOURCES = {
     "feature-platform/confbench-testset/template.yaml",
+    "feature-platform/decision-model-decider/template.yaml",
     "feature-platform/feature-template/template.yaml",
     "feature-platform/idp-data-generator/template.yaml",
     "feature-platform/pii-anonymizer/template.yaml",

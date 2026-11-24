@@ -73,12 +73,12 @@ of the four and is the one that passes in the broken configuration:
    cannot name another checkout — that makes "this tree" structural rather than
    lucky, and it is the assertion doing the real work. A symlink out of the tree is
    rejected separately, since the lexical argument cannot see one.
-2. A live basedpyright probe must actually resolve all five first-party imports
+2. A live basedpyright probe must actually resolve every first-party import
    through the values the shipped config carries, in a throwaway project with
    `reportMissingImports` forced to "error" so the answer is reported. Its value is
    exercising the pinned basedpyright rather than re-reading the JSON.
 3. basedpyright's **own reported search-path order** must make one of the
-   **configured `extraPaths`** the first provider of each of the five, **in every
+   **configured `extraPaths`** the first provider of each of them, **in every
    reported environment**. Both emphasised parts were added after each weaker form
    was measured to pass while the gate was blind — see
    `_reported_search_path_blocks` and
@@ -117,9 +117,12 @@ severity in the file still reads "error".
 
 from __future__ import annotations
 
+import ast
+import functools
 import json
 import os
 import posixpath
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -884,38 +887,178 @@ def test_no_exclude_entry_shadows_an_include_entry() -> None:
 # foreign checkout is exactly the accident #1094 makes available.
 #
 # `reportMissingImports` stays at "none", and that is a measured decision rather
-# than an inherited one. Raised to "warning" with `extraPaths` in place it reports
-# 44 findings over 25 distinct modules, **none of them first-party**: about 38 are
-# sibling-module imports inside script and Lambda trees that are not packages
-# (`from index import ...`, `processors.pdf_image_processor`, `seed_data.stages`),
-# which resolve at runtime because the handler's own directory is on `sys.path`;
-# the remaining handful are genuinely uninstalled third-party distributions
-# (`pdf2image`, `fastapi`, `mlflow`, `requests_aws4auth`). So the rule is unusable
-# above "none" here for the reason DISABLED_RULE_EXEMPTIONS already gives, and the
-# gap it leaves is not "third-party imports are unchecked" but "nothing reports an
-# import that *should* have resolved and did not". That is precisely what the
-# checks below cover, and why they are not redundant with the rule.
+# than an inherited one. Raised to "warning" with `extraPaths` in place, **none of
+# its findings is first-party** (CLAUDE.md gives the command that counts them; the
+# count moves with the tree, so it is not quoted here): most are sibling-module
+# imports inside script and Lambda trees that are not packages (`from index import
+# ...`, `processors.pdf_image_processor`), which resolve at runtime because the
+# handler's own directory is on `sys.path`; the rest are third-party distributions
+# the checkout does not install (`pdf2image`, `fastapi`, `mlflow`,
+# `requests_aws4auth`, and `seed_data`, which only the generator extension's
+# container installs and `idp_common.synthesis.engine` imports lazily). So the
+# rule is unusable above "none" here for the reason DISABLED_RULE_EXEMPTIONS
+# already gives, and the gap it leaves is not "third-party imports are unchecked"
+# but "nothing reports an import that *should* have resolved and did not". That is
+# precisely what the checks below cover, and why they are not redundant with the
+# rule.
 # --------------------------------------------------------------------------- #
 
 
-#: The five first-party top-level import names, keyed to the distribution that
-#: ships each. Derived below from `lib/*/pyproject.toml` rather than trusted from
-#: here; this mapping only exists so the live probe has something to `import`.
+def _tracked_pyprojects() -> list[Path]:
+    """Every tracked `pyproject.toml` in the repository, wherever it lives.
+
+    `_pyprojects()` reads `lib/*/pyproject.toml` only, and that glob was the whole
+    universe of the resolution checks below until `terraform/translator` — a
+    distribution outside `lib/` whose `idp_tf` package `scripts/` imports — was
+    found resolving to nothing. A real return-type error in
+    `scripts/terraform_check.py` was then reported only when the caller's shell
+    happened to put the translator on `PYTHONPATH`, and never in CI, which is the
+    #1109 condition for a package this file could not see. Read from git, not a filesystem walk, for
+    the reason `_tracked_python` gives.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", ":(glob)**/pyproject.toml"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return sorted(REPO_ROOT / line for line in result.stdout.splitlines() if line)
+
+
+def _absolute_imports_in(source: str) -> set[str]:
+    """Top-level names `source` imports by absolute name, read with `ast`.
+
+    Every alias of `import a, b`, statements after a `;`, imports nested in `try`,
+    `if` or a function body, `from a.b import c` (as `a`), and
+    `importlib.import_module("a.b")` with a literal argument. Relative imports are
+    left out: they never need a search path. An `ast` walk rather than a regex,
+    because a regex anchored on line starts misses the second name of
+    `import a, b` and everything after a `;` — the direction that would excuse a
+    needed search path rather than demand a spare one.
+    """
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+        elif (
+            isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "import_module")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "import_module"
+                )
+            )
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and not node.args[0].value.startswith(".")
+        ):
+            names.add(node.args[0].value.split(".")[0])
+    return names
+
+
+@functools.cache
+def _absolute_importers() -> dict[str, frozenset[str]]:
+    """`{top-level name: tracked files that import it by absolute name}`.
+
+    About four seconds over the whole tree, once per session. A file that does not
+    parse fails the run rather than being passed over, since a file this scan
+    cannot read is one whose imports it cannot vouch for.
+    """
+    importers: dict[str, set[str]] = {}
+    for rel in _tracked_python():
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        try:
+            names = _absolute_imports_in(text)
+        except SyntaxError as error:
+            pytest.fail(f"{rel} does not parse, so its imports are unread: {error}")
+        for name in names:
+            importers.setdefault(name, set()).add(rel)
+    return {name: frozenset(files) for name, files in importers.items()}
+
+
+def _resolution_roots(
+    distributions: dict[str, list[str]],
+    importers: dict[str, frozenset[str]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Which shipped packages the type gate must resolve, and why the rest need not.
+
+    `distributions` maps a distribution's repo-relative directory to the
+    repo-relative package directories it ships. Returns
+    `({import name: directory it must be imported from}, {distribution: verdict})`,
+    where every distribution gets a verdict, so a new `pyproject.toml` anywhere is
+    classified rather than silently outside the check.
+
+    A pure function of its inputs so the rule can be driven with synthetic trees.
+    The rule, member by member:
+
+    * A distribution under `lib/` is a root unconditionally: those are what this
+      repository installs and ships, and the property #1109 is about.
+    * Anywhere else, a package is a root when a tracked file **outside the
+      directory holding the package** imports it. Measured with
+      `reportMissingImports` raised to "error": basedpyright resolves `idp_tf` for
+      `terraform/translator/tests/` and `terraform/translator/scripts/` without any
+      search path, and fails it for `scripts/` and `terraform/tools/`, which fits
+      resolution walking up from the importing file. So the boundary is the package's
+      parent directory, not the distribution's: under a `src/` layout the
+      distribution's own `tests/` never walk up into `src/`, and must count as
+      outside. The comparison is on whole path components, so a sibling such as
+      `tools/translator2/` is not inside `tools/translator/`.
+    * A package whose import name a `lib/` distribution already ships is not a
+      second root, so a same-named stand-in can never be put on the search path
+      ahead of the real library. Two of the PyPI name-reservation placeholders under
+      `scripts/pypi-placeholders/` are dropped by that clause; the third ships a name
+      nothing imports and is dropped by the one above.
+    """
+    roots: dict[str, str] = {}
+    verdicts: dict[str, str] = {}
+    lib_prefix = str(LIB_ROOT.relative_to(REPO_ROOT)) + "/"
+    ordered = sorted(distributions, key=lambda d: (not d.startswith(lib_prefix), d))
+    for dist in ordered:
+        if dist.startswith(lib_prefix):
+            for source_dir in distributions[dist]:
+                roots[posixpath.basename(source_dir)] = posixpath.dirname(source_dir)
+            verdicts[dist] = "root: a lib/ distribution"
+            continue
+        reasons: list[str] = []
+        for source_dir in distributions[dist]:
+            name = posixpath.basename(source_dir)
+            if name in roots:
+                reasons.append(f"{name}: already shipped from {roots[name]!r}")
+                continue
+            root = posixpath.dirname(source_dir)
+            outside = sorted(
+                f for f in importers.get(name, ()) if not f.startswith(root + "/")
+            )
+            if outside:
+                roots[name] = root
+                more = f" and {len(outside) - 1} more" if len(outside) > 1 else ""
+                reasons.append(f"{name}: root, imported from {outside[0]}{more}")
+            else:
+                reasons.append(f"{name}: imported from nowhere outside {root}")
+        verdicts[dist] = "; ".join(reasons) or "ships no importable package"
+    return roots, verdicts
+
+
 def _first_party_package_roots() -> dict[str, str]:
     """`{top-level import name: repo-relative directory it must be imported from}`.
 
-    Derived from each distribution's own setuptools configuration, so a sixth
-    `lib/<something>/pyproject.toml` is in scope automatically and fails the
-    agreement check below until its root is added to `extraPaths`. A list written
-    here would be the "control that enumerates the known instances" defect this
-    file exists to prevent.
+    Derived from every tracked distribution's own setuptools configuration, so a new
+    `pyproject.toml` is in scope automatically and fails the agreement check below
+    until its root is added to `extraPaths`. A list written here would be the
+    "control that enumerates the known instances" defect this file exists to
+    prevent — and a glob bounded to `lib/` was that defect one level up.
     """
-    roots: dict[str, str] = {}
-    for pyproject in _pyprojects():
-        for source_dir in _importable_source_dirs(pyproject):
-            name = posixpath.basename(source_dir)
-            roots[name] = posixpath.dirname(source_dir)
-    return roots
+    distributions = {
+        str(pyproject.parent.relative_to(REPO_ROOT)): _importable_source_dirs(pyproject)
+        for pyproject in _tracked_pyprojects()
+    }
+    return _resolution_roots(distributions, _absolute_importers())[0]
 
 
 def _extra_paths() -> list[str]:
@@ -927,7 +1070,107 @@ def test_there_are_first_party_packages_for_the_resolution_checks() -> None:
     roots = _first_party_package_roots()
     assert len(roots) >= 5, (
         f"derived only {len(roots)} first-party package root(s) ({roots}) from "
-        f"{LIB_ROOT}/*/pyproject.toml. The resolution checks below would be vacuous."
+        "the tracked pyproject.toml files. The resolution checks below would be "
+        "vacuous."
+    )
+
+
+def test_the_resolution_rule_keeps_and_drops_the_right_members() -> None:
+    """The rule in `_resolution_roots`, driven member by member on a synthetic tree.
+
+    Each case is one member's verdict, so a change that drops the outside-importer
+    case (the `idp_tf` shape) or admits a placeholder (an empty stand-in for a real
+    library) fails here by name rather than as a count moving somewhere else.
+    """
+    # Insertion order puts the placeholder first, so the lib-first ordering is what
+    # keeps it from claiming `real`; `lib/quiet_pkg` is imported from nowhere and is
+    # still a root because the lib clause is unconditional.
+    distributions = {
+        "a_placeholders/real": ["a_placeholders/real/real"],
+        "tools/translator": ["tools/translator/xlate"],
+        "tools/internal_only": ["tools/internal_only/inner"],
+        "tools/unused": ["tools/unused/orphan"],
+        "tools/sibling": ["tools/sibling/sib"],
+        "tools/srclayout": ["tools/srclayout/src/srcpkg"],
+        "lib/real_pkg": ["lib/real_pkg/real"],
+        "lib/quiet_pkg": ["lib/quiet_pkg/quiet"],
+    }
+    importers = {
+        "real": frozenset({"scripts/a.py"}),
+        "xlate": frozenset({"scripts/check.py", "tools/translator/tests/t.py"}),
+        "inner": frozenset({"tools/internal_only/tests/t.py"}),
+        "sib": frozenset({"tools/sibling2/use.py"}),
+        "srcpkg": frozenset({"tools/srclayout/tests/test_it.py"}),
+    }
+    roots, verdicts = _resolution_roots(distributions, importers)
+    assert roots == {
+        "real": "lib/real_pkg",
+        "quiet": "lib/quiet_pkg",
+        "xlate": "tools/translator",
+        "sib": "tools/sibling",
+        "srcpkg": "tools/srclayout/src",
+    }
+    assert set(verdicts) == set(distributions)
+    assert "already shipped from 'lib/real_pkg'" in verdicts["a_placeholders/real"]
+    assert "imported from nowhere outside" in verdicts["tools/internal_only"]
+    assert "imported from nowhere outside" in verdicts["tools/unused"]
+
+
+@pytest.mark.parametrize(
+    ("source", "names"),
+    [
+        ("import a, b\n", {"a", "b"}),
+        ("import a; import b\n", {"a", "b"}),
+        ("try:\n    import a\nexcept ImportError:\n    pass\n", {"a"}),
+        ("def f():\n    from a.b import c\n", {"a"}),
+        ("import a.b as c\n", {"a"}),
+        ("from . import a\nfrom .b import c\n", set()),
+        ("import importlib\nimportlib.import_module('a.b')\n", {"importlib", "a"}),
+        (
+            "from importlib import import_module\nimport_module('a')\n",
+            {"importlib", "a"},
+        ),
+        ("import_module('.a', 'pkg')\n", set()),
+        ("'''import a'''\n", set()),
+    ],
+)
+def test_import_scan_reads_every_absolute_import_shape(
+    source: str, names: set[str]
+) -> None:
+    """The scan feeding `_resolution_roots`, one statement shape per case.
+
+    A shape it misses is an importer it never reports, which can excuse a search
+    path the gate needs.
+    """
+    assert _absolute_imports_in(source) == names
+
+
+def test_the_resolution_universe_reaches_past_lib() -> None:
+    """Non-vacuity for the widening: the derivation must read beyond `lib/`.
+
+    The derivation was bounded to `lib/*/pyproject.toml`, and that bound is what let
+    `idp_tf` go unresolved with every check here green. If the universe ever shrinks
+    back to `lib/` — a glob narrowed, `git ls-files` given a pathspec that only
+    matches one level — this fails, where the agreement checks would quietly agree
+    with a smaller set. The verdicts are printed so a new distribution's
+    classification is visible in the failure. If the tree genuinely stops importing
+    any distribution outside `lib/` from elsewhere, the verdicts will say so and this
+    test has served its purpose and should go.
+    """
+    distributions = {
+        str(pyproject.parent.relative_to(REPO_ROOT)): _importable_source_dirs(pyproject)
+        for pyproject in _tracked_pyprojects()
+    }
+    roots, verdicts = _resolution_roots(distributions, _absolute_importers())
+    outside_lib = {
+        name: root
+        for name, root in roots.items()
+        if not (REPO_ROOT / root).resolve().is_relative_to(LIB_ROOT.resolve())
+    }
+    assert any(not d.startswith("lib/") for d in distributions) and outside_lib, (
+        "the resolution derivation found no package root outside lib/, although "
+        "tracked distributions outside it are imported from elsewhere in the tree. "
+        "Verdicts:\n  " + "\n  ".join(f"{d}: {v}" for d, v in sorted(verdicts.items()))
     )
 
 
@@ -935,7 +1178,7 @@ def test_first_party_packages_are_resolvable_from_the_config() -> None:
     """The invariant from #1109, stated as the conjunction that caused it.
 
     `reportMissingImports: "none"` is legitimate on its own (see the block comment
-    above: above "none" the rule reports 44 findings on correct code). First-party
+    above: above "none" the rule reports findings on correct code). First-party
     packages failing to resolve is survivable on its own, because the rule would
     then say so on every affected line. **Together** they are a gate that reads
     every file in the repository and cannot produce a diagnostic about any call
@@ -1037,11 +1280,51 @@ def test_no_extra_path_is_stale() -> None:
     roots = {posixpath.normpath(r) for r in _first_party_package_roots().values()}
     stale = sorted(p for p in _extra_paths() if posixpath.normpath(p) not in roots)
     assert not stale, (
-        f"pyrightconfig.json `extraPaths` lists {stale}, which no distribution under "
-        f"{LIB_ROOT}/*/pyproject.toml ships from (roots: {sorted(roots)}). Drop the "
+        f"pyrightconfig.json `extraPaths` lists {stale}, which no tracked "
+        f"pyproject.toml ships a needed package from (roots: {sorted(roots)}). Drop the "
         "entry, or, if a new tree genuinely needs to be on the import path, say so "
         "in this test — an unexplained search path is how the next stale one hides."
     )
+
+
+def _in_ci() -> bool:
+    """Whether this run is in CI, read when called so the tests below can drive it.
+
+    Both CIs set ``CI`` (GitHub Actions and GitLab each do); the other two names are
+    read as well so a runner that sets only its own is covered. An explicit negative
+    (``CI=false``, ``0``, ``no``, ``off``) counts as not CI.
+    """
+    return any(
+        os.getenv(name, "").strip().lower() not in ("", "0", "false", "no", "off")
+        for name in ("CI", "GITLAB_CI", "GITHUB_ACTIONS")
+    )
+
+
+def _basedpyright() -> str:
+    """The basedpyright executable, or skip locally and fail in CI when it is absent.
+
+    The live probes below need basedpyright on ``PATH``. Without this check a
+    developer machine with no Node toolchain got a ``FileNotFoundError`` per probe,
+    which reads as a broken test rather than a missing tool. Skipping is the right
+    answer there and the wrong one in CI: every CI job that runs this module installs
+    basedpyright (``npm install -g basedpyright`` on GitLab, ``node: "true"`` on
+    GitHub) precisely so these probes run, and a skip would let a job that lost the
+    install report green with the #1109 checks never executed. So the same absence
+    is a skip on a developer machine and a failure in CI.
+    """
+    executable = shutil.which("basedpyright")
+    if executable is not None:
+        return executable
+    reason = (
+        "basedpyright is not on PATH, so the live resolution probes in "
+        "test_pyright_config.py cannot run (install it with `make setup-node` or "
+        "`npm install -g basedpyright`)"
+    )
+    if _in_ci():
+        pytest.fail(
+            f"{reason}. CI must run these probes, so give this job basedpyright."
+        )
+    pytest.skip(reason)
 
 
 def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
@@ -1077,7 +1360,7 @@ def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
             )
         )
         result = subprocess.run(
-            ["basedpyright", "--outputjson", "--project", str(project)],
+            [_basedpyright(), "--outputjson", "--project", str(project)],
             capture_output=True,
             text=True,
             cwd=project,
@@ -1085,8 +1368,14 @@ def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
         )
     try:
         report = json.loads(result.stdout)
-    except json.JSONDecodeError:  # pragma: no cover - basedpyright not installed
-        pytest.skip(f"basedpyright produced no JSON report: {result.stderr[:400]}")
+    except json.JSONDecodeError:
+        # basedpyright is installed (`_basedpyright` checked), so unreadable output
+        # is the probe breaking, not a missing tool. Skipping here would turn the
+        # #1109 checks off whenever basedpyright crashed or changed its output.
+        pytest.fail(
+            f"basedpyright produced no JSON report (exit {result.returncode}): "
+            f"stdout began {result.stdout[:200]!r}; stderr began {result.stderr[:400]!r}"
+        )
     return sorted(
         diagnostic["message"]
         for diagnostic in report.get("generalDiagnostics", [])
@@ -1147,7 +1436,7 @@ def _reported_search_path_blocks() -> list[list[Path]]:
     """
     probe_file = REPO_ROOT / "scripts" / "discover_model_limits.py"
     result = subprocess.run(
-        ["basedpyright", "--verbose", str(probe_file)],
+        [_basedpyright(), "--verbose", str(probe_file)],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
@@ -1167,8 +1456,10 @@ def _reported_search_path_blocks() -> list[list[Path]]:
                 continue
             current.append(Path(line.strip()))
     blocks = [block for block in blocks if block]
-    if not blocks:  # pragma: no cover - basedpyright missing or output changed
-        pytest.skip(
+    if not blocks:
+        # basedpyright is installed (`_basedpyright` checked), so this is its output
+        # changing shape — a reason to fail, since a skip would hide the check.
+        pytest.fail(
             "could not read any 'Search paths:' block from basedpyright --verbose; "
             f"stdout began {result.stdout[:200]!r}"
         )
@@ -1416,7 +1707,7 @@ def test_the_resolution_probe_reports_an_unresolvable_package() -> None:
     A `_resolution_probe` that returned `[]` unconditionally — a renamed rule, a
     changed JSON shape, a basedpyright flag that stopped meaning what it meant —
     would satisfy the test above forever while resolution was broken. Measured with
-    no search paths: all five first-party imports are reported.
+    no search paths: every first-party import is reported.
     """
     unresolved = _resolution_probe([], sorted(_first_party_package_roots()))
     assert len(unresolved) == len(_first_party_package_roots()), (
@@ -2126,3 +2417,87 @@ def test_the_scope_check_rejects_a_broadened_relaxation(case: str) -> None:
 def test_the_scope_check_accepts_the_live_config() -> None:
     """Control for the scope cases, same reason as the severity control."""
     assert _relaxation_scope_findings(_config()) == []
+
+
+# --------------------------------------------------------------------------- #
+# The probes' own guard. In CI basedpyright is installed and works, so none of
+# the branches below runs there unless it is driven directly: these tests are what
+# keep "skip locally, fail in CI, fail on unreadable output" from regressing
+# unnoticed on every run that has the tool.
+# --------------------------------------------------------------------------- #
+
+_CI_VARIABLES = ("CI", "GITLAB_CI", "GITHUB_ACTIONS")
+
+
+def _outcome(call) -> tuple[str, str]:
+    """``("returned", value)``, ``("skipped", msg)`` or ``("failed", msg)``.
+
+    ``pytest.raises(pytest.fail.Exception)`` cannot be used for these assertions: a
+    ``pytest.skip`` raised inside it escapes and turns the test into a skip, so a
+    fail-to-skip regression would read as green.
+    """
+    try:
+        return ("returned", str(call()))
+    except pytest.skip.Exception as exc:
+        return ("skipped", str(exc))
+    except pytest.fail.Exception as exc:
+        return ("failed", str(exc))
+
+
+def _off_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _CI_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_a_present_basedpyright_is_returned_rather_than_skipped(monkeypatch) -> None:
+    for in_ci in (False, True):
+        _off_ci(monkeypatch)
+        if in_ci:
+            monkeypatch.setenv("CI", "true")
+        monkeypatch.setattr(shutil, "which", lambda name: f"/opt/bin/{name}")
+        assert _outcome(_basedpyright) == ("returned", "/opt/bin/basedpyright")
+
+
+def test_an_absent_basedpyright_skips_off_ci_and_says_why(monkeypatch) -> None:
+    _off_ci(monkeypatch)
+    monkeypatch.setenv("CI", "false")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    kind, message = _outcome(_basedpyright)
+    assert kind == "skipped", (kind, message)
+    assert "basedpyright is not on PATH" in message
+
+
+@pytest.mark.parametrize("variable", _CI_VARIABLES)
+def test_an_absent_basedpyright_fails_in_ci(monkeypatch, variable: str) -> None:
+    _off_ci(monkeypatch)
+    monkeypatch.setenv(variable, "true")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    kind, message = _outcome(_basedpyright)
+    assert kind == "failed", (kind, message)
+    assert "CI must run these probes" in message
+
+
+def _unreadable_basedpyright(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An installed basedpyright whose output neither parser can read."""
+    monkeypatch.setattr(shutil, "which", lambda name: f"/opt/bin/{name}")
+
+    def run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout="garbage\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_unreadable_probe_output_fails_rather_than_skips(monkeypatch) -> None:
+    _off_ci(monkeypatch)
+    _unreadable_basedpyright(monkeypatch)
+    kind, message = _outcome(lambda: _resolution_probe([], ["idp_common"]))
+    assert kind == "failed", (kind, message)
+    assert "no JSON report" in message
+
+
+def test_unreadable_search_path_output_fails_rather_than_skips(monkeypatch) -> None:
+    _off_ci(monkeypatch)
+    _unreadable_basedpyright(monkeypatch)
+    kind, message = _outcome(_reported_search_path_blocks)
+    assert kind == "failed", (kind, message)
+    assert "Search paths:" in message

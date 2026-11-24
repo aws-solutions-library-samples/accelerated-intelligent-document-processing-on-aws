@@ -34,7 +34,14 @@
       "additionalProperties": false,
       "required": ["kind", "section_id", "score", "threshold"],
       "properties": {
-        "kind": { "enum": ["low_confidence", "blueprint_confidence"] },
+        "kind": {
+          "enum": [
+            "low_confidence",
+            "blueprint_confidence",
+            "missing_required",
+            "extraction_failed"
+          ]
+        },
         "section_id": { "type": "string" },
         "field": { "type": ["string", "null"] },
         "label": { "type": ["string", "null"] },

@@ -242,6 +242,12 @@ render the section empty (no content items added). A config that supplies its
 **own** extraction `task_prompt` must include the placeholder itself — exactly
 once, since `_build_prompt_content` splits on it and ignores it otherwise.
 
+`{DOCUMENT_IMAGE}` may appear at most once too, but a repeat is refused rather than
+ignored: `_build_prompt_content` raises `DocumentImagePlaceholderError` (the shared
+rule in `idp_common/document_image_placeholder.py`) for the whole template, before
+the few-shot split, and `_build_extraction_content` lets it out instead of falling
+back to the default prompt as it does for other formatting errors.
+
 Example fields are read under either the `x-aws-idp-*` names or the legacy
 camelCase names (`x-aws-idp-class-prompt` / `x-aws-idp-attributes-prompt` / `x-aws-idp-image-path`). Unreadable
 example images log a warning and the example is sent as text-only rather than
@@ -1102,9 +1108,29 @@ pinned `strands-agents` that total is added to as soon as a model response arriv
 (so a `max_tokens` turn is in it) and is never reset by a later `invoke_async` on the
 same agent, so one reading covers every feedback round and every resumed retry. Do
 not add readings together: each is cumulative. A call that raised before a response
-arrived recorded no usage, and none is invented for it. Strands' own
-conversation-summarization call goes to the model directly rather than through the
-event loop, so it is not in this total on either path.
+arrived recorded no usage, and none is invented for it.
+
+The total includes conversation summarization. When the conversation outgrows the
+model's context window, Strands' `SummarizingConversationManager` summarizes its
+oldest turns by calling the agent's model directly rather than through the event
+loop, so on its own that call's usage reaches no metric. The agent is therefore
+built with `MeteredSummarizingConversationManager`
+(`idp_common/agents/utils/conversation_manager.py`), which leaves Strands'
+summarization unchanged and adds each summary's usage to
+`agent.event_loop_metrics` with `update_usage`, the method the event loop uses for
+an ordinary turn. The summary is made by the extraction model, so its tokens are
+under the same `<context>/bedrock/<model>` key, on the success path and on this one
+([#1952](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1952)).
+It refuses a `summarization_agent`, at construction or assigned later, because
+that agent would record the usage on its own metrics.
+`tests/unit/extraction/test_agentic_summarization_metering.py` scans every tracked
+production module except that one and fails on any identifier, parameter,
+keyword, import or non-docstring string or bytes literal that names Strands'
+summarizing manager, its `generate_summary` helper, the method the subclass
+overrides, `summarization_agent`, or the `Agent` `context_manager` option, which
+builds an unmetered manager internally. That
+covers a dictionary of `Agent` arguments, `getattr` and `importlib`. It cannot see
+a name assembled at run time from pieces, or `Agent` arguments loaded from data.
 
 Two callers read it with `failure_metering(e)`, and only from the exception they
 caught, never from its `__cause__`:
@@ -1143,6 +1169,26 @@ wraps its service call and, in the `except` block, calls
   around `process_document_section`;
 - `patterns/unified/src/extraction_function/sfn_runtime_handler.py`, `mode="merge"`
   — the Distributed Map shard merge, around `merge_section_shards`.
+
+**One failure does not raise: a content-filter block.** When the model's reply
+is withheld by Bedrock's content filter (`bedrock_utils.is_content_filter_block`,
+which matches `CONTENT_FILTER_BLOCK_MESSAGE` on a `ValidationException` anywhere
+in the explicit `__cause__` chain), `process_document_section` calls
+`_handle_content_filtered` instead of re-raising. It writes an empty
+`result.json` with `metadata.content_filtered: true`, replaces the section's
+extraction-stage issues with one error-severity `extraction_failed` issue naming
+the block, and returns without touching `document.errors`, so the ProcessSections
+Map iteration succeeds and the collate step completes the document (#2038). The
+assessment service reads `metadata.content_filtered` and gives its skip the same
+reason. The same handling applies to a reply withheld by stop reason
+(`bedrock_utils.ModelOutputWithheld`, raised after the Simple-mode model call and
+by agentic extraction when its last regeneration round is withheld). With
+`hitl.enabled`, the issue is a human-review reason
+(`review_queues.reasons.failed_extraction_issue`): an `extraction_failed` reason in
+queue mode and a pending section in legacy HITL, so the document is held for review
+rather than completing with the section empty. Not covered: `run_one_section_shard`
+on the Distributed Map path, where a blocked or withheld shard still fails
+`ExtractionShardMap`.
 
 Three properties it relies on, and one it deliberately does not do:
 
@@ -2157,7 +2203,13 @@ both escalation scopes, is metered under `ESCALATION_METERING_CONTEXT`
 (`ExtractionEscalation`) from `extraction/service.py`. Simple mode used
 `Extraction-Escalation` before that constant existed, so stored reporting rows
 from earlier releases carry that spelling; a reader that groups escalation cost
-must accept both.
+must accept both. Capacity Planning is one such reader: it plans escalation as
+its own demand line on the escalation model, measures the escalation rate from
+these keys, and keeps them out of the Extraction line, so both spellings are
+matched in `ESCALATION_METERING_PREFIXES` in
+`src/lambda/calculate_capacity/index.py`. Renaming the context needs that tuple
+changed too; `test_evaluation_and_escalation_demand.py` beside it reads the
+constant from this module and fails if the two disagree.
 
 **Configuration UI.** The global `validation` block (enabled / check_formats /
 fail_action / escalation_model) is editable under **Extraction → Agentic

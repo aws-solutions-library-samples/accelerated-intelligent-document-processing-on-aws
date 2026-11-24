@@ -634,6 +634,12 @@ Resources:
                 description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                 order: 4
                 dependsOn: { field: "model_id", reasoningCapable: true }
+              max_tokens:
+                type: number
+                title: Max tokens
+                description: "Cap on output tokens for each Bedrock OCR page call (default 10000). Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
+                order: 5
+                dependsOn: { field: "backend", value: "bedrock" }
               features:
                 type: array
                 title: Textract features
@@ -1112,13 +1118,13 @@ Resources:
                         type: string
                         title: System prompt (page)
                         format: textarea
-                        description: "System prompt for page calls. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.system_prompt`)"
+                        description: "System prompt for page calls. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.system_prompt.txt) (`combined.page.system_prompt`)"
                         order: 1
                       task_prompt:
                         type: string
                         title: Task prompt (page)
                         format: textarea
-                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.task_prompt`)"
+                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.task_prompt.txt) (`combined.page.task_prompt`)"
                         order: 2
                   packet:
                     type: object
@@ -1148,13 +1154,13 @@ Resources:
                         type: string
                         title: System prompt (packet)
                         format: textarea
-                        description: "System prompt for packet calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.system_prompt`)"
+                        description: "System prompt for packet calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.system_prompt.txt) (`combined.packet.system_prompt`)"
                         order: 2
                       task_prompt:
                         type: string
                         title: Task prompt (packet)
                         format: textarea
-                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.task_prompt`)"
+                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.task_prompt.txt) (`combined.packet.task_prompt`)"
                         order: 3
                   llm:
                     type: object
@@ -1166,7 +1172,7 @@ Resources:
                       model:
                         type: string
                         title: "Model ID"
-                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                         enum:
                           - "LambdaHook"
                           - !If
@@ -1344,7 +1350,7 @@ Resources:
                           max_tokens:
                             type: number
                             title: Max tokens
-                            description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                            description: "Cap on output tokens (default 10000). A classification reply is short, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                             order: 4
                           reasoning_effort:
                             type: string
@@ -1406,21 +1412,21 @@ Resources:
                             type: string
                             title: Top-K instruction block
                             format: textarea
-                            description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                            description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk.txt) (`combined.llm.confidence.task_prompt_topk`)"
                             order: 2
                             dependsOn: { field: "mode", value: "topk" }
                           task_prompt_verbalized:
                             type: string
                             title: Verbalized instruction block
                             format: textarea
-                            description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                            description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized.txt) (`combined.llm.confidence.task_prompt_verbalized`)"
                             order: 3
                             dependsOn: { field: "mode", value: "verbalized" }
                           task_prompt_topk_packet:
                             type: string
                             title: Top-K instruction block (packet)
                             format: textarea
-                            description: "The 'topk' block used at packet granularity, where the unit is a section rather than a page. Empty falls back to the page block above."
+                            description: "The 'topk' block used at packet granularity, where the unit is a section rather than a page. Empty falls back to the page block above. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk_packet.txt) (`combined.llm.confidence.task_prompt_topk_packet`)"
                             order: 4
                             dependsOn: { field: "mode", value: "topk" }
                             showWhen: [{ field: "granularity", value: "packet" }]
@@ -1428,7 +1434,7 @@ Resources:
                             type: string
                             title: Verbalized instruction block (packet)
                             format: textarea
-                            description: "The 'verbalized' block used at packet granularity, on the same per-section rules as the packet Top-K block."
+                            description: "The 'verbalized' block used at packet granularity, on the same per-section rules as the packet Top-K block. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized_packet.txt) (`combined.llm.confidence.task_prompt_verbalized_packet`)"
                             order: 5
                             dependsOn: { field: "mode", value: "verbalized" }
                             showWhen: [{ field: "granularity", value: "packet" }]
@@ -1500,13 +1506,13 @@ Resources:
                                 type: string
                                 title: System prompt (page)
                                 format: textarea
-                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.system_prompt`)"
+                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.system_prompt.txt) (`split_then_classify.splitting.llm.page.system_prompt`)"
                                 order: 1
                               task_prompt:
                                 type: string
                                 title: Task prompt (page)
                                 format: textarea
-                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.task_prompt`)"
+                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.task_prompt.txt) (`split_then_classify.splitting.llm.page.task_prompt`)"
                                 order: 2
                           packet:
                             type: object
@@ -1536,18 +1542,18 @@ Resources:
                                 type: string
                                 title: System prompt (packet)
                                 format: textarea
-                                description: "System prompt for the packet splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.system_prompt`)"
+                                description: "System prompt for the packet splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.system_prompt.txt) (`split_then_classify.splitting.llm.packet.system_prompt`)"
                                 order: 2
                               task_prompt:
                                 type: string
                                 title: Task prompt (packet)
                                 format: textarea
-                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.task_prompt`)"
+                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.task_prompt.txt) (`split_then_classify.splitting.llm.packet.task_prompt`)"
                                 order: 3
                           model:
                             type: string
                             title: "Model ID"
-                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1725,7 +1731,7 @@ Resources:
                               max_tokens:
                                 type: number
                                 title: Max tokens
-                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                description: "Cap on output tokens (default 10000). A classification reply is short, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                                 order: 4
                               reasoning_effort:
                                 type: string
@@ -1746,9 +1752,9 @@ Resources:
                       method:
                         type: string
                         title: Section classification method
-                        description: "How each section gets its class. 'LLM' makes one call per section with the class list and examples. 'Decision model' asks a decision model one choice question per section and reads a probability for every class ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Embeddings are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)); an exported configuration may show an 'embeddings' block with defaults, which is ignored today."
-                        enum: ["llm", "decision_model"]
-                        enumLabels: { "llm": "LLM", "decision_model": "Decision model" }
+                        description: "How each section gets its class. 'LLM' makes one call per section with the class list and examples. 'Decision model' asks a decision model one choice question per section and reads a probability for every class ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). 'Embeddings' compares the section's page images with each class's example images or description, and sends the sections it is not sure of to the LLM settings above ([Section classification by embeddings](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/classification.md#section-classification-by-embeddings))."
+                        enum: ["llm", "decision_model", "embeddings"]
+                        enumLabels: { "llm": "LLM", "decision_model": "Decision model", "embeddings": "Embeddings, with LLM fallback" }
                         default: "llm"
                         order: 0
                       pages:
@@ -1780,18 +1786,18 @@ Resources:
                             type: string
                             title: System prompt
                             format: textarea
-                            description: "System prompt for the section classification calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.system_prompt`)"
+                            description: "System prompt for the section classification calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.system_prompt.txt) (`split_then_classify.section_classification.llm.system_prompt`)"
                             order: 6
                           task_prompt:
                             type: string
                             title: Task prompt
                             format: textarea
-                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.task_prompt`)"
+                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.task_prompt.txt) (`split_then_classify.section_classification.llm.task_prompt`)"
                             order: 7
                           model:
                             type: string
                             title: "Model ID"
-                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1969,7 +1975,7 @@ Resources:
                               max_tokens:
                                 type: number
                                 title: Max tokens
-                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                description: "Cap on output tokens (default 10000). A classification reply is short, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                                 order: 4
                               reasoning_effort:
                                 type: string
@@ -2031,14 +2037,14 @@ Resources:
                                 type: string
                                 title: Top-K instruction block
                                 format: textarea
-                                description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                                description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_topk.txt) (`split_then_classify.section_classification.llm.confidence.task_prompt_topk`)"
                                 order: 2
                                 dependsOn: { field: "mode", value: "topk" }
                               task_prompt_verbalized:
                                 type: string
                                 title: Verbalized instruction block
                                 format: textarea
-                                description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                                description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_verbalized.txt) (`split_then_classify.section_classification.llm.confidence.task_prompt_verbalized`)"
                                 order: 3
                                 dependsOn: { field: "mode", value: "verbalized" }
                       decision_model:
@@ -2070,6 +2076,14 @@ Resources:
                             maximum: 4
                             default: 1
                             order: 2
+                          max_input_tokens:
+                            type: integer
+                            title: Maximum input tokens per request
+                            description: "The most tokens one request may hold: the section's OCR text, its page images and the class question with every class description together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', the section's text beyond the limit is cut from the end and never read by the decision model, so a class cue that appears only in the cut part is not seen. The first page is kept whole when it fits. Default and maximum 3584: the model's 4,096-token window less 512 for its own prompt."
+                            minimum: 256
+                            maximum: 3584
+                            default: 3584
+                            order: 2.5
                           instructions:
                             type: string
                             title: Question
@@ -2093,14 +2107,59 @@ Resources:
                             maximum: 64
                             default: 4
                             order: 5
+                      embeddings:
+                        type: object
+                        sectionLabel: Embeddings
+                        collapsible: false
+                        description: "Each section's page images are embedded and compared with every class's references. A class's similarity is its best-matching reference, the similarities become probabilities by a softmax at the temperature below, and the top probability is the section's confidence. A section below either threshold is classified by the LLM settings above. Needs Low-confidence answers set to 'LLM' and a threshold above 0; a minimum probability of 0.97 kept the LLM's accuracy in the one benchmark run, with three sections in four still sent to the LLM."
+                        order: 4.5
+                        showWhen: [{ field: "method", value: "embeddings" }]
+                        properties:
+                          references:
+                            type: string
+                            title: References
+                            description: "'Example images' compares a section with each class's few-shot example images (x-aws-idp-examples with an image path); a class with none is never chosen by embeddings and reaches its sections only through the LLM. 'Class descriptions' compares it with each class's name and description, which was not more accurate than example images in the one benchmark run and sent more sections to the LLM."
+                            enum: ["examples", "descriptions"]
+                            enumLabels: { examples: "Example images (default)", descriptions: "Class descriptions" }
+                            default: "examples"
+                            order: 0
+                          model:
+                            type: string
+                            title: Embeddings model
+                            description: "A multimodal Bedrock embeddings model ID. Empty uses Cohere Embed v4 for the stack's Region (us., eu. or global. profile)."
+                            order: 1
+                          min_similarity:
+                            type: number
+                            title: Minimum similarity
+                            description: "A section whose best cosine similarity to any class is below this goes to the LLM. 0 sends none on similarity alone."
+                            minimum: 0
+                            maximum: 1
+                            default: 0
+                            order: 2
+                          temperature:
+                            type: number
+                            title: Softmax temperature
+                            description: "Turns similarities into probabilities; smaller is more confident. The default, 0.034, was fitted on a held-out split with Cohere Embed v4 and example images at 512 px; refit it when the model, the image size or the references change."
+                            minimum: 0.001
+                            maximum: 1
+                            default: 0.034
+                            order: 3
+                          max_image_dimension:
+                            type: integer
+                            title: Maximum image dimension (px)
+                            description: "Page and example images are downscaled to fit this on their longer side before they are embedded. Cohere Embed v4 bills an image by its pixel count (about 1,000 tokens at 512 px, 4,000 at 1024), so this decides the embedding cost. 1024 was not measurably more accurate than 512 in the one benchmark run."
+                            minimum: 256
+                            maximum: 2048
+                            default: 512
+                            order: 4
                       low_confidence:
                         type: object
                         sectionLabel: Low-confidence answers
                         collapsible: true
                         defaultExpanded: false
-                        description: "What happens to a decision-model answer whose probability is below the minimum. Applies to answers only: a call that fails fails its section and is never sent to the LLM."
+                        description: "What happens to a decision-model or embeddings answer whose probability is below the minimum. Applies to answers only: a call that fails fails its section and is never sent to the LLM. Embeddings require the action 'LLM'."
                         order: 5
-                        showWhen: [{ field: "method", value: "decision_model" }]
+                        showWhen: [{ field: "method", values: ["decision_model", "embeddings"] }]
                         properties:
                           min_confidence:
                             type: number
@@ -2143,6 +2202,14 @@ Resources:
                     default: "ALL"
                     order: 1
                     showWhen: [{ field: "sectionSplitting", value: "disabled" }]
+                  pageOrder:
+                    type: string
+                    title: Page order
+                    description: "'Scan order': pages are classified in the order they were scanned. 'Printed page numbers': each page's printed page number is read from the header and footer lines of its OCR text (no model call) and the pages are classified in that order, so a form whose pages were scanned apart is kept together. Pages are reordered only when every page has exactly one number and the numbers form one gap-free run; otherwise the scan order is kept and a warning on the first section says why. Page numbers in the results, the page viewer and extraction are unchanged. [Page order](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#page-order)"
+                    enum: ["scan", "printed_page_numbers"]
+                    enumLabels: { scan: "Scan order (default)", printed_page_numbers: "Printed page numbers" }
+                    default: "scan"
+                    order: 2
               postHook:
                 type: array
                 collapsible: true
@@ -2772,7 +2839,7 @@ Resources:
                   method:
                     type: string
                     title: Confidence method
-                    description: "Who scores each extracted value in a separate pass. 'LLM' (default): the confidence model and prompts below. 'Decision model': one yes/no question per value to a decision model, per page, and the value's confidence is its highest probability across pages ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Needs mode 'separate'."
+                    description: "Who scores each extracted value in a separate pass. 'LLM' (default): the confidence model and prompts below. 'Decision model': one yes/no question per value to a decision model, per page, and the value's confidence is its highest probability across pages; an empty value's is one minus the highest probability that a page shows a value ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Needs mode 'separate'."
                     enum: ["llm", "decision_model"]
                     enumLabels: { "llm": "LLM (default)", "decision_model": "Decision model" }
                     default: "llm"
@@ -2794,7 +2861,7 @@ Resources:
                       input:
                         type: string
                         title: Input
-                        description: "What each request reads. 'Page images' (default): one page image per request, which measured best. 'OCR text': one request with the section's text. 'Both': each page image plus the section's text, which can exceed the model's window on long sections."
+                        description: "What each request reads; every mode is one request per page. 'Page images' (default): the page image, which measured best. 'OCR text': that page's text. 'Both': the page image with that page's text. Text beyond 'Maximum input tokens per request' is cut and never read."
                         enum: ["images", "text", "both"]
                         enumLabels: { images: "Page images (default)", text: "OCR text", both: "Page images and OCR text" }
                         default: "images"
@@ -2811,9 +2878,16 @@ Resources:
                         type: string
                         title: Question
                         format: textarea
-                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default."
+                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default. A value the extraction left empty is asked the question below instead."
                         default: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
                         order: 3
+                      empty_value_instructions:
+                        type: string
+                        title: Question for an empty value
+                        format: textarea
+                        description: "The yes/no question for a value the extraction left empty, asking whether the page shows a value for the field. {FIELD} is the field's path, {DESCRIPTION} its schema description. The empty value's confidence is 1 minus the highest answer over the pages, so yes must mean a value is shown. Empty uses this default."
+                        default: 'The system found no value for the field "{FIELD}" ({DESCRIPTION}). Does the page show a value for it?'
+                        order: 3.5
                       max_questions_per_request:
                         type: integer
                         title: Maximum questions per request
@@ -2822,6 +2896,14 @@ Resources:
                         maximum: 250
                         default: 100
                         order: 4
+                      max_input_tokens:
+                        type: integer
+                        title: Maximum input tokens per request
+                        description: "The most tokens one request may hold: a page's OCR text, its image and the longest question together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', a page's text beyond the limit is cut from the end and never read by the decision model, so a value that appears only in the cut part is not seen. Default and maximum 3584: the model's 4,096-token window less 512 for its own prompt."
+                        minimum: 256
+                        maximum: 3584
+                        default: 3584
+                        order: 4.5
                       timeout_ms:
                         type: integer
                         title: Timeout (ms)
@@ -3494,7 +3576,7 @@ Resources:
                       max_tokens:
                         type: number
                         title: Max tokens
-                        description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                        description: "Cap on output tokens (default 10000). A comparison reply is a short JSON object, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                         order: 4
                       reasoning_effort:
                         type: string
@@ -4861,8 +4943,12 @@ Resources:
       # checkov:skip=CKV_AWS_163: "ECR scanning controlled by parameter for environment-specific deployment requirements"
       ImageScanningConfiguration:
         ScanOnPush: !If [IsECRImageScanningEnabled, true, false]
-      # Keeps two complete versions plus slack. A version is one image per entry
-      # in DockerBuildRun's ExpectedImages, and a rollback reuses the previous
+      # Keeps exactly two complete versions, and fewer after a rebuild of a
+      # version already here (its overwritten tags leave untagged digests that
+      # still count). A version is one image per entry
+      # in DockerBuildRun's ExpectedImages (which equals the set the buildspec
+      # pushes; patterns/unified/tests/test_expected_images_match_the_buildspec.py
+      # checks it), and a rollback reuses the previous
       # version's images only while all of them are still here (#1824), so the
       # count must be at least twice that list's length.
       # scripts/tests/test_docker_build_run_wiring.py checks it.
@@ -5217,9 +5303,11 @@ Resources:
         - "processresults-function"
         - "summarization-function"
         - "evaluation-function"
+        - "test-execution-aggregation-function"
         - "rule-validation-function"
         - "rule-validation-orchestration-function"
         - "mlflow-logger-function"
+        - "rule-validation-policy-classification-function"
 
   EcrRepositoryCleanup:
     Type: Custom::ECRRepositoryCleanup

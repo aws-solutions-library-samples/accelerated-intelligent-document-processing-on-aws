@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, StatusIndicator, Table } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import usePricing from '../../hooks/use-pricing';
 import { describePromptCache, summarizeCacheUsage } from '../common/promptCacheModel';
@@ -49,13 +50,106 @@ interface MeteringTableProps {
   preCalculatedTotals?: { totalCost: number; costPerPage: number };
 }
 
+const messages = defineMessages<{
+  loadingPricing: NoMessageValues;
+  columnContext: NoMessageValues;
+  columnServiceApi: NoMessageValues;
+  columnUnit: NoMessageValues;
+  columnValue: NoMessageValues;
+  columnUnitCost: NoMessageValues;
+  columnCost: NoMessageValues;
+  unpricedUnitCost: NoMessageValues;
+  unpricedCost: NoMessageValues;
+  subtotal: { readonly context: string };
+  total: NoMessageValues;
+  costCell: { readonly label: string; readonly cost: string };
+}>({
+  loadingPricing: {
+    id: 'documents.estimatedCost.loadingPricing',
+    defaultMessage: 'Loading pricing data...',
+    description: "Shown in Reports › Estimated Cost on the document page while the stack's pricing loads.",
+  },
+  columnContext: {
+    id: 'documents.estimatedCost.column.context',
+    defaultMessage: 'Context',
+    description:
+      'Column header of the cost table in Reports › Estimated Cost on the document page: the processing phase a line was metered in, such as Extraction.',
+  },
+  columnServiceApi: {
+    id: 'documents.estimatedCost.column.serviceApi',
+    defaultMessage: 'Service/Api',
+    description:
+      "Column header of the cost table in Reports › Estimated Cost on the document page: the service a line was metered for, with its API or model, such as textract/analyze_document. A phase's subtotal row shows its prompt-cache note in this column.",
+  },
+  columnUnit: {
+    id: 'documents.estimatedCost.column.unit',
+    defaultMessage: 'Unit',
+    description:
+      'Column header of the cost table in Reports › Estimated Cost on the document page: what a line counts, such as inputTokens.',
+  },
+  columnValue: {
+    id: 'documents.estimatedCost.column.value',
+    defaultMessage: 'Value',
+    description: 'Column header of the cost table in Reports › Estimated Cost on the document page: how many units a line metered.',
+  },
+  columnUnitCost: {
+    id: 'documents.estimatedCost.column.unitCost',
+    defaultMessage: 'Unit Cost',
+    description: "Column header of the cost table in Reports › Estimated Cost on the document page: the stack's price for one unit.",
+  },
+  columnCost: {
+    id: 'documents.estimatedCost.column.cost',
+    defaultMessage: 'Estimated Cost',
+    description:
+      "Column header of the cost table in Reports › Estimated Cost on the document page: a line's cost, and the subtotal and total rows' amounts.",
+  },
+  unpricedUnitCost: {
+    id: 'documents.estimatedCost.unpricedUnitCost',
+    defaultMessage: 'None',
+    description:
+      "Unit Cost cell of a line in Reports › Estimated Cost on the document page when the stack's pricing has no price for its unit. The line is left out of every total.",
+  },
+  unpricedCost: {
+    id: 'documents.estimatedCost.unpricedCost',
+    defaultMessage: 'N/A',
+    description:
+      "Estimated Cost cell of a line in Reports › Estimated Cost on the document page when the stack's pricing has no price for its unit. The line is left out of every total.",
+  },
+  subtotal: {
+    id: 'documents.estimatedCost.subtotal',
+    defaultMessage: '{context} Subtotal',
+    description:
+      "Label of a phase's subtotal row in the Estimated Cost column of Reports › Estimated Cost on the document page, before the amount. {context} is the phase as metered, such as Extraction, shown as written.",
+  },
+  total: {
+    id: 'documents.estimatedCost.total',
+    defaultMessage: 'Total',
+    description:
+      "Label of the document's total row in the Estimated Cost column of Reports › Estimated Cost on the document page, before the amount.",
+  },
+  costCell: {
+    id: 'documents.estimatedCost.costCell',
+    defaultMessage: '{label}: {cost}',
+    description:
+      'A subtotal or total cell of the Estimated Cost column in Reports › Estimated Cost on the document page. {label} is the row\'s label, such as "Extraction Subtotal" or "Total", and {cost} its amount in US dollars, formatted for the UI language.',
+  },
+});
+
 // Helper function to format cost cells
 const formatCostCell = (rowItem: MeteringRowItem): React.JSX.Element | string => {
   if (rowItem.isTotal) {
-    return <Box fontWeight="bold">{`${rowItem.note}: ${rowItem.cost}`}</Box>;
+    return (
+      <Box fontWeight="bold">
+        <FormattedMessage {...messages.costCell} values={{ label: String(rowItem.note), cost: rowItem.cost }} />
+      </Box>
+    );
   }
   if (rowItem.isSubtotal) {
-    return <Box fontWeight="bold" color="text-body-secondary">{`${rowItem.note}: ${rowItem.cost}`}</Box>;
+    return (
+      <Box fontWeight="bold" color="text-body-secondary">
+        <FormattedMessage {...messages.costCell} values={{ label: String(rowItem.note), cost: rowItem.cost }} />
+      </Box>
+    );
   }
   return rowItem.cost;
 };
@@ -71,6 +165,7 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
   // Use usePricing hook to get pricing data from the new separate pricing config
   const { pricing, nonChargeableUnits, loading } = usePricing();
   const { locale, formatUsDollars } = useFormatters();
+  const intl = useIntl();
   const [pricingData, setPricingData] = useState<PricingLookup>({});
   // We no longer use a default unit cost, showing "None" instead
 
@@ -89,7 +184,11 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
   }
 
   if (loading) {
-    return <Box>Loading pricing data...</Box>;
+    return (
+      <Box>
+        <FormattedMessage {...messages.loadingPricing} />
+      </Box>
+    );
   }
 
   // Transform metering data into table rows with context parsing
@@ -100,8 +199,8 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     unit,
     value: String(value),
     // The same adaptive rule as Test Studio's cost table, so one price renders one way on both screens.
-    unitCost: unitPrice !== null ? formatUnitCostUsd(unitPrice, locale) : 'None',
-    cost: unitPrice !== null ? formatUsDollars(cost, { fractionDigits: 4 }) : 'N/A',
+    unitCost: unitPrice !== null ? formatUnitCostUsd(unitPrice, locale) : intl.formatMessage(messages.unpricedUnitCost),
+    cost: unitPrice !== null ? formatUsDollars(cost, { fractionDigits: 4 }) : intl.formatMessage(messages.unpricedCost),
     costValue: cost,
     isTotal: false,
     isSubtotal: false,
@@ -160,10 +259,10 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
       costValue: contextTotal,
       isTotal: false,
       isSubtotal: true,
-      note: `${context} Subtotal`,
+      note: intl.formatMessage(messages.subtotal, { context }),
       cacheNote:
         cacheSummary && cacheSummary.state !== 'no-cache-data'
-          ? describePromptCache(cacheSummary, { phaseOnly: true, context })
+          ? describePromptCache(cacheSummary, { phaseOnly: true, context }, intl)
           : undefined,
     });
   });
@@ -182,7 +281,7 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     costValue: finalTotalCost,
     isTotal: true,
     isSubtotal: false,
-    note: 'Total',
+    note: intl.formatMessage(messages.total),
   });
 
   return (
@@ -190,13 +289,13 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
       columnDefinitions={[
         {
           id: 'context',
-          header: 'Context',
+          header: intl.formatMessage(messages.columnContext),
           minWidth: METERING_COLUMN_MIN_WIDTH.context,
           cell: (rowItem: MeteringRowItem) => rowItem.context,
         },
         {
           id: 'serviceApi',
-          header: 'Service/Api',
+          header: intl.formatMessage(messages.columnServiceApi),
           cell: (rowItem: MeteringRowItem) =>
             rowItem.cacheNote ? (
               <Box fontSize="body-s">
@@ -211,42 +310,35 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
         },
         {
           id: 'unit',
-          header: 'Unit',
+          header: intl.formatMessage(messages.columnUnit),
           minWidth: METERING_COLUMN_MIN_WIDTH.unit,
           cell: (rowItem: MeteringRowItem) => rowItem.unit,
         },
         {
           id: 'value',
-          header: 'Value',
+          header: intl.formatMessage(messages.columnValue),
           minWidth: METERING_COLUMN_MIN_WIDTH.value,
           cell: (rowItem: MeteringRowItem) => rowItem.value,
         },
         {
           id: 'unitCost',
-          header: 'Unit Cost',
+          header: intl.formatMessage(messages.columnUnitCost),
           minWidth: METERING_COLUMN_MIN_WIDTH.unitCost,
           cell: (rowItem: MeteringRowItem) => rowItem.unitCost,
         },
         {
           id: 'cost',
-          header: 'Estimated Cost',
+          header: intl.formatMessage(messages.columnCost),
           minWidth: METERING_COLUMN_MIN_WIDTH.cost,
           cell: formatCostCell,
         },
       ]}
+      // Always at least the total row, and never in a loading state (the pricing's
+      // loading text above replaces the table), so it needs no empty or loading text.
       items={tableItems}
-      loadingText="Loading resources"
       sortingDisabled
       wrapLines
       stripedRows
-      empty={
-        <Box textAlign="center" color="inherit">
-          <b>No metering data</b>
-          <Box padding={{ bottom: 's' }} variant="p" color="inherit">
-            No metering data is available for this document.
-          </Box>
-        </Box>
-      }
     />
   );
 };

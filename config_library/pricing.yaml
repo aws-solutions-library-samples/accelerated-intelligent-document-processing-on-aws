@@ -184,6 +184,25 @@ pricing:
         price: "0.0"
 
   # ---------------------------------------------------------------------------
+  # Document conversion (text, CSV, Excel, Word) — NOT a chargeable AWS call
+  # ---------------------------------------------------------------------------
+  # The OCR step emits `OCR/converted/document_conversion` = 1 page for every page
+  # it renders from a text, CSV, Excel or Word file instead of sending it to an OCR
+  # service (`OcrService._process_converted_page` in
+  # lib/idp_common_pkg/idp_common/ocr/service.py). The conversion runs inside the
+  # OCR Lambda with local libraries (`idp_common/ocr/document_converter.py`: PIL,
+  # python-docx, pandas) and calls no AWS API, so there is no per-page charge to
+  # price. Its only cost is the Lambda compute it uses, which the same function
+  # already meters as `OCR/lambda/requests` and `OCR/lambda/duration` (priced
+  # below), so pricing the page here would count that compute twice. The row
+  # states the zero rather than being absent because a missing entry records a
+  # NULL cost and reports the document's spend as incomplete (issue #2167).
+  - name: converted/document_conversion
+    units:
+      - name: pages
+        price: "0.0"
+
+  # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Amazon Nova (US)
   # ---------------------------------------------------------------------------
   #
@@ -1695,6 +1714,42 @@ pricing:
     units:
       - name: pages
         price: "0.0015"
+
+  # ---------------------------------------------------------------------------
+  # Cohere Embed v4 (Bedrock) — embeddings section labelling and multi-document
+  # discovery's embedding default
+  # ---------------------------------------------------------------------------
+  # One row per Region-default profile idp_common.regional_models resolves
+  # EMBEDDING_MODEL_ID to: us. (default), eu. (EU Regions), global. (Canada).
+  # The calls emit `requests`, `inputTokens` and `totalTokens`; the first and last
+  # are declared non-chargeable for bedrock in metering_units, so only
+  # inputTokens carries a rate. An image is billed as input tokens by its pixel
+  # count (about 196 pixels per token), which Bedrock reports in the same count,
+  # so text and image calls are priced at the one rate.
+  #
+  # Rate: $0.12 per million input tokens, the InputTokenCount usage type in the
+  # AWS Price List offer file AmazonBedrockFoundationModels for us-east-1
+  # (version 20261119133017, published 2026-11-19). The same file also lists a
+  # second Embed v4 usage type (USE1_Cohere_Embed_V4-Units, $0.00000002 per unit
+  # of "Embeddings", described as InputTokenCount; $0.02 per million if a unit is
+  # a token) whose relation to these calls it does not state. The higher
+  # rate is shipped so a cost report does not understate spend; the bill may be
+  # lower. The eu. and global. rows carry the us-east-1 rate: their own Region
+  # rates were not read. Override any of the three in the Pricing editor.
+  - name: bedrock/us.cohere.embed-v4:0
+    units:
+      - name: inputTokens
+        price: "1.2E-7"
+
+  - name: bedrock/eu.cohere.embed-v4:0
+    units:
+      - name: inputTokens
+        price: "1.2E-7"
+
+  - name: bedrock/global.cohere.embed-v4:0
+    units:
+      - name: inputTokens
+        price: "1.2E-7"
 
   # ---------------------------------------------------------------------------
   # Decision models on Lambda (System One API) — see docs/decision-models.md

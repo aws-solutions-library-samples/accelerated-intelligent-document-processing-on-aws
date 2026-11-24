@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from . import hcl
 from .awscc_schema import ANY, Hint
-from .translate import NO_VALUE, STACK_NAME_VAR, TranslationError, is_intrinsic
+from .translate import (
+    BARE_ARN_ATTR,
+    NO_VALUE,
+    STACK_NAME_VAR,
+    TranslationError,
+    is_intrinsic,
+)
 
 if TYPE_CHECKING:
     from .translate import Plan, Translator
@@ -536,8 +542,10 @@ LAMBDA = LambdaMapper(
 LOG_GROUP = SpecMapper(
     tf_type="aws_cloudwatch_log_group",
     ref_attr="name",
-    # CloudFormation's Arn ends in ":*"; the provider's does not.
-    attrs={"Arn": ("arn", '"${%s}:*"')},
+    # CloudFormation's Arn ends in ":*"; the provider's does not. BARE_ARN_ATTR
+    # is the translator's own name for the provider's form, for the properties
+    # whose service stores the ARN without the suffix (see translate.py).
+    attrs={"Arn": ("arn", '"${%s}:*"'), BARE_ARN_ATTR: "arn"},
     spec={
         "LogGroupName": ("attr", "name"),
         "RetentionInDays": ("attr", "retention_in_days"),

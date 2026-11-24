@@ -1,6 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
+import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -60,7 +62,9 @@ describe('useQuickStartUpload', () => {
 
   const upload = async (files: File[]) => {
     const onError = vi.fn();
-    const hook = renderHook(() => useQuickStartUpload({ onError }));
+    const hook = renderHook(() => useQuickStartUpload({ onError }), {
+      wrapper: ({ children }) => React.createElement(IntlProvider, { locale: 'en', defaultLocale: 'en' }, children),
+    });
     await act(async () => {
       await hook.result.current.startUpload(files, 'quickstart');
     });

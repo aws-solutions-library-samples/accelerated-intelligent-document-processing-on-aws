@@ -16,8 +16,11 @@ This module is the one place that defines the rule, so the write paths and the
 name-composing paths cannot drift apart.
 """
 
+import copy
 import re
-from typing import Final
+from typing import Any, Dict, Final
+
+from idp_common.config.schema_constants import ID_FIELD
 
 # The character set every consumer of a class id accepts. Kept in sync with
 # BDA's blueprintName constraint and the UI's CLASS_NAME_PATTERN.
@@ -49,3 +52,49 @@ def sanitize_class_name(name: str) -> str:
     sanitized = _INVALID_CHARS.sub("-", name)
     sanitized = _HYPHEN_RUN.sub("-", sanitized)
     return sanitized.strip("-")
+
+
+# Keywords whose values are instance data rather than subschemas. A ``"$id"``
+# key inside one of them is data and must not be rewritten.
+_INSTANCE_DATA_KEYWORDS: Final = frozenset({"const", "default", "enum", "examples"})
+
+
+def schema_id_as_uri_reference(value: str) -> str:
+    """Return ``value`` percent-encoded so it is a valid RFC 3986 URI-reference.
+
+    JSON Schema requires ``$id`` to be a URI-reference, but a class's ``$id`` is
+    also its user-visible name and may contain spaces (``"Bank Statement"``).
+    Every character outside the unreserved set and ``/`` is percent-encoded, so
+    the result is always a valid relative reference, and a name made only of
+    letters, digits, ``-``, ``_``, ``.``, ``~`` and ``/`` comes back unchanged.
+    """
+    from urllib.parse import quote
+
+    return quote(value, safe="/")
+
+
+def with_uri_safe_schema_ids(schema: Any) -> Any:
+    """Return a deep copy of ``schema`` whose every ``$id`` is a URI-reference.
+
+    For handing a class schema to a consumer that checks it against the JSON
+    Schema metaschema (Stickler's model builder, ``check_schema``). Whether that
+    check enforces ``format: uri-reference`` depends on whether an optional
+    package is installed, so a ``$id`` such as ``"Bank Statement"`` is accepted
+    in one environment and rejected in another. The authored schema is not
+    modified: the class name stays what the author wrote everywhere it is shown
+    or stored.
+    """
+    if isinstance(schema, dict):
+        copied: Dict[str, Any] = {}
+        for key, val in schema.items():
+            if key == ID_FIELD and isinstance(val, str):
+                copied[key] = schema_id_as_uri_reference(val)
+            elif key in _INSTANCE_DATA_KEYWORDS:
+                copied[key] = copy.deepcopy(val)
+            else:
+                copied[key] = with_uri_safe_schema_ids(val)
+        return copied
+    if isinstance(schema, list):
+        return [with_uri_safe_schema_ids(item) for item in schema]
+    # A JSON scalar is immutable, so it needs no copy.
+    return schema

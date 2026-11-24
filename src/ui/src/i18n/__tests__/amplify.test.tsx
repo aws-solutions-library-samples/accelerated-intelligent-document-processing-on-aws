@@ -9,6 +9,7 @@ import { registerAmplifyVocabularies } from '../amplify';
 import { LOCALE_STORAGE_KEY, type Locale } from '../locales';
 import { LocaleProvider, useLocale } from '../LocaleProvider';
 
+const EN_ONLY: readonly Locale[] = ['en'];
 const EN_FR: readonly Locale[] = ['en', 'fr-CA'];
 
 // Exact entry from node_modules/@aws-amplify/ui/dist/esm/i18n/dictionaries/authenticator/fr.mjs.
@@ -91,7 +92,7 @@ describe('Amplify UI dictionary', () => {
     const seen: string[] = [];
     const SignInProbe = makeSignInProbe(seen);
     render(
-      <LocaleProvider>
+      <LocaleProvider enabledLocales={EN_ONLY}>
         <SignInProbe />
       </LocaleProvider>,
     );

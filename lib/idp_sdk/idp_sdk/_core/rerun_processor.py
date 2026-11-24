@@ -22,9 +22,8 @@ logger = logging.getLogger(__name__)
 #: reprocessing each one is refused.
 #:
 #: Kept as a mapping of status VALUE to message, keyed on the string rather than
-#: on the ``Status`` enum, because this module imports ``idp_common`` lazily
-#: through a path shim and must not fail at import time on a machine where that
-#: package is absent. ``scripts/tests/test_reprocess_paths_agree.py`` checks this
+#: on the ``Status`` enum, because this module imports ``idp_common`` lazily,
+#: inside the methods that need it, as the rest of ``idp_sdk._core`` does. ``scripts/tests/test_reprocess_paths_agree.py`` checks this
 #: set against the resolver's ``_REPROCESS_REFUSED_STATUSES`` so the two doors
 #: cannot drift apart.
 _MALWARE_GATE_REFUSALS = {
@@ -61,31 +60,6 @@ def _malware_gate_refusal(document):
     return _MALWARE_GATE_REFUSALS.get(str(status).upper())
 
 
-def _get_idp_common_path() -> str:
-    """
-    Get path to idp_common package dynamically
-
-    Returns:
-        Absolute path to idp_common_pkg directory
-
-    Raises:
-        RuntimeError: If idp_common_pkg cannot be found
-    """
-    # Get the directory containing this file (idp_cli/idp_cli/)
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # Navigate up to project root (../../)
-    project_root = os.path.dirname(os.path.dirname(current_dir))
-    # Construct path to idp_common_pkg
-    idp_common_path = os.path.join(project_root, "lib", "idp_common_pkg")
-
-    if not os.path.exists(idp_common_path):
-        raise RuntimeError(
-            f"idp_common_pkg not found at expected location: {idp_common_path}"
-        )
-
-    return idp_common_path
-
-
 class RerunProcessor:
     """Handles reprocessing of documents for specific pipeline steps"""
 
@@ -99,14 +73,18 @@ class RerunProcessor:
         """
         self.stack_name = stack_name
 
-        # Auto-detect region if not provided
-        if not region:
-            session = boto3.session.Session()
-            region = session.region_name
-            if not region:
-                raise ValueError(
-                    "Region could not be determined. Please specify --region or configure AWS_DEFAULT_REGION"
-                )
+        # The Region a client built with no Region reaches (honouring
+        # `boto3.setup_default_session`), else `AWS_REGION`; passed explicitly to
+        # every client below, since boto3 itself does not read `AWS_REGION`.
+        from idp_sdk._core.region import resolve_region
+
+        resolved = resolve_region(region)
+        if not resolved:
+            raise ValueError(
+                "Region could not be determined. Please specify --region, or set "
+                "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
+            )
+        region = resolved
 
         self.region = region
         self.lambda_client = boto3.client("lambda", region_name=region)
@@ -245,58 +223,59 @@ class RerunProcessor:
             object_key: Document object key
 
         Returns:
-            Document object or None if not found
+            Document object, or None if the tracking table has no row for the key
+
+        Raises:
+            Exception: Anything that stops the read — a stack with no tracking
+                table, a DynamoDB error, an ``idp_common`` that cannot be
+                imported. It is deliberately not caught: ``rerun_documents``
+                reports each exception per document under its own message, and
+                folding them into ``None`` reported every one of them as
+                "Document not found".
         """
-        # Import idp_common here to get document
+        # ``idp_common`` is a declared dependency of ``idp_sdk`` and is imported
+        # like any other package, never through a path computed from this file's
+        # location (which breaks whenever the module moves, and is meaningless in
+        # an installed copy).
+        from idp_common.docs_service import create_document_service
+
+        tracking_table = tracking_table_name(self.resources, self.stack_name)
+
+        # Temporarily set environment variables
+        original_tracking = os.environ.get("TRACKING_TABLE")
+        original_region = os.environ.get("AWS_REGION")
+
+        os.environ["TRACKING_TABLE"] = tracking_table
+        if self.region:
+            os.environ["AWS_REGION"] = self.region
+
         try:
-            # Use DynamoDB service directly to get document
-            import sys
+            doc_service = create_document_service(mode="dynamodb")
+            document = doc_service.get_document(object_key)
+        finally:
+            # Restore original environment variables
+            if original_tracking:
+                os.environ["TRACKING_TABLE"] = original_tracking
+            else:
+                os.environ.pop("TRACKING_TABLE", None)
 
-            sys.path.insert(0, _get_idp_common_path())
-            from idp_common.docs_service import create_document_service
+            if original_region:
+                os.environ["AWS_REGION"] = original_region
+            elif self.region:
+                os.environ.pop("AWS_REGION", None)
 
-            # Set environment variables for DynamoDB service
-            tracking_table = tracking_table_name(self.resources, self.stack_name)
-
-            # Temporarily set environment variables
-            original_tracking = os.environ.get("TRACKING_TABLE")
-            original_region = os.environ.get("AWS_REGION")
-
-            os.environ["TRACKING_TABLE"] = tracking_table
-            if self.region:
-                os.environ["AWS_REGION"] = self.region
-
-            try:
-                doc_service = create_document_service(mode="dynamodb")
-                document = doc_service.get_document(object_key)
-            finally:
-                # Restore original environment variables
-                if original_tracking:
-                    os.environ["TRACKING_TABLE"] = original_tracking
-                else:
-                    os.environ.pop("TRACKING_TABLE", None)
-
-                if original_region:
-                    os.environ["AWS_REGION"] = original_region
-                elif self.region:
-                    os.environ.pop("AWS_REGION", None)
-
-            if not document:
-                return None
-
-            # Ensure bucket names are set
-            document.input_bucket = self.resources.get("InputBucket")
-            document.output_bucket = self.resources.get("OutputBucket")
-
-            logger.info(
-                f"Retrieved document {object_key}: {len(document.pages)} pages, {len(document.sections)} sections"
-            )
-
-            return document
-
-        except Exception as e:
-            logger.error(f"Error retrieving document {object_key}: {e}")
+        if not document:
             return None
+
+        # Ensure bucket names are set
+        document.input_bucket = self.resources.get("InputBucket")
+        document.output_bucket = self.resources.get("OutputBucket")
+
+        logger.info(
+            f"Retrieved document {object_key}: {len(document.pages)} pages, {len(document.sections)} sections"
+        )
+
+        return document
 
     def _prepare_for_classification_rerun(self, document):
         """
@@ -421,9 +400,6 @@ class RerunProcessor:
             document: Document object with status=QUEUED and cleared sections
         """
         try:
-            import sys
-
-            sys.path.insert(0, _get_idp_common_path())
             from idp_common.docs_service import create_document_service
 
             # Set environment variables temporarily

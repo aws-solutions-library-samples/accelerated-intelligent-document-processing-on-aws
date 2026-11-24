@@ -9,9 +9,11 @@ evaluation:
   enabled: true
   llm_method:
     top_p: "0.0"
-    # Empty => use the selected model's maximum output limit (model_config_limits.yaml).
-    # Set a positive value only to cap output below the model max.
-    max_tokens: ""
+    # Output cap. A comparison reply is a short JSON object, and Bedrock holds
+    # input + max_tokens of the tokens-per-minute quota while a call runs, so
+    # this is capped below Nova 2 Lite's 64,000-token limit. Empty => use the
+    # selected model's maximum output limit (model_config_limits.yaml).
+    max_tokens: "10000"
     top_k: "5"
     system_prompt: >-
       You are an evaluator that helps determine if the predicted and expected values match for document attribute extraction. You will consider the context and meaning rather than just exact string matching.

@@ -11,6 +11,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -48,6 +49,12 @@ const evaluation = {
   canEditBaseline: false,
 } as unknown as SectionEvaluation;
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 beforeEach(() => {
   document.body.innerHTML = '';
   state.fieldProps = null;
@@ -65,6 +72,7 @@ describe('the class verdict on the edit page', () => {
         onSave={async () => undefined}
         evaluation={evaluation}
       />,
+      { wrapper: English },
     );
     await waitFor(() => expect(state.fieldProps).not.toBeNull());
     expect(screen.getByTestId('class-verdict').textContent).toBe('W2 vs Paystub');

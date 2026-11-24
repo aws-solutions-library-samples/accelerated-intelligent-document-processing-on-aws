@@ -9,6 +9,7 @@
 
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../api/client-shim', () => ({
@@ -18,20 +19,26 @@ vi.mock('../../../api/client-shim', () => ({
 import { AnnotatorsCell } from '../QueuesPage';
 import { eligibleAnnotators } from '../reviewer-assignment';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('the Annotators column', () => {
   it('shows the number of listed Annotators, with their names on hover', () => {
-    render(<AnnotatorsCell eligible={['a@example.com', 'b@example.com']} />);
+    render(<AnnotatorsCell eligible={['a@example.com', 'b@example.com']} />, { wrapper: English });
     const cell = screen.getByText('2');
     expect(cell.getAttribute('title')).toBe('a@example.com, b@example.com');
   });
 
   it('shows 0 when no Annotator is listed', () => {
-    render(<AnnotatorsCell eligible={[]} />);
+    render(<AnnotatorsCell eligible={[]} />, { wrapper: English });
     expect(screen.getByText('0').getAttribute('title')).toBe('No Annotators listed');
   });
 
   it('treats a missing list as none listed', () => {
-    render(<AnnotatorsCell eligible={null} />);
+    render(<AnnotatorsCell eligible={null} />, { wrapper: English });
     expect(screen.getByText('0')).toBeTruthy();
   });
 });

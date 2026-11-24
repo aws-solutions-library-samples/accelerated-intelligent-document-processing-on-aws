@@ -7,18 +7,26 @@
 // entry. A reviewer-only caller (no Admin or Author role) saves the prediction through
 // saveSectionReviewEdits, which a Reviewer holding the document's review may call, and
 // doesn't save the baseline. Nothing is reprocessed.
+import { defineMessages, type NoMessageValues } from 'react-intl';
+
 import { generateClient } from '../../api/client-shim';
 import { saveSectionReviewEdits, uploadDocument } from '../../graphql/generated';
 import { reviewErrorCode } from '../review-queues/review-api';
+import { EditPageError } from './edit-messages';
 
 const client = generateClient();
 
-/**
- * What a direct save shows when the server refuses it because the document went into a
- * review queue after the page opened (`QUEUE_MANAGED`).
- */
-export const IN_REVIEW_SAVE_REFUSED =
-  "This document is now in a review queue, so it can't be edited here. Reload the page to work on it in its queue.";
+const messages = defineMessages<{ inReviewSaveRefused: NoMessageValues }>({
+  inReviewSaveRefused: {
+    id: 'editScreen.directEdit.inReviewSaveRefused',
+    defaultMessage: "This document is now in a review queue, so it can't be edited here. Reload the page to work on it in its queue.",
+    description:
+      'Why the section editor of a document\'s edit page could not save, shown after "Failed to save:": the server refused the save because the document went into a review queue after the page opened.',
+  },
+});
+
+/** The refusal in English: its test compares the thrown error's message with it. */
+export const IN_REVIEW_SAVE_REFUSED = String(messages.inReviewSaveRefused.defaultMessage);
 
 export interface FieldChange {
   original: unknown;
@@ -188,7 +196,7 @@ export const saveDirectSectionEdits = async ({
       }
     } catch (err) {
       // The baseline is not written after a refusal: the save stops here.
-      if (reviewErrorCode(err) === 'QUEUE_MANAGED') throw new Error(IN_REVIEW_SAVE_REFUSED);
+      if (reviewErrorCode(err) === 'QUEUE_MANAGED') throw new EditPageError({ descriptor: messages.inReviewSaveRefused });
       throw err;
     }
   }

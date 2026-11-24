@@ -85,6 +85,12 @@ evaluation:
   # invalid in GovCloud (ValidationException).
   llm_method:
     model: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
+    # Claude Sonnet 4.5's maximum output, which this preset's evaluation has
+    # always requested. The system default caps evaluation at 10000 for Nova 2
+    # Lite, which is not this preset's model. Written as a number rather than
+    # empty: an empty value is stored as null, which older releases reject when
+    # a stack update rolls back.
+    max_tokens: '64000'
 discovery:
   with_ground_truth:
     model_id: amazon.nova-pro-v1:0

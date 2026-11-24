@@ -25,7 +25,7 @@ import Editor from '@monaco-editor/react';
 import yaml from 'js-yaml';
 import usePricing from '../../hooks/use-pricing';
 import useUserRole from '../../hooks/use-user-role';
-import { hasPricingCustomizations } from './pricing-customizations';
+import { defaultUnitPriceLookup, hasPricingCustomizations, pricesDiffer } from './pricing-customizations';
 import { findInvalidPrices, parsePrice } from './price-format';
 
 const messages = defineMessages<{
@@ -34,6 +34,10 @@ const messages = defineMessages<{
   invalidPricesHeader: NoMessageValues;
   cannotSaveInvalidPrices: { readonly count: number };
   defaultUnitsAlwaysApply: NoMessageValues;
+  deleteUnit: NoMessageValues;
+  deleteDefaultUnitDisabledReason: NoMessageValues;
+  restoreDefaultPrice: NoMessageValues;
+  restoreDefaultPriceDisabledReason: NoMessageValues;
 }>({
   invalidPrice: {
     id: 'pricing.layout.invalidPrice',
@@ -61,9 +65,30 @@ const messages = defineMessages<{
   defaultUnitsAlwaysApply: {
     id: 'pricing.layout.defaultUnitsAlwaysApply',
     defaultMessage:
-      'Your saved prices are applied over the default prices. A default unit you delete comes back at its default price after you save and reload. To make a default unit cost nothing, set its price to 0.',
+      'Your saved prices are applied over the default prices, so a default unit cannot be deleted. To make a default unit cost nothing, set its price to 0. To undo a change to a default unit, choose Restore default price on its row.',
     description:
-      'Note above the pricing tables on the Pricing page: deleting a default unit does not persist, because saved prices are merged over the defaults per unit.',
+      'Note above the pricing tables on the Pricing page: default units cannot be deleted because saved prices are merged over the defaults per unit; explains how to zero or restore one instead.',
+  },
+  deleteUnit: {
+    id: 'pricing.layout.deleteUnit',
+    defaultMessage: 'Delete unit',
+    description: 'Accessible label of the icon button that deletes one pricing unit row on the Pricing page.',
+  },
+  deleteDefaultUnitDisabledReason: {
+    id: 'pricing.layout.deleteDefaultUnitDisabledReason',
+    defaultMessage:
+      'This unit is in the default price list, so it cannot be deleted: it would come back at its default price after you save and reload. Set its price to 0 to make it cost nothing.',
+    description: 'Tooltip on the disabled Delete unit button of a default pricing row on the Pricing page, explaining why it is disabled.',
+  },
+  restoreDefaultPrice: {
+    id: 'pricing.layout.restoreDefaultPrice',
+    defaultMessage: 'Restore default price',
+    description: 'Accessible label of the icon button that sets one default pricing unit back to its default price on the Pricing page.',
+  },
+  restoreDefaultPriceDisabledReason: {
+    id: 'pricing.layout.restoreDefaultPriceDisabledReason',
+    defaultMessage: 'This unit already has its default price.',
+    description: 'Tooltip on the disabled Restore default price button of a pricing row whose price equals the default.',
   },
 });
 
@@ -174,6 +199,10 @@ const PricingLayout = (): React.JSX.Element => {
       }
     }
   }, [pricing]);
+
+  // The shipped default price of a unit, or undefined for a custom unit
+  // (see pricing-customizations.ts)
+  const defaultPriceOf = useMemo(() => defaultUnitPriceLookup(defaultPricing), [defaultPricing]);
 
   // Prices the backend would refuse to save (see price-format.ts)
   const invalidPrices = useMemo(() => findInvalidPrices(formValues), [formValues]);
@@ -439,19 +468,6 @@ const PricingLayout = (): React.JSX.Element => {
     }
   };
 
-  // Delete an entire API/service entry
-  const _handleDeleteService = (apiName: string): void => {
-    const newFormValues = JSON.parse(JSON.stringify(formValues));
-    newFormValues.pricing = newFormValues.pricing.filter((e: PricingEntry) => e.name !== apiName);
-    setFormValues(newFormValues);
-    setJsonContent(JSON.stringify(newFormValues, null, 2));
-    try {
-      setYamlContent(yaml.dump(newFormValues));
-    } catch (e) {
-      console.error('Error converting to YAML:', e);
-    }
-  };
-
   // Render pricing table for a service
   const renderServiceTable = (serviceEntries: PricingEntry[]): React.JSX.Element | null => {
     if (!serviceEntries || serviceEntries.length === 0) {
@@ -513,17 +529,45 @@ const PricingLayout = (): React.JSX.Element => {
           {
             id: 'actions',
             header: 'Actions',
-            cell: (item) => (
-              <SpaceBetween direction="horizontal" size="xs">
-                <Button
-                  variant="icon"
-                  iconName="remove"
-                  onClick={() => handleDeleteUnit(item.apiName, item.unitName)}
-                  disabled={!isAdmin}
-                  ariaLabel="Delete unit"
-                />
-              </SpaceBetween>
-            ),
+            cell: (item) => {
+              const defaultPrice = defaultPriceOf(item.apiName, item.unitName);
+              if (defaultPrice === undefined) {
+                return (
+                  <SpaceBetween direction="horizontal" size="xs">
+                    <Button
+                      variant="icon"
+                      iconName="remove"
+                      onClick={() => handleDeleteUnit(item.apiName, item.unitName)}
+                      disabled={!isAdmin}
+                      ariaLabel={intl.formatMessage(messages.deleteUnit)}
+                    />
+                  </SpaceBetween>
+                );
+              }
+              // A default unit: saved prices are laid over the defaults per unit,
+              // so deleting one would only last until the next save and reload.
+              // It can be overridden, and restored to its default price.
+              const atDefault = !pricesDiffer(String(item.price ?? ''), defaultPrice);
+              return (
+                <SpaceBetween direction="horizontal" size="xs">
+                  <Button
+                    variant="icon"
+                    iconName="undo"
+                    onClick={() => updateUnitPrice(item.apiName, item.unitName, defaultPrice)}
+                    disabled={!isAdmin || atDefault}
+                    disabledReason={isAdmin && atDefault ? intl.formatMessage(messages.restoreDefaultPriceDisabledReason) : undefined}
+                    ariaLabel={intl.formatMessage(messages.restoreDefaultPrice)}
+                  />
+                  <Button
+                    variant="icon"
+                    iconName="remove"
+                    disabled
+                    disabledReason={isAdmin ? intl.formatMessage(messages.deleteDefaultUnitDisabledReason) : undefined}
+                    ariaLabel={intl.formatMessage(messages.deleteUnit)}
+                  />
+                </SpaceBetween>
+              );
+            },
             width: 100,
           },
         ]}

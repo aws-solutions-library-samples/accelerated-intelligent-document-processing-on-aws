@@ -360,8 +360,17 @@ def _assert_row_alignment(section, prefix, field, data_rows):
     )
 
 
-def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
+def confidence_observations(
+    sections, rows_typed, list_key, seq_ids=None, empty_sink=None
+):
     """``(confidence, correct)`` per list CELL, joined to exact truth by SEQ tag.
+
+    A cell whose predicted value is EMPTY (``None``, blank, or an empty container, by
+    ``idp_common.evaluation.empty_values.is_empty_prediction``, the definition Test
+    Studio's ``confidence_metrics.empty_values`` uses) is an observation like any
+    other: a missed value that scored high counts against the grader here. When
+    ``empty_sink`` is a list, each such observation is also appended to it, so the
+    caller can report how many empty predictions the figures include (#2052).
 
     This is the join #935 is about. A confidence score is only a calibration
     observation once it is paired with whether the value it scores was right, and
@@ -413,6 +422,8 @@ def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
     """
     if not rows_typed:
         return []
+    from idp_common.evaluation.empty_values import is_empty_prediction
+
     truth = {}
     for tag, cells in rows_typed.items():
         truth[_truth_seq(tag)] = {str(c).lower(): e for c, e in (cells or {}).items()}
@@ -451,9 +462,10 @@ def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
                             score, bool
                         ):
                             continue
-                        observations.append(
-                            (float(score), typed_match(cells[key], got))
-                        )
+                        observation = (float(score), typed_match(cells[key], got))
+                        observations.append(observation)
+                        if empty_sink is not None and is_empty_prediction(got):
+                            empty_sink.append(observation)
     return observations
 
 
@@ -519,13 +531,26 @@ def score_calibration(sections, rows_typed, list_key, observations=None, seq_ids
     ``observations`` lets a caller that already holds the pairs — the release-level
     pass, which retains them to compute the unbinned AUROC over a whole arm — pass
     them in rather than have the join run twice over the same sections.
+
+    ``calibration_empty_observations`` and ``calibration_empty_wrong`` say how many of
+    the observations are empty predictions and how many of those were wrong (#2052).
+    Every figure above already includes them; the two counts make that visible, which
+    is what Test Studio's ``confidence_metrics.empty_values`` does for a test run.
+    They are ``None`` when the caller passed ``observations`` in, because the pairs
+    alone no longer say which value was empty.
     """
+    empty = None
     if observations is None:
-        observations = confidence_observations(sections, rows_typed, list_key, seq_ids)
+        empty = []
+        observations = confidence_observations(
+            sections, rows_typed, list_key, seq_ids, empty_sink=empty
+        )
     if not observations:
         return {
             "calibration_observations": 0,
             "calibration_correct": None,
+            "calibration_empty_observations": None,
+            "calibration_empty_wrong": None,
             "calibration_ece": None,
             "calibration_ece_mean_conf": None,
             "calibration_auroc": None,
@@ -561,6 +586,10 @@ def score_calibration(sections, rows_typed, list_key, observations=None, seq_ids
     return {
         "calibration_observations": total,
         "calibration_correct": correct,
+        "calibration_empty_observations": len(empty) if empty is not None else None,
+        "calibration_empty_wrong": (
+            sum(1 for _score, ok in empty if not ok) if empty is not None else None
+        ),
         "calibration_ece": round(health.ece, 4) if health.ece is not None else None,
         "calibration_ece_mean_conf": (
             round(ece_mean_conf, 4) if ece_mean_conf is not None else None
@@ -883,23 +912,26 @@ def score_processing_issues(sections):
     the difference matters more than the mechanisms do.
 
     ⚠️ **What this cannot see, and why a ``0`` here is not a clean bill of health.**
-    Everything below records onto the section's DynamoDB record and never into the
-    S3 object this reads, because nothing rewrites ``result.json`` afterwards:
+    Everything below records onto the section's DynamoDB record, and reaches the S3
+    object this reads only partly or not at all:
 
-    * ``assessment``'s **degrade and skip** pair —
-      ``assessment_failed_confidence_unavailable`` and
-      ``assessment_skipped_confidence_unavailable``, declared in
-      ``assessment/degradation.py``, whose own docstring says that path
-      "deliberately does not rewrite that file", and whose five
+    * ``assessment``'s **skip** code, ``assessment_skipped_confidence_unavailable``,
+      declared in ``assessment/degradation.py``. Its five
       ``skip_section_no_confidence`` call sites in ``assessment/service.py`` each
-      ``return document`` before the write. These are the ones to worry about: they
-      are **error** severity on a document that **completes** — not failing it is
-      the whole point of the path — so a section that came back with no confidence
-      scores at all reads here as ``processing_issues: 0, success: true``, with no
-      ``status`` to fall back on. And it is live where it counts: over the committed
+      ``return document`` before the write, and nothing rewrites the file
+      afterwards. This is the one to worry about: it is **error** severity on a
+      document that **completes** — not failing it is the whole point of the path —
+      so a section that came back with no confidence scores at all reads here as
+      ``processing_issues: 0, success: true``, with no ``status`` to fall back on.
+      And it is live where it counts: over the committed
       ``results/v0.6.11/*/summary.json`` rows, ``resolved.assessment`` is
       ``separate`` on 4,192 rows against 516 ``integrated`` and 257 ``off``, and the
       skip sites are on the standalone path.
+    * ``assessment``'s **degrade** code, ``assessment_failed_confidence_unavailable``,
+      is written into ``result.json`` best effort by
+      ``degradation.record_no_confidence_in_result``, so it is usually read here. It
+      is missed when that file already holds the confidence pass's scores, or when
+      the write fails.
     * ``rule_validation`` and ``postprocessing``, recorded through
       ``document_failure.record_section_failure`` from the handlers in
       ``patterns/unified/src/``. Smaller, because these accompany a document the
@@ -911,9 +943,9 @@ def score_processing_issues(sections):
     scans, and it is deleted with its stack (three release stacks already are) where
     the S3 artifacts outlive it. So the boundary is **declared and closed** instead:
     ``test_processing_issues_recorded.py`` partitions every declared stage and every
-    code declared in ``degradation.py`` across what reaches ``result.json`` and a
-    named boundary list, so a *third* such stage or a *third* such code fails there
-    rather than going quietly unread.
+    code declared in ``degradation.py`` across what reaches ``result.json``, what
+    reaches it best effort, and a named boundary list, so a *third* such stage or a
+    *third* such code fails there rather than going quietly unread.
 
     Nothing here enumerates issue types. The tallies are keyed on each issue's own
     ``severity``/``code``/``stage``, and ``processing_issue_detail`` carries the

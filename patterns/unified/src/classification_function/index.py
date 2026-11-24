@@ -6,6 +6,7 @@ Classification function that processes documents and classifies them using LLMs.
 Uses the idp_common.classification package for classification functionality.
 """
 
+import copy
 import json
 import logging
 import os
@@ -15,7 +16,12 @@ from idp_common import classification, metrics, get_config
 from idp_common.classification import apply_forced_document_class
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
-from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils import (
+    calculate_lambda_metering,
+    failure_metering,
+    merge_metering_data,
+)
+from idp_common.utils.transient_errors import is_transient_error, raise_if_transient
 from aws_xray_sdk.core import xray_recorder, patch_all
 
 patch_all()
@@ -30,6 +36,24 @@ logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_
 
 @xray_recorder.capture('classification_function')  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
+    """Classify one document. See ``_handle``.
+
+    Transient causes are re-raised as ``TransientError``, the name
+    ClassificationStep's retrier lists alongside the modeled throttling codes, so a
+    read timeout or a bare ``ClientError`` throttle is retried as a modeled
+    ``ThrottlingException`` already was. The classification service raises one
+    itself when a split-then-classify section or splitting call fails transiently,
+    rather than recording it on the section (#2034). Hard errors keep their own
+    name and are not retried.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(e, where="classification")
+        raise
+
+
+def _handle(event, context):
     """
     Lambda handler for document classification.
     """
@@ -113,6 +137,9 @@ def handler(event, context):
     document_service = create_document_service()
     logger.info(f"Updating document status to {document.status}")
     document_service.update_document(document)
+    # The document as this attempt started it, before the service mutates it. A
+    # transient failure writes this back with the attempt's usage added (#2122).
+    attempt_start = copy.deepcopy(document)
     
     if not document.pages:
         error_message = "Document has no pages to classify"
@@ -136,7 +163,20 @@ def handler(event, context):
     )
     
     # Classify the document - the service will update the Document directly
-    document = service.classify_document(document)
+    try:
+        document = service.classify_document(document)
+    except Exception as e:
+        if is_transient_error(e):
+            # Retried by Step Functions: the attempt's usage, attached to the
+            # error by the service, is recorded and no FAILED status is written.
+            _record_transient_attempt(
+                document_service,
+                attempt_start,
+                merge_metering_data(
+                    copy.deepcopy(attempt_start.metering), failure_metering(e)
+                ),
+            )
+        raise
     
     # Check if document processing failed or has pages that failed to classify
     failed_page_exceptions = None
@@ -159,8 +199,17 @@ def handler(event, context):
             error_message += f" - {len(failed_page_exceptions)} pages failed to classify"
         
         logger.error(error_message)
-        # Update document status in AppSync before raising exception
-        document_service.update_document(document)
+        if primary_exception is not None and is_transient_error(primary_exception):
+            # The handler wrapper raises this as TransientError and Step Functions
+            # retries the step, so the document is not marked FAILED: only a final
+            # failure is persisted. The pages that were classified were billed,
+            # and their usage is already in document.metering (#2122).
+            _record_transient_attempt(
+                document_service, attempt_start, copy.deepcopy(document.metering)
+            )
+        else:
+            # Update document status in AppSync before raising exception
+            document_service.update_document(document)
         
         # Raise the original exception type if available, otherwise raise generic exception
         if primary_exception:
@@ -191,3 +240,30 @@ def handler(event, context):
     
     logger.info(f"Response: {json.dumps(response, default=str)}")
     return response
+
+
+def _record_transient_attempt(document_service, attempt_start, metering):
+    """Write an attempt's usage to the tracking record, leaving its status alone.
+
+    ``attempt_start`` is the document as the attempt wrote it at its start, with
+    status CLASSIFYING, and ``metering`` the run's usage including the attempt's.
+    Writing it records what the failed attempt spent, which is what an execution
+    that ends unsuccessfully reports, without showing the document as FAILED while
+    the retry runs. A failure here is logged rather than raised, so it cannot
+    replace the transient error Step Functions retries on.
+    """
+    if metering == attempt_start.metering:
+        return
+    try:
+        attempt_start.metering = metering
+        logger.info(
+            "Recording the usage of the classification attempt that failed with a "
+            "transient error; the document stays %s for the retry",
+            attempt_start.status,
+        )
+        document_service.update_document(attempt_start)
+    except Exception as record_error:
+        logger.error(
+            f"Failed to record the failed attempt's usage: {record_error}",
+            exc_info=True,
+        )

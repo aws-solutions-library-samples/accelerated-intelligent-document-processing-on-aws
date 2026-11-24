@@ -107,8 +107,8 @@ To run the fine-tuned arm:
 
 Extraction has no `max_tokens` setting — it always requests the model's maximum
 output, resolved from `config_library/model_config_limits.yaml`. That lookup matches
-on the model id, so `us.amazon.nova-2-lite-v1:0` resolves to Nova's 10,000-token
-output limit and a 300,000-token input window.
+on the model id, so `us.amazon.nova-2-lite-v1:0` resolves to Nova 2 Lite's
+64,000-token output limit and 1,000,000-token input window.
 
 A `custom-model-deployment` ARN matches no pattern in that file, so the lookup falls
 back to its conservative unmatched defaults — a smaller output budget and input

@@ -10,10 +10,17 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import WorkItemsTable from '../WorkItemsTable';
 import type { WorkItem } from '../work-items';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const row = (objectKey: string): WorkItem => ({
   id: objectKey,
@@ -21,18 +28,20 @@ const row = (objectKey: string): WorkItem => ({
   objectKey,
   name: objectKey.split('/').pop() ?? objectKey,
   queue: 'default',
+  escalated: false,
   priority: null,
   enqueuedAt: null,
   reason: null,
   extraReasons: 0,
-  state: { label: 'Waiting', type: 'pending' },
+  state: 'OPEN',
   assignedTo: null,
+  assignedToYou: false,
   assignedToMe: false,
   href: '#/edit',
 });
 
 const documentCells = (keys: string[]): HTMLElement[] => {
-  const { container } = render(<WorkItemsTable items={keys.map(row)} title="Items" columns={['document']} />);
+  const { container } = render(<WorkItemsTable items={keys.map(row)} title="Items" columns={['document']} />, { wrapper: English });
   const table = createWrapper(container).findTable()!;
   return keys.map((_, i) =>
     table

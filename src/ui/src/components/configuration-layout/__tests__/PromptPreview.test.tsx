@@ -680,6 +680,14 @@ describe('applyModalityToPrompt', () => {
     expect(applyModalityToPrompt('before {DOCUMENT_IMAGE} after', { images: 'false' })).toBe('before  after');
   });
 
+  it('removes bare placeholders beside a wrapped one, and every wrapped one', () => {
+    // Mirrors strip_placeholder: turning a modality off removes every placeholder.
+    const prompt = 'a {DOCUMENT_IMAGE}\n<document-image>\n{DOCUMENT_IMAGE}\n</document-image>\nb {DOCUMENT_IMAGE} c';
+    expect(applyModalityToPrompt(prompt, { images: 'false' })).toBe('a \nb  c');
+    const twice = 'x\n<document-image>{DOCUMENT_IMAGE}</document-image>\ny\n<document-image>{DOCUMENT_IMAGE}</document-image>\nz';
+    expect(applyModalityToPrompt(twice, { images: 'false' })).toBe('x\ny\nz');
+  });
+
   it('accepts a real boolean as well as the string form', () => {
     // The form holds booleans while a stored config deserializes as strings.
     expect(applyModalityToPrompt(PROMPT, { images: false })).not.toContain('{DOCUMENT_IMAGE}');

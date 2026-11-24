@@ -45,6 +45,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import deployment_key
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -124,9 +125,9 @@ def _sub_text(value: Any) -> str | None:
 def _key_expression_ok(rel_path: str, value: Any) -> bool:
     """The KmsKeyId the template's other log groups use."""
     if rel_path == "template.yaml":
-        return value == {"Fn::GetAtt": ["CustomerManagedEncryptionKey", "Arn"]} or (
-            value == {"Fn::GetAtt": "CustomerManagedEncryptionKey.Arn"}
-        )
+        # The deployment key: the supplied CustomerManagedKmsKeyArn, else the
+        # key the stack creates (scripts/tests/deployment_key.py).
+        return deployment_key.is_deployment_key_arn(value)
     return _is_ref(value, "CustomerManagedEncryptionKeyArn")
 
 

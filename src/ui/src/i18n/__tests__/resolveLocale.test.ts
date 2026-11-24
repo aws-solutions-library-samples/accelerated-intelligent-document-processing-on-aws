@@ -4,7 +4,7 @@
  * The locale resolver is an allow-list (decision D19 of #1770): a stored choice only when
  * it exactly matches an enabled locale, else the browser's languages by exact then
  * language-subtag match, else the fallback. Every case is parametrised on the enabled list,
- * because `fr-CA` is not enabled yet and the rules must already hold for when it is.
+ * so the rules hold whichever catalogs a build has.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LOCALE, ENABLED_LOCALES, LOCALE_STORAGE_KEY, type Locale } from '../locales';
@@ -139,11 +139,11 @@ describe('readResolvedLocale (storage and navigator)', () => {
     expect(readResolvedLocale(EN_FR)).toBe('fr-CA');
   });
 
-  it('defaults to the production allow-list, where only en is enabled', () => {
-    expect(ENABLED_LOCALES).toEqual(['en']);
-    window.localStorage.setItem(LOCALE_STORAGE_KEY, 'fr-CA');
+  it('defaults to the production allow-list, where en and fr-CA are enabled', () => {
+    expect(ENABLED_LOCALES).toEqual(['en', 'fr-CA']);
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, 'en-XA');
     setBrowserLanguages(['fr-CA']);
-    expect(readResolvedLocale()).toBe('en');
+    expect(readResolvedLocale()).toBe('fr-CA');
   });
 
   it('never reads the URL', () => {

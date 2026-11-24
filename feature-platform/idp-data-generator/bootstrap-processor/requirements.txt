@@ -12,4 +12,4 @@
 # (jsonschema only), avoiding seed-data's numpy 2.x conflict.
 ./idp_common_pkg[synthesis]
 aws-requests-auth>=0.4.3
-requests>=2.32.0
+requests>=2.33.0

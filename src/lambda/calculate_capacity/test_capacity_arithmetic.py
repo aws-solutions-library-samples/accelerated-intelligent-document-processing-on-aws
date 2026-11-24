@@ -1268,14 +1268,18 @@ def test_the_plan_model_set_agrees_with_the_step_level_quota_builder(pattern):
                 config,
                 [
                     {
-                        f"{stage}TokensPerHour": 60000
-                        for stage in (
-                            "ocr",
-                            "classification",
-                            "extraction",
-                            "assessment",
-                            "summarization",
-                        )
+                        **{
+                            f"{stage}TokensPerHour": 60000
+                            for stage in (
+                                "ocr",
+                                "classification",
+                                "extraction",
+                                "assessment",
+                                "summarization",
+                                "evaluation",
+                            )
+                        },
+                        "evaluationComparisonsPerHour": 100,
                     }
                 ],
             )

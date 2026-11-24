@@ -14,6 +14,7 @@ import React from 'react';
 import { cleanup, render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { afterEach, describe, expect, it } from 'vitest';
+import { IntlProvider } from 'react-intl';
 
 import {
   getDocumentMissingRequiredFieldCount,
@@ -27,6 +28,12 @@ import { MissingRequiredFieldsCount } from '../../document-panel/DocumentPanel';
 
 const missing = (name: string) => ({ attributeName: name, confidence: 0, confidenceThreshold: 0.8 });
 const mapOne = (item: Record<string, unknown>) => mapDocumentsAttributes([item as never])[0] as Record<string, unknown>;
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 afterEach(() => {
   cleanup();
@@ -67,7 +74,9 @@ describe('missing-required-field counts', () => {
 
 describe('display', () => {
   it('lists the section fields by name behind the count', () => {
-    render(<MissingRequiredFieldsCell item={{ Id: '1', MissingRequiredFields: [missing('Doi'), missing('Rows[2].Amount')] } as never} />);
+    render(<MissingRequiredFieldsCell item={{ Id: '1', MissingRequiredFields: [missing('Doi'), missing('Rows[2].Amount')] } as never} />, {
+      wrapper: English,
+    });
     const wrapper = createWrapper(document.body);
     expect(wrapper.findStatusIndicator()!.getElement().textContent).toBe('2');
     const popover = wrapper.findPopover()!;
@@ -78,7 +87,7 @@ describe('display', () => {
   });
 
   it('shows a green zero for a section with none', () => {
-    render(<MissingRequiredFieldsCell item={{ Id: '1' } as never} />);
+    render(<MissingRequiredFieldsCell item={{ Id: '1' } as never} />, { wrapper: English });
     expect(createWrapper(document.body).findStatusIndicator()!.getElement().textContent).toBe('0');
     expect(createWrapper(document.body).findPopover()).toBeNull();
   });

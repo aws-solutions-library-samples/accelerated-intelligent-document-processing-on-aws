@@ -38,6 +38,11 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_INSTANCE_ARRAY,
     X_AWS_IDP_SOURCE_PAGE_TYPES,
 )
+from idp_common.decision_model import function_name
+from idp_common.document_image_placeholder import (
+    DocumentImagePlaceholderError,
+    check_document_image_placeholder,
+)
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -288,6 +293,12 @@ class ExtractionService:
         # Per-page OCR text in section order, populated per section. Used to
         # shard the input by page range for concurrent agentic extraction.
         self._page_texts: list[str] = []
+        # The page ids _load_document_images loaded an image for, and each one's
+        # OCR text, in that order: what the confidence pass pairs image i with.
+        # ``_page_texts`` keeps a "" for a section page the document lacks, which
+        # has no image, so it cannot be paired with the images directly.
+        self._image_page_ids: list[str] = []
+        self._image_page_texts: list[str] = []
         # Optional checkpoint callback for incremental saves during agentic extraction.
         # When set, called after each successful extraction_tool or apply_json_patches
         # invocation with the current extraction dict, enabling resume on Lambda timeout.
@@ -541,6 +552,11 @@ class ExtractionService:
         if "<<CACHEPOINT>>" in prompt_template:
             self._pending_cache_marker_seen = True
 
+        # A repeated {DOCUMENT_IMAGE} is refused, as the confidence pass refuses
+        # it. Checked on the whole template, before the few-shot split renders
+        # each side separately.
+        check_document_image_placeholder(prompt_template, "extraction task prompt")
+
         # Handle FEW_SHOT_EXAMPLES placeholder first
         if "{FEW_SHOT_EXAMPLES}" in prompt_template:
             parts = prompt_template.split("{FEW_SHOT_EXAMPLES}")
@@ -585,29 +601,27 @@ class ExtractionService:
 
         # Handle DOCUMENT_IMAGE placeholder
         if "{DOCUMENT_IMAGE}" in prompt_template:
+            # The caller checked the whole template: at most one placeholder.
             parts = prompt_template.split("{DOCUMENT_IMAGE}")
-            if len(parts) == 2:
-                # Add text before image
-                before_text = self._prepare_prompt_from_template(
-                    parts[0], self._substitutions, required_placeholders=[]
-                )
-                if before_text.strip():
-                    content.append({"text": before_text})
+            # Add text before image
+            before_text = self._prepare_prompt_from_template(
+                parts[0], self._substitutions, required_placeholders=[]
+            )
+            if before_text.strip():
+                content.append({"text": before_text})
 
-                # Add images
-                if image_content:
-                    content.extend(self._prepare_image_attachments(image_content))
+            # Add images
+            if image_content:
+                content.extend(self._prepare_image_attachments(image_content))
 
-                # Add text after image
-                after_text = self._prepare_prompt_from_template(
-                    parts[1], self._substitutions, required_placeholders=[]
-                )
-                if after_text.strip():
-                    content.append({"text": after_text})
+            # Add text after image
+            after_text = self._prepare_prompt_from_template(
+                parts[1], self._substitutions, required_placeholders=[]
+            )
+            if after_text.strip():
+                content.append({"text": after_text})
 
-                return content
-            else:
-                logger.warning("Invalid DOCUMENT_IMAGE placeholder usage")
+            return content
 
         # No image placeholder, just text
         task_prompt = self._prepare_prompt_from_template(
@@ -746,6 +760,12 @@ class ExtractionService:
                         "assess_page_images": self._cap_agent_images(
                             self._slice_images(saved_images, shard.start, shard.end)
                         ),
+                        # The text of each page in assess_page_images, sliced the
+                        # same way from a list built over the same page ids, for a
+                        # decision model, which pairs each image with its text.
+                        "assess_page_texts": self._image_page_texts[
+                            shard.start : shard.end
+                        ],
                         # Integrated mode: tell the shard agent to emit per-field
                         # confidence/bbox inline (one inference, no second pass).
                         "emit_field_assessment": self._integrated_assessment_enabled(),
@@ -1398,6 +1418,8 @@ class ExtractionService:
         self._wire_class_schema = {}
         self._instance_probe_requested = False
         self._page_images = []
+        self._image_page_ids = []
+        self._image_page_texts = []
         self._image_uris = []
         self._pending_image_fit_metadata = None
         self._pending_cache_marker_seen = False
@@ -1813,6 +1835,7 @@ class ExtractionService:
         max_dimension = image.max_dimension_for_image_count(effective_image_count)
 
         page_images = []
+        loaded_page_ids: list[str] = []
         for page_id in sorted_page_ids:
             if page_id not in document.pages:
                 continue
@@ -1835,10 +1858,12 @@ class ExtractionService:
                     {"page_id": page_id, **fit.to_dict()}
                 )
             page_images.append(image_content)
+            loaded_page_ids.append(page_id)
 
         t1 = time.time()
         logger.info(f"Time taken to read images: {t1 - t0:.2f} seconds")
 
+        self._image_page_ids = loaded_page_ids
         return page_images
 
     def _initialize_extraction_context(
@@ -2085,6 +2110,97 @@ class ExtractionService:
         )
         return document
 
+    def _handle_content_filtered(
+        self,
+        document: Document,
+        section: Any,
+        section_info: SectionInfo,
+        section_id: str,
+        t0: float,
+        error: BaseException,
+    ) -> Document:
+        """Fail one section whose model reply was withheld by a content filter.
+
+        A content-filter block is a verdict on THIS section's content (the
+        agentic path has already regenerated the reply and been refused; the
+        Simple path's client does not retry it), and the other sections'
+        content is unaffected. Raising here failed
+        the ProcessSections Map, and with it the whole document, although every
+        other section extracted normally (#2038).
+
+        So the section is completed the way ``_handle_empty_schema`` completes a
+        section whose class is not configured: an empty result is written with
+        ``metadata.content_filtered`` set, and the section carries an
+        error-severity ``extraction_failed`` issue naming the reason. The section
+        then has no data rather than wrong data, the issue is what the Sections
+        panel renders as Failed, and the rest of the document completes.
+        ``document.errors`` is deliberately not appended to: the collate step fails
+        the whole document on any entry there, which is the outcome this replaces.
+        """
+        from idp_common.extraction.failure import (
+            EXTRACTION_FAILED_CODE,
+            EXTRACTION_STAGE,
+        )
+        from idp_common.models import ProcessingIssue
+        from idp_common.utils.bedrock_utils import content_block_wording
+
+        class_label = section_info.class_label
+        blocker, remedy = content_block_wording(error, "extraction model")
+        issue = ProcessingIssue(
+            stage=EXTRACTION_STAGE,
+            severity="error",
+            code=EXTRACTION_FAILED_CODE,
+            message=(
+                f"No fields were extracted from this section: {blocker} "
+                "the model's reply. "
+                "The rest of the document was processed normally."
+            ),
+            root_cause=(
+                f"{type(error).__name__}: {error}. The block applies to this "
+                f"section's content (class '{class_label}', pages "
+                f"{section_info.start_page}-{section_info.end_page}). Review the "
+                f"pages, or {remedy}."
+            ),
+            section_id=section_id,
+        )
+        logger.error(
+            "Content filter blocked extraction for section %s (class %s); "
+            "recording %s on the section and continuing with the rest of the "
+            "document: %s",
+            section_id,
+            class_label,
+            issue.code,
+            error,
+        )
+        # Replace only this stage's issues, as _save_results and
+        # _handle_empty_schema do: the result they described has been replaced by
+        # the empty one below, and other stages' issues must survive.
+        section.processing_issues = [
+            pi
+            for pi in (section.processing_issues or [])
+            if getattr(pi, "stage", None) != EXTRACTION_STAGE
+        ] + [issue]
+
+        output = {
+            "document_class": {"type": class_label},
+            "split_document": {"page_indices": section_info.page_indices},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": False,
+                "content_filtered": True,
+                "extraction_time_seconds": time.time() - t0,
+                "processing_issues": [pi.to_dict() for pi in section.processing_issues],
+            },
+        }
+        s3.write_content(
+            output,
+            section_info.output_bucket,
+            section_info.output_key,
+            content_type="application/json",
+        )
+        section.extraction_result_uri = section_info.output_uri
+        return document
+
     def _build_extraction_content(
         self,
         document: Document,
@@ -2201,6 +2317,10 @@ class ExtractionService:
             else:
                 try:
                     content = self._build_prompt_content(prompt_template, page_images)
+                except DocumentImagePlaceholderError:
+                    # The configured prompt is wrong for every document; sending
+                    # the default prompt instead would hide that.
+                    raise
                 except ValueError as e:
                     logger.warning(
                         f"Error formatting prompt template: {str(e)}. Using default prompt."
@@ -5077,19 +5197,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         stages: list[dict[str, Any]] = []
 
         # 1) OCR
-        ocr_info = metadata.get("ocr_analysis") or {}
-        tables_seen = ocr_info.get("tables_detected", 0)
+        ocr_detail = ""
+        if metadata.get("ocr_analysis"):
+            tables_seen = metadata["ocr_analysis"].get("tables_detected", 0)
+            ocr_detail = (
+                f"{tables_seen} markdown table(s) in text"
+                if tables_seen
+                else "no markdown tables"
+            )
         stages.append(
-            {
-                "key": "ocr",
-                "label": "OCR",
-                "detail": (
-                    f"{tables_seen} markdown table(s) in text"
-                    if tables_seen
-                    else "no markdown tables"
-                ),
-                "status": "ok",
-            }
+            {"key": "ocr", "label": "OCR", "detail": ocr_detail, "status": "ok"}
         )
         # 2) Classify
         stages.append(
@@ -5176,6 +5293,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             batch_count = split.get("batch_count")
             concurrent = split.get("concurrent_batches")
             c_status = "ok"
+            # Who scores the separate pass. With method decision_model that is
+            # the decision model, one request per page; the confidence LLM is
+            # never called, so naming it would report a model that scored nothing.
+            if conf_cfg.method == "decision_model":
+                conf_model = function_name(conf_cfg.decision_model.endpoint or "")
+                conf_name = f"decision model {conf_model}".strip()
+                scoring_detail = (
+                    f"{conf_cfg.decision_model.input}, one request per page"
+                )
+            else:
+                conf_model = conf_cfg.model
+                conf_name = conf_cfg.model or "model"
+                scoring_detail = "1 pass"
             if conf_mode == "integrated" and self._integrated_downgrade_reason:
                 # Configured integrated, ran separately (list-bearing class).
                 # Report what HAPPENED, not what was configured; the full reason
@@ -5193,12 +5323,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 c_detail = "integrated (inline with extraction)"
                 fan = 0
             elif batch_count and batch_count > 1:
-                c_detail = f"{conf_cfg.model or 'model'} · {batch_count} batches"
+                c_detail = f"{conf_name} · {batch_count} batches"
                 if concurrent and concurrent > 1:
                     c_detail += f" · {concurrent}× concurrent"
                 fan = concurrent if (concurrent and concurrent > 1) else 0
             else:
-                c_detail = f"{conf_cfg.model or 'model'} · 1 pass"
+                c_detail = f"{conf_name} · {scoring_detail}"
                 fan = 0
             stages.append(
                 {
@@ -5207,7 +5337,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "detail": c_detail,
                     "status": c_status,
                     "fanout": fan,
-                    "model": conf_cfg.model,
+                    "model": conf_model,
                 }
             )
 
@@ -5950,6 +6080,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
             metering = response.get("metering", {}) or {}
+            # A withheld reply is not a correction, however well it parses; the
+            # handler below keeps the original extraction, as for any failure.
+            from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+            raise_if_output_withheld(response)
             text = bedrock.extract_text_from_response(dict(response))
             corrected = json.loads(extract_json_from_text(text))
             corrected, ok, _count, _rec = self._normalize_list_result(
@@ -6991,6 +7126,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 tool_config=tool_config,
                 tool_choice=tool_choice,
             )
+            # A reply the content filter or a guardrail withheld is a 200, not an
+            # answer: raised as a block so the section fails as it does for a
+            # blocked ValidationException (_handle_content_filtered).
+            from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+            raise_if_output_withheld(response_with_metering)
 
             # A model can accept a toolConfig and still answer in prose. That is a
             # normal outcome (stopReason end_turn rather than tool_use), so an
@@ -8423,10 +8564,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     document.metering, failed_run_metering
                 )
             from idp_common.utils.bedrock_utils import (
+                is_content_filter_block,
                 is_image_request_rejection,
                 is_input_token_overflow,
             )
 
+            if is_content_filter_block(e):
+                # Fails this section only and returns, so the other sections and
+                # the document complete (#2038). Ahead of the two matchers below
+                # so neither can absorb it; its wording matches neither today.
+                return self._handle_content_filtered(
+                    document, section, section_info, section_id, t0, e
+                )
             if is_image_request_rejection(e):
                 # Checked FIRST so the image case can never be absorbed by the
                 # overflow branch as Bedrock's wording evolves: the two families
@@ -8512,6 +8661,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         page_images = self._load_document_images(
             document, section_info.sorted_page_ids, page_texts=self._page_texts
         )
+        # The text of each page an image was just loaded for, from the same ids.
+        self._image_page_texts = [
+            page_id_to_text.get(pid, "") for pid in self._image_page_ids
+        ]
 
         # Initialize extraction context
         class_schema, attribute_descriptions = self._initialize_extraction_context(
@@ -8714,6 +8867,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         extraction_results: dict[str, Any],
         document_text: str,
         page_images: list[bytes],
+        page_texts: list[str] | None = None,
     ) -> dict[str, Any]:
         """Assess one scope, batching large list fields across multiple inferences.
 
@@ -8736,6 +8890,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             extraction_results=extraction_results,
             document_text=document_text,
             page_images=page_images,
+            page_texts=page_texts,
             batch_size=confidence_cfg.list_batch_size,
             confidence_model_id=confidence_cfg.model,
             geometry_mode=self.config.extraction.geometry.mode,
@@ -8794,6 +8949,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return None
             document_text = payload.get("assess_document_text", "") or ""
             page_images = payload.get("assess_page_images", []) or []
+            page_texts = payload.get("assess_page_texts")
 
             # assess_results does Bedrock I/O; run it off the event loop so the
             # concurrent shard scheduler is not blocked.
@@ -8810,6 +8966,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     extraction_results=extraction_results,
                     document_text=document_text,
                     page_images=page_images,
+                    page_texts=page_texts,
                 )
                 shard_assessment = result.get("assessment") or {}
                 if ground_in_shard:
@@ -8947,6 +9104,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extraction_results=extracted_fields,
                 document_text=self._document_text,
                 page_images=self._page_images,
+                page_texts=self._image_page_texts,
             )
             metering["_merged_assessment"] = batched["assessment"]
             metering["_merged_assessment_alerts"] = batched["alerts"]

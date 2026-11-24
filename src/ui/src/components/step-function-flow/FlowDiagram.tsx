@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT-0
 
 import React from 'react';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import { Box, Badge } from '@cloudscape-design/components';
 import './FlowDiagram.css';
+import type { MalwareScanFields } from '../common/malware-scan';
+import { stepLabelMessages, stepName, stepStatusLabel } from './step-labels';
 import { withWordBreaks } from './word-breaks';
 
 interface StepConfig {
@@ -26,6 +29,8 @@ interface Step {
   parentMapName?: string;
   mapIterations?: number;
   mapIterationDetails?: Step[];
+  /** Set on the Malware Scan step only: the document's verdict, which the step is recognised and worded by. */
+  malwareScan?: MalwareScanFields;
 }
 
 interface FlowDiagramProps {
@@ -40,11 +45,59 @@ interface FlowDiagramProps {
   mergedConfig?: StepConfig | null;
 }
 
+const messages = defineMessages<{
+  noSteps: NoMessageValues;
+  mapIterations: { readonly count: number };
+  moreIterations: { readonly count: number };
+  legendCompleted: NoMessageValues;
+  legendRunning: NoMessageValues;
+  legendFailed: NoMessageValues;
+  legendPending: NoMessageValues;
+}>({
+  noSteps: {
+    id: 'documents.processingFlow.diagram.noSteps',
+    defaultMessage: 'No steps available',
+    description: 'Shown in the flow diagram of Reports › Processing Flow on the document page when the execution has no steps.',
+  },
+  mapIterations: {
+    id: 'documents.processingFlow.diagram.mapIterations',
+    defaultMessage: 'Map Iterations ({count})',
+    description:
+      'Heading over the iterations of a Map step in the flow diagram of Reports › Processing Flow on the document page. {count} is the number of iterations. Map is a Step Functions state type.',
+  },
+  moreIterations: {
+    id: 'documents.processingFlow.diagram.moreIterations',
+    defaultMessage: '+{count} more',
+    description:
+      'After the first six iterations of a Map step in the flow diagram of Reports › Processing Flow on the document page. {count} is the number of further iterations, which the diagram does not draw.',
+  },
+  legendCompleted: {
+    id: 'documents.processingFlow.diagram.legendCompleted',
+    defaultMessage: 'Completed',
+    description: 'Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a step that succeeded.',
+  },
+  legendRunning: {
+    id: 'documents.processingFlow.diagram.legendRunning',
+    defaultMessage: 'Running',
+    description: 'Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a step that is running.',
+  },
+  legendFailed: {
+    id: 'documents.processingFlow.diagram.legendFailed',
+    defaultMessage: 'Failed',
+    description: 'Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a step that failed.',
+  },
+  legendPending: {
+    id: 'documents.processingFlow.diagram.legendPending',
+    defaultMessage: 'Pending',
+    description: 'Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a pending step.',
+  },
+});
+
 // Helper function to check if a step is disabled based on configuration
-const isStepDisabled = (stepName: string, config: StepConfig | null): boolean => {
+const isStepDisabled = (name: string, config: StepConfig | null): boolean => {
   if (!config) return false;
 
-  const stepNameLower = stepName.toLowerCase();
+  const stepNameLower = name.toLowerCase();
 
   // Check if this is a summarization step
   if (stepNameLower.includes('summarization') || stepNameLower.includes('summary')) {
@@ -71,11 +124,12 @@ const FlowDiagram = ({
   getStepIcon,
   mergedConfig = null,
 }: FlowDiagramProps): React.JSX.Element => {
+  const intl = useIntl();
   if (!steps || steps.length === 0) {
     return (
       <Box textAlign="center" padding="xl">
         <Box variant="p" color="text-status-inactive">
-          No steps available
+          <FormattedMessage {...messages.noSteps} />
         </Box>
       </Box>
     );
@@ -144,7 +198,7 @@ const FlowDiagram = ({
                 }}
                 role="button"
                 tabIndex={0}
-                title={stepDisabled ? 'This step was disabled in configuration and performed no processing' : ''}
+                title={stepDisabled ? intl.formatMessage(stepLabelMessages.disabledTitle) : ''}
               >
                 <div className="step-icon-container">
                   {getStepIcon(step.name, step.type, step.status)}
@@ -152,11 +206,19 @@ const FlowDiagram = ({
                 </div>
                 <div className="step-label">
                   <div className="step-name">
-                    <span>{withWordBreaks(step.name)}</span>
-                    {stepDisabled && <Badge color="grey">NOT ENABLED</Badge>}
-                    {isMapState && step.mapIterations && <Badge color="blue">{step.mapIterations} iterations</Badge>}
+                    <span>{withWordBreaks(stepName(step, intl))}</span>
+                    {stepDisabled && (
+                      <Badge color="grey">
+                        <FormattedMessage {...stepLabelMessages.notEnabled} />
+                      </Badge>
+                    )}
+                    {isMapState && step.mapIterations && (
+                      <Badge color="blue">
+                        <FormattedMessage {...stepLabelMessages.iterations} values={{ count: step.mapIterations }} />
+                      </Badge>
+                    )}
                   </div>
-                  <div className={`step-status-text status-text-${step.status.toLowerCase()}`}>{step.status}</div>
+                  <div className={`step-status-text status-text-${step.status.toLowerCase()}`}>{stepStatusLabel(step.status, intl)}</div>
                   {step.error && (
                     <div className="step-error-indicator">
                       <span className="error-icon">⚠️</span>
@@ -172,7 +234,9 @@ const FlowDiagram = ({
               {isMapState && mapIterationsForThisStep.length > 0 && (
                 <div className="map-iterations-inline">
                   <div className="map-iterations-header">
-                    <h5>Map Iterations ({mapIterationsForThisStep.length})</h5>
+                    <h5>
+                      <FormattedMessage {...messages.mapIterations} values={{ count: mapIterationsForThisStep.length }} />
+                    </h5>
                   </div>
                   <div className="map-iterations-grid">
                     {mapIterationsForThisStep.slice(0, 6).map((iteration, iterIndex) => (
@@ -190,14 +254,18 @@ const FlowDiagram = ({
                       >
                         <div className="iteration-icon">{getStepIcon(iteration.name, iteration.type, iteration.status)}</div>
                         <div className="iteration-label">
-                          <div className="iteration-name">{iteration.name}</div>
-                          <div className={`iteration-status status-text-${iteration.status.toLowerCase()}`}>{iteration.status}</div>
+                          <div className="iteration-name">{stepName(iteration, intl)}</div>
+                          <div className={`iteration-status status-text-${iteration.status.toLowerCase()}`}>
+                            {stepStatusLabel(iteration.status, intl)}
+                          </div>
                         </div>
                       </div>
                     ))}
                     {mapIterationsForThisStep.length > 6 && (
                       <div className="more-iterations">
-                        <span>+{mapIterationsForThisStep.length - 6} more</span>
+                        <span>
+                          <FormattedMessage {...messages.moreIterations} values={{ count: mapIterationsForThisStep.length - 6 }} />
+                        </span>
                       </div>
                     )}
                   </div>
@@ -222,19 +290,27 @@ const FlowDiagram = ({
       <div className="flow-legend">
         <div className="legend-item">
           <div className="legend-icon succeeded" />
-          <span>Completed</span>
+          <span>
+            <FormattedMessage {...messages.legendCompleted} />
+          </span>
         </div>
         <div className="legend-item">
           <div className="legend-icon running" />
-          <span>Running</span>
+          <span>
+            <FormattedMessage {...messages.legendRunning} />
+          </span>
         </div>
         <div className="legend-item">
           <div className="legend-icon failed" />
-          <span>Failed</span>
+          <span>
+            <FormattedMessage {...messages.legendFailed} />
+          </span>
         </div>
         <div className="legend-item">
           <div className="legend-icon pending" />
-          <span>Pending</span>
+          <span>
+            <FormattedMessage {...messages.legendPending} />
+          </span>
         </div>
       </div>
     </div>

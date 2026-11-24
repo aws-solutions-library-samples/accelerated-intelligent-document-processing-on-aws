@@ -1,0 +1,140 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Sizing inputs (Solution Profile contract v1, sizingFile). The profile holds no
+# formulas: estimates come from the estimators listed at the end. The inputs
+# mirror what those estimators ask for. The Capacity Planning page
+# (docs/capacity-planning.md, src/ui/src/components/capacity-planning/) asks, per
+# document type, for average pages per document and tokens per processing step
+# (OCR, classification, extraction, assessment, summarization), populated from
+# processed documents' metering; an hourly schedule of documents per hour per
+# document type; a maximum latency per document (1 to 3,600 seconds); and, while
+# validation escalation is on, an escalation rate when not measured (default 15%).
+# It sizes pipeline mode only.
+inputs:
+  - id: pages-per-month
+    title: Pages processed per month, per document type
+    unit: pages/month
+    question: question:monthly-volume
+    used_for: [cost, quotas, storage]
+  - id: documents-per-month
+    title: Documents processed per month, per document type
+    unit: documents/month
+    question: question:monthly-volume
+    used_for: [cost, storage]
+  - id: peak-documents-per-hour
+    title: Documents per hour in each hour of the processing schedule, per document type (the Capacity Planning schedule)
+    unit: documents/hour
+    question: question:peak-volume
+    used_for: [quotas, throughput, latency]
+  - id: pages-per-document
+    title: Average and largest pages per document, per document type
+    unit: pages/document
+    question: question:pages-per-document
+    used_for: [cost, quotas, latency, configuration]
+  - id: max-list-rows
+    title: Largest number of rows in one table or list in a section
+    unit: rows
+    question: question:max-table-rows
+    used_for: [configuration, cost, latency]
+  - id: document-classes-count
+    title: Number of document classes to configure
+    unit: classes
+    question: question:document-classes
+    used_for: [configuration, staffing]
+  - id: attributes-per-class
+    title: Fields, groups and lists per class schema
+    unit: attributes/class
+    question: question:class-attributes
+    used_for: [configuration, cost, staffing]
+  - id: packet-share
+    title: Share of files that are packets of several documents, and sections per packet
+    unit: percent of files
+    question: question:single-or-packet
+    used_for: [configuration, cost]
+  - id: extraction-mode
+    title: Extraction mode per class, Simple or Advanced (agentic)
+    question: question:max-table-rows
+    used_for: [configuration, cost, latency]
+  - id: tokens-per-step
+    title: Tokens per document for OCR, classification, extraction, assessment and summarization, measured from processed documents
+    unit: tokens/document
+    question: question:class-attributes
+    used_for: [quotas, cost]
+  - id: escalation-rate
+    title: Share of documents whose extraction is re-run on the escalation model after failing validation (Capacity Planning default 15% when not measured)
+    unit: percent of documents
+    question: question:accuracy-target
+    used_for: [cost, quotas]
+  - id: max-latency-per-document
+    title: Maximum latency per document, judged at P99 by Capacity Planning
+    unit: seconds
+    question: question:latency-target
+    used_for: [latency, throughput]
+  - id: concurrent-workflows
+    title: Concurrent document workflows (MaxConcurrentWorkflows, default 100)
+    unit: workflows
+    question: question:peak-volume
+    used_for: [throughput, cost, quotas]
+  - id: review-rate
+    title: Share of documents or fields sent to human review
+    unit: percent of documents
+    question: question:review-needs
+    used_for: [staffing, latency]
+  - id: reviewer-count
+    title: Number of reviewers and annotators
+    unit: people
+    question: question:reviewer-roles
+    used_for: [staffing]
+  - id: retention-days
+    title: Retention of documents and tracking records (DataRetentionInDays, default 365) and of logs (LogRetentionDays, default 30)
+    unit: days
+    question: question:retention
+    used_for: [storage, cost]
+  - id: tenant-count
+    title: Number of tenants sharing one stack, or stacks needed
+    unit: tenants
+    question: question:multi-tenant
+    used_for: [configuration, throughput, cost]
+estimators:
+  - id: capacity-planner
+    title: Capacity Planning page in the web UI (Bedrock TPM and RPM quotas, latency percentiles; pipeline mode only)
+    evidence:
+      - docs/capacity-planning.md
+      - docs/capacity-planning.md#pipeline-mode-only
+      - docs/capacity-planning.md#evaluation-and-escalation-demand
+      - src/ui/src/components/capacity-planning/CapacityPlanningLayout.tsx
+      - src/lambda/calculate_capacity/index.py
+  - id: web-ui-cost-estimate
+    title: Per-document estimated cost in the web UI, from the editable pricing table
+    evidence:
+      - docs/cost-calculator.md#built-in-web-ui-cost-estimation
+  - id: document-estimated-cost-metric
+    title: DocumentEstimatedCost CloudWatch metric (Sum is spend in a period, Average is cost per document)
+    evidence:
+      - docs/cost-calculator.md#documentestimatedcost--a-cloudwatch-metric-you-can-alarm-on
+  - id: budget-method
+    title: Budget method - measure 20 to 50 representative documents, multiply by volume, add the always-on floor and 50% headroom
+    evidence:
+      - docs/cost-calculator.md#recommended-starting-budget
+      - docs/cost-calculator.md#the-split-that-matters-for-setting-a-budget
+  - id: extraction-scaling-figures
+    title: Measured cost and wall-clock by rows and pages for Simple and Advanced extraction (v0.6.14 benchmark)
+    evidence:
+      - docs/extraction-scaling-guide.md
+      - docs/benchmarking/config-guidance.md
+  - id: cli-load-test
+    title: idp-cli load-test - copies a file into the input bucket at a fixed rate or on a per-minute schedule
+    evidence:
+      - docs/idp-cli.md#load-test
+      - lib/idp_cli_pkg/examples/load-test-schedule.csv
+      - lib/idp_cli_pkg/idp_cli/cli.py
+  - id: benchmark-suite
+    title: Benchmark harness - runs a configuration by document-size matrix against a deployed stack and scores accuracy, completeness, calibration, latency, tokens and cost
+    evidence:
+      - benchmarks/README.md
+      - docs/benchmarking/index.md
+  - id: review-effort-estimate
+    title: Test Studio review-effort estimate - how much review a test set still needs
+    evidence:
+      - docs/test-studio.md#how-much-review-is-enough

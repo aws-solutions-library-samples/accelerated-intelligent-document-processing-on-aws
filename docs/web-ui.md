@@ -34,6 +34,13 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
 - **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
+- **Interface language** — use the everyday screens in English or French (Canada), chosen from the language menu in the top navigation (see [Interface language](#interface-language))
+
+## Welcome page and guided tour
+
+A new user lands on a **Welcome** page. It offers **Take the tour** and **Enter IDP Console**, and, where Quick Start is enabled (the default), **Quick Start** for an Admin (see [Quick Start](quick-start.md#web-ui)). **Don't show this again** hides it in that browser. An Annotator, or a Reviewer with no other role, lands on Home › Tasks instead, and is not offered the tour.
+
+**Take the tour** opens the Document List and walks through the main pages of the side navigation, one step each, with a line on what each page is for. It has a step only for the pages your role's side navigation shows, so it is shorter for an Author or a Viewer than for an Admin, and it ends on the last step it has for your role. Where Quick Start is enabled, an Admin's tour ends on the **Quick Start** button, and **Finish** opens Quick Start.
 
 ## Document List
 
@@ -115,9 +122,15 @@ reading which one you have:
   bucket's lifecycle rule expires them eventually; the cost of leaving them is storage
   until it does.
 - **The input-object delete failed.** The document is likewise removed from the list, and
-  **the originally uploaded file is still in the input bucket**. This is the case worth
-  acting on if the reason for deleting was that the document should not be held — the
-  remedy is the same `idp-cli` delete, or removing that one object.
+  **the originally uploaded file, or some of its versions, is still in the input bucket**.
+  This is the case worth acting on if the reason for deleting was that the document should
+  not be held — the remedy is the same `idp-cli` delete, or removing every version of that
+  one object.
+
+A successful delete removes the uploaded file **with every version of it**: the input
+bucket is versioned, and the delete purges each version and delete marker of the
+document's exact key rather than leaving the upload behind as a noncurrent version. A
+deleted document cannot be recovered from the input bucket.
 
 A selection where some documents were removed and others were not reports the failure for
 the whole call and names each document it could not finish; the ones that were removed are
@@ -957,6 +970,67 @@ labels each form declares are applied automatically. The forms are read from the
 repository's default branch rather than from the release a deployment was built from.
 Very long findings are length-capped so the URL stays inside GitHub's limit; use
 **Copy full details** in the Troubleshoot modal to grab the complete text.
+
+## Interface language
+
+The web UI is available in English and French (Canada). The **language menu** in the top
+navigation, the globe just before your user name, shows the current language and lists each
+language under its own name: **English** and **Français (Canada)**. Choosing one switches the
+page in place, without a reload.
+
+**Which language a browser opens in.** The UI takes the first of these that applies:
+
+1. the language last chosen from the menu in this browser;
+2. the first of the browser's preferred languages that the UI offers, in any region: a browser
+   set to French (France) or French (Belgium) opens in French (Canada), and one set to English
+   (United Kingdom) opens in English;
+3. English.
+
+The sign-in page follows the same rule; it has no language menu of its own. Nothing in the
+page's address selects a language.
+
+**The choice is kept per browser.** It is stored in the browser's local storage, so it survives
+a reload and signing out. Another browser or computer starts from its own preferred languages,
+and clearing the site's data in the browser resets the choice. It is not saved with your user
+account.
+
+**Dates, numbers and amounts follow the language**, in the browser's time zone. In French
+(Canada) a date reads `30 octobre 2026`, a time `17 h 40`, a number `1 234,56` and an amount
+`1 234,50 US$`. Amounts name the currency as `US$` in every language.
+
+**What stays English.** These are not translated:
+
+- the admin, configuration and Test Studio screens, including the configuration editor's help
+  text, and Test Studio's own text on a test-set item's edit page and on a test set's queue page
+  in Review Studio;
+- `(Active)`, which marks the active configuration profile in the profile lists of the
+  **Upload Documents** page and the **Reprocess** and **Skip All Reviews by profile** dialogs;
+- on the **Edit Page Grouping** board, the instructions and announcements a screen reader reads
+  for dragging a page, and the error shown when the grouping cannot be saved on the document page
+  or on a document's edit page;
+- the emails Amazon Cognito sends (invitations and verification codes), and the Cognito errors on
+  the sign-in form that the sign-in form's own French dictionary does not cover;
+- the documentation site the UI links to;
+- agent and chat responses, which come from the model. A suggested prompt's label is
+  translated; the prompt it sends stays English;
+- CSV column headers and generated report headings, so that tools reading the exports keep
+  working;
+- error messages from the backend that carry no code the UI can translate, and the short
+  fallbacks shown when an error has no text of its own, such as `Unknown error`;
+- the names and descriptions the backend sends for the agents on the **Document Analytics** page,
+  for the Inbox's message types and for the review queues, such as the **Default** queue;
+- extensions that do not translate their own text, and the names extensions are listed under.
+  The standard controls inside an extension, such as pagination or a dialog's close button,
+  follow the UI language anyway, so such an extension shows them in French around its English
+  text;
+- document data, always: extracted values, document class names, configuration content and file
+  names appear as they were written.
+
+At this release, **2,903 of 2,903** interface messages (**100%**) have a French (Canada)
+translation; a message without one is shown in English.
+
+Developers: the [i18n README](../src/ui/src/i18n/README.md) explains how a message is declared
+and how a language is added.
 
 ## Authentication Features
 

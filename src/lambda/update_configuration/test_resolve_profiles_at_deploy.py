@@ -114,6 +114,55 @@ def test_a_profile_with_history_gets_the_resolution_as_its_published_revision(
     assert manager.head_matches_published("claims") is True
 
 
+def _profile_saved_while_max_tokens_was_empty_by_default(mgr, name: str) -> None:
+    """A profile and its r1 saved while `max_tokens` defaulted to empty.
+
+    That release left the empty value out of the head and the revision body holds
+    it as `null`, so after the default became 10000 the head reads 10000 and r1,
+    which documents run, still reads empty.
+    """
+    from idp_common.config.configuration_manager import _stored_content_hash
+    from idp_common.config.models import IDPConfig
+
+    mgr.save_configuration("Config", IDPConfig(notes=name), version=name)
+    key = {"Configuration": f"Config#{name}"}
+    head = mgr._decompress_item(mgr.table.get_item(Key=key)["Item"])
+    head["classification"]["combined"]["llm"].pop("max_tokens")
+    mgr.table.put_item(Item=mgr._compress_item(head))
+    body = mgr.revisions.get_body(name, 1)
+    body["classification"]["combined"]["llm"]["max_tokens"] = None
+    mgr.revisions.put_body(name, 1, body)
+    mgr.revisions.update_entry(name, 1, storedHash=_stored_content_hash(head))
+
+
+@pytest.mark.unit
+def test_a_setting_whose_default_changed_is_recorded_and_stays_recorded(
+    manager, caplog
+):
+    """
+    The resolution's own save leaves the head reading as it did, so it is judged
+    against the revision documents run. Otherwise it rewrites the head without a
+    revision, and every later deployment logs that the profile cannot be shown to
+    be its current revision and records nothing.
+    """
+    import logging
+
+    from idp_common.config import get_config
+
+    _profile_saved_while_max_tokens_was_empty_by_default(manager, "claims")
+
+    assert index.resolve_user_profiles_against_default(manager, _Context()) == 1
+
+    assert manager.resolve_published_revision("claims") == 2
+    assert manager.head_matches_published("claims") is True
+    runs = get_config(as_model=True, version="claims", revision=2)
+    assert runs.classification.combined.llm.max_tokens == 10000
+    with caplog.at_level(logging.WARNING):
+        index.resolve_user_profiles_against_default(manager, _Context())
+    assert "Not recording the resolution" not in caplog.text
+    assert manager.resolve_published_revision("claims") == 2
+
+
 @pytest.mark.unit
 def test_a_second_deployment_records_nothing_more(manager):
     _profile_predating_summarization(manager, "claims")

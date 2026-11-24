@@ -385,7 +385,10 @@ def test_both_modes_pass_the_same_parameters(cbd, faked_deploy, run):
 
 def test_the_terraform_command_parses_as_a_terraform_deploy(cbd, faked_deploy, run):
     result = cbd._deploy_primary_terraform_attempt("stk", "a@example.test", run)
+    convergence = result.pop("convergence")
     assert result == {"stack_name": "stk", "success": True, "iac": "terraform"}
+    # The faked run_command answers the re-plan with exit 0: an empty plan.
+    assert convergence["status"] == "converged"
     (command,) = _deploys(faked_deploy)
     assert_deploy_command_is_well_formed(command)
     _, deploy, _ = _cli_authorities()
@@ -606,10 +609,153 @@ def test_an_unread_state_is_a_finding_not_a_skipped_sweep(cbd, faked_cleanup, ru
 
 def test_a_retained_resource_of_another_kind_is_a_finding(cbd, faked_cleanup, run):
     faked_cleanup["retained"] = {
-        "other": [{"type": "aws_kms_key", "physical_id": "k-1", "logical_id": "x"}]
+        "other": [
+            {"type": "aws_kms_alias", "physical_id": "alias/k-1", "logical_id": "x"}
+        ]
     }
     findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
-    assert any("aws_kms_key k-1" in f for f in findings)
+    assert any("aws_kms_alias alias/k-1" in f for f in findings)
+
+
+# The retained set a Terraform nightly reported (#2230), in the shape the SDK's
+# retained_report returns: the template's CustomerManagedEncryptionKey, which
+# the sweep did not delete, beside a bucket it does.
+NIGHTLY_KEY_ID = "e97cf58a-7231-4e1e-974e-8d06f234ad5f"
+RECORDED_NIGHTLY_RETAINED = {
+    "dynamodb_tables": [],
+    "log_groups": [],
+    "s3_buckets": [
+        {
+            "logical_id": "module.idp.aws_s3_bucket.input_bucket",
+            "physical_id": "stk-inputbucket-1a2b3c",
+            "type": "aws_s3_bucket",
+        }
+    ],
+    "other": [
+        {
+            "logical_id": "module.idp.awscc_kms_key.customer_managed_encryption_key",
+            "physical_id": NIGHTLY_KEY_ID,
+            "type": "awscc_kms_key",
+            "status": "RETAINED",
+            "display_name": f"KMS key {NIGHTLY_KEY_ID}, which encrypts the "
+            "retained buckets",
+        }
+    ],
+    "service_log_groups": [],
+}
+
+
+class _KmsError(Exception):
+    def __init__(self, code):
+        super().__init__(f"An error occurred ({code})")
+        self.response = {"Error": {"Code": code}}
+
+
+class _FakeKms:
+    """describe_key / schedule_key_deletion over a {key_id: KeyState} map."""
+
+    def __init__(self, states, schedule_error=None):
+        self.states = dict(states)
+        self.schedule_error = schedule_error
+        self.scheduled = []
+
+    def describe_key(self, KeyId):
+        if KeyId not in self.states:
+            raise _KmsError("NotFoundException")
+        return {"KeyMetadata": {"KeyId": KeyId, "KeyState": self.states[KeyId]}}
+
+    def schedule_key_deletion(self, KeyId, PendingWindowInDays):
+        if self.schedule_error:
+            raise _KmsError(self.schedule_error)
+        self.scheduled.append((KeyId, PendingWindowInDays))
+        self.states[KeyId] = "PendingDeletion"
+
+
+@pytest.fixture
+def unpatched_sweep(cbd):
+    """The real _sweep_terraform_retained, read before faked_cleanup replaces it
+    (requested ahead of faked_cleanup, so pytest sets it up first)."""
+    return cbd._sweep_terraform_retained
+
+
+@pytest.fixture
+def real_sweep(cbd, unpatched_sweep, faked_cleanup, monkeypatch):
+    """faked_cleanup with the real _sweep_terraform_retained: StackDeployer's
+    deleters stubbed, and boto3's KMS client replaced by the _FakeKms in
+    ``real_sweep["kms"]``. No network."""
+    deployer = SimpleNamespace(
+        _delete_dynamodb_table=lambda n: None,
+        _discover_auto_created_log_groups=lambda s: [],
+        _delete_log_group=lambda n: None,
+        _empty_and_delete_bucket=lambda n: None,
+    )
+    monkeypatch.setattr(
+        cbd,
+        "_sweep_terraform_retained",
+        lambda s, r: unpatched_sweep(s, r, deployer),
+    )
+    state = {"kms": _FakeKms({})}
+
+    def _client(service, **_kw):
+        assert service == "kms", service
+        return state["kms"]
+
+    monkeypatch.setattr(cbd.boto3, "client", _client)
+    faked_cleanup["retained"] = RECORDED_NIGHTLY_RETAINED
+    return state
+
+
+def test_a_retained_kms_key_is_scheduled_for_deletion_and_not_a_finding(
+    cbd, real_sweep, run
+):
+    real_sweep["kms"] = _FakeKms({NIGHTLY_KEY_ID: "Enabled"})
+    findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+    assert findings == ["iam finding"]
+    assert real_sweep["kms"].scheduled == [(NIGHTLY_KEY_ID, 7)]
+
+
+def test_a_kms_key_already_pending_deletion_counts_as_swept(cbd, real_sweep, run):
+    # A key a previous attempt scheduled, and one that is gone altogether.
+    for states in ({NIGHTLY_KEY_ID: "PendingDeletion"}, {}):
+        real_sweep["kms"] = _FakeKms(states)
+        findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+        assert findings == ["iam finding"], states
+        assert real_sweep["kms"].scheduled == [], states
+
+
+def test_a_kms_key_that_cannot_be_scheduled_is_a_finding(cbd, real_sweep, run):
+    real_sweep["kms"] = _FakeKms(
+        {NIGHTLY_KEY_ID: "Enabled"}, schedule_error="AccessDeniedException"
+    )
+    findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+    assert findings == [
+        f"retained resource not deleted: KMS key {NIGHTLY_KEY_ID}: "
+        "An error occurred (AccessDeniedException)",
+        "iam finding",
+    ]
+
+
+def test_an_unknown_kind_beside_a_swept_key_is_still_a_finding(
+    cbd, real_sweep, faked_cleanup, run
+):
+    account = {
+        "logical_id": "module.idp.module.apiresolverstack."
+        "awscc_apigateway_account.api_gateway_account",
+        "physical_id": "us-east-1",
+        "type": "awscc_apigateway_account",
+    }
+    faked_cleanup["retained"] = {
+        **RECORDED_NIGHTLY_RETAINED,
+        "other": [*RECORDED_NIGHTLY_RETAINED["other"], account],
+    }
+    real_sweep["kms"] = _FakeKms({NIGHTLY_KEY_ID: "Enabled"})
+    findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+    assert findings == [
+        "retained resource of a kind the sweep does not delete: "
+        "awscc_apigateway_account us-east-1",
+        "iam finding",
+    ]
+    assert real_sweep["kms"].scheduled == [(NIGHTLY_KEY_ID, 7)]
 
 
 def test_the_state_is_removed_only_after_a_clean_destroy(
@@ -1063,14 +1209,16 @@ def test_no_new_job_is_added_for_it(config):
     """The Terraform run is the integration_tests job on its own schedule, as the
     probe and region runs are; a second deploy job would race the first for the
     same resource group on the same schedule and break nightly_notification's
-    reading of which job ran."""
+    reading of which job ran. The one other deploy job is load_probe, which runs
+    only on the load-probe schedule, where integration_tests is ruled out
+    (test_load_probe.py pins both sets of rules)."""
     deploy_jobs = [
         name
         for name, job in config.items()
         if isinstance(job, dict)
         and "integration_test_deployment.py" in _script_text(job)
     ]
-    assert deploy_jobs == ["integration_tests"]
+    assert deploy_jobs == ["integration_tests", "load_probe"]
 
 
 # ---------------------------------------------------------------------------

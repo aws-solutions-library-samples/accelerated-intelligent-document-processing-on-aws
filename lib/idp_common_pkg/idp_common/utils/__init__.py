@@ -24,6 +24,7 @@ from .metering import attach_failure_metering as attach_failure_metering
 from .metering import cumulative_metering as cumulative_metering
 from .metering import failure_metering as failure_metering
 from .metering import merge_metering_data as merge_metering_data
+from .metering import subtract_metering as subtract_metering
 
 # Import settings helper utilities
 from .settings_helper import get_settings, get_setting, clear_cache

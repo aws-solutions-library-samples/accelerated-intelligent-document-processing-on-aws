@@ -490,6 +490,14 @@ _UNASSESSED_SHORT_RESPONSE_REASON = (
 #: at the model's output budget, where this points at the time budget, whose
 #: levers are the Assessment function's timeout and the work per section. Saying
 #: the assessment "returned fewer items" here would be false — no call was made.
+#: ``confidence_reason`` for a row whose confidence batch Amazon Bedrock withheld
+#: (a content-filter or guardrail block). The other batches stand, and the
+#: recovery rungs still offer the row to the model.
+_UNASSESSED_CONTENT_FILTER_REASON = (
+    "Not individually assessed (Amazon Bedrock withheld the confidence model's "
+    "reply for this row's batch: a content filter or a guardrail blocked it)."
+)
+
 _UNASSESSED_DEADLINE_REASON = (
     "Not individually assessed (the Lambda invocation time budget was reached "
     "before this row's confidence batch was dispatched; allow more Assessment "
@@ -509,6 +517,13 @@ _UNASSESSED_OMITTED_FIELD_REASON = (
     "is unaffected, but it carries no confidence, so threshold-based review does not "
     "cover it — treat it as unverified."
 )
+
+
+def _is_content_filter_block(error: BaseException) -> bool:
+    """``bedrock_utils.is_content_filter_block``, imported where it is used."""
+    from idp_common.utils.bedrock_utils import is_content_filter_block
+
+    return is_content_filter_block(error)
 
 
 def _row_placeholder(
@@ -2467,6 +2482,7 @@ def assess_results_batched(
     page_images: list[Any],
     batch_size: int,
     ocr_text_confidence: str = "",
+    page_texts: list[str] | None = None,
     max_retries: int = 2,
     confidence_model_id: str | None = None,
     geometry_mode: str | None = None,
@@ -2507,7 +2523,9 @@ def assess_results_batched(
 
     ``assessment_service`` must expose the pure inference core
     ``assess_results(class_label, extraction_results, document_text, page_images,
-    ocr_text_confidence) -> AssessmentCoreResult``.
+    ocr_text_confidence, page_texts) -> AssessmentCoreResult``. ``page_texts`` (the
+    OCR text per page) is passed through for the decision model, which reads one
+    page at a time.
 
     If a batch's response is TRUNCATED at the model's max-output-token ceiling
     (e.g. ``geometry.mode: llm`` makes per-row output too large for a small-cap
@@ -2598,6 +2616,10 @@ def assess_results_batched(
         if isinstance(v, list) and len(v) > effective_batch_size
     }
 
+    # Passed only when given, so a service whose assess_results predates the
+    # argument keeps working.
+    per_page = {"page_texts": page_texts} if page_texts is not None else {}
+
     def _one_call(results: dict[str, Any]) -> Any:
         return assessment_service.assess_results(
             class_label=class_label,
@@ -2605,6 +2627,7 @@ def assess_results_batched(
             document_text=document_text,
             page_images=page_images,
             ocr_text_confidence=ocr_text_confidence,
+            **per_page,
         )
 
     # 1.2 Escalation call closure + token-aware batch size for the STRONGER model
@@ -2622,6 +2645,7 @@ def assess_results_batched(
                 page_images=page_images,
                 ocr_text_confidence=ocr_text_confidence,
                 model_id_override=ladder_escalation_model,
+                **per_page,
             )
 
         escalation_one_call = _escalation_call
@@ -2633,6 +2657,34 @@ def assess_results_batched(
                 batch_size,
                 fixed_results=fixed_results,
             )
+
+    def _recovery_call(call: Callable[[dict[str, Any]], Any] | None):
+        """``call`` for a recovery rung: a reply Bedrock withheld scores nothing
+        rather than raising, so the section keeps what earlier calls scored and
+        the row stays a placeholder. Its billed usage is kept. The first call of
+        a section still raises, which degrades the section (#901)."""
+        if call is None:
+            return None
+
+        def recovering(results: dict[str, Any]) -> Any:
+            try:
+                return call(results)
+            except Exception as e:
+                if not _is_content_filter_block(e):
+                    raise
+                from idp_common.assessment.service import AssessmentCoreResult
+
+                logger.warning(
+                    "A confidence recovery call was withheld by Amazon Bedrock "
+                    "(%s); keeping the rows it covered unscored.",
+                    e,
+                )
+                return AssessmentCoreResult(metering=utils.failure_metering(e))
+
+        return recovering
+
+    recovery_one_call = _recovery_call(_one_call)
+    recovery_escalation_call = _recovery_call(escalation_one_call)
 
     # All list fields (any size) — used to target missing-row retries even when
     # no list is large enough to require batching.
@@ -2656,7 +2708,7 @@ def assess_results_batched(
             big = max(all_list_fields, key=lambda k: len(all_list_fields[k]))
             merged_assessment, merged_alerts, merged_metering, dur = (
                 _retry_missing_rows(
-                    _one_call,
+                    recovery_one_call,
                     extraction_results=extraction_results,
                     big_field=big,
                     merged_assessment=merged_assessment,
@@ -2665,7 +2717,7 @@ def assess_results_batched(
                     batch_size=effective_batch_size,
                     max_retries=max_retries,
                     split_stats=split_stats,
-                    escalation_one_call=escalation_one_call,
+                    escalation_one_call=recovery_escalation_call,
                     escalation_model=ladder_escalation_model,
                     escalation_batch_size=escalation_batch_size,
                     max_escalation_rounds=max_escalation_rounds,
@@ -2686,7 +2738,7 @@ def assess_results_batched(
         # or not the section also has a list.
         merged_assessment, merged_alerts, merged_metering, scalar_dur = (
             _retry_missing_scalars(
-                _one_call,
+                recovery_one_call,
                 extraction_results=extraction_results,
                 merged_assessment=merged_assessment,
                 merged_alerts=merged_alerts,
@@ -2770,16 +2822,41 @@ def assess_results_batched(
         # ``stats`` is a PER-CHUNK accumulator when running concurrently (merged
         # back afterward) so the shared split_stats dict is never mutated from
         # multiple threads.
-        return _assess_slice_adaptive(
-            _one_call,
-            base_results=extraction_results,
-            big_field=big_field,
-            rows=chunk,
-            reconcile=_reconcile_rows_only,
-            stats=stats,
-            deadline_epoch=deadline_epoch,
-            model_id=confidence_model_id,
-        )
+        try:
+            return _assess_slice_adaptive(
+                _one_call,
+                base_results=extraction_results,
+                big_field=big_field,
+                rows=chunk,
+                reconcile=_reconcile_rows_only,
+                stats=stats,
+                deadline_epoch=deadline_epoch,
+                model_id=confidence_model_id,
+            )
+        except Exception as e:
+            # One batch Bedrock withheld (a content-filter or guardrail block on
+            # these rows) costs these rows their scores, not the section its
+            # whole confidence pass: placeholders keep the later batches' rows
+            # aligned, and the recovery rungs below still offer these rows.
+            if not _is_content_filter_block(e):
+                raise
+            logger.warning(
+                "Confidence batch of %d row(s) for '%s' was withheld by Amazon "
+                "Bedrock (%s); leaving those rows unscored.",
+                len(chunk),
+                big_field,
+                e,
+            )
+            return {
+                "rows": [
+                    _row_placeholder(row, _UNASSESSED_CONTENT_FILTER_REASON)
+                    for row in chunk
+                ],
+                "scalars": {},
+                "alerts": [],
+                "metering": utils.failure_metering(e),
+                "duration": 0.0,
+            }
 
     # Concurrency (item 4): a single confidence call over a large list is slow,
     # and batches are INDEPENDENT (each scores different rows with identical
@@ -3046,7 +3123,7 @@ def assess_results_batched(
         merged_assessment, extraction_results
     )
     merged_assessment, merged_alerts, merged_metering, dur = _retry_missing_rows(
-        _one_call,
+        recovery_one_call,
         extraction_results=extraction_results,
         big_field=big_field,
         merged_assessment=merged_assessment,
@@ -3055,7 +3132,7 @@ def assess_results_batched(
         batch_size=effective_batch_size,
         max_retries=max_retries,
         split_stats=split_stats,
-        escalation_one_call=escalation_one_call,
+        escalation_one_call=recovery_escalation_call,
         escalation_model=ladder_escalation_model,
         escalation_batch_size=escalation_batch_size,
         max_escalation_rounds=max_escalation_rounds,
@@ -3071,7 +3148,7 @@ def assess_results_batched(
     # merged scalars came from.
     merged_assessment, merged_alerts, merged_metering, scalar_dur = (
         _retry_missing_scalars(
-            _one_call,
+            recovery_one_call,
             extraction_results=extraction_results,
             merged_assessment=merged_assessment,
             merged_alerts=merged_alerts,

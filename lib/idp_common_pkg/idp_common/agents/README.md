@@ -147,6 +147,17 @@ conversation_manager = DropAndSlideConversationManager(
 agent.conversation_manager = conversation_manager
 ```
 
+**Summarizing instead of trimming**: use `MeteredSummarizingConversationManager`
+from the same module, not Strands' `SummarizingConversationManager`. Strands'
+manager summarizes with a direct call to the agent's model that the event loop
+never records, so the summary's tokens are missing from
+`agent.event_loop_metrics.accumulated_usage` and from any metering read from it.
+The metered subclass summarizes exactly as Strands does and adds each summary's
+usage to the agent's metrics. It takes the same arguments except
+`summarization_agent`, which it refuses, because that agent would record the usage
+on its own metrics. Agentic extraction uses it; see the
+[extraction module README](../extraction/README.md#a-failed-agent-run-is-still-metered--idp_commonutilsmeteringfailure_metering).
+
 ### 3. Data Storage
 
 #### ChatMessagesTable (DynamoDB)
@@ -496,6 +507,32 @@ either chat route forwards (`_QUICK_START_ROLES`). On a stack deployed with
 template passes the parameter to the resolver and to both processors as
 `QUICK_START_ENABLED`, and an unset variable reads as the parameter's default,
 `true`.
+
+Quick Start's own profile writes (`create_config_version`), `idp-cli bootstrap` and
+the Test Set Generator's processor all go through
+`synthesis.bootstrap.merge_class_into_version`. It calls `refuse_protected_profile`
+first, which raises `ProtectedProfileError` for `default` and for any profile
+`list_config_versions` reports as `managed`: a stack update records a new revision of
+a managed profile from its preset, so a class written there would be lost, and a
+class in `default` applies to every document. The listing is read with
+`raise_errors=True`, so a listing that cannot be read refuses the write rather than
+reading as "nothing is managed". `create_config_version` returns a refusal as an
+`error` rather than raising, and the processor fails the job without asking SQS to
+retry it. Generating a test set from a class that already exists
+(`generate_from_existing_config`, or the generator's own generate-from-configuration)
+sends `fromExistingConfig`, and the processor writes nothing back to that profile.
+
+Documents attached in the panel are written by Discovery through the discovery upload
+resolver, which does not call that guard: the Discovery page saves into a profile the
+user picks, stack-managed ones included. For Quick Start the target is chosen in the
+browser, in `AgentChatLayout.tsx`: a new `quickstart-<date>-<time>-<code>` profile,
+one per conversation. The panel decides activation when Discovery finishes, from the
+profile list `fetchVersions` reads from the server at that moment, before the hook's
+own scope filter, and a failed read means it asks. It activates without asking only
+when that profile is already active or the stack has no profile of its own yet:
+`default` active and every other profile stack-managed, as a stack is deployed.
+Otherwise it leaves the agent to ask. The agent is told the profile is active only
+after the activation has succeeded.
 
 Its system prompt names screens and navigation paths (Upload Documents,
 Configuration › View/Edit Configuration, Test Studio › Test Sets, Agent Chat), so a

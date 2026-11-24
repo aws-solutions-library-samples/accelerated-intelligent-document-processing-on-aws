@@ -1,0 +1,33 @@
+query ListConfigPrefixMappingHistory($prefix: String, $limit: Int, $before: Int) {
+  listConfigPrefixMappingHistory(prefix: $prefix, limit: $limit, before: $before) {
+    success
+    entries {
+      seq
+      timestamp
+      actor
+      prefix
+      action
+      before {
+        prefix
+        configProfile
+        configRevision
+        metadataPrecedence
+        enabled
+        description
+      }
+      after {
+        prefix
+        configProfile
+        configRevision
+        metadataPrecedence
+        enabled
+        description
+      }
+    }
+    nextBefore
+    error {
+      type
+      message
+    }
+  }
+}

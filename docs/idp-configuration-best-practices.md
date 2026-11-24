@@ -1098,16 +1098,47 @@ silently ignored there. A/B test any change on your own documents.
 
 ### Max Tokens Sizing
 
-`max_tokens` is an **optional cap** on model output. Leave it empty (the
-default everywhere) and the service uses the selected model's maximum output
-limit — resolved at request time from the model limits list (editable in the
-web UI under **View / Edit Model Limits**). This avoids silent truncation when
-you switch to a larger-context model. Set a positive value only when you
-deliberately want to cap output *below* the model maximum (e.g. to bound cost
-or latency on a task with short responses).
+`max_tokens` is a cap on model output. Leave it empty and the service uses the
+selected model's maximum output limit, resolved at request time from the model
+limits list (editable in the web UI under **View / Edit Model Limits**), which
+avoids silent truncation when you switch to a model with a larger output limit.
+A positive value caps output *below* the model maximum, which bounds cost and
+latency on a task with short responses.
+
+The cap also decides how much of your tokens-per-minute quota a request holds
+while it runs: Amazon Bedrock deducts the request's input tokens plus its
+`max_tokens` when the request starts and returns the unused part when it
+finishes ([How tokens are counted in Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html)).
+A model with a large output limit therefore runs fewer requests at once within
+the same quota if its calls ask for the maximum.
+
+For that reason the steps whose replies are short ship with `max_tokens: 10000`:
+all three classification calls (`classification.combined.llm`,
+`classification.split_then_classify.splitting.llm` and
+`classification.split_then_classify.section_classification.llm`), Bedrock OCR
+(`ocr.max_tokens`) and LLM evaluation (`evaluation.llm_method.max_tokens`). Their
+shipped model, Amazon Nova 2 Lite, allows 64,000 output tokens, so with the field
+empty each of those calls would hold 64,000 tokens of quota beyond its input.
+Every other step that has the knob ships it empty.
+
+Two things follow from where the value lives:
+
+- An empty value was not stored in a profile while empty was the shipped
+  default, so a profile saved before the cap shipped resolves to 10000 like the
+  `default` profile. A revision saved then does store the empty value, so the
+  stack update that ships the cap records a new revision of `default`, of each
+  stack-managed profile and of each custom profile whose configuration is its
+  current revision, and new documents run 10000
+  ([A save that changes nothing records nothing](./configuration-profiles.md#a-save-that-changes-nothing-records-nothing)).
+  A document or test run pinned to an earlier revision reads that revision as it
+  was saved, with `max_tokens` empty, so it requests the model's maximum (64,000
+  for Nova 2 Lite). A value you clear now is stored and kept.
+- The cap stays when you change the step's model. If you choose a model for one
+  of these steps that needs longer replies (Bedrock OCR of very dense pages, for
+  example), raise the value or clear it.
 
 ```yaml
-# Recommended: leave empty to use the model's full output budget
+# Empty: request the model's full output budget
 max_tokens: ""
 
 # Or set an explicit cap (must not exceed the model's limit)
@@ -1291,7 +1322,7 @@ The extraction and classification services support precise control over where do
 
 #### How {DOCUMENT_IMAGE} Works
 
-**Without Placeholder (Default Behavior):**
+**Without Placeholder (Text Only):**
 ```yaml
 task_prompt: |
   Extract the following fields from this {DOCUMENT_CLASS} document:
@@ -1302,7 +1333,20 @@ task_prompt: |
   
   Respond with valid JSON.
 ```
-Images are automatically appended after the text content.
+No page image is sent with a prompt that has no `{DOCUMENT_IMAGE}`. That holds for
+each step that reads the prompt:
+
+- **Extraction** sends the text alone. In agentic mode the page images are not
+  attached either, and the agent is given no `view_image` tool.
+- **The confidence pass** (`extraction.confidence.task_prompt`) sends the text
+  alone. Removing the placeholder is the documented way to make it text-only.
+  This applies to the LLM method only: `extraction.confidence.method:
+  decision_model` sends no task prompt, and its own `decision_model.input` setting
+  decides what it receives.
+- **Classification** infers each call's `modality.images` from its task prompt, so
+  the call sends the text alone. Setting that call's `modality.images: true` is the
+  exception: it appends a wrapped placeholder to the end of the prompt, so the
+  images are sent after everything else in it.
 
 **With Placeholder (Controlled Placement):**
 ```yaml
@@ -1318,7 +1362,9 @@ task_prompt: |
   
   Respond with valid JSON containing the extracted values.
 ```
-Images are inserted exactly where `{DOCUMENT_IMAGE}` appears in the prompt.
+Images are inserted exactly where `{DOCUMENT_IMAGE}` appears in the prompt. Use it
+once: extraction, classification and the confidence pass all refuse a prompt that
+contains it more than once, with `found N occurrences, but exactly 1 is required`.
 
 #### Usage Examples
 
@@ -1632,6 +1678,7 @@ Pipeline mode supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR 
 ocr:
   backend: "bedrock"  # Options: "textract", "bedrock", "bda", "none"
   model_id: "us.anthropic.claude-sonnet-4-6"
+  max_tokens: "10000"  # output cap per page call; empty = the model's maximum
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
   

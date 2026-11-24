@@ -13,6 +13,7 @@ The Utils module provides common utility functions used across the IDP pipeline.
 | `parse_s3_uri(s3_uri)` | Parse an S3 URI into `(bucket, key)` tuple |
 | `merge_metering_data(existing, new)` | Merge token usage / metering dictionaries (sums numeric values) |
 | `cumulative_metering(doc)` | A document's cumulative usage: `doc.metering_baseline` (earlier runs) plus `doc.metering` (this run's own), on deep copies. Accepts any object with a `metering` attribute; a missing baseline counts as empty |
+| `subtract_metering(total, baseline)` | The usage added since `baseline`, per service/unit, as floats: the inverse of `cumulative_metering`. A unit that did not grow is dropped, and one below its baseline is dropped with a warning rather than reported as negative. The workflow tracker uses it to recover a failed run's own usage |
 | `get_bedrock_region()` | Get the AWS region for Bedrock API calls |
 | `extract_structured_data_from_text(text)` | Extract JSON or YAML structured data from LLM response text |
 | `sanitize_event_for_logging(event)` | Deep-copy an event with denylisted keys redacted and long content-field strings truncated, for safe `logger` output. ⚠️ **Has vendored copies — see below** |
@@ -73,6 +74,21 @@ transient; only explicit `raise ... from` links are followed (`__context__` is n
 a retry loop's chained attempts or a swallowed transient error cannot make an
 unrelated deterministic failure look transient); message markers are limited to
 transport text (`Read timed out`, `Connection reset`, ...).
+
+A `ClientError` whose code is a bare HTTP status — botocore's code when a reply names
+no error type, such as `"500"` with the message `"Internal Server Error"` — is
+transient for 500, 502, 503 and 504 (#2036), and for 429, a throttle (#2112). The status of a *named* code is not
+consulted: Lambda answers several deterministic errors with a 502, so the name still
+decides. The Bedrock ladders go further and retry any 5xx of those four by status
+(see the [bedrock README](../bedrock/README.md#resilience-features)).
+
+An exception that carries its own retry verdict, a `retry_later` attribute holding a
+`bool`, is judged by that verdict alone, and its cause chain is not consulted. The
+decision-model client sets it on every `DecisionModelError` (False unless the request
+never ran), so a bare `"500"` from Lambda that the client did not retry stays not
+transient even though the `ClientError` it chains would be. Section classification
+and the assessment step therefore treat one decision-model failure the same way
+(#2112).
 
 ⚠️ **The throttling half of the vocabulary is read from botocore, not listed here.**
 AWS has at least six spellings meaning "you are being rate limited" — `Throttling`,
@@ -135,7 +151,13 @@ except Exception as e:
 ```
 
 Neither ever wraps a `TransientError` in another one, so a failure that passes through
-several nested handlers still reports one name and one cause. Rule validation is where
+several nested handlers still reports one name and one cause.
+
+`reraise_if_transient(e, where=..., metering=m)` also attaches `m`, the usage of the
+calls the failed attempt completed, to the raised `TransientError`
+(`attach_failure_metering`), so the Lambda can record that spend before Step
+Functions retries the step. It replaces anything already attached, so `m` must
+include `failure_metering(e)` when `e` carried some. Rule validation is where
 this matters most, because its blocks nest: a transient re-raised for one rule travels
 up through `asyncio.gather` into a document-level `except` that returns a document
 marked failed (#1101).
@@ -217,6 +239,79 @@ Only `__cause__`, the explicit
 another is being handled, so following it would make a deterministic failure raised
 inside an `except` inherit the transience of what was being handled.
 `transient_errors` follows the same rule for the same reason.
+
+### The one `ValidationException` the retry decorators retry
+
+Both `exponential_backoff_retry` and `async_exponential_backoff_retry` retry a
+`ValidationException` only when it is a content-filter block
+(`is_content_filter_block`: the model's reply was withheld, and a regenerated reply
+can pass). Every other `ValidationException` is a refusal of the request itself and is
+raised on the first attempt. Both decorators decide that through one function,
+`is_unretryable_validation_error`, in the `ClientError` branch and, in the async
+decorator, in the branch that sees a Strands-wrapped error too. It compares the code
+case-insensitively and walks the `__cause__` chain, because an error raised inside a
+`ConverseStream` reply carries the event-stream member name, `validationException`,
+as its code, and Strands wraps the Bedrock error in `EventLoopException` from every
+model call after a tool use. Compared case-sensitively, as it was, the in-stream form
+fell through to the case-folded retryable vocabulary, which lists
+`ValidationException`, so an in-stream refusal was retried; on agentic extraction a
+persistent one was sent six times, until the 90-second backoff allowance ran out
+(measured with the harness below, raw and Strands-wrapped alike). The wrapped form was
+retried by substring whatever it said.
+`tests/unit/utils/test_validation_exception_retry_rule.py` measures both forms with a
+real Strands agent over a real botocore client and hand-framed event streams.
+
+### One rule for reading a Bedrock error code
+
+`is_image_request_rejection`, `is_image_count_rejection`, `is_input_token_overflow`,
+`is_content_filter_block` and `is_unretryable_validation_error` all read the code
+through `_chain_error_code`: the first exception on the explicit `__cause__` chain
+that carries a code decides, compared case-insensitively. A code other than
+`ValidationException` means "not this", whatever the text says; with a
+`ValidationException` on the chain, the text judged is that exception's own, so a
+wrapper's added wording cannot make a match; with no code anywhere the exception's
+own text is judged. Before this, the image and overflow matchers compared
+`code != "ValidationException"` on the outermost exception only, so an in-stream
+`validationException` image rejection was not recognised, and a Strands
+`ModelThrottledException` (no code of its own) whose text mentioned an image limit
+was taken for a deterministic rejection.
+
+In the async decorator's generic branch, `"ValidationException"` is no longer
+matched as a message substring: every wrapper Strands 1.48 raises around a Bedrock
+error is raised `from` it, so the code is on the chain, and the substring only
+matched text that quoted a refused request's code. A block is retried there only
+with its `ValidationException` on the chain (`_is_retryable_validation_error`).
+`tests/unit/utils/test_bedrock_error_code_rule.py` measures this with real
+in-stream errors.
+
+### A reply withheld with a stop reason (`ModelOutputWithheld`)
+
+A Converse `stopReason` of `content_filtered` or `guardrail_intervened`
+(`WITHHELD_OUTPUT_STOP_REASONS`) is a 200 whose text is not the model's answer.
+`guardrail_intervened` counts only when `trace.guardrail` records a policy whose
+`action` is `BLOCKED`: a guardrail that only anonymised sensitive information stops
+with the same reason and returns the model's answer, masked. With no trace the reply
+is read as an answer, as before; `guardrail_config_from_env` always enables the
+trace.
+`raise_if_output_withheld(response)` raises `ModelOutputWithheld` for it, with the
+envelope's metering attached (`utils.failure_metering`), and
+`is_content_filter_block` recognises that exception, so a step's existing
+block handling applies. Classification (`_invoke_bedrock_model`), Simple extraction
+and its escalation call, assessment and summarization call it after their model
+call; agentic extraction raises it when its last regeneration round is withheld
+too. `BedrockClient` itself does not, because document chat shows a guardrail's
+message to the user as the intended reply. Every block branch that catches it merges
+`utils.failure_metering(e)`, so the billed call is metered: the classification page,
+splitting-call and segment-labelling branches, the summarization stub, and the Assessment Lambda's
+deterministic-failure branch. In `assessment.batching`, a withheld list batch is
+caught in `_assess_chunk` and becomes per-row placeholders
+(`_UNASSESSED_CONTENT_FILTER_REASON`), and the recovery rungs use a call that scores
+nothing on a block instead of raising, so the other batches keep their scores; the
+first call of a section without list batching still raises and degrades it. Not
+covered: a withheld reply inside a Distributed Map extraction shard
+(`run_one_section_shard`), which fails the document as any failed shard does. `content_block_wording` gives the steps
+one wording, and tells a guardrail block to review the guardrail rather than change
+models. `tests/unit/test_withheld_reply_stop_reason.py` drives each step.
 
 ### A retry frees the attempt it replaces (`idp_common.failed_attempt`)
 

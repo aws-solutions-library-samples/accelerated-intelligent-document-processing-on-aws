@@ -3,13 +3,14 @@
 
 import React, { useState } from 'react';
 import { Box } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import DOMPurify from 'dompurify';
 // Note: XLSX and mammoth imports removed since we're using download approach for Excel/Docx files
 import useSettingsContext from '../../contexts/settings';
 import { getFileContents, getFilePresignedUrl } from '../../graphql/generated';
-import { FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../../hooks/utils/graphql-error';
+import { fileAccessMessages, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { useDocumentVersion } from '../../contexts/document-version';
 
 interface FileViewerProps {
@@ -21,6 +22,100 @@ interface FileViewerProps {
 const client = generateClient();
 const logger = new ConsoleLogger('FileViewer');
 
+const messages = defineMessages<{
+  loadFailed: NoMessageValues;
+  loading: NoMessageValues;
+  cannotDisplay: NoMessageValues;
+  frameTitle: NoMessageValues;
+  pdfFrameTitle: NoMessageValues;
+  openPdf: NoMessageValues;
+  previewAlt: NoMessageValues;
+  imageTitle: NoMessageValues;
+  imageCannotDisplay: NoMessageValues;
+  imageDownload: NoMessageValues;
+  officeTitle: { readonly app: string };
+  officeCannotDisplay: { readonly app: string };
+  officeDownload: { readonly app: string };
+  officeOpensIn: { readonly app: string };
+}>({
+  loadFailed: {
+    id: 'documents.fileViewer.loadFailed',
+    defaultMessage: 'Failed to load document. Please try again.',
+    description: 'Shown in the source view when the document could not be loaded.',
+  },
+  loading: {
+    id: 'documents.fileViewer.loading',
+    defaultMessage: 'Loading document...',
+    description: 'Shown while the source view loads the document.',
+  },
+  cannotDisplay: {
+    id: 'documents.fileViewer.cannotDisplay',
+    defaultMessage: 'Unable to display document.',
+    description: 'Shown in the source view when the document cannot be shown.',
+  },
+  frameTitle: {
+    id: 'documents.fileViewer.frameTitle',
+    defaultMessage: 'Document Viewer',
+    description: 'Accessible title of the frame that shows the document in the source view.',
+  },
+  pdfFrameTitle: {
+    id: 'documents.fileViewer.pdfFrameTitle',
+    defaultMessage: 'PDF Viewer',
+    description: 'Accessible title of the frame that shows a PDF document in the source view.',
+  },
+  openPdf: {
+    id: 'documents.fileViewer.openPdf',
+    defaultMessage: 'Open PDF in a new tab',
+    description: 'Link under a PDF document, for browsers that do not show PDFs themselves.',
+  },
+  previewAlt: {
+    id: 'documents.fileViewer.previewAlt',
+    defaultMessage: 'Document preview',
+    description: 'Alternative text of an image document in the source view.',
+  },
+  imageTitle: {
+    id: 'documents.fileViewer.image.title',
+    defaultMessage: 'Image Document',
+    description: 'Heading shown when an image document cannot be displayed; an icon comes before it.',
+  },
+  imageCannotDisplay: {
+    id: 'documents.fileViewer.image.cannotDisplay',
+    defaultMessage: 'Unable to display this image.',
+    description: 'Shown when an image document cannot be displayed.',
+  },
+  imageDownload: {
+    id: 'documents.fileViewer.image.download',
+    defaultMessage: 'Download Image',
+    description: 'Link that downloads an image document that cannot be displayed; an icon comes before it.',
+  },
+  officeTitle: {
+    id: 'documents.fileViewer.office.title',
+    defaultMessage: '{app} Document',
+    description: 'Heading for an Office document, which the browser cannot display. {app} is Excel or Word.',
+  },
+  officeCannotDisplay: {
+    id: 'documents.fileViewer.office.cannotDisplay',
+    defaultMessage: 'This {app} document cannot be displayed directly in the browser.',
+    description: 'Says why an Office document is offered as a download. {app} is Excel or Word.',
+  },
+  officeDownload: {
+    id: 'documents.fileViewer.office.download',
+    defaultMessage: 'Download {app} File',
+    description: 'Link that downloads an Office document; an icon comes before it. {app} is Excel or Word.',
+  },
+  officeOpensIn: {
+    id: 'documents.fileViewer.office.opensIn',
+    defaultMessage: 'The file will open in your default {app} application.',
+    description: 'Note under the download link of an Office document. {app} is Excel or Word.',
+  },
+});
+
+/** The Office application each downloadable type opens in: product names, the same in every language. */
+const FILE_TYPE_NAMES = { excel: 'Excel', docx: 'Word' } as const;
+
+/** A `data:` URL holding `text` as `contentType`, UTF-8 encoded. */
+const TEXT_DATA_URL = (contentType: string, text: string): string => `data:${contentType};charset=utf-8,${encodeURIComponent(text)}`;
+
 // Helper function to create a safe data URL for HTML content
 const createSafeDataUrl = (content: string, contentType: string): string => {
   // For HTML content, sanitize with DOMPurify
@@ -30,7 +125,7 @@ const createSafeDataUrl = (content: string, contentType: string): string => {
       FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onmouseout'],
     });
 
-    return `data:${contentType};charset=utf-8,${encodeURIComponent(sanitizedContent)}`;
+    return TEXT_DATA_URL(contentType, sanitizedContent);
   }
 
   // For CSV files, treat as plain text for better browser compatibility
@@ -39,7 +134,7 @@ const createSafeDataUrl = (content: string, contentType: string): string => {
   }
 
   // For other text-based content, use as is
-  return `data:${contentType};charset=utf-8,${encodeURIComponent(content)}`;
+  return TEXT_DATA_URL(contentType, content);
 };
 
 // Helper function to detect file type from object key or content type
@@ -83,12 +178,14 @@ const detectFileType = (objectKey: string, contentType: string | null): string =
 const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element => {
   // Fetch pinned bytes when viewing a past document version.
   const { versionIdForUri } = useDocumentVersion();
+  const intl = useIntl();
   const [presignedUrl, setPresignedUrl] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [contentType, setContentType] = useState<string | null>(null);
   const { settings } = useSettingsContext();
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  // A message, formatted at render, so it follows a language switch.
+  const [error, setError] = useState<TypedMessageDescriptor<NoMessageValues> | null>(null);
   const [viewMethod, setViewMethod] = useState<'presigned' | 'content'>('presigned');
   const [imageError, setImageError] = useState(false);
   const [imageErrorUrl, setImageErrorUrl] = useState('');
@@ -199,7 +296,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
       logger.error('Error preparing document for viewing:', err);
       // "Please try again" is advice that cannot work for a 403, and the file reads
       // now require an assigned Cognito group — so branch on the error.
-      setError(isAuthorizationError(err) ? FILE_ACCESS_DENIED_MESSAGE : 'Failed to load document. Please try again.');
+      setError(isAuthorizationError(err) ? fileAccessMessages.denied : messages.loadFailed);
     } finally {
       setIsLoading(false);
     }
@@ -220,7 +317,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
   if (error) {
     return (
       <Box color="text-status-error" padding="s">
-        {error}
+        <FormattedMessage {...error} />
       </Box>
     );
   }
@@ -229,7 +326,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
   if (isLoading) {
     return (
       <Box textAlign="center" padding="s">
-        Loading document...
+        <FormattedMessage {...messages.loading} />
       </Box>
     );
   }
@@ -248,7 +345,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
       <Box className="document-container" padding={{ top: 's' }}>
         <iframe
           src={safeDataUrl}
-          title="Document Viewer"
+          title={intl.formatMessage(messages.frameTitle)}
           width="100%"
           height="800px"
           className="h-full w-full"
@@ -286,7 +383,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
         <Box className="document-container" padding={{ top: 's' }}>
           <iframe
             src={presignedUrl}
-            title="PDF Viewer"
+            title={intl.formatMessage(messages.pdfFrameTitle)}
             width="100%"
             height="800px"
             className="h-full w-full"
@@ -294,7 +391,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
           />
           <Box padding={{ top: 'xs' }}>
             <a href={presignedUrl} target="_blank" rel="noopener noreferrer">
-              Open PDF in a new tab
+              <FormattedMessage {...messages.openPdf} />
             </a>
           </Box>
         </Box>
@@ -313,7 +410,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
             {!imageError ? (
               <img
                 src={presignedUrl}
-                alt="Document preview"
+                alt={intl.formatMessage(messages.previewAlt)}
                 style={{
                   maxWidth: '100%',
                   maxHeight: '800px',
@@ -324,8 +421,12 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
               />
             ) : (
               <Box padding="xl">
-                <h3>🖼️ Image Document</h3>
-                <p>Unable to display this image.</p>
+                <h3>
+                  🖼️ <FormattedMessage {...messages.imageTitle} />
+                </h3>
+                <p>
+                  <FormattedMessage {...messages.imageCannotDisplay} />
+                </p>
                 <p>
                   <a
                     href={imageErrorUrl}
@@ -342,7 +443,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
                       margin: '10px',
                     }}
                   >
-                    📥 Download Image
+                    📥 <FormattedMessage {...messages.imageDownload} />
                   </a>
                 </p>
               </Box>
@@ -354,12 +455,16 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
 
     // For Excel and Docx files, provide download link since browsers can't display them inline
     if (fileType === 'excel' || fileType === 'docx') {
-      const fileTypeName = fileType === 'excel' ? 'Excel' : 'Word';
+      const fileTypeName = FILE_TYPE_NAMES[fileType];
       return (
         <Box className="document-container" padding={{ top: 's' }} textAlign="center">
           <Box padding="xl">
-            <h3>📄 {fileTypeName} Document</h3>
-            <p>This {fileTypeName} document cannot be displayed directly in the browser.</p>
+            <h3>
+              📄 <FormattedMessage {...messages.officeTitle} values={{ app: fileTypeName }} />
+            </h3>
+            <p>
+              <FormattedMessage {...messages.officeCannotDisplay} values={{ app: fileTypeName }} />
+            </p>
             <p>
               <a
                 href={presignedUrl}
@@ -376,10 +481,12 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
                   margin: '10px',
                 }}
               >
-                📥 Download {fileTypeName} File
+                📥 <FormattedMessage {...messages.officeDownload} values={{ app: fileTypeName }} />
               </a>
             </p>
-            <p style={{ fontSize: '14px', color: '#666' }}>The file will open in your default {fileTypeName} application.</p>
+            <p style={{ fontSize: '14px', color: '#666' }}>
+              <FormattedMessage {...messages.officeOpensIn} values={{ app: fileTypeName }} />
+            </p>
           </Box>
         </Box>
       );
@@ -390,7 +497,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
       <Box className="document-container" padding={{ top: 's' }}>
         <iframe
           src={presignedUrl}
-          title="Document Viewer"
+          title={intl.formatMessage(messages.frameTitle)}
           width="100%"
           height="800px"
           className="h-full w-full"
@@ -404,7 +511,7 @@ const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element =
   // Default fallback
   return (
     <Box textAlign="center" padding="s">
-      Unable to display document.
+      <FormattedMessage {...messages.cannotDisplay} />
     </Box>
   );
 };

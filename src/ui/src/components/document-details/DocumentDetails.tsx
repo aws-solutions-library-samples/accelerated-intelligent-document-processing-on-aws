@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useIntl } from 'react-intl';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -35,6 +36,7 @@ type Read = { kind: 'loading' } | { kind: 'missing' } | { kind: 'failed'; error:
 const logger = new ConsoleLogger('documentDetails');
 
 const DocumentDetails = (): React.JSX.Element => {
+  const intl = useIntl();
   const params = useParams();
   const navigate = useNavigate();
 
@@ -265,9 +267,9 @@ const DocumentDetails = (): React.JSX.Element => {
     }
   };
 
-  if (read.kind === 'loading' || (read.kind === 'ready' && !document)) return <LoadState state={loadingDocumentModel().state} />;
-  if (read.kind === 'missing') return <LoadState state={documentMissingModel(false).state} />;
-  if (read.kind === 'failed') return <LoadState state={documentFailedModel(read.error, () => void readDocument(), false).state} />;
+  if (read.kind === 'loading' || (read.kind === 'ready' && !document)) return <LoadState state={loadingDocumentModel(intl).state} />;
+  if (read.kind === 'missing') return <LoadState state={documentMissingModel(false, intl).state} />;
+  if (read.kind === 'failed') return <LoadState state={documentFailedModel(read.error, () => void readDocument(), false, intl).state} />;
 
   return (
     <>

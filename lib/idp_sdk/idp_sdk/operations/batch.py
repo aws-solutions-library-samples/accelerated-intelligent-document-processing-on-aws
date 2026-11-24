@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+from idp_common.models import DOCUMENT_STATUS_VALUES
 from idp_sdk._core.document_processor import _section_instances
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
@@ -112,6 +113,7 @@ class BatchOperation:
         context: Optional[str] = None,
         *,
         config_profile: Optional[str] = None,
+        attributes: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> BatchProcessResult:
         """Process multiple documents through the IDP pipeline.
@@ -135,12 +137,29 @@ class BatchOperation:
             config_revision: Optional revision of that profile. Omit to process
                 under the profile's current configuration.
             context: Context for test set processing
+            attributes: Caller-supplied document attributes stored with every
+                document and returned with its results (see
+                ``docs/document-attributes.md``). A manifest row's own
+                ``attributes`` override these per key. Invalid attributes are
+                refused before anything is uploaded. Not accepted with
+                ``test_set``.
             **kwargs: Additional parameters
 
         Returns:
             BatchProcessResult with batch processing information
         """
         config_version = resolve_config_profile(config_profile, config_version)
+        if attributes:
+            from idp_sdk._core.document_attributes import validate
+
+            if test_set:
+                raise IDPConfigurationError(
+                    "attributes cannot be attached to a test set run"
+                )
+            try:
+                attributes = validate(attributes)
+            except ValueError as e:
+                raise IDPConfigurationError(str(e)) from e
         from idp_sdk._core.batch_processor import BatchProcessor
 
         name = self._client._require_stack(stack_name)
@@ -201,6 +220,8 @@ class BatchOperation:
                     and config_revision is not None
                 ):
                     manifest_kwargs["config_revision"] = config_revision
+                if attributes:
+                    manifest_kwargs["attributes"] = attributes
                 result = processor.process_batch(**manifest_kwargs)
             elif directory:
                 import inspect
@@ -221,6 +242,8 @@ class BatchOperation:
                     and config_revision is not None
                 ):
                     dir_kwargs["config_revision"] = config_revision
+                if attributes:
+                    dir_kwargs["attributes"] = attributes
                 result = processor.process_batch_from_directory(**dir_kwargs)
             else:
                 import inspect
@@ -239,6 +262,8 @@ class BatchOperation:
                     s3_kwargs["config_revision"] = config_revision
                 if "number_of_files" in sig.parameters and number_of_files:
                     s3_kwargs["number_of_files"] = number_of_files
+                if attributes:
+                    s3_kwargs["attributes"] = attributes
                 result = processor.process_batch_from_s3_uri(**s3_kwargs)
 
             return BatchProcessResult(
@@ -867,7 +892,14 @@ class BatchOperation:
                 wildcard selection pass ``pattern`` instead, where the breadth is
                 visible in what you wrote.
             pattern: Wildcard pattern to match document keys (e.g. ``"batch-123/*.pdf"``)
-            status_filter: Optional status filter (e.g., 'FAILED', 'COMPLETED')
+            status_filter: Only delete documents whose current status is exactly
+                this value. Must be one of
+                ``idp_common.models.DOCUMENT_STATUS_VALUES`` (e.g. ``'FAILED'``,
+                ``'COMPLETED'``, ``'QUEUED'``); a document still being processed
+                carries the name of its current step, such as ``'OCR'`` or
+                ``'EXTRACTING'``. Any other value raises
+                :class:`IDPConfigurationError`, because it could only ever select
+                nothing.
             stack_name: Optional stack name override
             dry_run: If True, only simulate deletion without actually deleting
             continue_on_error: If True, continue deleting other documents if one fails
@@ -888,6 +920,15 @@ class BatchOperation:
             raise IDPConfigurationError("Must specify either batch_id or pattern")
         if batch_id and pattern:
             raise IDPConfigurationError("Cannot specify both batch_id and pattern")
+        if status_filter and status_filter not in DOCUMENT_STATUS_VALUES:
+            # No tracking record carries any other value, so the scan would match
+            # nothing and the call would report zero deletions as a success.
+            raise IDPConfigurationError(
+                f"Unknown status_filter {status_filter!r}: a document's status is "
+                f"one of {', '.join(DOCUMENT_STATUS_VALUES)}. A document still being "
+                "processed carries the name of its current step (e.g. OCR, "
+                "EXTRACTING), not PROCESSING"
+            )
 
         name = self._client._require_stack(stack_name)
         resources = self._client._get_stack_resources(name)
@@ -1182,6 +1223,15 @@ class BatchOperation:
                 ),
                 None,
             )
+            # Caller-supplied attributes snapshotted at intake (#1851).
+            attributes = next(
+                (
+                    d.get("attributes")
+                    for d in entries
+                    if isinstance(d, dict) and d.get("attributes")
+                ),
+                None,
+            )
 
             # Try to get results.json from S3
             document_class = None
@@ -1239,7 +1289,7 @@ class BatchOperation:
                 except Exception as e:
                     logger.warning(f"Could not read results.json for {doc_id}: {e}")
 
-            return {
+            result = {
                 "document_id": doc_id,
                 "document_class": document_class,
                 "fields": fields,
@@ -1253,6 +1303,11 @@ class BatchOperation:
                 # in_review / complete / rejected (review queues); None if never routed.
                 "review_status": (review or {}).get("status"),
             }
+            # Only when the document carries any, so a result for a document
+            # uploaded without attributes has exactly the keys it always had.
+            if attributes:
+                result["attributes"] = attributes
+            return result
         except Exception as e:
             logger.warning(f"Error retrieving metadata for {doc_id}: {e}")
             return {
@@ -1322,14 +1377,26 @@ class BatchOperation:
         page_docs = document_ids[offset : offset + limit]
         has_more = offset + limit < total_in_batch
 
-        # Retrieve confidence scores for each document
+        # Retrieve confidence scores for each document. The submission time is
+        # passed for the same reason `get_status` passes it: without it a document
+        # whose tracking row has not landed yet reads FAILED instead of QUEUED.
+        started_at = _batch_started_at(batch_info)
         documents = []
 
         for doc_id in page_docs:
             try:
-                confidence_data = analyzer.get_confidence(doc_id, section_id)
-                status_data = monitor.get_batch_status([doc_id])
-                status = _single_document_status(status_data)
+                # The status comes from the tracking record whether or not the
+                # assessment file exists, so a document with no confidence yet
+                # reports where it actually is (QUEUED, RUNNING, FAILED, ...).
+                # It used to report PROCESSING, which is not a status any
+                # document carries.
+                status = _single_document_status(
+                    monitor.get_batch_status([doc_id], batch_started_at=started_at)
+                )
+                try:
+                    confidence_data = analyzer.get_confidence(doc_id, section_id)
+                except FileNotFoundError:
+                    confidence_data = {}
 
                 attributes = confidence_data.get("attributes", {})
                 documents.append(
@@ -1337,14 +1404,6 @@ class BatchOperation:
                         "document_id": doc_id,
                         "attributes": attributes,
                         "status": status,
-                    }
-                )
-            except FileNotFoundError:
-                documents.append(
-                    {
-                        "document_id": doc_id,
-                        "attributes": {},
-                        "status": "PROCESSING",
                     }
                 )
             except Exception as e:

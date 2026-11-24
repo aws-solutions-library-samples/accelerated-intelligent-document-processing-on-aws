@@ -8,7 +8,6 @@ import base64
 import boto3
 import os
 from typing import Any, Dict, Optional
-from datetime import datetime
 
 from idp_common import mcp_access
 
@@ -336,7 +335,13 @@ class BatchRunTool(IDPTool):
         return None
 
     def _generate_batch_id(self, prefix: Optional[str]) -> str:
-        """Generate batch ID with timestamp only"""
-        prefix = prefix or 'mcp-batch'
-        timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
-        return f"{prefix}-{timestamp}"
+        """Generate a batch ID: prefix, UTC timestamp and a random suffix.
+
+        The content path passes this id to the SDK explicitly and uploads under
+        ``temp/{batch_id}/``, so a timestamp-only id let two uploads in the same
+        second share one prefix (#2113). The SDK's generator is the one source of
+        the shape.
+        """
+        from idp_sdk import generate_timestamped_id
+
+        return generate_timestamped_id(prefix or 'mcp-batch')

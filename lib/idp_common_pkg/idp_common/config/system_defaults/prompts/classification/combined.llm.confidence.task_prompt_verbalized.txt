@@ -1,0 +1,4 @@
+{# Appended to the page task prompt when confidence.mode is verbalized. Must ask for a
+"confidence" number between 0.0 and 1.0 for the reported class. #}
+<class-confidence> Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
+Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>

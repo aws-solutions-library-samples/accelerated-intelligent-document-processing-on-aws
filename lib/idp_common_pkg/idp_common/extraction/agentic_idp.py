@@ -27,7 +27,6 @@ from botocore.config import Config
 from PIL import Image
 from pydantic import BaseModel, Field
 from strands import Agent, tool
-from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models import BedrockModel
 from strands.types.agent import AgentInput
 from strands.types.content import (
@@ -43,6 +42,9 @@ from strands.types.media import (
 )
 
 from idp_common.agents.common.strands_bedrock_model import strands_guardrail_kwargs
+from idp_common.agents.utils.conversation_manager import (
+    MeteredSummarizingConversationManager,
+)
 from idp_common.bedrock.client import (
     ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
@@ -67,8 +69,10 @@ from idp_common.timeout_budget import (
     BOTOCORE_TOTAL_MAX_ATTEMPTS,
 )
 from idp_common.utils.bedrock_utils import (
+    ModelOutputWithheld,
     async_exponential_backoff_retry,
     is_max_tokens_agent_error,
+    withheld_stop_reason,
 )
 from idp_common.utils.metering import attach_failure_metering
 from idp_common.utils.strands_agent_tools.todo_list import (
@@ -2067,6 +2071,15 @@ async def _invoke_agent_for_extraction(
                 "No extraction found in agent state",
                 extra={"attempt": attempt + 1, "max_retries": max_extraction_retries},
             )
+            # The turn ended because Bedrock withheld the reply (stopReason
+            # content_filtered / guardrail_intervened), not because the model
+            # chose prose. The rounds below regenerate it, as the retry decorator
+            # does for a blocked ValidationException; when the last one is
+            # withheld too it is raised as the same block, so the service fails
+            # this section rather than the document (#2038).
+            withheld = withheld_stop_reason(response)
+            if withheld is not None and attempt == max_extraction_retries - 1:
+                raise ModelOutputWithheld(withheld)
             if attempt < max_extraction_retries - 1:
                 # Ask agent to provide extraction
                 prompt_content = [
@@ -2635,7 +2648,10 @@ async def structured_output_async(
             ),
             "extraction_schema_json": schema_json,  # Store for schema reminder tool
         },
-        conversation_manager=SummarizingConversationManager(
+        # Metered: Strands' own manager summarizes with a direct model call that
+        # the agent loop never records, so its tokens would be missing from the
+        # usage read below on both the success and the failure path (#1952).
+        conversation_manager=MeteredSummarizingConversationManager(
             summary_ratio=summary_ratio, preserve_recent_messages=preserve_recent
         ),
         # With ``strands_throttle_retries=False`` (agentic extraction, the caller that

@@ -52,6 +52,19 @@ failure in this repo turns out to be.
      'python3 publish.py <bucket-basename> idp us-west-2 --clean-build'
    ```
 
+## The CI gate set in one command: `make premerge`
+
+Before a merge, `make premerge` runs exactly the gates both CIs run — the
+`SHARED_GATES` list in `scripts/tests/test_ci_gate_parity.py`, read by
+`scripts/premerge.py` rather than copied — and reports every failure at the end
+rather than stopping at the first. It includes what a hand-picked run tends to miss:
+`make srt-scan`, `make test-packages-cicd` (which holds `benchmarks/tests`), the
+coverage reports and their ratchet, `dep_audit.py` and `make terraform-check`. It
+needs network access and Node, and it checks this working tree rather than the merge
+result, so merge the base in first. `make premerge PREMERGE_ARGS=--list` prints the
+plan without running it (#2115). The per-suite commands below are for isolating a
+failure.
+
 ## The battery (mirrors `Makefile` `test:` + lint/typecheck)
 
 Run from repo root with the venv active. `make test` runs it all in one go; the
@@ -187,7 +200,7 @@ Two invocation corrections for the CI-equivalent gates:
   [#1152](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1152).
 - **Do not reach for `PYTHONPATH` to make `make typecheck` resolve first-party
   imports, and do not conclude from that that the tool ignores the environment.**
-  `pyrightconfig.json`'s `extraPaths` names the five first-party roots, so resolution
+  `pyrightconfig.json`'s `extraPaths` names every first-party root, so resolution
   is a property of the configuration rather than of the invocation. Measured on the
   current tree the two agree exactly — same error count, same warning count, same exit
   status — both with `PYTHONPATH` exported and under `env -u PYTHONPATH`. The point is

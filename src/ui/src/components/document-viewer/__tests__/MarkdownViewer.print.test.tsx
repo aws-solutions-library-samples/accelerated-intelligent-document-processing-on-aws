@@ -10,11 +10,18 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
 
 import MarkdownViewer from '../MarkdownViewer';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 describe('MarkdownViewer print', () => {
   it('writes the document name and title into <title> as text', async () => {
@@ -28,6 +35,7 @@ describe('MarkdownViewer print', () => {
 
     render(
       <MarkdownViewer content="# Report" title='Summary "A"' documentName={'a</title><img src="https://remote.example/x.png">.pdf'} />,
+      { wrapper: English },
     );
     await userEvent.click(screen.getByRole('button', { name: /print/i }));
 
