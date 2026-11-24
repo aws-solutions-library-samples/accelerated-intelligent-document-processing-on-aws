@@ -388,7 +388,7 @@ The format varies by OCR backend:
 The `text` field contains a markdown table with two columns:
 - **Text**: The extracted text content (with pipe characters escaped as `\|`)
 - **Confidence**: OCR confidence score rounded to 1 decimal point
-- Handwriting is indicated with "(HANDWRITING)" suffix in the text column
+- Handwriting is meant to be indicated with a "(HANDWRITING)" suffix in the text column, but the suffix is read from the LINE block's `TextType`, which Textract does not set (it sets `TextType` on WORD blocks only), so Textract pages carry no suffix. To mark handwriting in the page text, see `ocr.mark_handwriting`.
 
 **Bedrock Backend (no confidence data):**
 ```json
@@ -407,7 +407,7 @@ The `text` field contains a markdown table with two columns:
 ### Benefits
 
 - **85-95% token reduction** compared to raw Textract output (markdown table format is more compact than JSON)
-- **Preserved assessment data**: Text content, OCR confidence scores (rounded to 1 decimal), text type (PRINTED/HANDWRITING)
+- **Preserved assessment data**: Text content and OCR confidence scores (rounded to 1 decimal)
 - **Removed overhead**: Geometric data, relationships, block IDs, verbose metadata, and unnecessary JSON syntax
 - **Improved readability**: Markdown table format is human-readable in both UI and assessment prompts
 - **Cost efficiency**: Significantly reduced LLM inference costs for assessment workflows
