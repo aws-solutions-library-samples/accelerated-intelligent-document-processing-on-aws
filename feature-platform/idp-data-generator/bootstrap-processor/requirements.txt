@@ -9,7 +9,8 @@
 # package_agent_source.sh at publish time (git-ignored). It is a local subdir so
 # SAM's default pip builder resolves it after copying the CodeUri to a scratch
 # dir — a sibling ../../lib path would not. The [synthesis] extra is light
-# (jsonschema only), avoiding seed-data's numpy 2.x conflict.
+# (jsonschema only), so it carries none of the exact numpy and Pillow pins
+# that the heavier extras would bring.
 ./idp_common_pkg[synthesis]
 aws-requests-auth>=0.4.3
 requests>=2.33.0

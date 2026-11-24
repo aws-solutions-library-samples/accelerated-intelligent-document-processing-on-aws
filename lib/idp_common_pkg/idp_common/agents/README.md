@@ -522,6 +522,28 @@ retry it. Generating a test set from a class that already exists
 (`generate_from_existing_config`, or the generator's own generate-from-configuration)
 sends `fromExistingConfig`, and the processor writes nothing back to that profile.
 
+`set_processing_options` writes three settings into a profile; the prompt has the
+agent pass only a profile it saved in the conversation, and the code refuses `default`
+and stack-managed ones. It writes them through
+`synthesis.bootstrap.set_processing_options` and the same guard: section splitting
+(`classification.document_shape.sectionSplitting`, from `documents_per_file` "one",
+"several" or "one_per_page", see `DOCUMENTS_PER_FILE`), `extraction.mode`
+(`long_tables` picks "advanced" or "simple") and `summarization.enabled`. `mode` is
+the setting to write rather than `extraction.agentic.enabled`, because the config
+model derives `agentic.enabled` from `mode` and `default` sets `mode: simple`. Only
+those keys change; the profile is saved as a full copy of its configuration, as every
+profile save is, so a later change to `default` does not reach it. A pre-0.9 flat
+`classification.sectionSplitting` needs no special case, because reading the profile
+migrates it into `classification.document_shape`; `long_tables` is refused when the
+extraction model the profile runs with, its own or the one it inherits from `default`,
+is an OpenAI GPT-5.x Responses model, which the advanced engine cannot call. The prompt has
+the agent choose them from the description and examples rather than ask, ask one plain
+question only when it cannot tell, and fix a wrongly split document, or rows missing
+from a long table, itself instead of sending the user to Agent Chat. Other extraction
+settings are deliberately not offered. Agent Chat's orchestrator prompt points
+processing-settings requests at the Configuration page's sections and names Quick
+Start only for the settings it can write.
+
 Documents attached in the panel are written by Discovery through the discovery upload
 resolver, which does not call that guard: the Discovery page saves into a profile the
 user picks, stack-managed ones included. For Quick Start the target is chosen in the
@@ -533,6 +555,17 @@ when that profile is already active or the stack has no profile of its own yet:
 `default` active and every other profile stack-managed, as a stack is deployed.
 Otherwise it leaves the agent to ask. The agent is told the profile is active only
 after the activation has succeeded.
+
+The panel adds instructions for the agent to the messages it sends, such as that
+attached documents are being analysed, or what Discovery found and how to present it.
+These travel inside `<panel-context>...</panel-context>` blocks. The agent reads them,
+and the prompt tells it never to quote them. The user does not see them:
+`panelContext.ts` strips them before a user message is rendered, live or loaded from
+history, and a message with nothing left is not shown. The session title and the
+session list's last-message preview strip them too, through
+`agents.common.chat_text.visible_chat_text` in both chat processors and a local copy
+of the same pattern in the `agent_chat_resolver`, which carries no `idp_common`.
+`tests/unit/agents/common/test_chat_text.py` holds the copies to one pattern.
 
 Its system prompt names screens and navigation paths (Upload Documents,
 Configuration › View/Edit Configuration, Test Studio › Test Sets, Agent Chat), so a

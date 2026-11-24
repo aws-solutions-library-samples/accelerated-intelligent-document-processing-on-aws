@@ -235,6 +235,10 @@
     "defaultMessage": "Working on your request… this can take a minute.",
     "description": "Shown in the Agent Chat under the last message while the agent prepares its answer."
   },
+  "agentChat.quickStart.attachedDocuments": {
+    "defaultMessage": "Attached {count, plural, one {# document} other {# documents}}",
+    "description": "What the user sees as their own message in the Quick Start chat when they send attached example documents without typing anything. {count} is how many files they attached."
+  },
   "agentChat.quickStartUpload.analyzing": {
     "defaultMessage": "Analyzing document",
     "description": "Progress step under the Quick Start input while one attached document is analyzed, until the server reports its own step."

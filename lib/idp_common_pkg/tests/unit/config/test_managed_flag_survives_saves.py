@@ -218,6 +218,16 @@ def _via_quick_start_bootstrap_tool(mgr: ConfigurationManager, name: str) -> Non
     assert "stack-managed" in result["error"]
 
 
+def _via_quick_start_processing_options(mgr: ConfigurationManager, name: str) -> None:
+    from idp_common.agents.quick_start.tools.bootstrap_tools import (
+        set_processing_options_impl,
+    )
+
+    result = json.loads(set_processing_options_impl(name, "one", False))
+    assert result["refused"] is True
+    assert "stack-managed" in result["error"]
+
+
 def _via_discovery_upload_resolver(mgr: ConfigurationManager, name: str) -> None:
     sys.path.insert(0, str(_DISCOVERY_UPLOAD_DIR))
     sys.modules.pop("index", None)
@@ -294,6 +304,7 @@ SAVE_PATHS: Dict[str, Callable[[ConfigurationManager, str], None]] = {
 REFUSING_PATHS: Dict[str, Callable[[ConfigurationManager, str], None]] = {
     "synthesis_bootstrap": _via_synthesis_bootstrap,
     "quick_start_bootstrap_tool": _via_quick_start_bootstrap_tool,
+    "quick_start_processing_options": _via_quick_start_processing_options,
 }
 
 

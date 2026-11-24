@@ -6,7 +6,7 @@
 #     (idp_common.synthesis.engine drives seed_data.Generator; plus bootstrap,
 #     schema_bridge, packet_io). The [synthesis] extra is
 #     deliberately light (jsonschema only) — NOT [ocr|evaluation|all], whose
-#     numpy==1.26.4 pin conflicts with seed-data's numpy 2.x.
+#     exact numpy and Pillow pins need not agree with seed-data's.
 #   - bedrock-agentcore + uvicorn: the AgentCore HTTP service contract.
 #   - aws-requests-auth and requests are pinned here but imported nowhere under
 #     agent-source/; job status is written straight to BootstrapTrackingTable
