@@ -252,6 +252,15 @@ const fieldLabels = defineMessages<{
   },
 });
 
+/**
+ * The notice after an action: a failure's own text (the server's or a thrown error's), kept as it
+ * arrives, or one of the dialog's messages, worded at render so it follows a language switch. The
+ * dialog stays mounted, and only a new action or a dismiss clears the notice.
+ */
+type Feedback =
+  | { readonly type: 'success' | 'error'; readonly message: TypedMessageDescriptor<NoMessageValues> }
+  | { readonly type: 'error'; readonly text: string };
+
 interface CircuitBreakerPanelProps {
   visible: boolean;
   status: CircuitBreakerStatus;
@@ -268,7 +277,7 @@ const CircuitBreakerPanel = ({ visible, status, onDismiss, onPause, onResume, on
   const [activeAction, setActiveAction] = useState<ActionKind | null>(null);
   const [reason, setReason] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
-  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
 
   const openConfirm = (action: ActionKind) => {
     setFeedback(null);
@@ -292,14 +301,14 @@ const CircuitBreakerPanel = ({ visible, status, onDismiss, onPause, onResume, on
       if (activeAction === 'pause') await onPause(trimmed);
       else if (activeAction === 'resume') await onResume(trimmed);
       else if (activeAction === 'probe') await onProbe(trimmed);
-      setFeedback({ type: 'success', message: intl.formatMessage(ACTIONS[activeAction].messages.submitted) });
+      setFeedback({ type: 'success', message: ACTIONS[activeAction].messages.submitted });
       setActiveAction(null);
       setReason('');
     } catch (err) {
       logger.error(`${activeAction} failed`, err);
       const gqlError = err as { errors?: { message?: string }[] };
-      const detail = gqlError?.errors?.[0]?.message || (err instanceof Error ? err.message : intl.formatMessage(messages.requestFailed));
-      setFeedback({ type: 'error', message: detail });
+      const detail = gqlError?.errors?.[0]?.message || (err instanceof Error ? err.message : null);
+      setFeedback(detail === null ? { type: 'error', message: messages.requestFailed } : { type: 'error', text: detail });
     } finally {
       setSubmitting(false);
     }
@@ -356,7 +365,7 @@ const CircuitBreakerPanel = ({ visible, status, onDismiss, onPause, onResume, on
 
         {feedback && (
           <Alert type={feedback.type} dismissible onDismiss={() => setFeedback(null)}>
-            {feedback.message}
+            {'text' in feedback ? feedback.text : <FormattedMessage {...feedback.message} />}
           </Alert>
         )}
 
