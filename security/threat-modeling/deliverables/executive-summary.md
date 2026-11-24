@@ -42,31 +42,31 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Category | Count |
 |----------|-------|
-| **Total threats identified** | **120** |
+| **Total threats identified** | **123** |
 | Critical risk (score 8-9) | 8 |
 | High risk (score 6-7) | 33 |
-| Medium risk (score 3-5) | 61 |
-| Low risk (score 1-2) | 18 |
+| Medium risk (score 3-5) | 63 |
+| Low risk (score 1-2) | 19 |
 
 ### 3.2 STRIDE Distribution
 
 | STRIDE Category | Count | Key Concern |
 |----------------|-------|-------------|
-| **Tampering** | 48 | Prompt injection, configuration manipulation, data/ground-truth poisoning, reviewer-controlled output |
-| **Information Disclosure** | 47 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure, Terraform state on local disk |
-| **Elevation of Privilege** | 42 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, per-object authorization that is opt-in per resolver, parser exploits |
+| **Tampering** | 51 | Prompt injection, configuration manipulation, data/ground-truth poisoning, reviewer-controlled output, routing that decides what is reviewed |
+| **Information Disclosure** | 49 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure, Terraform state on local disk |
+| **Elevation of Privilege** | 43 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, per-object authorization that is opt-in per resolver, parser exploits |
 | **Denial of Service** | 22 | Resource exhaustion, cost escalation, redaction loops, service dependency |
 | **Spoofing** | 17 | Token theft, caller-identity spoofing, credential compromise |
 | **Repudiation** | 7 | Insufficient audit trail, BDA opacity, review history that is not tamper-evident |
 
-> Counts sum to more than 120 because a threat may carry multiple STRIDE categories.
+> Counts sum to more than 123 because a threat may carry multiple STRIDE categories.
 
 ### 3.3 Mitigation Status
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 63 | 53% |
-| **Partially Mitigated** | 52 | 43% |
+| **Mitigated** | 63 | 51% |
+| **Partially Mitigated** | 55 | 45% |
 | **Open** (real gap, needs work) | **1** | **1%** |
 | **Accepted** | 4 | 3% |
 
@@ -194,4 +194,4 @@ The threat model has been developed using:
 | [STRIDE Analysis](../threat-analysis/stride-analysis.md) | Full STRIDE analysis across all components |
 | [Risk Matrix](../risk-assessment/risk-matrix.md) | Complete risk register with scoring |
 | [Implementation Guide](implementation-guide.md) | Security controls implementation details |
-| [Threat ID Glossary](../threat-id-glossary.md) | All 120 threat IDs with cross-references |
+| [Threat ID Glossary](../threat-id-glossary.md) | All 123 threat IDs with cross-references |

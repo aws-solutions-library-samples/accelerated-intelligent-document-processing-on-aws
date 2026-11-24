@@ -4,14 +4,14 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 3.19 |
-| **Last Updated** | 2026-11-17 |
+| **Version** | 3.20 |
+| **Last Updated** | 2026-11-24 |
 | **Applies to release** | v0.6.16 |
 | **Last reviewed against version** | 0.6.16 |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
 | **Architecture** | Unified (Pipeline + BDA modes), API Gateway REST transport |
 | **Methodology** | STRIDE |
-| **Total Threats** | 120 |
+| **Total Threats** | 123 |
 | **Classification** | Internal |
 
 > **`Last reviewed against version` is a gated field.** It records the release
@@ -30,13 +30,13 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 | Metric | Value |
 |--------|-------|
-| Threats identified | **120** |
+| Threats identified | **123** |
 | Critical risk (8–9) | 8 |
 | High risk (6–7) | 33 |
-| Medium risk (3–5) | 61 |
-| Low risk (1–2) | 18 |
-| Mitigated | 63 (53%) |
-| Partially mitigated | 52 (43%) |
+| Medium risk (3–5) | 63 |
+| Low risk (1–2) | 19 |
+| Mitigated | 63 (51%) |
+| Partially mitigated | 55 (45%) |
 | Open (real gap, needs work) | **1 (1%)** |
 | Accepted risk | 4 (3%) |
 
@@ -138,6 +138,18 @@ at the release it was last verified against as a whole: HOOK.T06 to HOOK.T10 in
 [`reporting-analytics.md`](feature-threats/reporting-analytics.md); and PM.T01,
 PM.T06 and PM.T08 in [`architecture/pipeline-mode.md`](architecture/pipeline-mode.md).
 
+The v3.20 pass (2026-11-24) read the changes merged to `develop` after v3.19 —
+review routing and its DMN import, the new review outcomes and the Apply Review
+Changes step, reprocess start steps, `TenantSelection`, `CustomerManagedKmsKeyArn`
+and the retained stack key, `ManageApiGatewayAccountSettings`, document
+attributes, the input-bucket version purge, the Strands Decider extension, the
+Terraform S3 state backend and versions index, prefix-mapping history and the
+exact-name `submission-source` exemption, and Quick Start's Admin-only and
+server-side switch — against the code and templates. It added HITL.T06, PM.T10
+and FEAT.T06 and updated the entries those changes touch, named in the Version
+History row below. It did not re-verify any document as a whole beyond those
+entries; each document's **Applies to release** row is unchanged by it.
+
 The remaining documents were **carried forward**: their content was reconciled for
 counts, cross-references and any claim contradicted by the documents above, but
 their threat entries were not individually re-verified against source in this
@@ -152,7 +164,7 @@ the deliverables, the risk matrix, the STRIDE analysis and the glossary.
 ```
 security/threat-modeling/
 ├── README.md                                    ← You are here
-├── threat-id-glossary.md                        ← All 120 threat IDs with cross-references
+├── threat-id-glossary.md                        ← All 123 threat IDs with cross-references
 │
 ├── architecture/                                ← System architecture & data flows
 │   ├── system-overview.md                       ← Unified architecture, components, trust boundaries
@@ -230,7 +242,7 @@ security/threat-modeling/
 ### Cross-Cutting Analysis
 - **[STRIDE Analysis](threat-analysis/stride-analysis.md)** — Full STRIDE across all components
 - **[Risk Matrix](risk-assessment/risk-matrix.md)** — Complete risk register with scoring and recommendations
-- **[Threat ID Glossary](threat-id-glossary.md)** — All 120 threat IDs with quick reference
+- **[Threat ID Glossary](threat-id-glossary.md)** — All 123 threat IDs with quick reference
 
 ### Implementation & Testing
 - **[Implementation Guide](deliverables/implementation-guide.md)** — Security controls, configuration, and checklists
@@ -242,7 +254,7 @@ security/threat-modeling/
 
 | Prefix | Category | Count | Highest Risk | Document |
 |--------|----------|-------|-------------|----------|
-| PM | Pipeline Mode | 9 | Very High (9) | [pipeline-mode.md](architecture/pipeline-mode.md) |
+| PM | Pipeline Mode | 10 | Very High (9) | [pipeline-mode.md](architecture/pipeline-mode.md) |
 | BDA | BDA Mode | 5 | Medium (4) | [bda-mode.md](architecture/bda-mode.md) |
 | AGT | Agent Analysis | 6 | High (6) | [agent-analysis.md](feature-threats/agent-analysis.md) |
 | CHAT | Companion Chat | 6 | Very High (9) | [companion-chat.md](feature-threats/companion-chat.md) |
@@ -253,11 +265,11 @@ security/threat-modeling/
 | HOOK | Lambda Hooks | 10 | Critical (8) | [lambda-hooks.md](feature-threats/lambda-hooks.md) |
 | UI | Web UI | 7 | High (6) | [web-ui.md](feature-threats/web-ui.md) |
 | RPT | Reporting/Analytics | 8 | High (6) | [reporting-analytics.md](feature-threats/reporting-analytics.md) |
-| FEAT | Feature Platform | 5 | Critical (8) | [feature-platform.md](feature-threats/feature-platform.md) |
+| FEAT | Feature Platform | 6 | Critical (8) | [feature-platform.md](feature-threats/feature-platform.md) |
 | JOB | Jobs API | 3 | High (6) | [jobs-api.md](feature-threats/jobs-api.md) |
 | PII | PII Anonymization | 5 | High (6) | [pii-anonymization.md](feature-threats/pii-anonymization.md) |
 | SELL | Seller Entitlement Service | 10 | Very High (9) | [seller-entitlement-service.md](feature-threats/seller-entitlement-service.md) |
-| HITL | Review Queues | 5 | Medium (3) | [review-queues.md](feature-threats/review-queues.md) |
+| HITL | Review Queues | 6 | Medium (3) | [review-queues.md](feature-threats/review-queues.md) |
 | TEN | Tenant Isolation | 5 | High (6) | [tenant-isolation.md](feature-threats/tenant-isolation.md) |
 
 ## Top Priority Threats
@@ -340,6 +352,7 @@ strictly worse than the red build.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.20 | 2026-11-24 | **Changes merged after v3.19, for the 0.6.16 release.** `Last reviewed against version` stays at 0.6.16. Three entries are added, each *Partially Mitigated*: **HITL.T06** (routing rules and run options decide which documents a person reviews; Low × High = 3) — the routing table is Admin-only, evaluated by an S-FEEL parser with no interpreter, failing to the Default queue, and imported from DMN with `defusedxml` and DTDs forbidden, but the profile settings that feed it are Author-editable and a reprocess can skip Assessment and Policy Rule Validation; **PM.T10** (caller-supplied document attributes are untrusted metadata carried to results; Low × Medium = 2) — intake reads a sidecar only at the document's own key plus `.idp-attributes.json`, which this change also enforces; and **FEAT.T06** (the Strands Decider extension builds third-party code and model weights into an in-account image; Low × High = 3) — commit-SHA pins and fork and branch refusal, with the upstream Dockerfile's dependencies unverified and open egress. Updated: TEN.T03 (`TenantSelection=UserSelect` and `selectActiveTenant`), HITL.T02 (send-back and the Apply Review Changes step), HITL.T04 (the review resolver's invoke grant on the reprocess function), AUTH.T07 (prefix mappings refuse a missing profile, the exact-name `submission-source` exemption, and the mapping change history), CHAT.T03 (Quick Start Admin-only and `EnableQuickStartWidget` enforced on both chat routes), PM.T08 (Cohere Embed v4 and decision models as further model families), SDK.T06 (S3 state backend) and SDK.T07 (versions index). The system overview gains `CustomerManagedKmsKeyArn` and the retained stack key in §3.1 and §6, `ManageApiGatewayAccountSettings` in §7.1, `TenantSelection` in §7, and rows for review routing, document attributes and decision models in §3.3. Counts move 120 → 123; Medium 61 → 63, Low 18 → 19; Partially Mitigated 52 → 55; Tampering 48 → 51, Information Disclosure 47 → 49, Elevation of Privilege 42 → 43. No status or score of an existing entry changed. |
 | 3.19 | 2026-11-17 | **Re-reviewed against 0.6.16.** The 0.6.15 release and the 0.6.16 cycle were read against the code; "What reviewed covers" above names the documents verified whole and those carried forward. New surfaces are modelled: the experimental Terraform and OpenTofu deployment and the migration from `genai-idp-terraform` (system overview §7.2 and trust boundary TB7; SDK.T06 working directory and state, SDK.T07 module integrity, SDK.T08 destructive plans and migrations), MCP service credentials and their storage in Secrets Manager (MCP.T07, SDK.T09), opt-in Code Intelligence and External MCP agents (AGT.T06), Bulk Skip All Reviews (HITL.T05), decision models invoked from classification and extraction (HOOK.T08 to HOOK.T10), and the Test Set Generator rendering from local resources (FEAT.T05). Existing entries now name the controls in the code: MCP tools act as the signed-in caller and `EnableMCP` defaults to `false`; chat sessions and agent memory are keyed on the verified Cognito `sub`; the content security policy is sent in both hosting modes; tenant grants bind to the Cognito `sub`; discovery applies profile scope; the guardrail's coverage is stated per function. Entries whose own residuals stand move to *Partially Mitigated*: PM.T01, AGT.T05, KB.T01, KB.T03, KB.T04 (score 2 → 4), MCP.T02, MCP.T04 and MCP.T05. SDK.T05 moves from 8 to 3: the shipped service role confines IAM writes to the stack-name prefix with a required permissions boundary, and its remaining breadth is the service-wide wildcards. Threats 109 → 120; Mitigated 67 → 63, Partially Mitigated 37 → 52. |
 | 3.18 | 2026-11-12 | **Each entry records the evidence for its mitigations, and AGT.T02 is Partially Mitigated.** A documentation and status change, not a re-review — `Last reviewed against version` stays at 0.6.14. Every entry the export builder reads gains an `Evidence` row citing the tests, gates and `make` targets that cover its mitigations, or reading `UNVERIFIED` with what is not covered; `scripts/tests/test_threat_model_evidence.py` checks that each citation resolves and pins the number of `UNVERIFIED` rows so it can only fall. Every entry is `UNVERIFIED` today: none has had its citations matched to each mitigation it lists. AGT.T02 moves from *Mitigated* to *Partially Mitigated*, because its own residual stands: code in an interpreter session can write the result of the query the agent ran to Amazon S3 in the session's region, and the interpreter is the AWS-managed one. UI.T06's table had blank lines inside it, so the export carried only its first three fields; the table is joined and the export now carries all of them. Mitigated 68 → 67, Partially Mitigated 36 → 37; no entry added or removed. |
 | 3.17 | 2026-11-11 | **CHAT.T03 and CHAT.T06 mitigated: the chat streaming endpoint verifies the caller's ID token.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.14. Every chat route verifies the Cognito ID token the browser sends in `x-idp-id-token` and takes the caller only from it, so the group checks and the document-chat scope check apply on that transport. Each chat session id is registered to its first user in `ChatSessionOwnersTable`, every read, write and delete checks it, and agent memory is keyed on the user and the session. CHAT.T03 and CHAT.T06 move Open → Mitigated, and AUTH.T14, whose only residual was this transport carrying no verified claims, moves Partially Mitigated → Mitigated; the Open count falls from 3 to 1. The `make api-test` cells for the transport are pending their first live run. |

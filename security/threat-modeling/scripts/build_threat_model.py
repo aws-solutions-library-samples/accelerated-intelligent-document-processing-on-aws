@@ -83,6 +83,9 @@ STATUS: dict[str, tuple[int, str]] = {
     # Low x High. The GuardDuty ingest gate is optional and off by default, and
     # static detection only; the Staging bucket's archive decoder is outside it.
     "PM.T09": (3, "Partially Mitigated"),
+    # Low x Medium. Validated, bound to the document's own sidecar key and kept out
+    # of prompts, paths and routing, but the values are the uploader's assertions.
+    "PM.T10": (2, "Partially Mitigated"),
     # BDA mode
     "BDA.T01": (4, "Partially Mitigated"),
     "BDA.T02": (2, "Mitigated"),
@@ -195,6 +198,9 @@ STATUS: dict[str, tuple[int, str]] = {
     "FEAT.T03": (6, "Partially Mitigated"),
     "FEAT.T04": (3, "Partially Mitigated"),
     "FEAT.T05": (2, "Mitigated"),
+    # Low x High. Commit-pinned source and weights, but the upstream Dockerfile's
+    # transitive dependencies are unverified and the build and function have egress.
+    "FEAT.T06": (3, "Partially Mitigated"),
     # Jobs API
     "JOB.T01": (6, "Mitigated"),
     "JOB.T02": (3, "Open"),
@@ -228,6 +234,9 @@ STATUS: dict[str, tuple[int, str]] = {
     # Low x High: grants are stack-scoped but wider than any Annotator operation.
     "HITL.T04": (3, "Partially Mitigated"),
     "HITL.T05": (3, "Partially Mitigated"),
+    # Low x High. The routing table is Admin-only, but the profile settings that
+    # feed it are Author-editable and a reprocess can skip the steps that feed it.
+    "HITL.T06": (3, "Partially Mitigated"),
     # Tenant isolation in a shared stack (v0.6.14). Likelihood x Severity per entry.
     # Medium x High: Off with Manual is the default and reads an unscoped non-Admin
     # as unrestricted; Strict or an external grant source fails closed.
