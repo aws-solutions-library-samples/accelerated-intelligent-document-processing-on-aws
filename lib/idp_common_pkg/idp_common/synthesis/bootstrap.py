@@ -155,6 +155,135 @@ def merge_class_into_version(
     config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)
 
 
+def _resolved_against_default(
+    config: Dict[str, Any], *, config_manager: Any
+) -> Dict[str, Any]:
+    """``config`` as the pipeline runs it: ``default`` with the profile's keys over it.
+
+    A stored profile can be a sparse delta, and every profile is resolved against
+    ``default`` when it is read for processing (``get_merged_configuration``), so a
+    key the profile lacks takes ``default``'s value rather than the model field's own
+    default. Without ``default`` the profile is judged as stored.
+    """
+    import copy
+
+    from idp_common.config.constants import DEFAULT_VERSION
+    from idp_common.config.merge_utils import deep_update
+
+    default = config_manager.get_raw_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
+    if not default:
+        return config
+    resolved = copy.deepcopy(default)
+    deep_update(resolved, copy.deepcopy(config))
+    return resolved
+
+
+def _models_advanced_extraction_cannot_use(config: Dict[str, Any]) -> List[str]:
+    """The extraction models in ``config`` that the advanced engine refuses.
+
+    OpenAI GPT-5.x models are called through the Responses API, which the agentic
+    engine behind ``extraction.mode: advanced`` does not use, so ``validate_config``
+    refuses that pairing and the extraction step raises on it. ``config`` is the
+    profile resolved against ``default`` (see :func:`_resolved_against_default`),
+    so a profile that names no extraction model is judged by the one it inherits.
+    The global model and every per-class override are checked; the escalation model
+    only when escalation can run. Escalation is read off the validated ``IDPConfig``, as
+    ``merge_utils._validate_agentic_openai`` reads it, because the raw dict cannot
+    answer it for a pre-0.7 ``extraction.agentic.validation`` block.
+    """
+    from idp_common.bedrock.openai_responses import is_openai_responses_model
+    from idp_common.config.models import IDPConfig
+
+    extraction = IDPConfig.model_validate(config).extraction
+    vcfg = extraction.validation
+    escalates = vcfg.enabled and vcfg.fail_action == "escalate"
+    models = [extraction.model]
+    if escalates:
+        models.append(vcfg.escalation_model)
+    for cls in config.get("classes") or []:
+        models.append(cls.get(sc.X_AWS_IDP_EXTRACTION_MODEL))
+        if escalates:
+            models.append(cls.get(sc.X_AWS_IDP_EXTRACTION_ESCALATION_MODEL))
+    return sorted({m for m in models if m and is_openai_responses_model(m)})
+
+
+DOCUMENTS_PER_FILE: Dict[str, str] = {
+    "one": "disabled",
+    "several": "llm_determined",
+    "one_per_page": "page",
+}
+
+
+def set_processing_options(
+    version: str,
+    *,
+    config_manager: Any,
+    documents_per_file: str = "",
+    summaries: Optional[bool] = None,
+    long_tables: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Write the processing options Quick Start chooses in plain words into ``version``.
+
+    ``documents_per_file`` is one of :data:`DOCUMENTS_PER_FILE`: "one" (each file is
+    one document, so section splitting is off), "several" (a file can hold several
+    documents, whose boundaries are detected) or "one_per_page" (every page is its
+    own document). ``summaries`` turns document summaries on or off. ``long_tables``
+    selects ``extraction.mode``: "advanced" when a document can hold a long list of
+    rows, because single-pass ("simple") extraction can end such a list early, and
+    "simple" otherwise; "advanced" is refused for a profile whose extraction model
+    the advanced engine cannot call. Only those keys change: the profile is saved
+    as a full copy of its configuration, as every profile save is, so a later
+    change to 'default' does not reach it. A pre-0.9 flat
+    ``classification.sectionSplitting`` needs no handling here: reading the profile
+    migrates it into ``classification.document_shape``, so the nested key is the
+    only one this sees.
+
+    The profile must already exist, and 'default' and stack-managed profiles are
+    refused exactly as a class write is. Returns the keys written and their values.
+    """
+    if documents_per_file and documents_per_file not in DOCUMENTS_PER_FILE:
+        raise ValueError(
+            f"documents_per_file must be one of {sorted(DOCUMENTS_PER_FILE)}, "
+            f"not {documents_per_file!r}"
+        )
+    if not documents_per_file and summaries is None and long_tables is None:
+        raise ValueError(
+            "Nothing to set: pass documents_per_file, summaries, long_tables or a mix."
+        )
+    refuse_protected_profile(version, config_manager=config_manager)
+    existing = config_manager.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
+    if not existing:
+        raise ValueError(
+            f"'{version}' does not exist yet: save its document class into it first."
+        )
+    if long_tables:
+        refused_models = _models_advanced_extraction_cannot_use(
+            _resolved_against_default(existing, config_manager=config_manager)
+        )
+        if refused_models:
+            raise ValueError(
+                "Long tables need the advanced extraction engine, which cannot use "
+                f"{', '.join(refused_models)}: OpenAI GPT-5.x models are called "
+                "through the Responses API. Choose another extraction model on the "
+                "Configuration page first, or leave long_tables off."
+            )
+    applied: Dict[str, Any] = {}
+    if documents_per_file:
+        splitting = DOCUMENTS_PER_FILE[documents_per_file]
+        classification = existing.setdefault("classification", {})
+        classification.setdefault("document_shape", {})["sectionSplitting"] = splitting
+        applied["classification.document_shape.sectionSplitting"] = splitting
+    if summaries is not None:
+        existing.setdefault("summarization", {})["enabled"] = bool(summaries)
+        applied["summarization.enabled"] = bool(summaries)
+    if long_tables is not None:
+        mode = "advanced" if long_tables else "simple"
+        existing.setdefault("extraction", {})["mode"] = mode
+        applied["extraction.mode"] = mode
+    config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)
+    return applied
+
+
 def run_bootstrap(
     request: BootstrapRequest,
     *,

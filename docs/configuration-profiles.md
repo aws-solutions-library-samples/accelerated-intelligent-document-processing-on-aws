@@ -109,9 +109,11 @@ Configuration profiles fall into two categories, indicated by a **Type** badge i
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed profiles cannot be deleted in the UI or via the API
 - **Stays managed when other features write to it** — class discovery, BDA blueprint
-  sync and optimization, the Quick Start bootstrap, a discovery Replace and an update
-  through the API or `idp-cli config-upload` can all save a managed profile, and none
-  of them makes it a custom one. A save never clears the flag, including one whose
+  sync and optimization, a discovery Replace and an update through the API or
+  `idp-cli config-upload` can all save a managed profile, and none of them makes it a
+  custom one. Quick Start, `idp-cli bootstrap` and the Test Set Generator do not write
+  to it at all: they refuse `default` and every managed profile as a target and save
+  into a profile of their own. A save never clears the flag, including one whose
   configuration says `managed: false`, and an update through the editor, API, SDK or
   CLI cannot set it either. The stack's presets set it, and so does restoring a
   revision saved while the profile was managed. A profile created by copying a

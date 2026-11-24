@@ -23,6 +23,7 @@ import uuid
 from typing import Optional
 
 import strands
+from pydantic import ValidationError
 
 from idp_common.synthesis import catalog as catalog_mod
 from idp_common.synthesis import engine, schema_author, schema_bridge
@@ -347,6 +348,69 @@ def activate_config_version_impl(version_name: str) -> str:
         return json.dumps({"activated": False, "error": str(e)})
 
 
+def set_processing_options_impl(
+    version_name: str,
+    documents_per_file: str = "",
+    summaries: Optional[bool] = None,
+    long_tables: Optional[bool] = None,
+) -> str:
+    from idp_common.config.configuration_manager import ConfigurationManager
+    from idp_common.synthesis import bootstrap as bootstrap_mod
+
+    if not version_name:
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "refused": False,
+                "error": "version_name is required",
+            }
+        )
+    try:
+        applied = bootstrap_mod.set_processing_options(
+            version_name,
+            config_manager=ConfigurationManager(),
+            documents_per_file=documents_per_file,
+            summaries=summaries,
+            long_tables=long_tables,
+        )
+    except bootstrap_mod.ProtectedProfileError as e:
+        return json.dumps(
+            {"config_version": version_name, "refused": True, "error": str(e)}
+        )
+    except ValidationError:
+        logger.error(
+            f"Profile '{version_name}' does not validate; options not set",
+            exc_info=True,
+        )
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "refused": False,
+                "error": (
+                    "This profile's stored configuration does not pass validation, "
+                    "so its options were not changed. Open it on Configuration > "
+                    "View/Edit Configuration to see what needs fixing."
+                ),
+            }
+        )
+    except ValueError as e:
+        return json.dumps(
+            {"config_version": version_name, "refused": False, "error": str(e)}
+        )
+    except Exception:
+        logger.error(
+            f"Error setting processing options on '{version_name}'", exc_info=True
+        )
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "refused": False,
+                "error": "The options could not be saved; try again.",
+            }
+        )
+    return json.dumps({"config_version": version_name, "applied": applied})
+
+
 def request_document_generation_impl(
     schema_text: str,
     config_version: str,
@@ -369,6 +433,25 @@ def request_document_generation_impl(
         schema = json.loads(schema_text)
     except json.JSONDecodeError:
         return json.dumps({"error": "schema_text is not valid JSON"})
+
+    from idp_common.config.configuration_manager import ConfigurationManager
+    from idp_common.synthesis import bootstrap as bootstrap_mod
+
+    try:
+        bootstrap_mod.refuse_protected_profile(
+            config_version, config_manager=ConfigurationManager()
+        )
+    except bootstrap_mod.ProtectedProfileError as e:
+        return json.dumps({"enqueued": False, "refused": True, "reason": str(e)})
+    except Exception:
+        logger.error(f"Could not check profile '{config_version}'", exc_info=True)
+        return json.dumps(
+            {
+                "enqueued": False,
+                "refused": False,
+                "reason": "The profile could not be checked; try again.",
+            }
+        )
 
     job_id = uuid.uuid4().hex
     allowed = schema_bridge.field_names(schema)
@@ -650,6 +733,40 @@ def activate_config_version(version_name: str) -> str:
 
 
 @strands.tool
+def set_processing_options(
+    version_name: str,
+    documents_per_file: str = "",
+    summaries: Optional[bool] = None,
+    long_tables: Optional[bool] = None,
+) -> str:
+    """Set how a profile splits files into documents, summarizes them, and extracts long tables.
+
+    Call it on the profile you just saved (create_config_version, or the profile
+    Discovery saved attached documents into). Only the options you pass are
+    changed. 'default' and stack-managed profiles are refused: the result then has
+    "refused": true. long_tables=True is also turned down, with an "error" saying
+    why, when the profile's extraction model cannot run the advanced engine.
+
+    Args:
+        version_name: The configuration profile to change.
+        documents_per_file: "one" when each file is one document (an invoice, a
+            W-2, a statement), "several" when one file can hold several documents
+            (a loan packet, a bundle of forms), "one_per_page" when every page is
+            a separate document (a stack of scanned receipts). Empty leaves it as
+            it is.
+        summaries: True to summarize each document, False not to. Omit to leave
+            it as it is.
+        long_tables: True when a document can hold a long list of rows (more than
+            about a page of line items, transactions or log entries): extraction
+            then uses the advanced engine, which keeps every row but is slower and
+            costs more per document. False for short documents. Omit to leave it.
+    """
+    return set_processing_options_impl(
+        version_name, documents_per_file, summaries, long_tables
+    )
+
+
+@strands.tool
 def request_document_generation(
     schema_text: str,
     config_version: str,
@@ -666,7 +783,12 @@ def request_document_generation(
 
     Args:
         schema_text: The approved schema as a JSON string.
-        config_version: The config version to attach the test set to.
+        config_version: The config version the schema is written into and the
+            test set is attached to. Pass one saved in this conversation.
+            'default' and stack-managed profiles are refused before anything
+            is queued: the result then has "refused": true and a "reason".
+            For a class already in another profile, use
+            generate_from_existing_config instead.
         doc_count: Number of documents to generate.
         threshold: Quality threshold (1-10).
         augment: Whether to apply scan/fax-style image augmentation.
