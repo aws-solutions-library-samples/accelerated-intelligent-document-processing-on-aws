@@ -1605,12 +1605,17 @@ about 196 pixels per token: 996 tokens for a page at 512 pixels, 4,069 at 1024 a
 10,647 at 150 DPI unscaled (one US Letter page, measured). Reference vectors are
 cached for the life of the Lambda container, so a warm container embeds each
 example image once; the first document after a cold start pays for all of them.
-`config_library/pricing.yaml` has no row for Cohere Embed v4, so the embedding
-tokens are recorded but their cost is reported as unpriced rather than as zero.
-The AWS price list for `us-east-1` gives $0.12 per million input tokens for it,
-and also lists a second usage type whose relation to image calls it does not
-state, so no rate is shipped; add a `bedrock/<model>` row to your pricing
-configuration (one per Region profile you use) if you want the cost reported.
+`config_library/pricing.yaml` prices Cohere Embed v4 at $0.12 per million input
+tokens, the InputTokenCount rate in the AWS price list for `us-east-1`, with one
+row per Region profile the default resolves to (`us.`, `eu.` and
+`global.cohere.embed-v4:0`). Text and image calls are priced at that one rate: an
+image is billed as input tokens by its pixel count, and Bedrock reports those
+tokens in the same count. The price list also lists a second, lower Embed v4
+usage type ("Units", $0.00000002 per unit) and does not say how it relates to
+these calls, so your bill may be lower than the reported cost. The higher rate is
+shipped so that the report does not understate spend. The `eu.` and `global.` rows
+carry the `us-east-1` rate. To use your own rate, override the rows in the
+Pricing editor.
 
 #### What the benchmark measured
 

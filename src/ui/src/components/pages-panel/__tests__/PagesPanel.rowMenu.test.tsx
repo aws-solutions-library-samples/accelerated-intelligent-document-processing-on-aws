@@ -14,6 +14,7 @@ import React from 'react';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { IntlProvider } from 'react-intl';
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
 vi.mock('../../../hooks/use-page-thumbnails', () => ({
@@ -33,6 +34,12 @@ const PAGES = [
   { Id: '1', Class: 'W2', TextUri: 's3://out/1.json' },
   { Id: '2', Class: 'W2' },
 ];
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const rowMenu = (id: string) =>
   createWrapper(document.body)
@@ -75,7 +82,7 @@ beforeEach(() => {
 
 describe('the Document Pages table', () => {
   it('has none of the retired table controls', () => {
-    render(<PagesPanel pages={PAGES as never} />);
+    render(<PagesPanel pages={PAGES as never} />, { wrapper: English });
     const labels = createWrapper(document.body)
       .findAllButtons()
       .map((b) => b.getElement().textContent);
@@ -84,14 +91,14 @@ describe('the Document Pages table', () => {
   });
 
   it('holds View Page Text only, without the page offering Edit Page Text', () => {
-    render(<PagesPanel pages={PAGES as never} />);
+    render(<PagesPanel pages={PAGES as never} />, { wrapper: English });
     expect(rowMenu('1').findNativeButton().getElement().getAttribute('aria-label')).toBe('Actions for page 1');
     expect(itemsOf('1')).toEqual([{ text: 'View Page Text', disabled: false }]);
     expect(itemsOf('2')).toEqual([{ text: 'View Page Text', disabled: true }]);
   });
 
   it('View Page Text opens the text read-only, at that page', async () => {
-    render(<PagesPanel pages={PAGES as never} />);
+    render(<PagesPanel pages={PAGES as never} />, { wrapper: English });
     const menu = rowMenu('1');
     act(() => menu.openDropdown());
     act(() => menu.findItemById('view-text')!.click());
@@ -102,7 +109,7 @@ describe('the Document Pages table', () => {
 
   it('holds Edit Page Text where the page offers it, opening it at that page', () => {
     const open = vi.fn();
-    render(<PagesPanel pages={PAGES as never} pageTextEdit={{ open }} />);
+    render(<PagesPanel pages={PAGES as never} pageTextEdit={{ open }} />, { wrapper: English });
     expect(itemsOf('1')).toEqual([
       { text: 'View Page Text', disabled: false },
       { text: 'Edit Page Text', disabled: false },
@@ -114,14 +121,14 @@ describe('the Document Pages table', () => {
   });
 
   it('passes the reason Edit Page Text is disabled through, and disables it for a page with no text', () => {
-    render(<PagesPanel pages={PAGES as never} pageTextEdit={{ open: vi.fn(), disabledReason: 'Not now' }} />);
+    render(<PagesPanel pages={PAGES as never} pageTextEdit={{ open: vi.fn(), disabledReason: 'Not now' }} />, { wrapper: English });
     expect(itemsOf('1')[1]).toEqual({ text: 'Edit Page Text', disabled: true });
     const menu = rowMenu('1');
     act(() => menu.openDropdown());
     expect(document.body.textContent).toContain('Not now');
     act(() => menu.openDropdown());
     cleanup();
-    render(<PagesPanel pages={PAGES as never} pageTextEdit={{ open: vi.fn() }} />);
+    render(<PagesPanel pages={PAGES as never} pageTextEdit={{ open: vi.fn() }} />, { wrapper: English });
     expect(itemsOf('2')[1]).toEqual({ text: 'Edit Page Text', disabled: true });
     const second = rowMenu('2');
     act(() => second.openDropdown());
@@ -129,7 +136,7 @@ describe('the Document Pages table', () => {
   });
 
   it('puts Actions last at 100px, the data columns sharing the rest of the width evenly', () => {
-    render(<PagesPanel pages={PAGES as never} />);
+    render(<PagesPanel pages={PAGES as never} />, { wrapper: English });
     const share = css('calc((100% - 100px) / 4)');
     expect(columnWidths()).toEqual([
       ['Page ID', share],
@@ -149,7 +156,7 @@ describe('the Document Pages table', () => {
 
   it('shows the columns chosen in its preferences, remembered, the rest sharing the width', () => {
     window.localStorage.setItem('document-pages-columns', JSON.stringify({ visibleContent: ['id', 'class'] }));
-    render(<PagesPanel pages={PAGES as never} />);
+    render(<PagesPanel pages={PAGES as never} />, { wrapper: English });
     expect(columnWidths()).toEqual([
       ['Page ID', css('calc((100% - 100px) / 2)')],
       ['Class/Type', css('calc((100% - 100px) / 2)')],

@@ -1221,6 +1221,8 @@ class ConfigOperation:
             field_hints: Fields the schema must include.
             source_profile: Existing profile whose classes seed the catalog.
             target_profile: Profile to write (default ``bootstrap-<class>``).
+                ``default`` and stack-managed profiles are refused: the result
+                has ``success=False`` and says why.
             doc_count: Synthetic documents to generate.
             quality_threshold: Generation quality threshold (1-10).
             augment: Apply image augmentation to generated documents.

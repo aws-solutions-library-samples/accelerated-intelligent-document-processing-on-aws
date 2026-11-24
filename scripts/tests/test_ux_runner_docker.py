@@ -1552,3 +1552,208 @@ def test_install_sh_takes_the_python_pins_only_as_the_files_they_hash() -> None:
     assert len(pips) == 1, pips
     for needle in ("--require-hashes", "--no-deps", '-r "$HERE/requirements.txt"'):
         assert needle in pips[0], f"the pip install has no {needle}: {pips[0]}"
+
+
+# --------------------------------------------------------------------------- #
+# translation: the screen review of the translated UI
+# --------------------------------------------------------------------------- #
+
+
+def _translation(
+    host: FakeHost,
+    tmp_path: Path,
+    *extra: str,
+    environ: dict[str, str] | None = None,
+    glossary: bool = True,
+) -> int:
+    gloss = tmp_path / "glossary.fr-CA.csv"
+    if glossary:
+        gloss.write_text("en,fr-CA,note\nupload,téléverser,\n", encoding="utf-8")
+    args, _ = rid.parse_args(
+        ["translation", "--stack", "idp-fr-test", "--glossary", str(gloss), *extra]
+    )
+    return rid.translation(
+        args, run=host, environ=_environ() if environ is None else environ
+    )
+
+
+@pytest.fixture
+def translation_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    out = tmp_path / "test-reports" / "ux-translation-review"
+    monkeypatch.setattr(rid, "TRANSLATION_OUT", out)
+    return out
+
+
+def _command(argv: list[str]) -> list[str]:
+    """The orchestrator's command line inside a container: after the image tag."""
+    start = next(i for i, part in enumerate(argv) if part == "python3")
+    return argv[start:]
+
+
+@pytest.mark.unit
+def test_translation_runs_one_container_that_publishes_nothing(
+    host: FakeHost, tmp_path: Path, translation_out: Path
+) -> None:
+    code = _translation(
+        host, tmp_path, "--locale", "fr-CA", "--max-usd", "30", "--max-turns", "120"
+    )
+    assert code == 0
+    assert _docker_steps(host) == ["image inspect", "run review container"]
+    review = _only(host, "run review container")
+    assert not {"-p", "--publish", "--network"} & set(review.argv)
+    assert _command(review.argv) == [
+        "python3",
+        "-B",
+        f"/repo/{rid.TRANSLATION_ENTRY}",
+        "--stack",
+        "idp-fr-test",
+        "--artifact-dir",
+        "/out",
+        "--web-url",
+        WEB_URL,
+        "--glossary",
+        "/glossary/glossary.fr-CA.csv",
+        "--locale",
+        "fr-CA",
+        "--max-usd",
+        "30.0",
+        "--max-turns",
+        "120",
+    ]
+    specs = _mount_specs(review.argv)
+    assert set(specs) == {"/repo", "/out", "/glossary/glossary.fr-CA.csv"}
+    assert specs["/repo"].endswith(",readonly")
+    assert specs["/glossary/glossary.fr-CA.csv"].endswith(",readonly")
+    assert not specs["/out"].endswith(",readonly")
+    (run_dir,) = translation_out.iterdir()
+    assert run_dir.name.endswith("-review")
+    assert Path(_mount_sources(review.argv)["/out"]) == run_dir
+
+
+@pytest.mark.unit
+def test_translation_hands_the_container_every_value_by_name_only(
+    host: FakeHost, tmp_path: Path, translation_out: Path
+) -> None:
+    environ = _environ()
+    _translation(host, tmp_path, environ=environ)
+    review = _only(host, "run review container")
+    assert _env_names(review.argv) == list(rid.CONTAINER_ENV_NAMES)
+    for call in host.calls:
+        for value in _hidden_values(environ):
+            assert all(value not in part for part in call.argv), (call.argv[:3], value)
+    env = review.env or {}
+    assert env["AWS_ACCESS_KEY_ID"] == "fake-key-id-7d2e"
+    assert env["AWS_SESSION_TOKEN"] == "fake-session-c44a"
+    assert "GITLAB_REVIEW_TOKEN" not in _env_names(review.argv)
+
+
+@pytest.mark.unit
+def test_translation_serves_a_build_read_only_and_asks_for_no_web_url(
+    host: FakeHost, tmp_path: Path, translation_out: Path
+) -> None:
+    build = tmp_path / "ui-build"
+    build.mkdir()
+    (build / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    _translation(host, tmp_path, "--build-dir", str(build))
+    review = _only(host, "run review container")
+    command = _command(review.argv)
+    assert command[command.index("--build-dir") + 1] == "/ui-build"
+    assert "--web-url" not in command
+    assert _mount_specs(review.argv)["/ui-build"].endswith(",readonly")
+    queries = [c.argv for c in host.calls if "describe-stacks" in c.argv]
+    assert all("ApplicationWebURL" not in " ".join(argv) for argv in queries)
+
+
+@pytest.mark.unit
+def test_translation_of_the_pseudo_locale_alone_needs_no_glossary(
+    host: FakeHost, tmp_path: Path, translation_out: Path
+) -> None:
+    _translation(host, tmp_path, "--locale", "en-XA", glossary=False)
+    review = _only(host, "run review container")
+    assert "--glossary" not in _command(review.argv)
+    assert not any(
+        target.startswith("/glossary") for target in _mount_specs(review.argv)
+    )
+
+
+@pytest.mark.unit
+def test_translation_refuses_what_cannot_work_before_running_anything(
+    host: FakeHost, tmp_path: Path, translation_out: Path
+) -> None:
+    with pytest.raises(rid.DockerRunError, match="the fr-CA glossary .* is not there"):
+        _translation(host, tmp_path, glossary=False)
+    environ = _environ()
+    del environ["UX_TEST_PERSONAS"]
+    with pytest.raises(rid.DockerRunError, match="UX_TEST_PERSONAS is not set"):
+        _translation(host, tmp_path, environ=environ)
+    args, _ = rid.parse_args(["translation", "--stack", "not a stack"])
+    with pytest.raises(rid.DockerRunError, match="not a CloudFormation stack name"):
+        rid.translation(args, run=host, environ=_environ())
+    assert host.calls == []
+
+
+@pytest.mark.unit
+def test_translation_returns_the_containers_exit_and_gives_the_files_back(
+    host: FakeHost,
+    tmp_path: Path,
+    translation_out: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handed: list[Path] = []
+    monkeypatch.setattr(
+        rid, "return_ownership", lambda out, **kwargs: handed.append(out)
+    )
+    host.review_exit = 1
+    assert _translation(host, tmp_path) == 1
+    (run_dir,) = translation_out.iterdir()
+    assert handed == [run_dir]
+    printed = capsys.readouterr().out
+    assert "nothing is posted" in printed
+    assert "findings.md" in printed
+
+
+@pytest.mark.unit
+def test_translation_runs_land_under_a_gitignored_test_reports_directory() -> None:
+    assert rid.TRANSLATION_OUT.relative_to(rid.REPO_ROOT).parts[0] == "test-reports"
+    ignored = (rid.REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "test-reports/" in ignored or "/test-reports/" in ignored
+    assert rid.TRANSLATION_GLOSSARY.relative_to(rid.REPO_ROOT).as_posix() == (
+        "src/ui/src/i18n/glossary.fr-CA.csv"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["translation"],
+        ["translation", "--stack", "s", "--web-url", WEB_URL, "--build-dir", "b"],
+        ["translation", "--stack", "s", "--locale", "fr"],
+    ],
+    ids=["no-stack", "two-uis", "unknown-locale"],
+)
+def test_translation_options_that_cannot_work_are_refused(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        rid.parse_args(argv)
+    assert stopped.value.code == 2
+
+
+@pytest.mark.unit
+def test_a_run_directory_goes_under_the_root_it_is_given(tmp_path: Path) -> None:
+    made = rid.story_run_dir("review", out=None, clock=lambda: 0.0, root=tmp_path)
+    assert made == tmp_path / "19700101T000000Z-review"
+    assert (made / rid.OUT_MARKER).is_file()
+
+
+@pytest.mark.unit
+def test_main_dispatches_translation(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def fake(args: Any) -> int:
+        seen.append(args.stack)
+        return 7
+
+    monkeypatch.setattr(rid, "translation", fake)
+    assert rid.main(["translation", "--stack", "idp-fr-test"]) == 7
+    assert seen == ["idp-fr-test"]

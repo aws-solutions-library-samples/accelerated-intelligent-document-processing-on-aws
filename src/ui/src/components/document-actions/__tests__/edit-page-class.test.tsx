@@ -74,9 +74,9 @@ vi.mock('../../document-panel/DocumentVersionsPanel', () => ({
 vi.mock('../../document-panel/DocumentDownloadModals', () => ({ DownloadOptionsModal: () => null, DownloadProgressModal: () => null }));
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
-  MarkdownReport: ({ title, emptyMessage, reportUri }: { title: string; emptyMessage: string; reportUri: string }) => (
+  MarkdownReport: ({ report, emptyMessage, reportUri }: { report: string; emptyMessage: string; reportUri: string }) => (
     <div data-testid="markdown-report">
-      {title}|{emptyMessage}|{reportUri}
+      {report}|{emptyMessage}|{reportUri}
     </div>
   ),
 }));
@@ -286,7 +286,7 @@ describe('Edit Page Grouping › Save and Re-extract', () => {
     await openBoard();
     act(() => board().secondarySave.onSave(changedOnly));
     const confirm = await waitFor(() => shown(modalTitled('Confirm Reprocessing')));
-    expect([...confirm.findContent().getElement().querySelectorAll('li')][0].textContent).toBe('Section 2: FieldTicket, pages 4');
+    expect([...confirm.findContent().getElement().querySelectorAll('li')][0].textContent).toBe('Section 2: FieldTicket, page 4');
     expect(order()).toEqual([]);
     await act(async () => footerButton('Confirm Reprocessing', 'Confirm & Process').click());
     await waitFor(() => expect(order()).toEqual(['updateDocumentSections', 'processChanges']));

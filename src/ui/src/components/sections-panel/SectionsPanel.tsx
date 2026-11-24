@@ -15,6 +15,7 @@ import {
 } from '@cloudscape-design/components';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -22,7 +23,7 @@ import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../c
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
 import ClassNameText from '../common/ClassNameText';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
-import { getSectionIssueStatus } from '../common/processing-issues-utils';
+import { getSectionIssueStatus, issueCodeLabel } from '../common/processing-issues-utils';
 import { getSectionMissingRequiredFields } from '../common/missing-required-fields-utils';
 import type { EditableSection } from '../../types/documents';
 import useAppContext from '../../contexts/app';
@@ -31,7 +32,7 @@ import useUserRole from '../../hooks/use-user-role';
 import { documentEditHref } from '../../routes/constants';
 import { getFilePresignedUrl } from '../../graphql/generated';
 import { isBaselineAvailable } from '../document-panel/document-export';
-import { SECTION_NO_DATA_REASON } from '../document-actions/action-reasons';
+import { actionReasonMessages } from '../document-actions/action-reasons';
 import { ColumnPreferences, fillTableColumns, useColumnPreferences } from '../common/detail-table-columns';
 
 const client = generateClient();
@@ -80,6 +81,259 @@ interface SectionsPanelProps {
   classificationIndex?: ClassificationIndex;
 }
 
+const messages = defineMessages<{
+  title: NoMessageValues;
+  skipped: { readonly reason: string };
+  skippedNoReason: NoMessageValues;
+  suspectedHeader: NoMessageValues;
+  detectedHeader: NoMessageValues;
+  suspectedBody: { readonly count: number; readonly className: string };
+  suspectedBodyNoClass: { readonly count: number };
+  detectedBody: { readonly count: number; readonly className: string };
+  detectedBodyNoClass: { readonly count: number };
+  suspectedHint: NoMessageValues;
+  detectedHint: NoMessageValues;
+  missingRequiredHeader: NoMessageValues;
+  missingRequiredUnnamed: NoMessageValues;
+  missingRequiredBody: NoMessageValues;
+  issuesHeader: NoMessageValues;
+  issueFallback: NoMessageValues;
+  rootCause: { readonly rootCause: string };
+  downloadNoFileUri: NoMessageValues;
+  downloadPredictionFailed: NoMessageValues;
+  downloadPredictionFailedWithError: { readonly error: string };
+  downloadBaselineFailed: NoMessageValues;
+  downloadBaselineFailedWithError: { readonly error: string };
+  downloadBaselineNotFound: NoMessageValues;
+  editData: NoMessageValues;
+  viewData: NoMessageValues;
+  downloadData: NoMessageValues;
+  downloadBaseline: NoMessageValues;
+  actionsAriaLabel: { readonly section: string };
+  emptyTitle: NoMessageValues;
+  emptyBody: NoMessageValues;
+}>({
+  title: {
+    id: 'documents.sections.title',
+    defaultMessage: 'Document Sections',
+    description: 'Heading of the sections table on the document page; also names the table in its column preferences.',
+  },
+  skipped: {
+    id: 'documents.sections.skipped',
+    defaultMessage: 'Skipped: {reason}',
+    description:
+      "Badge beside a section's class in the Document Sections table when the configuration excludes that class from processing. {reason} is the exclusion reason the configuration gives, as written there.",
+  },
+  skippedNoReason: {
+    id: 'documents.sections.skippedNoReason',
+    defaultMessage: 'Skipped: excluded',
+    description:
+      "Badge beside a section's class in the Document Sections table when the configuration excludes that class from processing and gives no reason.",
+  },
+  suspectedHeader: {
+    id: 'documents.sections.multiInstance.suspectedHeader',
+    defaultMessage: 'Records may be missing from this section',
+    description:
+      "Heading of the popover behind a section's record count in the Document Sections table, when its pages appear to hold more records than were extracted.",
+  },
+  detectedHeader: {
+    id: 'documents.sections.multiInstance.detectedHeader',
+    defaultMessage: 'Multiple records in one section',
+    description:
+      "Heading of the popover behind a section's record count in the Document Sections table, when extraction found and extracted several records in the section.",
+  },
+  suspectedBody: {
+    id: 'documents.sections.multiInstance.suspectedBody',
+    defaultMessage:
+      'These pages appear to contain {count} separate {className} records, but only the first was extracted — the rest are not in the result.',
+    description:
+      "Text of the popover behind a section's record count when records may be missing. {count} is the number of records the pages appear to contain (2 or more); {className} is the section's class.",
+  },
+  suspectedBodyNoClass: {
+    id: 'documents.sections.multiInstance.suspectedBodyNoClass',
+    defaultMessage:
+      'These pages appear to contain {count} separate records, but only the first was extracted — the rest are not in the result.',
+    description:
+      "Text of the popover behind a section's record count when records may be missing, for a section without a class. {count} is the number of records the pages appear to contain (2 or more).",
+  },
+  detectedBody: {
+    id: 'documents.sections.multiInstance.detectedBody',
+    defaultMessage: 'Extraction found {count} separate {className} records in this section. Each one was extracted as its own instance.',
+    description:
+      "Text of the popover behind a section's record count when several records were extracted. {count} is the number of records (2 or more); {className} is the section's class.",
+  },
+  detectedBodyNoClass: {
+    id: 'documents.sections.multiInstance.detectedBodyNoClass',
+    defaultMessage: 'Extraction found {count} separate records in this section. Each one was extracted as its own instance.',
+    description:
+      "Text of the popover behind a section's record count when several records were extracted, for a section without a class. {count} is the number of records (2 or more).",
+  },
+  suspectedHint: {
+    id: 'documents.sections.multiInstance.suspectedHint',
+    defaultMessage:
+      'Split the section (classification section splitting), or turn on multi-instance extraction for this class so every record is extracted.',
+    description: "Advice under the text of the popover behind a section's record count, when records may be missing.",
+  },
+  detectedHint: {
+    id: 'documents.sections.multiInstance.detectedHint',
+    defaultMessage: 'If these should be separate sections, review the classification settings for this class.',
+    description: "Advice under the text of the popover behind a section's record count, when several records were extracted.",
+  },
+  missingRequiredHeader: {
+    id: 'documents.sections.missingRequired.header',
+    defaultMessage: 'Missing required fields',
+    description:
+      'Heading of the popover behind a count in the Missing Required Fields column of the Document Sections table; it lists the required fields extraction found no value for.',
+  },
+  missingRequiredUnnamed: {
+    id: 'documents.sections.missingRequired.unnamedField',
+    defaultMessage: '(unnamed field)',
+    description: 'Shown in the list of missing required fields in place of a field that has no name.',
+  },
+  missingRequiredBody: {
+    id: 'documents.sections.missingRequired.body',
+    defaultMessage: 'The class schema marks these fields required and extraction found no value for them. They raise no confidence alert.',
+    description: 'Explanation under the list of missing required fields in their popover.',
+  },
+  issuesHeader: {
+    id: 'documents.sections.issues.header',
+    defaultMessage: 'Processing issues',
+    description:
+      "Heading of the popover behind a section's status in the Document Sections table; it lists the section's processing issues.",
+  },
+  issueFallback: {
+    id: 'documents.sections.issues.fallback',
+    defaultMessage: 'issue',
+    description:
+      "Shown in the Processing issues popover in place of an issue's code when the issue has neither a code nor a processing stage.",
+  },
+  rootCause: {
+    id: 'documents.sections.issues.rootCause',
+    defaultMessage: 'Root cause: {rootCause}',
+    description:
+      "Line under a processing issue's message in the Processing issues popover. {rootCause} is the cause the backend recorded, in English.",
+  },
+  downloadNoFileUri: {
+    id: 'documents.sections.download.noFileUri',
+    defaultMessage: 'File URI not available',
+    description: "Error notice when a section row's Download Data or Download Baseline finds no file location to download from.",
+  },
+  downloadPredictionFailed: {
+    id: 'documents.sections.download.predictionFailed',
+    defaultMessage: 'Failed to download prediction data',
+    description: "Error notice when a section row's Download Data fails and the failure carries no message.",
+  },
+  downloadPredictionFailedWithError: {
+    id: 'documents.sections.download.predictionFailedWithError',
+    defaultMessage: 'Failed to download prediction data: {error}',
+    description: "Error notice when a section row's Download Data fails. {error} is the failure's message, in English.",
+  },
+  downloadBaselineFailed: {
+    id: 'documents.sections.download.baselineFailed',
+    defaultMessage: 'Failed to download baseline data',
+    description: "Error notice when a section row's Download Baseline fails and the failure carries no message.",
+  },
+  downloadBaselineFailedWithError: {
+    id: 'documents.sections.download.baselineFailedWithError',
+    defaultMessage: 'Failed to download baseline data: {error}',
+    description: "Error notice when a section row's Download Baseline fails. {error} is the failure's message, in English.",
+  },
+  downloadBaselineNotFound: {
+    id: 'documents.sections.download.baselineNotFound',
+    defaultMessage: 'Baseline data not found. The baseline may not have been set for this document yet.',
+    description: "Error notice when a section row's Download Baseline finds no baseline to download.",
+  },
+  editData: {
+    id: 'documents.sections.row.editData',
+    defaultMessage: 'Edit Data',
+    description:
+      "Item of a section row's menu in the Document Sections table that opens the section's data on the edit page, for a role that can edit.",
+  },
+  viewData: {
+    id: 'documents.sections.row.viewData',
+    defaultMessage: 'View Data',
+    description:
+      "Item of a section row's menu in the Document Sections table that opens the section's data on the edit page, for a role that can't edit.",
+  },
+  downloadData: {
+    id: 'documents.sections.row.downloadData',
+    defaultMessage: 'Download Data',
+    description: "Item of a section row's menu that downloads the section's data as a JSON file.",
+  },
+  downloadBaseline: {
+    id: 'documents.sections.row.downloadBaseline',
+    defaultMessage: 'Download Baseline',
+    description:
+      "Item of a section row's menu that downloads the section's evaluation baseline as a JSON file, offered when the document has one.",
+  },
+  actionsAriaLabel: {
+    id: 'documents.sections.row.actionsAriaLabel',
+    defaultMessage: 'Actions for section {section}',
+    description: "Screen-reader label of a section row's menu. {section} is the section id.",
+  },
+  emptyTitle: {
+    id: 'documents.sections.empty.title',
+    defaultMessage: 'No sections',
+    description: 'Heading of the sections table when the document has no section.',
+  },
+  emptyBody: {
+    id: 'documents.sections.empty.body',
+    defaultMessage: 'This document has no sections.',
+    description: 'Text of the sections table when the document has no section.',
+  },
+});
+
+/** The column headers, keyed by column id; the ⚙ preferences name the columns with the same messages. */
+const columnMessages = defineMessages<{
+  id: NoMessageValues;
+  class: NoMessageValues;
+  pageIds: NoMessageValues;
+  confidenceAlerts: NoMessageValues;
+  missingRequiredFields: NoMessageValues;
+  status: NoMessageValues;
+  actions: NoMessageValues;
+}>({
+  id: {
+    id: 'documents.sections.column.id',
+    defaultMessage: 'Section ID',
+    description: 'Column header of the sections table: the section id.',
+  },
+  class: {
+    id: 'documents.sections.column.class',
+    defaultMessage: 'Class/Type',
+    description: 'Column header of the sections table: the class the section was classified as.',
+  },
+  pageIds: {
+    id: 'documents.sections.column.pageIds',
+    defaultMessage: 'Page IDs',
+    description: "Column header of the sections table: the numbers of the section's pages.",
+  },
+  confidenceAlerts: {
+    id: 'documents.sections.column.confidenceAlerts',
+    defaultMessage: 'Low Confidence Fields',
+    description: "Column header of the sections table: how many of the section's fields scored below their confidence threshold.",
+  },
+  missingRequiredFields: {
+    id: 'documents.sections.column.missingRequiredFields',
+    defaultMessage: 'Missing Required Fields',
+    description: 'Column header of the sections table: how many required fields extraction found no value for.',
+  },
+  status: {
+    id: 'documents.sections.column.status',
+    defaultMessage: 'Status',
+    description: "Column header of the sections table: the section's status, from its processing issues.",
+  },
+  actions: {
+    id: 'documents.sections.column.actions',
+    defaultMessage: 'Actions',
+    description: 'Column header of the sections table: the row menu.',
+  },
+});
+
+/** The text in the UI's language; without `intl` (tests reading the column ids) the English source text. */
+const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: IntlShape): string =>
+  intl ? intl.formatMessage(message) : String(message.defaultMessage);
+
 // Cell renderer components
 const IdCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.Id}</span>;
 
@@ -107,7 +361,13 @@ const ClassCell = ({
     return (
       <SpaceBetween direction="horizontal" size="xs">
         <ClassNameText color="#5f6b7a">{item.Class}</ClassNameText>
-        <Badge color="grey">Skipped: {item.ExclusionReason || 'excluded'}</Badge>
+        <Badge color="grey">
+          {item.ExclusionReason ? (
+            <FormattedMessage {...messages.skipped} values={{ reason: item.ExclusionReason }} />
+          ) : (
+            <FormattedMessage {...messages.skippedNoReason} />
+          )}
+        </Badge>
       </SpaceBetween>
     );
   }
@@ -151,6 +411,7 @@ const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <spa
 const SUSPECTED_ISSUE_CODE = 'extraction_multi_instance_suspected';
 
 const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element | null => {
+  const intl = useIntl();
   const count = item.InstanceCount ?? 0;
 
   if (count <= 1) {
@@ -165,24 +426,28 @@ const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element 
       position="top"
       size="medium"
       triggerType="custom"
-      header={suspected ? 'Records may be missing from this section' : 'Multiple records in one section'}
+      header={intl.formatMessage(suspected ? messages.suspectedHeader : messages.detectedHeader)}
       content={
         <SpaceBetween size="xs">
           {suspected ? (
             <Box variant="p">
-              These pages appear to contain {count} separate {item.Class ? `${item.Class} records` : 'records'}, but only the first was
-              extracted — the rest are not in the result.
+              {item.Class ? (
+                <FormattedMessage {...messages.suspectedBody} values={{ count, className: item.Class }} />
+              ) : (
+                <FormattedMessage {...messages.suspectedBodyNoClass} values={{ count }} />
+              )}
             </Box>
           ) : (
             <Box variant="p">
-              Extraction found {count} separate {item.Class ? `${item.Class} records` : 'records'} in this section. Each one was extracted
-              as its own instance.
+              {item.Class ? (
+                <FormattedMessage {...messages.detectedBody} values={{ count, className: item.Class }} />
+              ) : (
+                <FormattedMessage {...messages.detectedBodyNoClass} values={{ count }} />
+              )}
             </Box>
           )}
           <Box variant="small" color="text-body-secondary">
-            {suspected
-              ? 'Split the section (classification section splitting), or turn on multi-instance extraction for this class so every record is extracted.'
-              : 'If these should be separate sections, review the classification settings for this class.'}
+            <FormattedMessage {...(suspected ? messages.suspectedHint : messages.detectedHint)} />
           </Box>
         </SpaceBetween>
       }
@@ -224,6 +489,7 @@ const ConfidenceAlertsCell = ({
  * absent field raises no confidence alert, so it is listed here instead.
  */
 export const MissingRequiredFieldsCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+  const intl = useIntl();
   const missing = getSectionMissingRequiredFields(item);
   if (missing.length === 0) {
     return <StatusIndicator type="success">0</StatusIndicator>;
@@ -234,17 +500,17 @@ export const MissingRequiredFieldsCell = ({ item }: { item: SectionItem }): Reac
       position="top"
       size="medium"
       triggerType="custom"
-      header="Missing required fields"
+      header={intl.formatMessage(messages.missingRequiredHeader)}
       content={
         <SpaceBetween size="xxs">
           {missing.map((field) => (
             // Paths are unique within a section, so the path is the key.
             <Box key={field.attributeName || '(unnamed field)'} variant="code">
-              {field.attributeName || '(unnamed field)'}
+              {field.attributeName || <FormattedMessage {...messages.missingRequiredUnnamed} />}
             </Box>
           ))}
           <Box variant="small" color="text-body-secondary">
-            The class schema marks these fields required and extraction found no value for them. They raise no confidence alert.
+            <FormattedMessage {...messages.missingRequiredBody} />
           </Box>
         </SpaceBetween>
       }
@@ -261,8 +527,9 @@ export const MissingRequiredFieldsCell = ({ item }: { item: SectionItem }): Reac
 // message + root cause. Reuses the getSectionIssueStatus helper (mirrors the
 // hitl-status-renderer + confidence-alerts-utils conventions).
 const StatusCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+  const intl = useIntl();
   const issues = item.ProcessingIssues || [];
-  const { type, label } = getSectionIssueStatus(item);
+  const { type, label } = getSectionIssueStatus(item, intl);
 
   const indicator = <StatusIndicator type={type}>{label}</StatusIndicator>;
 
@@ -276,7 +543,7 @@ const StatusCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
       position="top"
       size="large"
       triggerType="custom"
-      header="Processing issues"
+      header={intl.formatMessage(messages.issuesHeader)}
       content={
         <SpaceBetween size="s">
           {issues.map((issue, idx) => (
@@ -291,13 +558,13 @@ const StatusCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
                         : 'info'
                   }
                 >
-                  {issue.code || issue.stage || 'issue'}
+                  {issue.code ? issueCodeLabel(issue.code, intl) : issue.stage || intl.formatMessage(messages.issueFallback)}
                 </StatusIndicator>
               </Box>
               <Box variant="p">{issue.message}</Box>
               {issue.rootCause && (
                 <Box variant="small" color="text-body-secondary">
-                  Root cause: {issue.rootCause}
+                  <FormattedMessage {...messages.rootCause} values={{ rootCause: issue.rootCause }} />
                 </Box>
               )}
             </div>
@@ -316,6 +583,7 @@ const StatusCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
  * editor decides what is editable), and its data and baseline as JSON.
  */
 const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: DocumentItem | undefined }) => {
+  const intl = useIntl();
   const [isDownloading, setIsDownloading] = React.useState(false);
   const { settings } = useSettingsContext();
   const { setErrorMessage } = useAppContext();
@@ -370,14 +638,14 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
   };
 
   // Download handler for both prediction and baseline data
-  const handleDownload = async (type: string) => {
+  const handleDownload = async (type: 'prediction' | 'baseline') => {
     setIsDownloading(true);
 
     try {
       const fileUri = type === 'baseline' ? constructBaselineUri(item.OutputJSONUri) : item.OutputJSONUri;
 
       if (!fileUri) {
-        setErrorMessage('File URI not available');
+        setErrorMessage(intl.formatMessage(messages.downloadNoFileUri));
         return;
       }
 
@@ -423,12 +691,17 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
     } catch (error) {
       logger.error(`Error downloading ${type} data:`, error);
 
-      let errorMessage = `Failed to download ${type} data`;
+      // The failure's own message is shown as it is; which download failed picks the sentence.
+      const failure = (error as Error).message;
+      let errorMessage = intl.formatMessage(type === 'baseline' ? messages.downloadBaselineFailed : messages.downloadPredictionFailed);
 
-      if (type === 'baseline' && (error as Error).message?.includes('not found')) {
-        errorMessage = 'Baseline data not found. The baseline may not have been set for this document yet.';
-      } else if ((error as Error).message) {
-        errorMessage = `Failed to download ${type} data: ${(error as Error).message}`;
+      if (type === 'baseline' && failure?.includes('not found')) {
+        errorMessage = intl.formatMessage(messages.downloadBaselineNotFound);
+      } else if (failure) {
+        errorMessage = intl.formatMessage(
+          type === 'baseline' ? messages.downloadBaselineFailedWithError : messages.downloadPredictionFailedWithError,
+          { error: failure },
+        );
       }
 
       setErrorMessage(errorMessage);
@@ -440,14 +713,16 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
   const items: ButtonDropdownProps.ItemOrGroup[] = [
     {
       id: 'edit-data',
-      text: canEdit ? 'Edit Data' : 'View Data',
+      text: intl.formatMessage(canEdit ? messages.editData : messages.viewData),
       href: documentEditHref(objectKey, { section: String(item.Id), from: 'document' }),
       ...(canEdit ? { iconName: 'edit' as const } : {}),
       disabled: !objectKey || !item.OutputJSONUri,
-      disabledReason: !item.OutputJSONUri ? SECTION_NO_DATA_REASON : undefined,
+      disabledReason: !item.OutputJSONUri ? intl.formatMessage(actionReasonMessages.sectionNoData) : undefined,
     },
-    { id: 'prediction', text: 'Download Data', iconName: 'download' },
-    ...(isBaselineAvailable(documentItem) ? [{ id: 'baseline', text: 'Download Baseline', iconName: 'download' as const }] : []),
+    { id: 'prediction', text: intl.formatMessage(messages.downloadData), iconName: 'download' },
+    ...(isBaselineAvailable(documentItem)
+      ? [{ id: 'baseline', text: intl.formatMessage(messages.downloadBaseline), iconName: 'download' as const }]
+      : []),
   ];
 
   return (
@@ -455,7 +730,7 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
       items={items}
       variant="inline-icon"
       expandToViewport
-      ariaLabel={`Actions for section ${item.Id}`}
+      ariaLabel={intl.formatMessage(messages.actionsAriaLabel, { section: String(item.Id) })}
       loading={isDownloading}
       onItemClick={({ detail }) => {
         if (detail.id === 'prediction' || detail.id === 'baseline') void handleDownload(detail.id);
@@ -464,15 +739,8 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
   );
 };
 
-/** The data columns a user may show or hide (⚙), with their headers. */
-export const SECTION_COLUMN_OPTIONS = [
-  { id: 'id', label: 'Section ID' },
-  { id: 'class', label: 'Class/Type' },
-  { id: 'pageIds', label: 'Page IDs' },
-  { id: 'confidenceAlerts', label: 'Low Confidence Fields' },
-  { id: 'missingRequiredFields', label: 'Missing Required Fields' },
-  { id: 'status', label: 'Status' },
-] as const;
+/** The data columns a user may show or hide (⚙), in their order; each is named by its header's message. */
+const SECTION_COLUMNS = ['id', 'class', 'pageIds', 'confidenceAlerts', 'missingRequiredFields', 'status'] as const;
 
 /**
  * The sections table's columns, the ⋮ Actions column last. Their widths come from
@@ -483,43 +751,44 @@ export const sectionColumnDefinitions = (
   documentItem: DocumentItem | undefined,
   mergedConfig: Record<string, unknown> | null | undefined,
   classificationIndex: ClassificationIndex,
+  intl?: IntlShape,
 ) => {
   return [
     {
       id: 'id',
-      header: 'Section ID',
+      header: labelOf(columnMessages.id, intl),
       cell: (item: SectionItem) => <IdCell item={item} />,
       sortingField: 'Id',
     },
     {
       id: 'class',
-      header: 'Class/Type',
+      header: labelOf(columnMessages.class, intl),
       cell: (item: SectionItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
       sortingField: 'Class',
     },
     {
       id: 'pageIds',
-      header: 'Page IDs',
+      header: labelOf(columnMessages.pageIds, intl),
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
     },
     {
       id: 'confidenceAlerts',
-      header: 'Low Confidence Fields',
+      header: labelOf(columnMessages.confidenceAlerts, intl),
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
     },
     {
       id: 'missingRequiredFields',
-      header: 'Missing Required Fields',
+      header: labelOf(columnMessages.missingRequiredFields, intl),
       cell: (item: SectionItem) => <MissingRequiredFieldsCell item={item} />,
     },
     {
       id: 'status',
-      header: 'Status',
+      header: labelOf(columnMessages.status, intl),
       cell: (item: SectionItem) => <StatusCell item={item} />,
     },
     {
       id: 'actions',
-      header: 'Actions',
+      header: labelOf(columnMessages.actions, intl),
       cell: (item: SectionItem) => <ActionsCell item={item} documentItem={documentItem} />,
     },
   ];
@@ -531,6 +800,7 @@ const SectionsPanel = ({
   mergedConfig,
   classificationIndex = EMPTY_CLASSIFICATION_INDEX,
 }: SectionsPanelProps): React.JSX.Element => {
+  const intl = useIntl();
   // Sort sections by their starting page ID for consistent display order.
   // During parallel Map state execution (Extraction/Assessment), events may arrive out
   // of order — the DynamoDB Sections array order depends on which parallel Lambda
@@ -546,18 +816,28 @@ const SectionsPanel = ({
   // the direction, so every column that declares a sort works. Starts unsorted,
   // so the default view keeps its existing order.
   const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
-  const { preferences, setPreferences, visibleColumns } = useColumnPreferences('document-sections-columns', SECTION_COLUMN_OPTIONS);
+  const columnOptions = SECTION_COLUMNS.map((id) => ({ id, label: intl.formatMessage(columnMessages[id]) }));
+  const { preferences, setPreferences, visibleColumns } = useColumnPreferences('document-sections-columns', columnOptions);
 
   return (
-    <Container header={<Header variant="h2">Document Sections</Header>}>
+    <Container
+      header={
+        <Header variant="h2">
+          <FormattedMessage {...messages.title} />
+        </Header>
+      }
+    >
       <div style={{ overflowX: 'auto', position: 'relative' }}>
         <Table
-          columnDefinitions={fillTableColumns(sectionColumnDefinitions(documentItem, mergedConfig, classificationIndex), visibleColumns)}
+          columnDefinitions={fillTableColumns(
+            sectionColumnDefinitions(documentItem, mergedConfig, classificationIndex, intl),
+            visibleColumns,
+          )}
           visibleColumns={visibleColumns}
           preferences={
             <ColumnPreferences
-              title="Document Sections"
-              options={SECTION_COLUMN_OPTIONS}
+              title={intl.formatMessage(messages.title)}
+              options={columnOptions}
               preferences={preferences}
               setPreferences={setPreferences}
             />
@@ -568,9 +848,11 @@ const SectionsPanel = ({
           stickyHeader={false}
           empty={
             <Box textAlign="center" color="inherit">
-              <b>No sections</b>
+              <b>
+                <FormattedMessage {...messages.emptyTitle} />
+              </b>
               <Box padding={{ bottom: 's' }} variant="p" color="inherit">
-                This document has no sections.
+                <FormattedMessage {...messages.emptyBody} />
               </Box>
             </Box>
           }

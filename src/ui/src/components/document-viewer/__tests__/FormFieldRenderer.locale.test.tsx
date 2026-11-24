@@ -8,11 +8,12 @@
  * gives for the ratio, with the locale's decimal mark and a (no-break) space before the sign.
  * The numeric input beside it is parsed back (`Number(detail.value)`), so its value stays
  * `String(value)` in every locale: `1234.5`, never `1 234,5`, which `Number` would read as
- * `NaN`. The second case renders without a provider and checks the English text is what it
- * has always been.
+ * `NaN`. The second case renders under an English provider and checks the English text is what
+ * it has always been.
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -21,6 +22,12 @@ import FormFieldRenderer from '../FormFieldRenderer';
 
 /** Confidence reaches the renderer through the assessment's explainability data, keyed by field name. */
 const EXPLAINABILITY = [{ Amount: { confidence: 1.0 } }];
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const field = (onChange: (value: unknown) => void): React.JSX.Element => (
   <FormFieldRenderer
@@ -50,8 +57,8 @@ describe('FormFieldRenderer numbers under a locale', () => {
     expect(onChange).toHaveBeenCalledWith(1234.6);
   });
 
-  it('shows the English confidence without a provider, as before', () => {
-    render(field(vi.fn()));
+  it('shows the English confidence under an English provider, as before', () => {
+    render(field(vi.fn()), { wrapper: English });
     expect(screen.getByText(/Confidence: 100\.0%/)).toBeInTheDocument();
   });
 });

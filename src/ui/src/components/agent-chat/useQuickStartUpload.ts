@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import JSZip from 'jszip';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { uploadDiscoveryZip } from '../../api/discovery-zip-upload';
 import { startMultiDocDiscovery, listDiscoveryJobs, uploadDiscoveryDocument } from '../../graphql/generated';
@@ -12,6 +13,35 @@ const logger = new ConsoleLogger('useQuickStartUpload');
 const client = generateClient();
 
 const POLL_INTERVAL_MS = 5000;
+
+const messages = defineMessages<{
+  discoveryFailed: NoMessageValues;
+  analyzing: NoMessageValues;
+  packaging: NoMessageValues;
+  uploadFailed: NoMessageValues;
+}>({
+  discoveryFailed: {
+    id: 'agentChat.quickStartUpload.discoveryFailed',
+    defaultMessage: 'Document discovery failed',
+    description: 'Error under the Quick Start input when discovery of the attached documents failed and the server gave no reason.',
+  },
+  analyzing: {
+    id: 'agentChat.quickStartUpload.analyzing',
+    defaultMessage: 'Analyzing document',
+    description:
+      'Progress step under the Quick Start input while one attached document is analyzed, until the server reports its own step.',
+  },
+  packaging: {
+    id: 'agentChat.quickStartUpload.packaging',
+    defaultMessage: 'Packaging documents',
+    description: 'Progress step under the Quick Start input while the attached documents are packaged for upload.',
+  },
+  uploadFailed: {
+    id: 'agentChat.quickStartUpload.uploadFailed',
+    defaultMessage: 'Upload failed',
+    description: 'Error under the Quick Start input when uploading the attached documents failed with no error message.',
+  },
+});
 
 export interface QuickStartUploadStatus {
   jobId: string | null;
@@ -85,6 +115,7 @@ const parseClassNames = (discoveredClasses?: string): string[] => {
 };
 
 const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = {}) => {
+  const intl = useIntl();
   const { settings } = useSettingsContext();
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<QuickStartUploadStatus | null>(null);
@@ -130,7 +161,7 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
                 configVersion: configVersionRef.current,
               });
             } else {
-              onError?.(update.errorMessage || 'Document discovery failed');
+              onError?.(update.errorMessage || intl.formatMessage(messages.discoveryFailed));
             }
           }
         } catch (err) {
@@ -140,7 +171,7 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
       pollTimerRef.current = setInterval(poll, POLL_INTERVAL_MS);
       void poll();
     },
-    [onComplete, onError, stopPolling],
+    [onComplete, onError, stopPolling, intl],
   );
 
   const startSingleDocUpload = useCallback(
@@ -176,10 +207,10 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
       // uploadDiscoveryDocument creates the job server-side but returns no
       // jobId, so track it by the uploaded object key.
       const objectKey = uploadData.objectKey;
-      setStatus({ jobId: null, status: 'QUEUED', currentStep: 'Analyzing document' });
+      setStatus({ jobId: null, status: 'QUEUED', currentStep: intl.formatMessage(messages.analyzing) });
       startPolling((job) => job.documentKey === objectKey);
     },
-    [settings.DiscoveryBucket, startPolling],
+    [settings.DiscoveryBucket, startPolling, intl],
   );
 
   const startMultiDocUpload = useCallback(
@@ -212,7 +243,7 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
       if (!files.length) return;
       configVersionRef.current = configVersion;
       setUploading(true);
-      setStatus({ jobId: null, status: 'PREPARING', currentStep: 'Packaging documents' });
+      setStatus({ jobId: null, status: 'PREPARING', currentStep: intl.formatMessage(messages.packaging) });
       try {
         if (isSingleDocUpload(files)) {
           await startSingleDocUpload(files[0], configVersion);
@@ -220,7 +251,7 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
           await startMultiDocUpload(files, configVersion);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Upload failed';
+        const message = err instanceof Error ? err.message : intl.formatMessage(messages.uploadFailed);
         logger.error('startUpload failed', err);
         setStatus(null);
         onError?.(message);
@@ -228,7 +259,7 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
         setUploading(false);
       }
     },
-    [startSingleDocUpload, startMultiDocUpload, onError],
+    [startSingleDocUpload, startMultiDocUpload, onError, intl],
   );
 
   const reset = useCallback(() => {

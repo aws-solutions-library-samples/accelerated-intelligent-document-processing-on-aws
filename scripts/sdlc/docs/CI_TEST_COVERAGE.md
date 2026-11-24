@@ -96,6 +96,43 @@ payload-robustness corpus covers that goal directly. See
 [`security/README.md`](../../../security/README.md) and
 [the service README](../../../feature-platform/seller-entitlement-service/README.md).
 
+## Web UI internationalization (i18n) and localization (L10N)
+
+The web UI's text goes through react-intl, with the English catalog in
+`src/ui/src/i18n/en.json` and one catalog per further locale beside it (`fr-CA.json`
+today); see [`src/ui/src/i18n/README.md`](../../../src/ui/src/i18n/README.md). What CI
+checks about that is static and unit-level. Nothing that deploys a stack or drives a
+browser runs in a language other than English.
+
+| Check | What it fails on | Where it runs |
+|-------|------------------|---------------|
+| `make check-ui-i18n-catalog` | `en.json` differs from a fresh extraction of the messages declared in `src/ui/src`; a translation catalog the UI build would reject (an argument, plural, select or tag that does not match the English, a malformed entry, an id `en.json` no longer has) | `make lint-cicd`: `static_checks` on GitLab, "Static Checks (lint, types, scans)" on GitHub |
+| `make check-ui-string-debt` | A UI file gains a user-facing string written straight into the code instead of a message, or a file not listed in `scripts/ui_string_debt.json` carries any | `make lint-cicd`, as above |
+| UI unit tests (vitest) | Screen tests that render in `fr-CA` or the pseudo-locale `en-XA`, including that a screen loads its data once and does not fetch again when the catalog arrives or the language changes | `ui_tests` on GitLab, "UI Unit Tests" on GitHub |
+| Message-map parity tests in `scripts/tests/` (`test_*_ui_parity.py`) | A backend status, severity, issue code or similar value that the UI's message maps do not cover, in either direction | The `scripts` tree of `make coverage-all-cicd`: `unit_tests` on GitLab, "Scripts Coverage (gate suites)" on GitHub |
+
+Three things are deliberately **not** gated, and nothing else covers them:
+
+- **Stale translations.** A translation whose English has changed since it was
+  written still passes `check-ui-i18n-catalog`, so the old wording ships to that
+  locale. `make ui-i18n-coverage` lists stale and missing entries; it is advisory and
+  no CI job runs it. Gating stale entries is proposed in
+  [#2080](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2080).
+- **Missing translations.** An English message with no translation never fails a
+  job: users of that locale see the English until it is translated.
+- **The translated UI against a live stack.** `integration_tests` deploys and
+  processes documents but never opens the web UI, and `ai_ux_test`, the
+  first-time-user stories and `ux_nightly` all run in English; no flow in
+  `scripts/ux_flows.yaml` and no story in `scripts/ux_stories.toml` sets a locale.
+
+The translation tools are developer-only and run with the developer's own AWS
+credentials; no CI job calls any of them. `make ui-i18n-translate` drafts missing and
+stale entries with Amazon Translate, `make ui-i18n-review` and `make ui-i18n-revise`
+review and correct a catalog with a Bedrock model, and `make ai-ux-translation-review`
+looks at the signed-in UI in `fr-CA` and `en-XA` in the UX runner's confined browser.
+Run them before a release, or after a batch of English changes, rather than expecting
+CI to report what they find.
+
 ## Pipeline stages & triggers
 
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the

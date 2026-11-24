@@ -1517,6 +1517,7 @@ def test_the_makefile_targets_are_outside_every_gate_section() -> None:
         "ai-ux-test-stories-pair",
         "ai-ux-test-stories-report",
         "ai-ux-test-stories-search",
+        "ai-ux-translation-review",
     ], targets
     for target in targets:
         assert not sections[target].startswith(GATE_SECTION_PREFIXES), (

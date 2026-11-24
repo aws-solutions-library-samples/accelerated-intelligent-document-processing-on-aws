@@ -18,6 +18,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 vi.mock('../../../api/client-shim', () => ({
   generateClient: () => ({ graphql: vi.fn() }),
@@ -34,11 +35,18 @@ import { DocumentVersionProvider } from '../../../contexts/document-version';
 const SECTIONS = [{ Id: 'sec-1', Class: 'W2', PageIds: [11], Confidence: 0.87 }];
 const DOC = { objectKey: 'doc', objectStatus: 'COMPLETED' };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderPanel = () =>
   render(
     <DocumentVersionProvider runId={null} files={[]}>
       <SectionsPanel {...({ sections: SECTIONS, pages: [], documentItem: DOC } as Record<string, unknown>)} />
     </DocumentVersionProvider>,
+    { wrapper: English },
   );
 
 const headers = (): string[] => Array.from(document.querySelectorAll('th')).map((th) => th.textContent?.trim() ?? '');

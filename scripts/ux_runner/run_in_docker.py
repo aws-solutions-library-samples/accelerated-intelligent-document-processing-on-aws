@@ -8,7 +8,7 @@ image ``scripts/ux_runner/Dockerfile`` builds from ``scripts/ux_runner/install.s
 which is the same toolchain definition the CI job installs, so a run on a Mac
 (Apple Silicon included), on Windows under Docker Desktop or on a Linux devbox
 gets the same Chrome for Testing, Node, npm pins, ffmpeg, fonts, Python pins,
-managed policy and users as CI does. It has three modes.
+managed policy and users as CI does. It has four modes.
 
 ``review``
     The CI-equivalent test of one merge request, a **dry run** unless
@@ -47,6 +47,14 @@ managed policy and users as CI does. It has three modes.
     run from its own harness commit. ``--list`` and ``--search`` are the
     authoring helpers; ``--search`` runs in the image, because the docs index runs
     ``docs-site/setup.sh``.
+``translation``
+    The screen review of the translated web UI in ``fr-CA`` and the pseudo-locale
+    ``en-XA``, run by ``scripts/sdlc/ai_ux_translation_review.py`` in one
+    container that publishes nothing, against the stack's web URL or a
+    ``--build-dir`` that holds the locales, with the glossary bound read-only.
+    Every run gets its own ``test-reports/ux-translation-review/<UTC
+    time>-review/``, gitignored, holding ``findings.md``, ``findings.json``,
+    ``run.json`` and ``screens/``. Nothing is posted.
 
 The pair session
 ----------------
@@ -1320,22 +1328,28 @@ def _read_json(path: Path, limit: int, what: str) -> Any:
 
 
 def story_run_dir(
-    label: str, *, out: str | None, clock: Callable[[], float] = time.time
+    label: str,
+    *,
+    out: str | None,
+    clock: Callable[[], float] = time.time,
+    root: Path | None = None,
 ) -> Path:
-    """A new ``scratch/ux-docker/stories/<UTC time>-<label>`` directory, or ``--out``.
+    """A new ``<root>/<UTC time>-<label>`` directory, or ``--out``.
 
-    The name sorts by time, and a second run in the same second takes the next
-    free suffix, so a run never writes into another's directory.
+    ``root`` is :data:`STORIES_OUT` unless given. The name sorts by time, and a
+    second run in the same second takes the next free suffix, so a run never
+    writes into another's directory.
     """
     if out:
         return prepare_out(Path(out))
+    base = STORIES_OUT if root is None else root
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
     for number in range(1, 100):
         suffix = "" if number == 1 else f"-{number}"
-        candidate = STORIES_OUT / f"{stamp}-{label}{suffix}"
+        candidate = base / f"{stamp}-{label}{suffix}"
         if not candidate.exists():
             return prepare_out(candidate)
-    raise DockerRunError(f"{STORIES_OUT} already holds 99 runs started at {stamp}")
+    raise DockerRunError(f"{base} already holds 99 runs started at {stamp}")
 
 
 def _git_text(repo: Path, arguments: Sequence[str], *, run: Callable[..., Any]) -> str:
@@ -3103,9 +3117,106 @@ def stories(
     return _stories_run(args, run=run, popen=popen, environ=env)
 
 
+TRANSLATION_ENTRY = "scripts/sdlc/ai_ux_translation_review.py"
+#: Under ``test-reports/``, which ``.gitignore`` keeps out of git, because the
+#: screenshots are another stack's screens and are not redacted.
+TRANSLATION_OUT = REPO_ROOT / "test-reports" / "ux-translation-review"
+TRANSLATION_GLOSSARY = REPO_ROOT / "src" / "ui" / "src" / "i18n" / "glossary.fr-CA.csv"
+TRANSLATION_LOCALES = ("fr-CA", "en-XA")
+
+
+def _translation_glossary(args: argparse.Namespace) -> Path | None:
+    """The glossary file to bind, or None when no locale reviewed needs one."""
+    if "fr-CA" not in (args.locale or TRANSLATION_LOCALES):
+        return None
+    path = Path(args.glossary).expanduser() if args.glossary else TRANSLATION_GLOSSARY
+    if not path.is_file():
+        raise DockerRunError(
+            f"the fr-CA glossary {path} is not there; pass --glossary with the "
+            "translators' CSV (en,fr-CA,note)"
+        )
+    return path.resolve()
+
+
+def translation(
+    args: argparse.Namespace,
+    *,
+    run: Callable[..., Any] = subprocess.run,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    """The screen review of the translated UI in one container; its exit code.
+
+    The container is a story container's (:func:`_review_container`): the harness
+    read-only, the run directory at ``/out``, every value by name, and no port
+    published. The proxy and Chrome start inside it, as the orchestrator's
+    ``ConfinedBrowser`` starts them for every other mode.
+    """
+    env = dict(os.environ if environ is None else environ)
+    _check_stack(args.stack)
+    _require(env, "UX_TEST_PERSONAS", "UX_TEST_AWS_ACCOUNT_ID")
+    local_build = _local_build(args)
+    glossary = _translation_glossary(args)
+    docker = resolve_tool(args.docker)
+    out = story_run_dir("review", out=args.out, root=TRANSLATION_OUT)
+    print(f"-> run directory: {out}", flush=True)
+    platform_name = host_platform()
+    tag = image_tag(PACKAGE_DIR)
+    ensure_image(
+        tag,
+        platform_name,
+        PACKAGE_DIR,
+        docker=docker,
+        rebuild=args.rebuild_image,
+        run=run,
+    )
+    credentials = export_credentials(profile=args.profile, run=run)
+    region = _region(env)
+    ui_env = ui_env_text(
+        env, stack=args.stack, profile=args.profile, region=region, run=run
+    )
+    command = ["python3", "-B", f"/repo/{TRANSLATION_ENTRY}", "--stack", args.stack]
+    command += ["--artifact-dir", "/out"]
+    mounts: list[str] = []
+    if local_build is not None:
+        mounts += bind(local_build, "/ui-build", readonly=True)
+        command += ["--build-dir", "/ui-build"]
+    else:
+        command += [
+            "--web-url",
+            _web_url(args, ui_env, args.stack, region=region, run=run),
+        ]
+    if glossary is not None:
+        mounts += bind(glossary, f"/glossary/{glossary.name}", readonly=True)
+        command += ["--glossary", f"/glossary/{glossary.name}"]
+    for locale in args.locale or ():
+        command += ["--locale", locale]
+    if args.max_usd is not None:
+        command += ["--max-usd", str(args.max_usd)]
+    command += list(args.passthrough)
+    print("-> reviewing the translated screens; nothing is posted", flush=True)
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        _review_container(
+            docker=docker,
+            platform_name=platform_name,
+            tag=tag,
+            harness=REPO_ROOT,
+            out=out,
+            names=CONTAINER_ENV_NAMES,
+            mounts=mounts,
+            command=command,
+        ),
+        env=_container_env(env, credentials, ui_env),
+        check=False,
+    )
+    return_ownership(out, docker=docker, tag=tag, platform_name=platform_name, run=run)
+    print(f"-> findings: {out / 'findings.md'}", flush=True)
+    return int(completed.returncode)
+
+
 def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
     """Every mode's options; unrecognised ``review`` options pass to ai_ux_test.py,
-    and unrecognised ``stories`` options to ai_ux_test_stories.py.
+    unrecognised ``stories`` options to ai_ux_test_stories.py, and unrecognised
+    ``translation`` options to ai_ux_translation_review.py.
 
     Abbreviations are off, so a pass-through option can never be read as a
     prefix of one of this script's own.
@@ -3337,10 +3448,63 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         "--docker", default="docker", help="docker CLI (default: %(default)s)"
     )
 
+    translation_parser = modes.add_parser(
+        "translation",
+        allow_abbrev=False,
+        help="review the translated UI's screens in fr-CA and the pseudo-locale "
+        "(look-only, posts nothing)",
+    )
+    translation_parser.add_argument(
+        "--stack", required=True, help="the stack whose UI is reviewed"
+    )
+    translation_ui = translation_parser.add_mutually_exclusive_group()
+    translation_ui.add_argument(
+        "--web-url",
+        help="the deployed UI, built with the locales (default: UX_TEST_UI_ENV's "
+        "UX_TEST_WEB_URL line, else the stack's ApplicationWebURL output)",
+    )
+    translation_ui.add_argument(
+        "--build-dir",
+        help="a UI built with the locales, to serve at http://localhost:3000",
+    )
+    translation_parser.add_argument(
+        "--glossary",
+        help="the fr-CA glossary CSV on the host (default: "
+        "src/ui/src/i18n/glossary.fr-CA.csv)",
+    )
+    translation_parser.add_argument(
+        "--locale",
+        action="append",
+        choices=TRANSLATION_LOCALES,
+        help="a locale to review, repeatable (default: fr-CA, then en-XA)",
+    )
+    translation_parser.add_argument(
+        "--max-usd",
+        type=float,
+        help="the run's spending cap in US dollars (default: the orchestrator's, 40)",
+    )
+    translation_parser.add_argument(
+        "--out",
+        help="the run directory (default: test-reports/ux-translation-review/"
+        "<time>-review)",
+    )
+    translation_parser.add_argument(
+        "--profile", help="AWS CLI profile on the host (default: the CLI's own)"
+    )
+    translation_parser.add_argument(
+        "--rebuild-image",
+        action="store_true",
+        help="rebuild the toolchain image even if it exists",
+    )
+    translation_parser.add_argument(
+        "--docker", default="docker", help="docker CLI (default: %(default)s)"
+    )
+
     args, extra = parser.parse_known_args(argv)
     if args.mode == "browser" and extra:
         browser_parser.error(f"unrecognized arguments: {' '.join(extra)}")
-    args.passthrough = list(extra) if args.mode in ("review", "stories") else []
+    passing = ("review", "stories", "translation")
+    args.passthrough = list(extra) if args.mode in passing else []
     return args, extra
 
 
@@ -3369,6 +3533,8 @@ def main(argv: list[str] | None = None) -> int:
             return review(args)
         if args.mode == "stories":
             return stories(args)
+        if args.mode == "translation":
+            return translation(args)
         return browser(args)
     except DockerRunError as exc:
         print(f"FAILED: {exc}", file=sys.stderr)

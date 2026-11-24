@@ -188,6 +188,16 @@ DECLARED_ENTRY_COUNT = 4
 #: because this model has no ``:1m`` variant — 1M is its default window and
 #: ``us.anthropic.claude-sonnet-5-5:1m`` is not an id Bedrock accepts.
 #:
+#: 101 -> 104 when Cohere Embed v4 gained ``us.``/``eu.``/``global.`` Bedrock
+#: entries (the embedding default's Region profiles). Audited: an embeddings call
+#: meters ``requests``, ``inputTokens`` and ``totalTokens``; each entry prices
+#: ``inputTokens`` only. ``totalTokens`` equals ``inputTokens`` there, so pricing
+#: it would double-charge. ``requests`` carries one residual: the price list's
+#: second Embed v4 usage type is priced per "Embeddings" unit at $0.00000002, and
+#: if that unit is a call rather than a token, these three entries leave a
+#: per-request charge of that size unpriced. Read against the $0.12 per million
+#: input-token rate they do carry, which is the one the cost report states.
+#:
 #: The two ``cacheReadInputTokens`` / ``cacheWriteInputTokens`` rows are gone
 #: rather than renumbered, because those units are no longer declared at service
 #: scope at all — see :data:`DECLARED_ENTRY_COUNT`. The equivalent per-member
@@ -197,8 +207,8 @@ DECLARED_ENTRY_COUNT = 4
 #: model it was read against, so the shielded set is closed by construction and a
 #: number to keep in step would be redundant.
 EXPECTED_SHIELDED_SITES = {
-    ("bedrock", "totalTokens"): 101,
-    ("bedrock", "requests"): 101,
+    ("bedrock", "totalTokens"): 104,
+    ("bedrock", "requests"): 104,
     ("lambda_hook", "totalTokens"): 2,
     ("lambda_hook", "requests"): 2,
 }

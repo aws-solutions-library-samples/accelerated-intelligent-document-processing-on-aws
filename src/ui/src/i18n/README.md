@@ -1,18 +1,17 @@
 # Internationalization
 
 Developer notes for `src/ui/src/i18n/`: how the web UI shows a language other than English,
-how a message is declared, and what the gates around it check. Nothing here is visible to a user
-yet (only `en` is enabled); the user-facing description goes into
-[docs/web-ui.md](../../../../docs/web-ui.md) with the pull request that enables `fr-CA`. The series
+how a message is declared, and what the gates around it check. The user-facing description is
+[Interface language](../../../../docs/web-ui.md#interface-language) in the web UI guide. The series
 of pull requests that builds this out is tracked in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
 
 ## What this is
 
 The UI uses [react-intl](https://formatjs.github.io/docs/react-intl/) with the English text kept
-inline in the code. Today only `en` is enabled; `fr-CA` arrives with its reviewed catalog, and the
-pseudo-locale `en-XA` exists on flagged builds only (see below). The rules every piece of this
-module follows:
+inline in the code. `en` and `fr-CA` are enabled, each by its catalog file (see "Catalogs and the
+build"), and the pseudo-locale `en-XA` exists on flagged builds only (see below). The rules every
+piece of this module follows:
 
 - **English inline, stable ids.** Each message is declared next to the component that renders it,
   with an explicit dotted `id` and the English as `defaultMessage`. There is no English catalog to
@@ -85,6 +84,12 @@ intl.formatMessage(messages.count, { count: rows.length });
 - **Never concatenate fragments** (`'Delete ' + n + ' items'`) and never put user-facing text in
   a `const ALL_CAPS = ...` constant (see the known gaps under the string-debt gate): a
   module-level label becomes a `defineMessages` descriptor formatted at render time.
+- **Text the UI sends to an agent.** A label shown for text the UI sends (a suggested prompt) is a
+  message; the text sent stays English and is read from the descriptor's `defaultMessage`, so it
+  is written once. When the text sent is itself the message shown (Quick Start's upload summary
+  and attachment note), there is no label to translate: a chat message has one text, both sent
+  and shown. Such text stays English and counted by the string-debt gate, with a comment at its
+  builder, so in every locale the transcript shows it in English as the user's own message.
 
 ### Cloudscape and Amplify strings
 
@@ -101,11 +106,12 @@ The sign-in form is Amplify UI. [`amplify.ts`](amplify.ts) registers Amplify's `
 once and calls `I18n.setLanguage(locale)` in the provider's state initialiser, before the
 Authenticator first renders, and again on every switch. That order matters: once any vocabulary
 exists, Amplify defaults to `navigator.language`, so without it a French browser on an
-English-only deployment would get a French sign-in form while the app resolved `en`. The `fr-CA`
-override dictionary (Québec terms such as "courriel" for e-mail, the space before `?`) lands with
-PR 8 of the series, in the spot `registerAmplifyVocabularies` reserves. The UI's own sign-in
-strings ([`UnauthRoutes.tsx`](../routes/UnauthRoutes.tsx), [`SessionStates.tsx`](../routes/SessionStates.tsx))
-are ordinary messages.
+English-only deployment would get a French sign-in form while the app resolved `en`. Under
+`fr-CA` the sign-in form uses Amplify's built-in `fr` dictionary, through `I18n.get`'s
+language-subtag lookup. No `fr-CA` override dictionary (Québec terms such as "courriel" for
+e-mail, the space before `?`) is registered; one would be added in `registerAmplifyVocabularies`.
+The UI's own sign-in strings ([`UnauthRoutes.tsx`](../routes/UnauthRoutes.tsx),
+[`SessionStates.tsx`](../routes/SessionStates.tsx)) are ordinary messages.
 
 ## Dates, numbers, money
 
@@ -157,8 +163,7 @@ Every displayed date, time and amount goes through the helpers, and so does near
 number. What remains on `toFixed` or `toLocaleString` is either technical (exports,
 parse-backs, text comparisons, debug timings, chart data) or one of the exceptions named here:
 the test-run comparison's colour-graded cells and its field-metrics string, which are parsed
-back; the sentence builders in `promptCacheModel.ts` and `review-api.ts`, converted with their
-screens; and the capacity planner's quota strings, a follow-up. The comparison screen's CSV test
+back; and the capacity planner's quota strings, a follow-up. The comparison screen's CSV test
 pins an export beside its localized cell.
 
 ## Catalogs and the build
@@ -171,6 +176,8 @@ pins an export beside its localized cell.
 | [`validate-message.mjs`](../../scripts/i18n/validate-message.mjs) | The per-message parity check: both texts parse as ICU (every plural/select needs `other`), the same argument names, each shared argument keeps its kind (plural, selectordinal, select, or plain), the same rich-text tag names. Plural branch keys are not compared, since languages have different categories |
 | [`check-catalog.mjs`](../../scripts/i18n/check-catalog.mjs) | CLI over `compileCatalog` for one locale; what the gate runs |
 | [`loadCatalog.ts`](loadCatalog.ts) | `loadCatalog(locale)`: `en` → a frozen empty table with no import; otherwise `loaders[locale]()`, the lazy chunk |
+| [`glossary.fr-CA.csv`](glossary.fr-CA.csv) | The `fr-CA` terms, `en,fr-CA,note`: names and nouns the translation draft must use. Not a catalog (the build reads only `<locale>.json`); see [Drafting a translation](#drafting-a-translation) |
+| [`translate-segments.mjs`](../../scripts/i18n/translate-segments.mjs) | What a translation engine is shown of a message and how its answer becomes ICU again; the Node half of `make ui-i18n-translate` |
 
 `make check-ui-i18n-catalog` ([`check_ui_i18n_catalog.py`](../../../../scripts/check_ui_i18n_catalog.py))
 replays the `i18n:extract` script from `package.json` into a temporary file, by path out of
@@ -240,17 +247,46 @@ dates (`2026-10-30 17 h 40 min 05 s` against `10/30/2026, 5:40:05 PM`) shows onl
   asserts the marker is never tracked and does travel.
 - **Production builds contain nothing of it**: an unflagged build emits no `en-XA` chunk and its
   entry chunk is identical to a build before the pseudo-locale existed.
-- **A flagged tree makes two tests red on purpose**: with the marker present (or the variable
-  exported), `ENABLED_LOCALES` is `['en', 'en-XA']`, so the production allow-list test in
-  [`resolveLocale.test.ts`](__tests__/resolveLocale.test.ts) and the top-navigation
-  [slot test](../components/genai-idp-top-navigation/__tests__/language-switcher-slot.test.tsx)
-  fail. A flagged tree is not production; remove the marker (the command above does) before
-  running the suite. The marker also changes the `make ui-lint` checksum, so lint re-runs once.
+- **A flagged tree makes one test red on purpose**: with the marker present (or the variable
+  exported), `ENABLED_LOCALES` is `['en', 'fr-CA', 'en-XA']`, so the production allow-list test in
+  [`resolveLocale.test.ts`](__tests__/resolveLocale.test.ts) fails. A flagged tree is not
+  production; remove the marker (the command above does) before running the suite. The marker
+  also changes the `make ui-lint` checksum, so lint re-runs once.
 - `en-XA` has no Cloudscape or Amplify bundle: `importMessages` walks it down to `en` and loads
   `all.en`, so Cloudscape's and Amplify's own strings show their English built-ins.
 - A hand-written `en-XA.json` in this directory while the build is flagged is a build error (the
   file and the generated catalog would be ambiguous). Unflagged, such a file compiles as an
   ordinary translation.
+
+### Reviewing translated screens
+
+`make ai-ux-translation-review STACK=<name>` looks at the signed-in UI in `fr-CA`, then in `en-XA`,
+and reports what only a rendered screen shows: English left on a French screen, text that bypasses
+the catalog, text cut off by its layout, a term wrong for its place, a placeholder shown raw, and
+house-style typography. Whether each message means what its English means is the catalog review's
+question, not this one's.
+
+- **What the UI must hold.** `fr-CA` needs `fr-CA.json` in this directory when the UI is built;
+  `en-XA` needs a flagged build (above: the `src/ui/.pseudo-locale` marker for a deployed stack,
+  `IDP_UI_PSEUDO_LOCALE=1` for a local build). Point the review at a test stack deployed that way
+  (its web URL is the default, or `WEB_URL=`), or at a local build made with the stack's
+  `.env.production.local`, as `BUILD_DIR=`, which is served at `http://localhost:3000`. A locale
+  the build lacks fails alone, saying so, and the next one still runs.
+- **How it runs.** In the UX runner's Docker image, each locale in its own confined, signed-in
+  Chrome, as the MR UX test runs. The harness switches the language as the UI records a user's
+  choice (`idp-locale`, then a reload) and waits until the screen shows it. The model may only
+  navigate, wait, hover, snapshot and screenshot: the commit guard recognises a control by its
+  English name, so on these screens a click could not be checked. Dialogs and menus that need a
+  click are not reviewed.
+- **Cost.** Bedrock (`us.anthropic.claude-opus-5-5`, in `ca-central-1` unless `AWS_REGION` is
+  set) on your own AWS credentials, within `MAX_USD` (default 40): each session may spend nine
+  tenths of an even share of what is left. The fr-CA glossary is `GLOSSARY=` (default
+  `glossary.fr-CA.csv` here); `LOCALE=en-XA` reviews the pseudo-locale alone.
+- **Output.** `test-reports/ux-translation-review/<time>-review/`: `findings.md` (a table per
+  locale, each finding linked to its screenshot), `findings.json`, `run.json` and `screens/`.
+  There is no video: the recorder renders only the review stack `idp-ux-nightly`. The findings are
+  the model's claims for a person to adjudicate, and the screenshots are not redacted, so review a
+  stack that holds sample data only.
 
 ## The string-debt gate
 
@@ -336,17 +372,24 @@ re-measure it, and the figures will shrink as the conversion PRs land):
    constructor are excluded callees): those messages reach users through `.message` paths that
    the stable-error-code work addresses separately.
 3. **Single lowercase tokens** (`[a-z][a-zA-Z0-9]*`, about 1,300 strings such as `'error'`,
-   `'link'`, `'primary'`) are treated as technical. The one known user-facing miss is the wizard's
-   `optional: 'optional'` in [`CreateTestSetWizard.tsx`](../components/test-studio/CreateTestSetWizard.tsx).
+   `'link'`, `'primary'`) are treated as technical. Some of them are user-facing, such as the
+   wizard's `optional: 'optional'` in [`CreateTestSetWizard.tsx`](../components/test-studio/CreateTestSetWizard.tsx),
+   and the conversion PRs find the others by reading each screen.
    To re-measure: remove that pattern from `WORDS` in `eslint.i18n.config.js`, run
    `npm run i18n:lint`, and count the findings it adds (then restore the pattern: the gate pins
    the configuration's hash).
 4. **Object literals keyed by enum-like names.** `LEAF_KEYS` excludes keys matching `[A-Z_-]+` and
    the plugin skips the whole value under an excluded key, so a map keyed `CLOSED`/`HALF_OPEN`/`OPEN`
-   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing
-   (`CircuitBreakerPanel.tsx`'s state labels, `TestSets.tsx`'s type badges). To re-measure: remove
-   that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, diff against
-   the committed run, restore it.
+   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing (the
+   circuit-breaker panel's state labels, since converted, and `TestSets.tsx`'s type badges). To
+   re-measure: remove that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run
+   `npm run i18n:lint`, diff against the committed run, restore it.
+5. **Words that contain a slash.** The `WORDS` pattern for MIME types and slash paths
+   (`[\w.+-]+/[\w.+/-]+`) also skips user-facing words with a slash: **109 findings in 19 files**
+   when this entry was added (`N/A` 95, `Service/Api` 6, `YYYY/MM/DD` 5, `Class/Type` 2,
+   `Docs/Hour` 1). The conversion PRs convert them with their screens. To re-measure: remove that
+   pattern from `WORDS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, count the findings it
+   adds, then restore it (the gate pins the configuration's hash).
 
 ## Coverage
 
@@ -359,7 +402,99 @@ percentage. Every English id lands in exactly one of translated, missing, stale 
 `UI_I18N_COVERAGE_ARGS=--json` gives the machine-readable form; `--locale fr-CA` narrows it. It is
 advisory: exit 0 for any report, 2 only for a tool error (no `en.json`, malformed JSON, a
 `--locale` with no file); it is in none of `lint`, `fastlint` or `lint-cicd`. `en-XA` is never a
-candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in release notes.
+candidate (it is never a file). This is the figure release notes quote.
+
+## Drafting a translation
+
+`make ui-i18n-translate LOCALE=fr-CA` ([`ui_i18n_translate.py`](../../../../scripts/ui_i18n_translate.py) over
+[`translate-segments.mjs`](../../scripts/i18n/translate-segments.mjs)) drafts, with Amazon Translate, the entries of
+`<locale>.json` that the coverage report calls missing or stale, and writes them with their `sourceHash`. It is a
+developer tool, run with your own AWS credentials: no CI job runs it and no deployed stack calls it. Start with
+`UI_I18N_TRANSLATE_ARGS=--dry-run`, which prints the entries, the characters and the estimated cost and calls
+nothing; a real run needs `--region` (and `--profile` for a named profile), and `--limit N` takes a small batch first.
+A `<locale>.json` in this directory turns that language on in the switcher (`availableLocales` is file presence), so
+a drafted catalog is committed only in the change that enables its language.
+
+- **What Translate sees.** Never ICU. Every plural and select is hoisted so each branch is a whole sentence, sent as
+  HTML with arguments and `#` in `translate="no"` spans and rich-text tags as spans. The answer is rebuilt into ICU
+  and must pass the parity check the build applies; otherwise the entry is left out (English shown) and named.
+- **Register and typography.** `fr-CA` is asked for the formal register, and an answer without it is refused. The
+  rebuilt text gets the typographic apostrophe, no space before `;`, `?` and `!`, a no-break space before a colon that
+  ends a phrase, and « » quotation marks.
+- **The glossary.** [`glossary.fr-CA.csv`](glossary.fr-CA.csv) is imported as the custom terminology `idp-ui-fr-CA`,
+  its first two columns only, again whenever they change. Translate applies a term wherever its English occurs, so
+  the file holds names and nouns that are safe in every context, never verbs. A multi-word term matched in Title Case
+  English is put back in the glossary's own case. A new screen's new term goes in the same change as the screen.
+- **Cost.** Translate bills the characters sent. The run refuses to start above `--max-chars` (by default about
+  US$5 at the standard rate); a full `fr-CA` pass is far below it.
+- **Provenance.** Each run writes what it sent and received, the terms Translate applied, the terminology hash and,
+  with `--back-translate`, each answer translated back into English, under `test-reports/ui-i18n-translate/`. The
+  catalog records none of it. Review the French before committing it.
+- **Permissions.** `translate:TranslateText`, `translate:GetTerminology` and `translate:ImportTerminology` in the
+  Region you pass.
+- **Exit status.** 0 when every entry was written (or a dry run), 1 when something needs a person (an answer
+  refused, a message that cannot be split, a back-translation stopped), 2 when nothing was written.
+
+## Reviewing a translation
+
+`make ui-i18n-review LOCALE=fr-CA` ([`ui_i18n_review.py`](../../../../scripts/ui_i18n_review.py)) has a Bedrock model
+review the entries of `<locale>.json` and writes `report.md` and `report.json` under `test-reports/ui-i18n-review/`.
+It changes no catalog: a person reads the report and decides. Like the drafting tool, it is a developer tool run with
+your own AWS credentials. Start with `UI_I18N_REVIEW_ARGS=--dry-run`, which prints the entries, the batches and the
+estimated cost and calls nothing; a real run needs `--region` (and `--profile` for a named profile).
+
+- **What is reviewed.** Every entry the build accepts and whose English has not changed since it was translated.
+  The coverage report's invalid and stale entries are listed in the report and never sent. `--provenance <file>`
+  narrows the review to the entries one `make ui-i18n-translate` or `make ui-i18n-revise` run wrote, with the
+  translation run's back-translations as evidence.
+- **What the model is asked.** The locale's rules and the whole glossary come first, then, per entry, the English, its
+  `description`, the translation and the glossary terms its English uses. The model answers through one tool with the
+  problems it sees (meaning, glossary, register, regional, grammar, typography), a short reason and its own
+  translation. Arguments, plurals, tags and spacing before punctuation are checked by code and kept out of its brief.
+- **What the report says.** Each entry is `same` (no problem, same wording), `same-meaning` (no problem, worded
+  otherwise: the current translation stands) or `disagreement` (a person decides, with the model's suggestion beside
+  it). An answer that is not well formed is listed as unreviewed and never counted. The agreement figure is the share
+  of reviewed entries with no problem. A suggestion you take is copied into `<locale>.json` by hand, where
+  `make check-ui-i18n-catalog` checks it.
+- **Model and cost.** The default model is `us.anthropic.claude-opus-5-5`; `--model` takes another inference profile
+  of it that has a price in `config_library/pricing.yaml`. The run refuses to start above `--max-usd` (US$20 by
+  default) and stops before any batch that could take it past the cap.
+- **Permissions.** `bedrock:InvokeModel` on the inference profile and on the foundation model in each Region the
+  profile routes to.
+- **Exit status.** 0 when the report covers every entry (or a dry run within the cap), 1 when it is partial (the
+  cap, an AWS error or unusable answers, each listed), 2 when no report was written.
+
+## Revising a translation
+
+`make ui-i18n-revise LOCALE=fr-CA` ([`ui_i18n_revise.py`](../../../../scripts/ui_i18n_revise.py)) has the review's
+model write again the entries of `<locale>.json` that a review flagged, and writes each answer that passes the build's
+parity check. It is a developer tool run with your own AWS credentials, like the other two. Start with
+`UI_I18N_REVISE_ARGS="--review <report.json> --dry-run"`, which prints the entries, the batches and the estimated cost
+and calls nothing; a real run needs `--region` (and `--profile` for a named profile).
+
+- **What is revised.** `--review <report.json>` (repeatable) takes a review's disagreements, each with the problems,
+  reason and suggestion the review gave, and the entries it could not review. An entry whose translation changed
+  after that review is left out. `--notes <file>`, a JSON object of message id to a note, adds entries no review
+  flagged, such as one a screen shows wrongly or one the catalog lacks. Invalid and stale entries are never sent.
+- **What the model is asked.** The review's rules for the locale come first, then the rules for a revision: for
+  `fr-CA`, Canadian French wherever it fits (Quebec usage such as courriel, clavardage, téléverser and bogue), a
+  no-break space before a colon that ends a phrase and none before `;`, `?` and `!`, then the whole glossary. Per
+  entry it gets the English, its `description`, the current translation, the glossary terms its English uses, and the
+  review's findings and the note when there are any. It answers with the message only.
+- **What is written.** Each answer first gets the locale's spacing before punctuation by code, as the drafting tool
+  applies it (the model does not keep no-break spaces). The coverage worker then checks every answer with the
+  build's parity check. An answer that fails, or is not well formed, is refused with the reason, and its entry keeps
+  its text. An answer that passes and differs is written with the `sourceHash` of its English. Review the French
+  before committing it.
+- **Provenance.** Each run writes the model, the Region, the prompt's and the glossary's SHA-256, the cost, and per
+  entry the text before and after and its outcome (revised, unchanged, refused or skipped) under
+  `test-reports/ui-i18n-revise/`. `make ui-i18n-review` with `--provenance <file>` reviews the entries that run
+  wrote. When the same model wrote them, that review is not independent of the revision.
+- **Model and cost.** As the review: `us.anthropic.claude-opus-5-5` by default, a refusal to start above
+  `--max-usd` (US$20 by default), and a stop before any batch that could take the run past it.
+- **Exit status.** 0 when every entry sent was answered and checked and none was refused (or a dry run within the
+  cap), 1 when an answer was refused or the cap or an AWS error stopped the run (what passed is written, the rest is
+  listed), 2 when nothing was written.
 
 ## Testing
 
@@ -441,16 +576,10 @@ candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in
 
 ## What stays English for now
 
-Admin, configuration and Test Studio screens (the configuration editor, including its help text,
-is a committed follow-up right after `fr-CA` ships; the rest is optional later); Cognito
-invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
-dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
-headers and generated report headings; the relative-time literal "just now", the unit suffixes
-on durations and sizes (`s`, `m`, `KB`, `MB`), the English `%` placement on integer percents
-built in template strings (`${progressPct}%`) and the stored ISO timestamps the document page
-shows as submitted and completed times, until their screens convert; extension UIs built
-before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
-until they carry stable codes; and document data, always. The remaining PRs of the series (the
-screens area by area, review tooling, enabling `fr-CA`, Cognito
-persistence, the configuration editor, error codes, agent-convention docs) are listed in
+The list a user reads is [Interface language](../../../../docs/web-ui.md#interface-language) in
+the web UI guide; change it together with this section. On the screens that list keeps English,
+the unit suffixes on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on
+integer percents built in template strings (`${progressPct}%`) stay until those screens convert.
+The follow-ups (keeping the choice with the user account, the configuration editor, stable error
+codes, agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).

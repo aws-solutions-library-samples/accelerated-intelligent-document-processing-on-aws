@@ -41,9 +41,12 @@ idp-cli publish --source-dir . --bucket-basename <basename> --prefix <prefix> \
   policy grants anonymous read.
 - `--terraform` also generates the release's Terraform module from the templates just
   published and uploads it beside them under `<prefix>/<version>/terraform/`, with its
-  checksum, and updates the `<prefix>/terraform/idp-terraform-latest.json` pointer that
+  checksum, adds the version to the `<prefix>/terraform/idp-terraform-versions.json` index,
+  and updates the `<prefix>/terraform/idp-terraform-latest.json` pointer that
   `idp-cli deploy --terraform` reads by default. With `--public` the module is anonymously readable
-  too. See [Terraform deployment](terraform.md).
+  too. A release version cannot be republished with a different module: the module publish is
+  refused before any module object is written, but by then the CloudFormation templates under
+  `<prefix>/<version>/` have already been replaced, so cut a new version instead. See [Terraform deployment](terraform.md).
 - `--clean-build` forces every component to rebuild instead of reusing cached builds.
 
 `make publish REGION=<region> BUCKET_BASENAME=<basename> PREFIX=<prefix> PUBLIC=1` is a

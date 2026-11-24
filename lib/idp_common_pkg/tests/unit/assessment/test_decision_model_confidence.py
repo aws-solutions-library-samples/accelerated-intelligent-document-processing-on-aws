@@ -538,8 +538,8 @@ def test_truncation_cuts_the_tail_at_a_line_break_when_it_can():
     text = first + "b" * 39 + "\n" + "c" * 39 + "\n"
     kept, dropped = truncate_to_tokens(text, estimate_tokens(first + "bb"))
     assert (kept, dropped) == (first, len(text) - len(first))
-    # One line with no break: cut where the budget runs out.
-    assert truncate_to_tokens("x" * 100, 10) == ("x" * 20, 80)
+    # One line of word letters with no break: cut where the budget runs out.
+    assert truncate_to_tokens("ab" * 50, 10) == ("ab" * 10, 80)
     assert truncate_to_tokens(text, 1000) == (text, 0)
     assert truncate_to_tokens("", 0) == ("", 0)
 

@@ -493,6 +493,7 @@ def _deploy_terraform(
     terraform_dir: Optional[str],
     terraform_bin: str,
     unsupported: List[str],
+    module_version: Optional[str] = None,
     headless: bool = False,
     govcloud: bool = False,
     assume_role_arn: Optional[str] = None,
@@ -548,8 +549,11 @@ def _deploy_terraform(
                 )
             pointer_url = default_terraform_pointer_url(TEMPLATE_URLS[region], variant)
             kind = f"{variant} " if variant else ""
+            which = (
+                f"version {module_version} of the" if module_version else "the latest"
+            )
             console.print(
-                f"[bold]Using the latest {kind}Terraform module for {region}[/bold]"
+                f"[bold]Using {which} {kind}Terraform module for {region}[/bold]"
             )
         additional = parse_parameters(
             parameters,
@@ -565,6 +569,7 @@ def _deploy_terraform(
             parameters=additional,
             module_url=module_url,
             pointer_url=pointer_url,
+            module_version=module_version,
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
             assume_role_arn=assume_role_arn,
@@ -1009,6 +1014,17 @@ def cli():
     ),
 )
 @click.option(
+    "--terraform-module-version",
+    default=None,
+    metavar="X.Y.Z",
+    help=(
+        "Deploy this published Terraform module version instead of the latest, "
+        "looked up in the region's idp-terraform-versions.json index and held to "
+        "its sha256 (used with --terraform; combines with --headless/--govcloud, "
+        "not with --terraform-module-url or --from-code)"
+    ),
+)
+@click.option(
     "--terraform-dir",
     default=None,
     help=(
@@ -1081,6 +1097,7 @@ def deploy(
     no_validate_template: bool,
     terraform: bool,
     terraform_module_url: Optional[str],
+    terraform_module_version: Optional[str],
     terraform_dir: Optional[str],
     terraform_bin: str,
     terraform_assume_role_arn: Optional[str],
@@ -1123,10 +1140,21 @@ def deploy(
       # Deploy with Terraform (root configuration in ./idp-terraform/my-idp)
       idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com
 
+      # Deploy a specific published Terraform module version
+      idp-cli deploy --terraform --terraform-module-version 0.6.15 --stack-name my-idp
+
       # Build and deploy with Terraform from a local checkout
       idp-cli deploy --terraform --from-code . --stack-name my-idp --admin-email user@example.com
     """
     if terraform:
+        if terraform_module_version and (from_code or terraform_module_url):
+            console.print(
+                "[red]✗ Error: --terraform-module-version selects a published "
+                "module; it cannot be combined with "
+                + ("--from-code" if from_code else "--terraform-module-url")
+                + ".[/red]"
+            )
+            sys.exit(1)
         if from_code and terraform_module_url:
             console.print(
                 "[red]✗ Error: --from-code builds and publishes its own Terraform "
@@ -1172,6 +1200,7 @@ def deploy(
             parameters=parameters,
             region=region,
             module_url=terraform_module_url,
+            module_version=terraform_module_version,
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
             unsupported=[k for k, v in ignored.items() if v],
@@ -1185,6 +1214,11 @@ def deploy(
             terraform_state=terraform_state,
         )
         return
+    if terraform_module_version:
+        console.print(
+            "[red]✗ Error: --terraform-module-version is used with --terraform.[/red]"
+        )
+        sys.exit(1)
     if terraform_state:
         console.print(
             "[red]✗ Error: --terraform-state is used with --terraform; a "
@@ -8630,13 +8664,13 @@ def abort_test_run(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Existing configuration profile to source catalog classes from / merge into; --config-version is the former name and still works",
+    help="Existing configuration profile whose classes are searched for a template to adapt (nothing is written to it); --config-version is the former name and still works",
 )
 @click.option(
     "--target-profile",
     "--target-version",
     "target_version",
-    help="Name of the configuration profile to create (default: bootstrap-<class>); --target-version is the former name and still works",
+    help="Configuration profile to create or add the class to (default: bootstrap-<class>; default and stack-managed profiles are refused); --target-version is the former name and still works",
 )
 @click.option(
     "--count", "-c", default=3, show_default=True, help="Documents to generate"

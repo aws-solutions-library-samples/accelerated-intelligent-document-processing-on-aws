@@ -10,8 +10,10 @@
  * a load the user started, and any error the server answered, still report at once.
  */
 
+import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 const { graphql, setErrorMessage, poll } = vi.hoisted(() => ({
   graphql: vi.fn(),
@@ -40,6 +42,9 @@ vi.mock('../../graphql/generated', () => ({
 import useGraphQlApi, { POLL_NETWORK_FAILURES_BEFORE_REPORT } from '../use-graphql-api';
 import { LATEST_PERIODS } from '../../components/document-list/documents-table-config';
 
+const English = ({ children }: { children: React.ReactNode }) =>
+  React.createElement(IntlProvider, { locale: 'en', defaultLocale: 'en' }, children);
+
 const OK = { data: { listDocuments: { Documents: [{ ObjectKey: 'a.pdf', PK: 'doc#a.pdf', SK: 'none' }], nextToken: null } } };
 // The shape api/rest-client.ts throws when `fetch` itself rejects.
 const NETWORK = { errors: [{ message: 'Failed to fetch', errorType: 'NetworkError' }] };
@@ -47,7 +52,7 @@ const SERVER = { errors: [{ message: 'boom', errorType: 'InternalError' }] };
 
 const loaded = async () => {
   graphql.mockResolvedValue(OK);
-  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }), { wrapper: English });
   await act(async () => {
     hook.result.current.setIsDocumentsListLoading(true);
   });
@@ -126,7 +131,7 @@ describe('document list polling errors', () => {
 
   it('reports a network error on a load the user started at once', async () => {
     graphql.mockRejectedValue(NETWORK);
-    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }), { wrapper: English });
 
     await act(async () => {
       hook.result.current.setIsDocumentsListLoading(true);
@@ -139,7 +144,7 @@ describe('document list polling errors', () => {
 describe('getDocumentDetailsFromIds error reporting', () => {
   it('raises the shared banner for a refused read by default', async () => {
     graphql.mockRejectedValue(SERVER);
-    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }), { wrapper: English });
 
     await act(async () => {
       await hook.result.current.getDocumentDetailsFromIds(['a.pdf']);
@@ -150,7 +155,7 @@ describe('getDocumentDetailsFromIds error reporting', () => {
 
   it('leaves reporting to a caller that asks for it', async () => {
     graphql.mockRejectedValue(SERVER);
-    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }), { wrapper: English });
 
     let result: unknown[] = ['unset'];
     await act(async () => {
@@ -166,7 +171,7 @@ describe('getDocumentDetailsFromIds error reporting', () => {
       if (variables.objectKey === 'b.pdf') throw SERVER;
       return { data: { getDocument: { ObjectKey: variables.objectKey } } };
     });
-    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }), { wrapper: English });
     const onError = vi.fn();
 
     let result: unknown[] = [];

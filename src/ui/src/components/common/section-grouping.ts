@@ -59,14 +59,29 @@ export interface GroupedSection {
   pageIds: number[];
 }
 
+/**
+ * One problem with a grouping, as a code and the values that name it. The editor words it
+ * where it shows it, so this module holds no text.
+ */
+export type GroupingIssue =
+  | { code: 'noId' }
+  /** `sectionId` is the id that more than one section uses. */
+  | { code: 'duplicateId'; sectionId: string }
+  | { code: 'noPages' }
+  /** `sectionId` is the section that already holds the page. */
+  | { code: 'pageClaimed'; pageId: number; sectionId: string }
+  | { code: 'notInDocument'; pageIds: number[] }
+  /** Pages of the document that no section holds. */
+  | { code: 'pagesNotInSection'; pageIds: number[] };
+
 export interface GroupingValidation {
-  /** Messages that belong to one section, keyed by its id. */
-  bySection: Record<string, string[]>;
+  /** Problems that belong to one section, keyed by its id. */
+  bySection: Record<string, GroupingIssue[]>;
   /**
-   * Messages about the grouping as a whole — an orphaned page belongs to no section by
+   * Problems with the grouping as a whole — an orphaned page belongs to no section by
    * definition, so it cannot be reported under one.
    */
-  document: string[];
+  document: GroupingIssue[];
   isValid: boolean;
 }
 
@@ -78,23 +93,23 @@ export interface GroupingValidation {
  * time.
  */
 export const validateGrouping = (sections: GroupedSection[], availablePageIds: number[]): GroupingValidation => {
-  const bySection: Record<string, string[]> = {};
-  const documentErrors: string[] = [];
+  const bySection: Record<string, GroupingIssue[]> = {};
+  const documentErrors: GroupingIssue[] = [];
   const claimedBy = new Map<number, string>();
   const seenSectionIds = new Set<string>();
   const available = new Set(availablePageIds);
 
-  const push = (sectionId: string, message: string) => {
-    bySection[sectionId] = [...(bySection[sectionId] ?? []), message];
+  const push = (sectionId: string, issue: GroupingIssue) => {
+    bySection[sectionId] = [...(bySection[sectionId] ?? []), issue];
   };
 
   sections.forEach((section) => {
     const id = section.sectionId;
 
     if (!id || !id.trim()) {
-      documentErrors.push('A section has no id.');
+      documentErrors.push({ code: 'noId' });
     } else if (seenSectionIds.has(id)) {
-      push(id, `Section id '${id}' is used by more than one section.`);
+      push(id, { code: 'duplicateId', sectionId: id });
     } else {
       seenSectionIds.add(id);
     }
@@ -102,7 +117,7 @@ export const validateGrouping = (sections: GroupedSection[], availablePageIds: n
     if (section.pageIds.length === 0) {
       // Blocked rather than auto-removed: deleting a section discards its field values,
       // so it should always be a deliberate act.
-      push(id, 'This section has no pages. Move a page into it, or delete the section.');
+      push(id, { code: 'noPages' });
       return;
     }
 
@@ -113,14 +128,14 @@ export const validateGrouping = (sections: GroupedSection[], availablePageIds: n
       } else if (!available.has(pageId)) {
         notInDocument.push(pageId);
       } else if (claimedBy.has(pageId)) {
-        push(id, `Page ${pageId} is already in section ${claimedBy.get(pageId)}.`);
+        push(id, { code: 'pageClaimed', pageId, sectionId: String(claimedBy.get(pageId)) });
       } else {
         claimedBy.set(pageId, id);
       }
     });
 
     if (notInDocument.length > 0) {
-      push(id, `Page${notInDocument.length > 1 ? 's' : ''} ${notInDocument.join(', ')} not in this document.`);
+      push(id, { code: 'notInDocument', pageIds: notInDocument });
     }
   });
 
@@ -129,9 +144,7 @@ export const validateGrouping = (sections: GroupedSection[], availablePageIds: n
   // would mark it unmatched.
   const orphans = availablePageIds.filter((pageId) => !claimedBy.has(pageId));
   if (orphans.length > 0) {
-    documentErrors.push(
-      `Page${orphans.length > 1 ? 's' : ''} ${orphans.join(', ')} ${orphans.length > 1 ? 'are' : 'is'} not in any section. Every page has to belong to one.`,
-    );
+    documentErrors.push({ code: 'pagesNotInSection', pageIds: orphans });
   }
 
   return {

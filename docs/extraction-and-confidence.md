@@ -167,7 +167,9 @@ extraction:
 > configuration migration pins `mode` from it before merging onto the defaults. A
 > **full** configuration is different: it already carries `mode: simple`, so
 > editing only `agentic.enabled` to `true` in it leaves the document on the Simple
-> path, with no error. Set `mode: advanced` to choose Advanced extraction.
+> path. It is not an error, but `idp-cli config-validate`, `idp-cli config-upload`
+> and the SDK's `validate` warn about a true flag that the mode overrides. Set
+> `mode: advanced` to choose Advanced extraction.
 
 #### Supported models for agentic extraction
 
@@ -963,6 +965,15 @@ the *accuracy* of the values in it. A model that would have emitted a stray key
 may instead emit a worse value that fits the schema, so this is not a free
 accuracy win and it is not yet proven on real corpora. Measure completeness and
 field accuracy on your own documents before enabling it.
+
+**Why not Bedrock structured outputs.** Bedrock also offers structured outputs
+for Claude models, which guarantees the reply's shape rather than making it likely.
+The accelerator does not use it yet. No case has been found where forced tool use
+returns off-schema output that structured outputs would have prevented, and
+supporting it adds schema rewriting, a per-model gate and a configuration
+migration. The proposal and its measurements are in
+[PR #1935](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1935); it will be
+revisited if a head-to-head comparison shows a measurable benefit.
 
 **When it is skipped automatically.** Two different things can make forcing
 unavailable, and both fall back to the prompt with the reason recorded — so a

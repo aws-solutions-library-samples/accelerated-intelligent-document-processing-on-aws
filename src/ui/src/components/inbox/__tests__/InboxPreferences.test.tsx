@@ -4,6 +4,7 @@
 import React from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { graphqlMock, app } = vi.hoisted(() => ({
@@ -36,6 +37,12 @@ const prefs = (types = TYPES, mutedTypes = ['review.expiring']) => ({
   data: { getInboxPreferences: { types, mutedTypes, updatedAt: null } },
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const toggles = () => createWrapper(document.body).findAllToggles();
 const saveButton = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 
@@ -48,7 +55,7 @@ describe('InboxPreferences', () => {
 
   it('explains the empty state', async () => {
     graphqlMock.mockResolvedValue(prefs([], []));
-    render(<InboxPreferences visible onDismiss={() => undefined} />);
+    render(<InboxPreferences visible onDismiss={() => undefined} />, { wrapper: English });
     expect(await screen.findByText(PREFERENCES_EMPTY_TEXT)).toBeTruthy();
     expect(PREFERENCES_EMPTY_TEXT).toBe(
       'No message types yet. Types appear here when a platform feature that sends Inbox messages is in use.',
@@ -57,7 +64,7 @@ describe('InboxPreferences', () => {
 
   it('shows one Receive toggle per type, off for muted types', async () => {
     graphqlMock.mockResolvedValue(prefs());
-    render(<InboxPreferences visible onDismiss={() => undefined} />);
+    render(<InboxPreferences visible onDismiss={() => undefined} />, { wrapper: English });
     await screen.findByText('Review assigned');
     expect(screen.getByText('A claim is about to expire')).toBeTruthy();
     const [assigned, expiring] = toggles();
@@ -74,7 +81,7 @@ describe('InboxPreferences', () => {
           })
         : Promise.resolve(prefs()),
     );
-    render(<InboxPreferences visible onDismiss={() => undefined} />);
+    render(<InboxPreferences visible onDismiss={() => undefined} />, { wrapper: English });
     await screen.findByText('Review assigned');
 
     const [assigned, expiring] = toggles();
@@ -95,7 +102,7 @@ describe('InboxPreferences', () => {
         ? Promise.reject({ errors: [{ message: 'nope', errorType: 'InternalError' }] })
         : Promise.resolve(prefs()),
     );
-    render(<InboxPreferences visible onDismiss={() => undefined} />);
+    render(<InboxPreferences visible onDismiss={() => undefined} />, { wrapper: English });
     await screen.findByText('Review assigned');
     act(() => toggles()[0].findNativeInput().click());
     await act(async () => saveButton().click());
@@ -106,7 +113,7 @@ describe('InboxPreferences', () => {
 
   it('shows an Alert with Retry when loading fails', async () => {
     graphqlMock.mockRejectedValueOnce({ errors: [{ message: 'down', errorType: 'InternalError' }] });
-    render(<InboxPreferences visible onDismiss={() => undefined} />);
+    render(<InboxPreferences visible onDismiss={() => undefined} />, { wrapper: English });
     expect(await screen.findByText('Could not load preferences')).toBeTruthy();
 
     graphqlMock.mockResolvedValue(prefs());

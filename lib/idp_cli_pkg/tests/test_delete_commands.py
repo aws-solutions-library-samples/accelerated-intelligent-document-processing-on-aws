@@ -122,6 +122,21 @@ def _keys(bucket, region="us-east-1"):
     )
 
 
+def _input_keys_purged(api_calls) -> set:
+    """The input keys a delete removed, read from the calls it made.
+
+    The input bucket is versioned, and a document delete removes every version of the
+    exact key with ``DeleteObjects`` rather than one versionless ``DeleteObject``
+    (#2166), so this is where a selection's deletions show up.
+    """
+    return {
+        obj["Key"]
+        for call in api_calls.of("DeleteObjects")
+        if call.params["Bucket"] == "dd-input-bucket"
+        for obj in call.params["Delete"]["Objects"]
+    }
+
+
 def _bucket_names(region="us-east-1"):
     s3 = boto3.client("s3", region_name=region)
     return sorted(bucket["Name"] for bucket in s3.list_buckets()["Buckets"])
@@ -1342,6 +1357,7 @@ class TestDeleteDocumentsSelectorValidation:
         assert "Cannot specify more than one of" in result.output
         assert surviving == [key for key, _ in SEEDED_DOCUMENTS]
         assert api_calls.of("DeleteObject") == []
+        assert api_calls.of("DeleteObjects") == []
 
     def test_an_unknown_status_filter_is_rejected_by_the_parser(self, api_calls):
         """`--status-filter` is a closed set; a typo must not widen the selection."""
@@ -1427,7 +1443,7 @@ class TestDeleteDocumentsSelection:
         assert surviving_input == ["batch-10/third.pdf"]
         assert surviving_output == ["batch-10/third.pdf/sections/1/result.json"]
         assert surviving_records == ["batch-10/third.pdf"]
-        assert {call.params["Key"] for call in api_calls.of("DeleteObject")} == {
+        assert _input_keys_purged(api_calls) == {
             "batch-1/first.pdf",
             "batch-1/second.pdf",
         }
@@ -1452,7 +1468,7 @@ class TestDeleteDocumentsSelection:
         assert result.exit_code == 0
         assert "Selected 2 document(s) for deletion" in result.output
         assert surviving_input == ["batch-1/second.pdf"]
-        assert {call.params["Key"] for call in api_calls.of("DeleteObject")} == {
+        assert _input_keys_purged(api_calls) == {
             "batch-1/first.pdf",
             "batch-10/third.pdf",
         }
@@ -1752,6 +1768,7 @@ class TestDeleteDocumentsRefusals:
         assert result.exit_code != 0
         assert surviving == [key for key, _ in SEEDED_DOCUMENTS]
         assert api_calls.of("DeleteObject") == []
+        assert api_calls.of("DeleteObjects") == []
 
     def test_dry_run_deletes_nothing_and_asks_nothing(self, api_calls):
         """`--dry-run` reports the selection without touching it or prompting.
@@ -1863,6 +1880,9 @@ class TestDeleteDocumentsResultReporting:
         assert surviving == [key for key, _ in SEEDED_DOCUMENTS]
         assert surviving_records == [key for key, _ in SEEDED_DOCUMENTS]
         assert api_calls.of("DeleteObject") == [], (
+            "the refusal comes before any delete is attempted"
+        )
+        assert api_calls.of("DeleteObjects") == [], (
             "the refusal comes before any delete is attempted"
         )
 
