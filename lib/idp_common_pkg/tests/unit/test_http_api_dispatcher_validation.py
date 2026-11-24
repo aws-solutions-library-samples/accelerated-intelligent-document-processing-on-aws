@@ -458,9 +458,10 @@ def test_required_arg_count_is_stable(spec):
     cycleId), testRoutingTable (objectKey), getReviewQueueReferences
     (queueId), convertRoutingDmn (direction, content) and getReprocessOptions
     (objectKeys) -- 156-160; the paged listReviewQueues still takes none; and
-    getReviewCompletionPlan (objectKey, cycleId) the 161st and
-    getProcessChangesPlan (objectKey) the 162nd)."""
+    getReviewCompletionPlan (objectKey, cycleId) the 161st,
+    getProcessChangesPlan (objectKey) the 162nd and selectActiveTenant (tenantId)
+    the 163rd)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 162
+    assert len(required) == 163

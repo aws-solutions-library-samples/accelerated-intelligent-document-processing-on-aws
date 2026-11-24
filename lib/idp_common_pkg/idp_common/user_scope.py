@@ -29,7 +29,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from idp_common.config_scope import (  # noqa: F401 - grant-source names re-exported
     GRANT_SOURCE_API,
@@ -59,6 +59,27 @@ GRANT_SOURCES = (GRANT_SOURCE_MANUAL, GRANT_SOURCE_IDP_CLAIM, GRANT_SOURCE_API)
 #: What ``scopeSource`` records on a row, per grant source.
 SCOPE_SOURCE_IDP = "idp"
 SCOPE_SOURCE_API = "api"
+
+
+#: The stack's ``TenantSelection`` parameter, as an environment variable.
+TENANT_SELECTION_ENV = "TENANT_SELECTION"
+TENANT_SELECTION_USER = "UserSelect"
+
+
+def tenant_selection_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether a user granted several tenants may choose one of them.
+
+    True only for ``TenantSelection=UserSelect`` **and** ``TenantGrantSource=IdpClaim``:
+    the list a user chooses from is written by the sign-in trigger from the identity
+    provider's claim, so under any other grant source there is nothing to choose
+    from. An unset or unrecognised value is off, which is today's behaviour: a user
+    granted two or more tenants is granted none.
+    """
+    env = os.environ if environ is None else environ
+    return (
+        env.get(TENANT_SELECTION_ENV, "") == TENANT_SELECTION_USER
+        and tenant_grant_source(env) == GRANT_SOURCE_IDP_CLAIM
+    )
 
 
 def tenant_grant_source(environ: Optional[Mapping[str, str]] = None) -> str:
@@ -269,7 +290,7 @@ def clear_granted_scope(
         Key=user_row_key(user_id),
         UpdateExpression=(
             "SET updatedAt = :now REMOVE allowedConfigVersions, scopeTenant, "
-            "scopeSource"
+            "scopeSource, eligibleTenants"
         ),
         ExpressionAttributeValues={":now": _now()},
         ConditionExpression="attribute_exists(PK)",
@@ -305,8 +326,20 @@ def apply_tenant_grant(
     source: str,
     persona_for_new_row: str = "Viewer",
     create_missing: bool = True,
+    eligible_tenants: Optional[Sequence[str]] = None,
+    require_eligible_tenant: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write the scope a grant resolution gives one user. Returns what happened.
+
+    ``eligible_tenants`` is for ``TenantSelection=UserSelect``: the ids of the tenants
+    the identity provider's claim grants the user, written to ``eligibleTenants`` and
+    removed when empty. ``None`` leaves the attribute as it is. Only the sign-in
+    trigger passes a list; nothing a user can call does, because that list is what
+    bounds the tenants a user may choose.
+
+    ``require_eligible_tenant`` makes the write conditional on that id being in the
+    row's ``eligibleTenants`` at write time, so a selection cannot land on a list
+    the trigger has just rewritten.
 
     ``resolution`` is :func:`idp_common.config.tenants.resolve_grants`' answer.
     ``source`` is :data:`SCOPE_SOURCE_IDP` or :data:`SCOPE_SOURCE_API`.
@@ -390,6 +423,8 @@ def apply_tenant_grant(
         }
         if tenant_id:
             item["scopeTenant"] = tenant_id
+        if eligible_tenants:
+            item["eligibleTenants"] = [str(t) for t in eligible_tenants]
         if cognito_sub:
             item[USERS_TABLE_SUB_ATTRIBUTE] = cognito_sub
         users_table.put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
@@ -402,14 +437,24 @@ def apply_tenant_grant(
             "updatedAt = :now",
         ]
         values: Dict[str, Any] = {":acv": scope, ":src": source, ":now": now}
-        remove = ""
+        remove_parts = []
         if tenant_id:
             set_parts.append("scopeTenant = :tid")
             values[":tid"] = tenant_id
         else:
-            remove = " REMOVE scopeTenant"
+            remove_parts.append("scopeTenant")
+        if eligible_tenants is not None:
+            if eligible_tenants:
+                set_parts.append("eligibleTenants = :elig")
+                values[":elig"] = [str(t) for t in eligible_tenants]
+            else:
+                remove_parts.append("eligibleTenants")
+        remove = (" REMOVE " + ", ".join(remove_parts)) if remove_parts else ""
         condition = "attribute_exists(PK)"
         names: Dict[str, str] = {}
+        if require_eligible_tenant:
+            condition += " AND contains(eligibleTenants, :req)"
+            values[":req"] = require_eligible_tenant
         if cognito_sub:
             # The grant and the binding to this account are one write: the row is
             # bound to ``cognito_sub`` in the same UpdateItem, on condition that it
@@ -432,6 +477,12 @@ def apply_tenant_grant(
             users_table.update_item(**update)
         except Exception as exc:  # noqa: BLE001
             code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+            if require_eligible_tenant and code == "ConditionalCheckFailedException":
+                raise PermissionError(
+                    f"Tenant {require_eligible_tenant!r} is not one the identity "
+                    "provider currently grants this user. Sign in again to refresh "
+                    "the list."
+                ) from exc
             if cognito_sub and code == "ConditionalCheckFailedException":
                 raise RuntimeError(
                     f"The record of user {user_id} was removed, or bound to another "
@@ -468,3 +519,54 @@ def apply_tenant_grant(
         "allowedConfigVersions": scope,
         "tenant": tenant_id,
     }
+
+
+def select_active_tenant(
+    users_table: Any,
+    *,
+    email: str,
+    cognito_sub: str,
+    tenant: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Make one of the tenants the identity provider grants a user their active one.
+
+    For ``TenantSelection=UserSelect``. The caller is a user choosing for themselves,
+    identified by the ``sub`` of their verified token; nothing here accepts another
+    user's identity. The choice is bounded by the row's ``eligibleTenants``, which
+    only the sign-in trigger writes, so a user can pick among the tenants the claim
+    granted and no others. The write repeats that check in its condition.
+
+    Returns :func:`apply_tenant_grant`'s answer. Raises ``PermissionError`` for an
+    Admin or a tenant the user is not eligible for, ``ValueError`` when the caller
+    cannot be identified or has no record.
+    """
+    tenant_id = str((tenant or {}).get("tenantId") or "").strip()
+    if not cognito_sub:
+        # Without a sub the row would be found by address alone, which Cognito does
+        # not keep unique. A selection is only ever made on the caller's own account.
+        raise ValueError("The caller's identity could not be verified.")
+    if not tenant_id or not (tenant or {}).get("profilePattern"):
+        raise ValueError("That tenant is not declared.")
+    row = find_user_row(users_table, email=email, cognito_sub=cognito_sub)
+    if row is None:
+        raise ValueError("No user record was found for the caller.")
+    if row.get("persona") == "Admin":
+        raise PermissionError(
+            "Admins are not scoped to a tenant, so have none to select."
+        )
+    if tenant_id not in {str(t) for t in (row.get("eligibleTenants") or [])}:
+        raise PermissionError(
+            f"Tenant {tenant_id!r} is not one the identity provider grants this user."
+        )
+    result = apply_tenant_grant(
+        users_table,
+        email=email,
+        cognito_sub=cognito_sub,
+        resolution={"tenant": tenant},
+        source=SCOPE_SOURCE_IDP,
+        create_missing=False,
+        require_eligible_tenant=tenant_id,
+    )
+    if result.get("action") != "updated":
+        raise ValueError("No user record was found for the caller.")
+    return result

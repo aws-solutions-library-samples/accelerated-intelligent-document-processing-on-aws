@@ -1127,6 +1127,7 @@ export type Mutation = {
   saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
   saveTestSetDocumentSectionDraft?: Maybe<TestSetSectionDraft>;
+  selectActiveTenant?: Maybe<User>;
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendBackReviewItem: ReprocessDocumentResult;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
@@ -1661,6 +1662,11 @@ export type MutationSaveTestSetDocumentSectionDraftArgs = {
   objectKey: Scalars['String']['input'];
   sectionId: Scalars['String']['input'];
   testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationSelectActiveTenantArgs = {
+  tenantId: Scalars['String']['input'];
 };
 
 
@@ -3459,6 +3465,7 @@ export type User = {
   allowedConfigVersions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   allowedTestSets?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  eligibleTenants?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   email: Scalars['String']['output'];
   persona: Scalars['String']['output'];
   scopeSource?: Maybe<Scalars['String']['output']>;
@@ -4070,6 +4077,13 @@ export type SaveTestSetDocumentSectionDraftMutationVariables = Exact<{
 
 export type SaveTestSetDocumentSectionDraftMutation = { saveTestSetDocumentSectionDraft?: { sectionId: string, revision: number, draftUri: string, updatedAt: string, updatedBy?: string | null } | null };
 
+export type SelectActiveTenantMutationVariables = Exact<{
+  tenantId: Scalars['String']['input'];
+}>;
+
+
+export type SelectActiveTenantMutation = { selectActiveTenant?: { userId: string, allowedConfigVersions?: Array<string | null> | null, scopeTenant?: string | null, scopeSource?: string | null, eligibleTenants?: Array<string | null> | null } | null };
+
 export type SendAgentChatMessageMutationVariables = Exact<{
   prompt: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
@@ -4537,7 +4551,7 @@ export type GetMyAnnotationClaimsQuery = { getAnnotationQueue?: { testSetId: str
 export type GetMyProfileQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type GetMyProfileQuery = { getMyProfile?: { userId: string, email: string, persona: string, status?: string | null, createdAt?: string | null, allowedConfigVersions?: Array<string | null> | null, allowedTestSets?: Array<string | null> | null } | null };
+export type GetMyProfileQuery = { getMyProfile?: { userId: string, email: string, persona: string, status?: string | null, createdAt?: string | null, allowedConfigVersions?: Array<string | null> | null, allowedTestSets?: Array<string | null> | null, scopeTenant?: string | null, eligibleTenants?: Array<string | null> | null } | null };
 
 export type GetMyReviewQueuesQueryVariables = Exact<{
   itemLimit?: InputMaybe<Scalars['Int']['input']>;

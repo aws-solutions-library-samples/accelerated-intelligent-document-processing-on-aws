@@ -56,9 +56,11 @@ from idp_common.user_scope import (
     SCOPE_SOURCE_API,
     apply_tenant_grant,
     tenant_grant_source,
+    tenant_selection_enabled,
 )
 from idp_common.user_scope import is_scoped as _is_scoped
 from idp_common.user_scope import record_cognito_sub as _record_cognito_sub
+from idp_common.user_scope import select_active_tenant as _select_active_tenant
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -191,6 +193,8 @@ def handler(event, context):
         return get_my_profile(event)
     elif field == "setUserTenant":
         return set_user_tenant(arguments)
+    elif field == "selectActiveTenant":
+        return select_active_tenant(event, arguments)
 
     raise ValueError(f"Unknown operation: {field}")
 
@@ -274,6 +278,48 @@ def set_user_tenant(args):
     # Read the row back by its primary key with a strongly consistent read. The
     # email index is eventually consistent, so querying it straight after the write
     # can return the previous scope and make a successful push look like a failure.
+    row = table.get_item(Key=_user_row_key(result["userId"]), ConsistentRead=True).get(
+        "Item"
+    )
+    return user_response_from_item(row)
+
+
+def select_active_tenant(event, args):
+    """Let the caller choose which of their granted tenants is active.
+
+    For ``TenantSelection=UserSelect`` (``TenantGrantSource=IdpClaim``), where a user
+    the identity provider grants two or more tenants is granted none until they
+    choose. Callable by any signed-in non-Admin, and only ever on the caller's own
+    record: the identity is the verified token's ``sub``, and the arguments name no
+    user. The tenants offered are the row's ``eligibleTenants``, which only the
+    sign-in trigger writes from the claim, so this cannot select a tenant the
+    claim did not grant.
+    """
+    if not tenant_selection_enabled():
+        raise ValueError(
+            "selectActiveTenant is available only when TenantSelection is UserSelect "
+            "and TenantGrantSource is IdpClaim."
+        )
+    caller = _get_caller_identity(event)
+    if caller["is_admin"]:
+        raise PermissionError(
+            "Admins are cross-tenant and are not scoped to a tenant, so have none to "
+            "select."
+        )
+    tenant_id = str(args.get("tenantId") or "").strip()
+    if not tenant_id:
+        raise ValueError("tenantId is required")
+    tenant = next((t for t in _read_tenants() if t["tenantId"] == tenant_id), None)
+    if tenant is None:
+        raise ValueError(f"Tenant '{tenant_id}' is not declared")
+
+    table = dynamodb.Table(USERS_TABLE_NAME)
+    result = _select_active_tenant(
+        table, email=caller["email"], cognito_sub=caller["sub"], tenant=tenant
+    )
+    logger.info(f"User {result['userId']} selected active tenant {tenant_id}")
+    # Strongly consistent, as in set_user_tenant: the answer must show the scope just
+    # written, not the one before it.
     row = table.get_item(Key=_user_row_key(result["userId"]), ConsistentRead=True).get(
         "Item"
     )
@@ -668,6 +714,11 @@ def user_response_from_item(item):
     for attr in _SCOPE_ATTRIBUTES:
         if attr in item:
             result[attr] = item[attr]
+    # The tenants a user may choose from. Written only by the sign-in trigger, and
+    # meaningful only while TenantSelection=UserSelect, so it is not reported
+    # otherwise: a stale list must not make the UI offer a choice the server refuses.
+    if item.get("eligibleTenants") and tenant_selection_enabled():
+        result["eligibleTenants"] = list(item["eligibleTenants"])
     return result
 
 

@@ -290,6 +290,9 @@ type User @aws_cognito_user_pools {
   # set the scope by hand.
   scopeSource: String
   scopeTenant: String
+  # The tenants this user may choose between, when the identity provider's claim
+  # grants two or more and TenantSelection is UserSelect. Absent otherwise.
+  eligibleTenants: [String]
 }
 
 type UserList @aws_cognito_user_pools {
@@ -2436,6 +2439,12 @@ type Mutation {
   # TenantGrantSource is Api, for an entitlement system pushing grants.
   setUserTenant(email: String!, tenantId: String): User
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Choose which of the caller's granted tenants is active. Acts only on the caller's
+  # own record; only when TenantSelection is UserSelect. Admins are refused.
+  selectActiveTenant(tenantId: String!): User
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   # MCP service credentials (MCP Configuration page). Admin only.
   createMcpCredential(
     name: String!

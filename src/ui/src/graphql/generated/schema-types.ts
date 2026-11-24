@@ -1127,6 +1127,7 @@ export type Mutation = {
   saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
   saveTestSetDocumentSectionDraft?: Maybe<TestSetSectionDraft>;
+  selectActiveTenant?: Maybe<User>;
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendBackReviewItem: ReprocessDocumentResult;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
@@ -1661,6 +1662,11 @@ export type MutationSaveTestSetDocumentSectionDraftArgs = {
   objectKey: Scalars['String']['input'];
   sectionId: Scalars['String']['input'];
   testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationSelectActiveTenantArgs = {
+  tenantId: Scalars['String']['input'];
 };
 
 
@@ -3459,6 +3465,7 @@ export type User = {
   allowedConfigVersions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   allowedTestSets?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  eligibleTenants?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   email: Scalars['String']['output'];
   persona: Scalars['String']['output'];
   scopeSource?: Maybe<Scalars['String']['output']>;

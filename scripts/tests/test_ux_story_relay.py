@@ -1833,6 +1833,16 @@ _WIZARD = "components/test-studio/CreateTestSetWizard.tsx"
 #: unaccounted one; every control listed must still be in its file and refused.
 MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "AbortTestRuns": (Shipped("components/test-studio/AbortTestModal.tsx", "Abort"),),
+    "SelectActiveTenant": (
+        Shipped(
+            "components/tenant-selection/TenantSelectionGate.tsx", "Confirm tenant"
+        ),
+        Shipped(
+            "components/tenant-selection/useTenantSwitcher.tsx",
+            "Confirm switch",
+            inside_dialog=True,
+        ),
+    ),
     "AbortWorkflow": (
         Shipped("components/common/AbortWorkflowModal.tsx", "Abort"),
         Shipped(_TABLE, "Abort"),

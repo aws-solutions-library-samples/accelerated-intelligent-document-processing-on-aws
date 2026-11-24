@@ -7,5 +7,7 @@ query GetMyProfile {
     createdAt
     allowedConfigVersions
     allowedTestSets
+    scopeTenant
+    eligibleTenants
   }
 }

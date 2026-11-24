@@ -111,7 +111,7 @@ Notes:
   `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
   ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in
   `scripts/test_api_rbac.py`) — **`Annotator` is not one** — and it creates **no
-  groupless user**. 27 operations are declared `ANY_GROUP` today, and "denied to a
+  groupless user**. 28 operations are declared `ANY_GROUP` today, and "denied to a
   caller in no group" — the whole point of that policy — is asserted offline only, in
   `test_http_api_dispatcher_authz.py`. The *mechanism* is live-proven: step 4 of the
   chain measured in
@@ -190,7 +190,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (188 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (189 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -462,7 +462,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 188 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 189 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,

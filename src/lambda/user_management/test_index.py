@@ -1424,3 +1424,217 @@ class TestSetUserTenant:
                 caller=caller,
             )
         assert "allowedConfigVersions" not in self._stored(users_table)
+
+
+def _caller(group="Viewer", sub="sub-1", email="annotator@example.com"):
+    return {
+        "is_admin": group == "Admin",
+        "email": email,
+        "sub": sub,
+        "username": "u",
+        "groups": [group],
+    }
+
+
+class TestSelectActiveTenant:
+    """``selectActiveTenant``: a user the claim grants several tenants chooses one.
+
+    Callable by any signed-in non-Admin, and only ever on the caller's own record.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _selection_on(self, monkeypatch):
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "IdpClaim")
+        monkeypatch.setenv("TENANT_SELECTION", "UserSelect")
+
+    def _call(self, index, args, caller):
+        event = {"info": {"fieldName": "selectActiveTenant"}, "arguments": args}
+        with patch.object(index, "_get_caller_identity", return_value=caller):
+            return cast(dict, index.handler(event, None))
+
+    def _user(self, users_table, **attrs):
+        users_table.put_item(
+            Item=dict(
+                ANNOTATOR_ITEM,
+                persona="Viewer",
+                cognitoSub="sub-1",
+                allowedConfigVersions=["!no-tenant-granted"],
+                scopeSource="idp",
+                eligibleTenants=["acme", "globex"],
+                **attrs,
+            )
+        )
+
+    def _stored(self, users_table, user_id="u-1"):
+        return users_table.get_item(
+            Key={"PK": f"USER#{user_id}", "SK": f"USER#{user_id}"}
+        )["Item"]
+
+    @pytest.mark.parametrize("group", ["Viewer", "Reviewer", "Author", "Annotator"])
+    def test_every_non_admin_role_can_choose_among_its_tenants(
+        self, users_table, group
+    ):
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        result = self._call(index, {"tenantId": "globex"}, _caller(group))
+        assert result["allowedConfigVersions"] == ["globex-*"]
+        assert result["scopeTenant"] == "globex"
+        assert result["scopeSource"] == "idp"
+        # The list stays, so the user can switch again.
+        assert result["eligibleTenants"] == ["acme", "globex"]
+        assert self._stored(users_table)["allowedConfigVersions"] == ["globex-*"]
+
+    def test_the_user_can_switch_to_the_other_tenant(self, users_table):
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        self._call(index, {"tenantId": "globex"}, _caller())
+        result = self._call(index, {"tenantId": "acme"}, _caller())
+        assert result["allowedConfigVersions"] == ["acme-*"]
+
+    def test_an_admin_is_refused(self, users_table):
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        with pytest.raises(PermissionError):
+            self._call(index, {"tenantId": "acme"}, _caller("Admin"))
+        assert self._stored(users_table)["allowedConfigVersions"] == [
+            "!no-tenant-granted"
+        ]
+
+    def test_a_tenant_outside_the_eligible_list_is_refused(self, users_table):
+        index = _load_index()
+        store = _declare_tenants_plus("initech")
+        assert store
+        self._user(users_table)
+        with pytest.raises(PermissionError):
+            self._call(index, {"tenantId": "initech"}, _caller())
+        assert self._stored(users_table)["allowedConfigVersions"] == [
+            "!no-tenant-granted"
+        ]
+
+    def test_an_undeclared_tenant_is_refused(self, users_table):
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        with pytest.raises(ValueError, match="not declared"):
+            self._call(index, {"tenantId": "nowhere"}, _caller())
+
+    def test_a_missing_tenant_id_is_refused(self, users_table):
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        with pytest.raises(ValueError, match="tenantId is required"):
+            self._call(index, {}, _caller())
+
+    def test_a_caller_without_a_sub_is_refused(self, users_table):
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        with pytest.raises(ValueError):
+            self._call(index, {"tenantId": "acme"}, _caller(sub=""))
+        assert self._stored(users_table)["allowedConfigVersions"] == [
+            "!no-tenant-granted"
+        ]
+
+    def test_it_only_ever_changes_the_callers_own_record(self, users_table):
+        """No argument names a user. Even one that tried to, by address, is ignored."""
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        users_table.put_item(
+            Item={
+                "PK": "USER#u-2",
+                "SK": "USER#u-2",
+                "userId": "u-2",
+                "email": "victim@example.com",
+                "persona": "Viewer",
+                "cognitoSub": "sub-2",
+                "allowedConfigVersions": ["!no-tenant-granted"],
+                "eligibleTenants": ["acme", "globex"],
+            }
+        )
+        self._call(
+            index, {"tenantId": "acme", "email": "victim@example.com"}, _caller()
+        )
+        assert self._stored(users_table, "u-1")["allowedConfigVersions"] == ["acme-*"]
+        assert self._stored(users_table, "u-2")["allowedConfigVersions"] == [
+            "!no-tenant-granted"
+        ]
+
+    @pytest.mark.parametrize(
+        "selection,source",
+        [(None, "IdpClaim"), ("Disabled", "IdpClaim"), ("UserSelect", "Api")],
+    )
+    def test_it_is_refused_unless_selection_is_on(
+        self, users_table, monkeypatch, selection, source
+    ):
+        if selection is None:
+            monkeypatch.delenv("TENANT_SELECTION")
+        else:
+            monkeypatch.setenv("TENANT_SELECTION", selection)
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", source)
+        index = _load_index()
+        _declare_tenants()
+        self._user(users_table)
+        with pytest.raises(ValueError, match="TenantSelection"):
+            self._call(index, {"tenantId": "acme"}, _caller())
+
+    def test_it_is_not_in_the_admin_only_set(self):
+        """The Admin gate in the handler names the operations only an Admin may call."""
+        import inspect
+
+        index = _load_index()
+        source = inspect.getsource(index.handler)
+        gate = source.split("if field in (", 1)[1].split("):", 1)[0]
+        assert "selectActiveTenant" not in gate
+
+
+class TestGetMyProfileOffersTheChoice:
+    def _profile(self, index):
+        event = {
+            "info": {"fieldName": "getMyProfile"},
+            "identity": {"claims": {"email": "annotator@example.com", "sub": "sub-1"}},
+        }
+        return cast(dict, index.handler(event, None))
+
+    def _user(self, users_table):
+        users_table.put_item(
+            Item=dict(
+                ANNOTATOR_ITEM,
+                persona="Viewer",
+                cognitoSub="sub-1",
+                allowedConfigVersions=["!no-tenant-granted"],
+                eligibleTenants=["acme", "globex"],
+            )
+        )
+
+    def test_the_list_is_returned_when_selection_is_on(self, users_table, monkeypatch):
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "IdpClaim")
+        monkeypatch.setenv("TENANT_SELECTION", "UserSelect")
+        index = _load_index()
+        self._user(users_table)
+        assert self._profile(index)["eligibleTenants"] == ["acme", "globex"]
+
+    def test_a_stale_list_is_not_returned_when_selection_is_off(
+        self, users_table, monkeypatch
+    ):
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "IdpClaim")
+        monkeypatch.delenv("TENANT_SELECTION", raising=False)
+        index = _load_index()
+        self._user(users_table)
+        assert "eligibleTenants" not in self._profile(index)
+
+
+def _declare_tenants_plus(extra_id):
+    """The two standard tenants plus one more, which the user is not eligible for."""
+    from idp_common.config.tenants import TenantStore
+
+    store = TenantStore(
+        boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+    )
+    for tenant in TENANTS:
+        store.put(tenant["tenantId"], tenant["prefixes"], tenant["profilePattern"])
+    store.put(extra_id, [f"clients/{extra_id}/"], f"{extra_id}-*")
+    return store

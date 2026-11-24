@@ -1818,6 +1818,23 @@ operations:
     # caller is refused (by the mode check, or as user-not-found) and nothing is
     # written.
     args: { email: "__no@no.invalid" }
+  selectActiveTenant:
+    groups: ANY_GROUP
+    kind: mutation
+    ownership: true
+    enforced_in: src/lambda/user_management/index.py
+    # No tenant argument can name another user: the handler acts on the row of the
+    # verified token's `sub`, and only among that row's `eligibleTenants`, which the
+    # sign-in trigger writes from the identity provider's claim. The probe tenant is
+    # not declared, so an allowed caller is refused and nothing is written.
+    args: { tenantId: "__no_such_tenant__" }
+    note: >-
+      ANY_GROUP, not ANY: it writes the caller's own configuration scope, so a caller
+      in no group is refused. Every user who can choose a tenant holds a group, because
+      one in no group is locked out of the application altogether. Admins pass the
+      dispatcher and are refused by the handler, since they are never scoped.
+      `ownership: true` because own-record-only is record ownership: there is no
+      user-identifying argument.
   listUsers:
     groups: [Admin]
     kind: read
