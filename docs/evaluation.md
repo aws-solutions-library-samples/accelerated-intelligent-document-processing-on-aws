@@ -131,7 +131,7 @@ The evaluation framework is powered by [Stickler](https://github.com/awslabs/sti
 - **Extensible Comparators**: Support for exact, fuzzy, numeric, semantic, and LLM-based comparison
 - **Native JSON Schema Support**: Direct use of JSON Schema with custom extensions
 
-The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.1`, verified at import via `idp_common.evaluation.stickler_version`).
+The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.2`, verified at import via `idp_common.evaluation.stickler_version`).
 
 ### Architecture
 
@@ -945,6 +945,13 @@ Different evaluation methods work with different field types:
 Every threshold above is optional. Omitting one is accepted and the comparator
 falls back to its own default — it is not reported as a missing required value.
 
+**Amounts in non-ASCII digits.** `NUMERIC_EXACT` reads amounts written in Arabic-Indic,
+Persian, Devanagari and full-width digits, in their usual formats, when the field is
+declared `"type": "string"`: `"١٬٢٥٠٫٠٠"` matches `"1,250.00"`. A field declared
+`"type": "number"` is converted with `float()` first, which reads bare digits such as
+`"١٢٥٠"` but not their separators, so `"١٬٢٥٠٫٠٠"` scores `0.0` there. Declare amount
+fields `"type": "string"` for documents that write them in other scripts.
+
 **How a mismatch is handled**:
 
 - The **configuration editor** filters the method dropdown by the selected field
@@ -1665,7 +1672,7 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 
 ### Stickler Version Information
 
-The solution installs Stickler from PyPI (`stickler-eval==1.0.1`, pinned in
+The solution installs Stickler from PyPI (`stickler-eval==1.0.2`, pinned in
 `lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from

@@ -799,4 +799,11 @@ def compare_with_flags() -> Dict[str, Any]:
 #         semantics. Re-scoring 3,067 documents (10,701 sections) on 1.0.0 and
 #         1.0.1 gave identical scores, verdicts, rows and counts, so a bump
 #         would only make the aggregation Lambda warn on every 3.1 blob.
+#         Stickler 1.0.2 (#2245) also keeps 3.1: it adds, removes or renames
+#         no blob key and changes no ``_stickler_counts`` semantics. It does
+#         change the score of an amount written in non-ASCII digits, such as
+#         ``"١٬٢٥٠٫٠٠"`` against ``"1,250.00"`` on a NUMERIC_EXACT string
+#         field, which now matches. Re-scoring 3,075 documents with no such
+#         amounts gave identical results on 1.0.1 and 1.0.2. A bump would
+#         again only make the aggregation Lambda warn on every 3.1 blob.
 STICKLER_RESULT_VERSION = "3.1"

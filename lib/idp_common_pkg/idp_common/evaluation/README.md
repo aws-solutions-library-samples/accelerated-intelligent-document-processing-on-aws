@@ -458,7 +458,7 @@ The service supports multiple evaluation methods that can be configured for each
 A score that floating-point rounding leaves within 1e-10 below its threshold counts as a match, the same tolerance Stickler applies, so a value that scores, say, 0.7999999999 against a 0.8 threshold is a match.
 
 - `EXACT`: Exact string match (after normalizing whitespace and punctuation)
-- `NUMERIC_EXACT`: Exact match for numeric values (after normalizing currency symbols)
+- `NUMERIC_EXACT`: Exact match for numeric values (after normalizing currency symbols). On a `"type": "string"` field it also reads amounts in Arabic-Indic, Persian, Devanagari and full-width digits in their usual formats (`"١٬٢٥٠٫٠٠"` matches `"1,250.00"`); a `"type": "number"` field is converted with `float()` first, which reads bare digits such as `"١٢٥٠"` but not their separators
 - `FUZZY`: Fuzzy string matching with configurable evaluation_threshold
 - `DATE`: Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates before comparing, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Also handles date ranges (e.g. `2024-01-01 to 2024-01-31`). Optional per-field tuning via `x-aws-idp-evaluation-method-config` (e.g. `dayfirst`, `tolerance`, `range_mode`).
 - `HUNGARIAN`: Optimal matching for lists of values using the Hungarian algorithm with configurable comparator types:
