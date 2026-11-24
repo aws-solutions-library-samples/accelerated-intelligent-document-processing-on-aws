@@ -715,7 +715,9 @@ entries:
     surfaces: [harness:scripts/ux_runner/agent.py::claude_argv]
     note: >-
       The MR UX test and the first-time-user stories (ai_ux_test, ai_ux_test_stories),
-      driving a confined browser against the shared review stack.
+      driving a confined browser against the shared review stack, and the screen
+      review of a translated UI (ai_ux_translation_review), which may only look and
+      writes local files, no comment.
     reads: [review_stack_session]
     inputs: [review_stack_pages]
     outputs: [review_comment]

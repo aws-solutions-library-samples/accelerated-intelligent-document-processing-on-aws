@@ -2188,6 +2188,26 @@ ai-ux-test-stories-report: ## Write report.html, a story run as one page to open
 	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-report RUN=<dir holding story-run.json>'; exit 2; }
 	@$(PYTHON) -B scripts/ux_runner/story_report.py "$$RUN"
 
+# The screen review of the translated web UI (scripts/sdlc/ai_ux_translation_review.py)
+# in the Docker runner (scripts/ux_runner/run_in_docker.py translation): fr-CA, then the
+# pseudo-locale en-XA, each in its own confined browser, with a model that may only
+# look (no click, no typing) under a spending cap (MAX_USD, default 40). STACK names
+# the stack; the UI is its web URL, or WEB_URL=, or BUILD_DIR=, and must hold the
+# locales (src/ui/src/i18n/README.md, "Reviewing translated screens"). GLOSSARY is the
+# fr-CA CSV (default src/ui/src/i18n/glossary.fr-CA.csv); LOCALE= reviews one locale.
+# BUILD_DIR and GLOSSARY reach the recipe through the environment, so a path with a
+# space arrives whole. Writes test-reports/ux-translation-review/<time>-review/ and
+# posts nothing. Needs host AWS credentials, UX_TEST_PERSONAS and
+# UX_TEST_AWS_ACCOUNT_ID, as ai-ux-test-local.
+.PHONY: ai-ux-translation-review
+
+ai-ux-translation-review: ## Review the translated UI's screens in fr-CA and the pseudo-locale in Docker, look-only, posting nothing (STACK= required; WEB_URL= or BUILD_DIR=; GLOSSARY=; LOCALE=; MAX_USD=)
+	@$(if $(STACK),,$(error set STACK=<stack name>, e.g. make ai-ux-translation-review STACK=idp-fr-test))
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py translation --stack $(STACK) \
+		$(if $(WEB_URL),--web-url $(WEB_URL)) $(if $(BUILD_DIR),--build-dir "$$BUILD_DIR") \
+		$(if $(GLOSSARY),--glossary "$$GLOSSARY") $(if $(LOCALE),--locale $(LOCALE)) \
+		$(if $(MAX_USD),--max-usd $(MAX_USD)) $(EXTRA_ARGS)
+
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
 # 80% case. Uncommon flags can still be passed via EXTRA_ARGS="--foo --bar".
