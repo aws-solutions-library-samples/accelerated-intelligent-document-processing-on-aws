@@ -108,10 +108,13 @@ def _shipped_bedrock_units() -> dict[str, set[str]]:
 def _shipped_token_rates(pricing_key: str) -> dict[str, str]:
     """The entry's own input and output rates, formatted as the digest formats one.
 
-    Used to tie a recorded ``price_list_model`` to the entry citing it. Every one
-    of these entries prices both — an entry that did not would be a different and
-    simpler failure, refused by ``test_pricing_lookup.py`` — so ``KeyError`` here
-    is a real fault rather than a case to tolerate.
+    Used to tie a recorded ``price_list_model`` to the entry citing it. Every
+    entry prices ``inputTokens``, so ``KeyError`` for one that does not is a real
+    fault rather than a case to tolerate. ``outputTokens`` is absent from an
+    embeddings entry (Cohere Embed v4), because the model produces no output
+    tokens and AWS publishes no output dimension for it; the returned dict then
+    omits it, and :func:`_identity_candidates` reads the omission as a claim of
+    its own.
     """
     with open(_PRICING_PATH) as handle:
         raw = yaml.safe_load(handle)
@@ -123,7 +126,7 @@ def _shipped_token_rates(pricing_key: str) -> dict[str, str]:
             for unit in entry.get("units") or []
             if unit["name"] in IDENTITY_UNITS
         }
-        if set(rates) == set(IDENTITY_UNITS):
+        if "inputTokens" in rates:
             return rates
         raise KeyError(f"{pricing_key} prices only {sorted(rates)} of {IDENTITY_UNITS}")
     raise KeyError(f"{pricing_key} is not in {_PRICING_PATH}")
@@ -136,12 +139,18 @@ def _identity_candidates(digest: dict[str, Any], pricing_key: str) -> list[str]:
     single model, and where it is not, what matters is whether the candidates
     *agree* on the cache answer — see
     :func:`test_a_rate_collision_cannot_change_a_recorded_verdict`.
+
+    An identity unit the entry prices has to be a rate the model publishes, and
+    one it omits has to be a unit the model publishes **no** rate for. Without the
+    second half an entry omitting ``outputTokens`` would be identified by its
+    input rate alone, which is the collision-prone state the pair replaced.
     """
     rates = _shipped_token_rates(pricing_key)
     return sorted(
         model
         for model, record in digest["models"].items()
         if all(rate in record[unit] for unit, rate in rates.items())
+        and not any(record[unit] for unit in IDENTITY_UNITS if unit not in rates)
     )
 
 
@@ -625,7 +634,7 @@ def test_most_member_identities_are_pinned_to_exactly_one_model():
         for entry in EXPECTED_CACHE_UNIT_OMISSIONS
         if len(_identity_candidates(digest, entry.pricing_key)) == 1
     ]
-    assert len(unique) >= 15, (
+    assert len(unique) >= 21, (
         f"only {len(unique)} of {len(EXPECTED_CACHE_UNIT_OMISSIONS)} members have "
         "their price-list model pinned to exactly one candidate by the entry's "
         "own published rates. Below that the identity check is close to the "

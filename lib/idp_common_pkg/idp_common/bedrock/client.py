@@ -842,10 +842,12 @@ CACHEPOINT_SUPPORTED_MODELS = [
 # and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
 # tool-capable even though its GPT-5.x stablemates on the Responses API are not.
 #
-# NOTE: there is no hard-grammar/strict mode available on bedrock-runtime.
-# ``toolSpec.strict``, ``output_config.format`` and ``response_format`` are all
-# rejected ("Extra inputs are not permitted") on BOTH Converse and InvokeModel,
-# so a forced ``toolChoice`` is the strongest schema enforcement available.
+# NOTE: a forced ``toolChoice`` is the strongest schema enforcement this client
+# uses. Bedrock now offers structured outputs (constrained decoding to a JSON
+# Schema, via Converse ``outputConfig.textFormat`` / InvokeModel
+# ``output_config.format``) for Claude models, and the accelerator deliberately
+# does not use it yet. Why, and what would change that, is recorded in the module
+# docstring of ``idp_common.extraction.forced_tool``.
 TOOL_CONFIG_UNSUPPORTED_ROUTES: Dict[str, str] = {
     "LambdaHook": (
         "the LambdaHook route posts a Converse-shaped payload to a customer-owned "
@@ -904,10 +906,10 @@ def supports_tool_config(model_id: str) -> bool:
 #   * ``toolChoice: {"tool": {"name": ...}}`` -> the same ValidationException.
 #
 # This matters beyond the error message because a forced ``toolChoice`` is the
-# strongest schema enforcement bedrock-runtime offers (``toolSpec.strict``,
-# ``output_config.format`` and ``response_format`` are all rejected on Converse and
-# InvokeModel alike). So on this model the extraction forced-tool path has no
-# equivalent and must fall back to the prose schema — which
+# strongest schema enforcement the accelerator uses (Bedrock structured outputs is
+# not used; see ``idp_common.extraction.forced_tool``). So on this model the
+# extraction forced-tool path has no equivalent and must fall back to the prose
+# schema — which
 # ``forced_tool.should_force_tool`` already knows how to do, recording the reason in
 # the section's audit metadata rather than skipping silently.
 # Claude Sonnet 5.5 is the second entry, and the one that shows this is not an
@@ -1589,11 +1591,11 @@ class BedrockClient:
               treat a text answer as possible: use
               ``extract_tool_use_from_response()`` and fall back to
               ``extract_text_from_response()`` when it returns None.
-            * **No strict mode exists on bedrock-runtime.** ``toolSpec.strict``,
-              ``output_config.format`` and ``response_format`` are all rejected
-              ("Extra inputs are not permitted") on both Converse and
-              InvokeModel. A forced ``toolChoice`` is best-effort constrained
-              decoding, not a grammar guarantee — validate the result.
+            * **A forced tool is best effort, not a grammar guarantee.** A
+              forced ``toolChoice`` constrains the shape but does not guarantee
+              it, so validate the result. Bedrock structured outputs (which does
+              guarantee the shape, for Claude models) is not used by this
+              client; see ``idp_common.extraction.forced_tool`` for why.
             * **Property names must be sanitized by the caller.** Converse
               rejects *top-level* ``inputSchema.json.properties`` keys that do
               not match ``^[a-zA-Z0-9_.-]{1,64}$`` — so a key like

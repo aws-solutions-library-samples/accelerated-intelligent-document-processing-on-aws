@@ -31,3 +31,6 @@
 
 # Workshop content.
 /workshop/                                        @tomron-aws @rstrahan
+
+# Web UI translations: the French (Canada) catalog.
+/src/ui/src/i18n/fr-CA.json                       @rabieaws @rstrahan

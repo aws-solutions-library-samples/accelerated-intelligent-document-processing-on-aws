@@ -17,6 +17,8 @@
  * infer the rule, or to conclude the boxes are unreliable.
  */
 
+import { defineMessages, type IntlShape, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
+
 /** A field's relationship to the page, as the viewer can determine it. */
 export type FieldGeometryState =
   /** Has a box, so it can be highlighted on the page image. */
@@ -141,6 +143,46 @@ export const classifyFieldGeometry = (
   return hasFieldData ? 'unmatched' : 'no-data';
 };
 
+const messages = defineMessages<{
+  noValue: NoMessageValues;
+  unmatched: NoMessageValues;
+  noneProduced: NoMessageValues;
+  noData: NoMessageValues;
+}>({
+  noValue: {
+    id: 'common.geometry.noValue',
+    defaultMessage: 'No value extracted, so no bounding box.',
+    description:
+      "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: the model returned no value for it.",
+  },
+  unmatched: {
+    id: 'common.geometry.unmatched',
+    defaultMessage: 'Value not found in the page text, so no bounding box.',
+    description:
+      "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: its value was not found in the page's text.",
+  },
+  noneProduced: {
+    id: 'common.geometry.noneProduced',
+    defaultMessage: 'No field in this section has a bounding box.',
+    description:
+      "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: no field of the open section has one.",
+  },
+  noData: {
+    id: 'common.geometry.noData',
+    defaultMessage: 'No bounding box recorded — the assessment step skipped this field.',
+    description:
+      "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: nothing was recorded about the field.",
+  },
+});
+
+/** The sentence of each state without a box. */
+const reasonMessages: Record<Exclude<FieldGeometryState, 'located'>, TypedMessageDescriptor<NoMessageValues>> = {
+  'no-value': messages.noValue,
+  unmatched: messages.unmatched,
+  'none-produced': messages.noneProduced,
+  'no-data': messages.noData,
+};
+
 /**
  * One short line per state, for the row that carries no locate control.
  *
@@ -148,21 +190,11 @@ export const classifyFieldGeometry = (
  * needs which of the four causes applies, not an explanation of geometry. None
  * of them says anything about the value, which is displayed either way — what is
  * missing in every case is its *position*.
+ *
+ * In the UI's language with `intl`, else in English.
  */
-export const describeFieldGeometry = (state: FieldGeometryState): string => {
-  switch (state) {
-    case 'no-value':
-      return 'No value extracted, so no bounding box.';
-    case 'unmatched':
-      return 'Value not found in the page text, so no bounding box.';
-    case 'none-produced':
-      return 'No field in this section has a bounding box.';
-    case 'no-data':
-      return 'No bounding box recorded — the assessment step skipped this field.';
-    default:
-      return 'Highlight this field on the page image.';
-  }
-};
+export const describeFieldGeometry = (state: Exclude<FieldGeometryState, 'located'>, intl?: IntlShape): string =>
+  intl ? intl.formatMessage(reasonMessages[state]) : String(reasonMessages[state].defaultMessage);
 
 /**
  * Whether anything in the section carries a drawable box.

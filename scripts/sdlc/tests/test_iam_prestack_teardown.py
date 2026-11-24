@@ -748,6 +748,8 @@ def test_cleanup_stack_reaches_the_iam_cleanup_after_a_failed_stack_delete(
     monkeypatch.setattr(cbd, "run_command", _boom)
     monkeypatch.setattr(cbd, "cancel_bedrock_ingestion_jobs", _boom)
     monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda s: seen.append(s) or [])
+    monkeypatch.setattr(cbd, "_read_stack_kms_key", lambda s: (None, []))
+    monkeypatch.setattr(cbd, "_schedule_stack_kms_key", lambda s, k: [])
 
     findings = cbd.cleanup_stack({"stack_name": STACK})
 

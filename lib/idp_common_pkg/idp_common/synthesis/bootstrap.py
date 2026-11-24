@@ -100,12 +100,41 @@ def resolve_schema(
     return schema, tier, matched_name
 
 
+class ProtectedProfileError(ValueError):
+    """The named profile is one bootstrap does not write: 'default' or stack-managed."""
+
+
+def refuse_protected_profile(version: str, *, config_manager: Any) -> None:
+    """Raise ProtectedProfileError when ``version`` is 'default' or stack-managed.
+
+    A stack update records a new revision of a stack-managed profile from its preset,
+    and 'default' changes only through Save as default or idp-cli config-upload, so a
+    class written into either by bootstrap is lost or applied to every document. The
+    class goes into a profile of its own instead.
+
+    The listing is read with ``raise_errors=True``: an unreadable listing raises
+    rather than reading as "no profile is managed".
+    """
+    if version == "default":
+        raise ProtectedProfileError(
+            "'default' is not written by bootstrap: save the class into a new profile, "
+            "and use Save as default from it if it should become the default."
+        )
+    for listed in config_manager.list_config_versions(raise_errors=True):
+        if listed.get("versionName") == version and listed.get("managed"):
+            raise ProtectedProfileError(
+                f"'{version}' is a stack-managed profile, which a stack update "
+                "replaces with its preset: save the class into a new profile instead."
+            )
+
+
 def merge_class_into_version(
     schema: Dict[str, Any],
     version: str,
     *,
     config_manager: Any,
 ) -> None:
+    refuse_protected_profile(version, config_manager=config_manager)
     existing = config_manager.get_raw_configuration(CONFIG_TYPE_CONFIG, version) or {}
     classes = list(existing.get("classes", []))
     new_id = schema.get(sc.X_AWS_IDP_DOCUMENT_TYPE) or schema.get(sc.ID_FIELD)
@@ -144,6 +173,15 @@ def run_bootstrap(
         logger.info("bootstrap %.0f%%: %s", pct, msg)
         if status_cb:
             status_cb(pct, msg)
+
+    if request.target_version:
+        try:
+            refuse_protected_profile(
+                request.target_version, config_manager=config_manager
+            )
+        except Exception as e:
+            result.error = f"Failed to create config version: {e}"
+            return result
 
     config_classes: List[Dict[str, Any]] = []
     if request.config_version:

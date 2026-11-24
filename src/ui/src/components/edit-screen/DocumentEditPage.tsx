@@ -7,6 +7,7 @@
 // decideEditMode). Opened from the document page's Edit, a section's Edit Data, the
 // documents list's In Review link, Home › Tasks and Inbox messages.
 import React from 'react';
+import { useIntl } from 'react-intl';
 import { useParams, useSearchParams } from 'react-router-dom';
 
 import useUserRole from '../../hooks/use-user-role';
@@ -22,16 +23,17 @@ const DocumentEditPage = (): React.JSX.Element => {
   const [searchParams] = useSearchParams();
   const { isAnnotatorOnly } = useUserRole();
   const mode = useEditMode(objectKey);
+  const intl = useIntl();
 
-  if (mode.status === 'loading') return <EditPage model={loadingDocumentModel()} />;
-  if (mode.status === 'document-missing') return <EditPage model={documentMissingModel(isAnnotatorOnly)} />;
-  if (mode.status === 'document-failed') return <EditPage model={documentFailedModel(mode.error, mode.retry, isAnnotatorOnly)} />;
+  if (mode.status === 'loading') return <EditPage model={loadingDocumentModel(intl)} />;
+  if (mode.status === 'document-missing') return <EditPage model={documentMissingModel(isAnnotatorOnly, intl)} />;
+  if (mode.status === 'document-failed') return <EditPage model={documentFailedModel(mode.error, mode.retry, isAnnotatorOnly, intl)} />;
 
   const { decision, document } = mode;
   if (decision.mode === 'queue')
     return <ProductionItemEdit key={objectKey} objectKey={objectKey} seed={{ detail: decision.detail, document }} />;
-  if (decision.mode === 'not-a-member') return <EditPage model={notAMemberModel()} />;
-  if (decision.mode === 'item-failed') return <EditPage model={itemFailedModel(decision.error, mode.retry)} />;
+  if (decision.mode === 'not-a-member') return <EditPage model={notAMemberModel(intl)} />;
+  if (decision.mode === 'item-failed') return <EditPage model={itemFailedModel(decision.error, mode.retry, intl)} />;
   return (
     <DocumentEdit
       key={objectKey}

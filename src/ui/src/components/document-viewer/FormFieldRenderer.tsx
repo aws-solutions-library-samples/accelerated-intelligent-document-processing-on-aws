@@ -5,7 +5,7 @@
 
 // The recursive form renderer (and its comparison-key helpers) of the edit page's
 // Visual Editor tab (SectionEditor). Pure presentational: no S3/API calls;
-// everything it needs arrives via props, apart from the UI locale (`useFormatters`).
+// everything it needs arrives via props, apart from the UI locale (`useFormatters`, `useIntl`).
 
 import React, { memo } from 'react';
 import {
@@ -17,6 +17,7 @@ import {
   Button,
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import { getFieldConfidenceInfo } from '../common/confidence-alerts-utils';
 import { valueSourceLabel } from '../common/labels';
 import FieldGeometryAffordance from '../common/FieldGeometryAffordance';
@@ -33,8 +34,169 @@ const ExtBox = Box as React.ComponentType<ExtendedBoxProps>;
 
 const logger = new ConsoleLogger('FormFieldRenderer');
 
-/** The default value labels: the values are model predictions. */
-const PREDICTION_VALUE_LABEL = valueSourceLabel(null);
+const messages = defineMessages<{
+  rootHeading: NoMessageValues;
+  edited: NoMessageValues;
+  baselineEdited: NoMessageValues;
+  mismatch: NoMessageValues;
+  match: NoMessageValues;
+  confidence: { readonly confidence: string };
+  confidenceWithThreshold: { readonly confidence: string; readonly threshold: string };
+  editedNoConfidence: NoMessageValues;
+  evalScore: { readonly score: string };
+  evalScoreWithReason: { readonly score: string; readonly reason: string };
+  method: { readonly method: string };
+  weight: { readonly weight: string };
+  copyPredictedToBaseline: NoMessageValues;
+  copyBaselineToPredicted: NoMessageValues;
+  expectedBaseline: NoMessageValues;
+  nullPlaceholder: NoMessageValues;
+  groupScore: { readonly score: string };
+  groupScoreWithReason: { readonly score: string; readonly reason: string };
+  coverage: { readonly located: number; readonly total: number };
+  coverageInSection: { readonly located: number; readonly total: number };
+  itemCount: { readonly label: string; readonly count: number };
+  listScore: { readonly score: string };
+  listScoreWithReason: { readonly score: string; readonly reason: string };
+}>({
+  rootHeading: {
+    id: 'documents.formField.rootHeading',
+    defaultMessage: 'Document Data',
+    description: "Heading of the open section's fields in the Visual Editor tab of the edit page's section editor.",
+  },
+  edited: {
+    id: 'documents.formField.edited',
+    defaultMessage: '✏️ Edited',
+    description:
+      "Badge beside a field's name in the Visual Editor tab of the edit page's section editor, once the user has changed the field's value.",
+  },
+  baselineEdited: {
+    id: 'documents.formField.baselineEdited',
+    defaultMessage: '✏️ Baseline Edited',
+    description:
+      "Badge beside a field's name in the Visual Editor tab of the edit page's section editor, once the user has changed the field's evaluation baseline value.",
+  },
+  mismatch: {
+    id: 'documents.formField.mismatch',
+    defaultMessage: '⚠ Mismatch',
+    description:
+      "Badge beside a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on, when the field's value differs from the evaluation baseline.",
+  },
+  match: {
+    id: 'documents.formField.match',
+    defaultMessage: '✓ Match',
+    description:
+      "Badge beside a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on, when the field's value agrees with the evaluation baseline.",
+  },
+  confidence: {
+    id: 'documents.formField.confidence',
+    defaultMessage: 'Confidence: {confidence}',
+    description:
+      "Under a field's name in the Visual Editor tab of the edit page's section editor: the model's confidence in the value. {confidence} is a percentage, already formatted.",
+  },
+  confidenceWithThreshold: {
+    id: 'documents.formField.confidenceWithThreshold',
+    defaultMessage: 'Confidence: {confidence} / Threshold: {threshold}',
+    description:
+      "Under a field's name in the Visual Editor tab of the edit page's section editor: the model's confidence in the value, and the confidence the field needs. {confidence} and {threshold} are percentages, already formatted.",
+  },
+  editedNoConfidence: {
+    id: 'documents.formField.editedNoConfidence',
+    defaultMessage: "Edited — the model's confidence no longer applies",
+    description:
+      "Under a field's name in the Visual Editor tab of the edit page's section editor, in place of the model's confidence, once the user has changed the value.",
+  },
+  evalScore: {
+    id: 'documents.formField.evalScore',
+    defaultMessage: 'Eval Score: {score}',
+    description:
+      "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's evaluation score. {score} is a percentage, already formatted.",
+  },
+  evalScoreWithReason: {
+    id: 'documents.formField.evalScoreWithReason',
+    defaultMessage: 'Eval Score: {score} - {reason}',
+    description:
+      "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is.",
+  },
+  method: {
+    id: 'documents.formField.method',
+    defaultMessage: 'Method: {method}',
+    description:
+      "Under a field's name or a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the evaluation method. {method} is the method's name, shown as is.",
+  },
+  weight: {
+    id: 'documents.formField.weight',
+    defaultMessage: 'Weight: {weight}',
+    description:
+      "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's weight in the evaluation. {weight} is a number, already formatted.",
+  },
+  copyPredictedToBaseline: {
+    id: 'documents.formField.copyPredictedToBaseline',
+    defaultMessage: 'Copy predicted value to baseline',
+    description:
+      "Screen-reader label of the button beside a field's value in the Visual Editor tab of the edit page's section editor that copies the value into the evaluation baseline.",
+  },
+  copyBaselineToPredicted: {
+    id: 'documents.formField.copyBaselineToPredicted',
+    defaultMessage: 'Copy baseline value to predicted',
+    description:
+      "Screen-reader label of the button beside a field's evaluation baseline value in the Visual Editor tab of the edit page's section editor that copies it into the field's value.",
+  },
+  expectedBaseline: {
+    id: 'documents.formField.expectedBaseline',
+    defaultMessage: 'Expected (baseline):',
+    description:
+      "Label before a field's evaluation baseline value in the Visual Editor tab of the edit page's section editor while Show Evaluation is on.",
+  },
+  nullPlaceholder: {
+    id: 'documents.formField.nullPlaceholder',
+    defaultMessage: 'null (enter value to change)',
+    description:
+      "Placeholder of the input of a field whose value is null, in the Visual Editor tab of the edit page's section editor. null is the JSON value, kept as is.",
+  },
+  groupScore: {
+    id: 'documents.formField.groupScore',
+    defaultMessage: 'Group Score: {score}',
+    description:
+      "Under a group's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the group's evaluation score. {score} is a percentage, already formatted.",
+  },
+  groupScoreWithReason: {
+    id: 'documents.formField.groupScoreWithReason',
+    defaultMessage: 'Group Score: {score} - {reason}',
+    description:
+      "Under a group's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the group's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is.",
+  },
+  coverage: {
+    id: 'documents.formField.coverage',
+    defaultMessage: '{located} of {total, plural, one {# field} other {# fields}} have a bounding box',
+    description:
+      "Under the heading of the open section's fields in the Visual Editor tab of the edit page's section editor: how many of the section's fields have a bounding box on the page image. {located} and {total} are numbers of fields.",
+  },
+  coverageInSection: {
+    id: 'documents.formField.coverageInSection',
+    defaultMessage: '{located} of {total, plural, one {# field} other {# fields}} have a bounding box in this section',
+    description:
+      "Under the heading of the open section's fields in the Visual Editor tab of the edit page's section editor, while the Show fields menu leaves some fields out: how many of the whole section's fields have a bounding box on the page image. {located} and {total} are numbers of fields.",
+  },
+  itemCount: {
+    id: 'documents.formField.itemCount',
+    defaultMessage: '{label} ({count, plural, one {# item} other {# items}})',
+    description:
+      "Heading of a list in the Visual Editor tab of the edit page's section editor: its name and how many items it holds. {label} is the list field's name, as the document holds it (followed by its confidence in parentheses when the results give one).",
+  },
+  listScore: {
+    id: 'documents.formField.listScore',
+    defaultMessage: 'List Score: {score}',
+    description:
+      "Under a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the list's evaluation score. {score} is a percentage, already formatted.",
+  },
+  listScoreWithReason: {
+    id: 'documents.formField.listScoreWithReason',
+    defaultMessage: 'List Score: {score} - {reason}',
+    description:
+      "Under a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the list's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is.",
+  },
+});
 
 // Build the canonical Stickler comparison key for a field from its render path.
 // e.g. path=["LineItems", 0, "Description"] -> "LineItems[0].Description".
@@ -136,9 +298,12 @@ const FormFieldRenderer = memo<Record<string, any>>(
     _onRevertPrediction = null,
     _onRevertBaseline = null,
     /** The value labels ({ value, changed }): prediction wording unless the values are ground truth. */
-    valueLabel = PREDICTION_VALUE_LABEL,
+    valueLabel: valueLabelProp,
   }) => {
+    const intl = useIntl();
     const { formatFixed, formatPercent } = useFormatters();
+    /** The default value labels: the values are model predictions. */
+    const valueLabel = valueLabelProp ?? valueSourceLabel(intl, null);
     // Calculate path key for collapse state using displayPath
     const pathKey = [...displayPath, fieldKey].join('.');
     const isCollapsed = collapsedPaths.has(pathKey);
@@ -627,22 +792,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <span>{fieldKey}:</span>
                     {isPredictionChanged && (
                       <ExtBox color="text-status-info" fontSize="body-s" fontWeight="bold">
-                        ✏️ Edited
+                        <FormattedMessage {...messages.edited} />
                       </ExtBox>
                     )}
                     {isBaselineChanged && !isPredictionChanged && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ✏️ Baseline Edited
+                        <FormattedMessage {...messages.baselineEdited} />
                       </ExtBox>
                     )}
                     {hasMismatch && !hasLocalEdit && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ⚠ Mismatch
+                        <FormattedMessage {...messages.mismatch} />
                       </ExtBox>
                     )}
                     {!hasMismatch && !hasLocalEdit && showComparison && baselineValue !== null && (
                       <ExtBox color="text-status-success" fontSize="body-s">
-                        ✓ Match
+                        <FormattedMessage {...messages.match} />
                       </ExtBox>
                     )}
                   </SpaceBetween>
@@ -652,30 +817,46 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       a score of, typically, 100%. */}
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
-                      {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
-                            confidenceInfo.confidenceThreshold ?? 0,
-                            { fractionDigits: 1 },
-                          )}`
-                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
+                      {confidenceInfo.displayMode === 'with-threshold' ? (
+                        <FormattedMessage
+                          {...messages.confidenceWithThreshold}
+                          values={{
+                            confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }),
+                            threshold: formatPercent(confidenceInfo.confidenceThreshold ?? 0, { fractionDigits: 1 }),
+                          }}
+                        />
+                      ) : (
+                        <FormattedMessage
+                          {...messages.confidence}
+                          values={{ confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }) }}
+                        />
+                      )}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      Edited — the model&apos;s confidence no longer applies
+                      <FormattedMessage {...messages.editedNoConfidence} />
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
-                      {evalReason && ` - ${evalReason}`}
+                      {evalReason ? (
+                        <FormattedMessage
+                          {...messages.evalScoreWithReason}
+                          values={{ score: formatPercent(evalScore, { fractionDigits: 1 }), reason: String(evalReason) }}
+                        />
+                      ) : (
+                        <FormattedMessage {...messages.evalScore} values={{ score: formatPercent(evalScore, { fractionDigits: 1 }) }} />
+                      )}
                     </ExtBox>
                   )}
                   {showComparison && (evalMethod || evalWeight !== undefined) && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      {evalMethod && `Method: ${evalMethod}`}
+                      {evalMethod && <FormattedMessage {...messages.method} values={{ method: evalMethod }} />}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
+                      {evalWeight !== undefined && (
+                        <FormattedMessage {...messages.weight} values={{ weight: formatFixed(evalWeight, 2) }} />
+                      )}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -743,7 +924,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       <Button
                         variant="inline-icon"
                         iconName="arrow-down"
-                        ariaLabel="Copy predicted value to baseline"
+                        ariaLabel={intl.formatMessage(messages.copyPredictedToBaseline)}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (onBaselineChange) {
@@ -758,7 +939,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                     <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
                       <ExtBox fontSize="body-s" color="text-body-secondary">
-                        Expected (baseline):
+                        <FormattedMessage {...messages.expectedBaseline} />
                       </ExtBox>
                       {isBaselineChanged && (
                         <ExtBox fontSize="body-s" color="text-status-warning" fontWeight="bold">
@@ -810,7 +991,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         <Button
                           variant="inline-icon"
                           iconName="arrow-up"
-                          ariaLabel="Copy baseline value to predicted"
+                          ariaLabel={intl.formatMessage(messages.copyBaselineToPredicted)}
                           onClick={(e) => {
                             e.stopPropagation();
                             onChange(baselineValue);
@@ -849,22 +1030,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <span>{fieldKey}:</span>
                     {isPredictionChanged && (
                       <ExtBox color="text-status-info" fontSize="body-s" fontWeight="bold">
-                        ✏️ Edited
+                        <FormattedMessage {...messages.edited} />
                       </ExtBox>
                     )}
                     {isBaselineChanged && !isPredictionChanged && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ✏️ Baseline Edited
+                        <FormattedMessage {...messages.baselineEdited} />
                       </ExtBox>
                     )}
                     {hasMismatch && !hasLocalEdit && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ⚠ Mismatch
+                        <FormattedMessage {...messages.mismatch} />
                       </ExtBox>
                     )}
                     {!hasMismatch && !hasLocalEdit && showComparison && baselineValue !== null && (
                       <ExtBox color="text-status-success" fontSize="body-s">
-                        ✓ Match
+                        <FormattedMessage {...messages.match} />
                       </ExtBox>
                     )}
                   </SpaceBetween>
@@ -874,30 +1055,46 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       a score of, typically, 100%. */}
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
-                      {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
-                            confidenceInfo.confidenceThreshold ?? 0,
-                            { fractionDigits: 1 },
-                          )}`
-                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
+                      {confidenceInfo.displayMode === 'with-threshold' ? (
+                        <FormattedMessage
+                          {...messages.confidenceWithThreshold}
+                          values={{
+                            confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }),
+                            threshold: formatPercent(confidenceInfo.confidenceThreshold ?? 0, { fractionDigits: 1 }),
+                          }}
+                        />
+                      ) : (
+                        <FormattedMessage
+                          {...messages.confidence}
+                          values={{ confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }) }}
+                        />
+                      )}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      Edited — the model&apos;s confidence no longer applies
+                      <FormattedMessage {...messages.editedNoConfidence} />
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
-                      {evalReason && ` - ${evalReason}`}
+                      {evalReason ? (
+                        <FormattedMessage
+                          {...messages.evalScoreWithReason}
+                          values={{ score: formatPercent(evalScore, { fractionDigits: 1 }), reason: String(evalReason) }}
+                        />
+                      ) : (
+                        <FormattedMessage {...messages.evalScore} values={{ score: formatPercent(evalScore, { fractionDigits: 1 }) }} />
+                      )}
                     </ExtBox>
                   )}
                   {showComparison && (evalMethod || evalWeight !== undefined) && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      {evalMethod && `Method: ${evalMethod}`}
+                      {evalMethod && <FormattedMessage {...messages.method} values={{ method: evalMethod }} />}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
+                      {evalWeight !== undefined && (
+                        <FormattedMessage {...messages.weight} values={{ weight: formatFixed(evalWeight, 2) }} />
+                      )}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -973,7 +1170,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       <Button
                         variant="inline-icon"
                         iconName="arrow-down"
-                        ariaLabel="Copy predicted value to baseline"
+                        ariaLabel={intl.formatMessage(messages.copyPredictedToBaseline)}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (onBaselineChange) {
@@ -988,7 +1185,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                     <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
                       <ExtBox fontSize="body-s" color="text-body-secondary">
-                        Expected (baseline):
+                        <FormattedMessage {...messages.expectedBaseline} />
                       </ExtBox>
                       {isBaselineChanged && (
                         <ExtBox fontSize="body-s" color="text-status-warning" fontWeight="bold">
@@ -1042,7 +1239,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         <Button
                           variant="inline-icon"
                           iconName="arrow-up"
-                          ariaLabel="Copy baseline value to predicted"
+                          ariaLabel={intl.formatMessage(messages.copyBaselineToPredicted)}
                           onClick={(e) => {
                             e.stopPropagation();
                             onChange(baselineValue);
@@ -1081,22 +1278,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <span>{fieldKey}:</span>
                     {isPredictionChanged && (
                       <ExtBox color="text-status-info" fontSize="body-s" fontWeight="bold">
-                        ✏️ Edited
+                        <FormattedMessage {...messages.edited} />
                       </ExtBox>
                     )}
                     {isBaselineChanged && !isPredictionChanged && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ✏️ Baseline Edited
+                        <FormattedMessage {...messages.baselineEdited} />
                       </ExtBox>
                     )}
                     {hasMismatch && !hasLocalEdit && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ⚠ Mismatch
+                        <FormattedMessage {...messages.mismatch} />
                       </ExtBox>
                     )}
                     {!hasMismatch && !hasLocalEdit && showComparison && baselineValue !== null && (
                       <ExtBox color="text-status-success" fontSize="body-s">
-                        ✓ Match
+                        <FormattedMessage {...messages.match} />
                       </ExtBox>
                     )}
                   </SpaceBetween>
@@ -1106,30 +1303,46 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       a score of, typically, 100%. */}
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
-                      {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
-                            confidenceInfo.confidenceThreshold ?? 0,
-                            { fractionDigits: 1 },
-                          )}`
-                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
+                      {confidenceInfo.displayMode === 'with-threshold' ? (
+                        <FormattedMessage
+                          {...messages.confidenceWithThreshold}
+                          values={{
+                            confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }),
+                            threshold: formatPercent(confidenceInfo.confidenceThreshold ?? 0, { fractionDigits: 1 }),
+                          }}
+                        />
+                      ) : (
+                        <FormattedMessage
+                          {...messages.confidence}
+                          values={{ confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }) }}
+                        />
+                      )}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      Edited — the model&apos;s confidence no longer applies
+                      <FormattedMessage {...messages.editedNoConfidence} />
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
-                      {evalReason && ` - ${evalReason}`}
+                      {evalReason ? (
+                        <FormattedMessage
+                          {...messages.evalScoreWithReason}
+                          values={{ score: formatPercent(evalScore, { fractionDigits: 1 }), reason: String(evalReason) }}
+                        />
+                      ) : (
+                        <FormattedMessage {...messages.evalScore} values={{ score: formatPercent(evalScore, { fractionDigits: 1 }) }} />
+                      )}
                     </ExtBox>
                   )}
                   {showComparison && (evalMethod || evalWeight !== undefined) && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      {evalMethod && `Method: ${evalMethod}`}
+                      {evalMethod && <FormattedMessage {...messages.method} values={{ method: evalMethod }} />}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
+                      {evalWeight !== undefined && (
+                        <FormattedMessage {...messages.weight} values={{ weight: formatFixed(evalWeight, 2) }} />
+                      )}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -1199,7 +1412,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       <Button
                         variant="inline-icon"
                         iconName="arrow-down"
-                        ariaLabel="Copy predicted value to baseline"
+                        ariaLabel={intl.formatMessage(messages.copyPredictedToBaseline)}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (onBaselineChange) {
@@ -1214,7 +1427,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                     <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
                       <ExtBox fontSize="body-s" color="text-body-secondary">
-                        Expected (baseline):
+                        <FormattedMessage {...messages.expectedBaseline} />
                       </ExtBox>
                       {isBaselineChanged && (
                         <ExtBox fontSize="body-s" color="text-status-warning" fontWeight="bold">
@@ -1268,7 +1481,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         <Button
                           variant="inline-icon"
                           iconName="arrow-up"
-                          ariaLabel="Copy baseline value to predicted"
+                          ariaLabel={intl.formatMessage(messages.copyBaselineToPredicted)}
                           onClick={(e) => {
                             e.stopPropagation();
                             onChange(baselineValue);
@@ -1359,7 +1572,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     {isCollapsed ? '▶' : '▼'}
                   </span>
                 )}
-                <span>{label}</span>
+                <span>{path.length === 0 ? <FormattedMessage {...messages.rootHeading} /> : label}</span>
                 {groupEvalResult && !groupEvalResult.matched && (
                   <ExtBox color="text-status-warning" fontSize="body-s">
                     ⚠
@@ -1373,8 +1586,20 @@ const FormFieldRenderer = memo<Record<string, any>>(
               </SpaceBetween>
               {showComparison && groupEvalResult && (
                 <ExtBox fontSize="body-s" color={groupEvalResult.matched ? 'text-status-success' : 'text-status-warning'}>
-                  {`Group Score: ${formatPercent(groupEvalResult.score, { fractionDigits: 1 })}`}
-                  {groupEvalResult.reason && ` - ${groupEvalResult.reason}`}
+                  {groupEvalResult.reason ? (
+                    <FormattedMessage
+                      {...messages.groupScoreWithReason}
+                      values={{
+                        score: formatPercent(groupEvalResult.score, { fractionDigits: 1 }),
+                        reason: String(groupEvalResult.reason),
+                      }}
+                    />
+                  ) : (
+                    <FormattedMessage
+                      {...messages.groupScore}
+                      values={{ score: formatPercent(groupEvalResult.score, { fractionDigits: 1 }) }}
+                    />
+                  )}
                 </ExtBox>
               )}
               {/* How much of this section has bounding boxes, at the root only.
@@ -1393,13 +1618,16 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       have them, so only the section this line captions can be
                       spoken for. `0 of 13 fields have a bounding box` says that
                       much and attributes no cause. */}
-                  {`${coverage.located} of ${coverage.total} field${coverage.total === 1 ? '' : 's'} have a bounding box`}
                   {/* "in this section" once a filter is on, because the count is of
                       the section and the rows are a subset of it. Without that the
                       caption reads as a statement about what is on screen, and
                       "6 of 10" above two rows is the same two-facts-no-way-to-choose
                       problem this caption exists to remove. */}
-                  {filterMode !== 'none' && ' in this section'}
+                  {filterMode !== 'none' ? (
+                    <FormattedMessage {...messages.coverageInSection} values={{ located: coverage.located, total: coverage.total }} />
+                  ) : (
+                    <FormattedMessage {...messages.coverage} values={{ located: coverage.located, total: coverage.total }} />
+                  )}
                   {/* No clause naming the causes. There are four of them, only one
                       applies to any given row, and which one requires that row's own
                       entry and value — so a line about the section can only list
@@ -1544,22 +1772,22 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <span>{fieldKey}:</span>
                     {isPredictionChanged && (
                       <ExtBox color="text-status-info" fontSize="body-s" fontWeight="bold">
-                        ✏️ Edited
+                        <FormattedMessage {...messages.edited} />
                       </ExtBox>
                     )}
                     {isBaselineChanged && !isPredictionChanged && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ✏️ Baseline Edited
+                        <FormattedMessage {...messages.baselineEdited} />
                       </ExtBox>
                     )}
                     {hasMismatch && !hasLocalEdit && (
                       <ExtBox color="text-status-warning" fontSize="body-s" fontWeight="bold">
-                        ⚠ Mismatch
+                        <FormattedMessage {...messages.mismatch} />
                       </ExtBox>
                     )}
                     {!hasMismatch && !hasLocalEdit && showComparison && baselineValue !== null && (
                       <ExtBox color="text-status-success" fontSize="body-s">
-                        ✓ Match
+                        <FormattedMessage {...messages.match} />
                       </ExtBox>
                     )}
                   </SpaceBetween>
@@ -1569,30 +1797,46 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       a score of, typically, 100%. */}
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
-                      {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
-                            confidenceInfo.confidenceThreshold ?? 0,
-                            { fractionDigits: 1 },
-                          )}`
-                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
+                      {confidenceInfo.displayMode === 'with-threshold' ? (
+                        <FormattedMessage
+                          {...messages.confidenceWithThreshold}
+                          values={{
+                            confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }),
+                            threshold: formatPercent(confidenceInfo.confidenceThreshold ?? 0, { fractionDigits: 1 }),
+                          }}
+                        />
+                      ) : (
+                        <FormattedMessage
+                          {...messages.confidence}
+                          values={{ confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }) }}
+                        />
+                      )}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      Edited — the model&apos;s confidence no longer applies
+                      <FormattedMessage {...messages.editedNoConfidence} />
                     </ExtBox>
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
-                      {evalReason && ` - ${evalReason}`}
+                      {evalReason ? (
+                        <FormattedMessage
+                          {...messages.evalScoreWithReason}
+                          values={{ score: formatPercent(evalScore, { fractionDigits: 1 }), reason: String(evalReason) }}
+                        />
+                      ) : (
+                        <FormattedMessage {...messages.evalScore} values={{ score: formatPercent(evalScore, { fractionDigits: 1 }) }} />
+                      )}
                     </ExtBox>
                   )}
                   {showComparison && (evalMethod || evalWeight !== undefined) && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      {evalMethod && `Method: ${evalMethod}`}
+                      {evalMethod && <FormattedMessage {...messages.method} values={{ method: evalMethod }} />}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
+                      {evalWeight !== undefined && (
+                        <FormattedMessage {...messages.weight} values={{ weight: formatFixed(evalWeight, 2) }} />
+                      )}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -1661,7 +1905,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                             onChange(detail.value === '' ? null : detail.value);
                           }}
                           onFocus={handleFocus}
-                          placeholder="null (enter value to change)"
+                          placeholder={intl.formatMessage(messages.nullPlaceholder)}
                         />
                       )}
                     </div>
@@ -1669,7 +1913,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       <Button
                         variant="inline-icon"
                         iconName="arrow-down"
-                        ariaLabel="Copy predicted value to baseline"
+                        ariaLabel={intl.formatMessage(messages.copyPredictedToBaseline)}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (onBaselineChange) {
@@ -1684,7 +1928,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   <ExtBox onClick={handleClick} style={{ cursor: 'pointer' }}>
                     <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
                       <ExtBox fontSize="body-s" color="text-body-secondary">
-                        Expected (baseline):
+                        <FormattedMessage {...messages.expectedBaseline} />
                       </ExtBox>
                       {isBaselineChanged && (
                         <ExtBox fontSize="body-s" color="text-status-warning" fontWeight="bold">
@@ -1731,7 +1975,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                                 onBaselineChange(detail.value === '' ? null : detail.value);
                               }
                             }}
-                            placeholder={baselineValue === null ? 'null (enter value to change)' : undefined}
+                            placeholder={baselineValue === null ? intl.formatMessage(messages.nullPlaceholder) : undefined}
                           />
                         )}
                       </div>
@@ -1739,7 +1983,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         <Button
                           variant="inline-icon"
                           iconName="arrow-up"
-                          ariaLabel="Copy baseline value to predicted"
+                          ariaLabel={intl.formatMessage(messages.copyBaselineToPredicted)}
                           onClick={(e) => {
                             e.stopPropagation();
                             onChange(baselineValue);
@@ -1803,7 +2047,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   </span>
                 )}
                 <span>
-                  {label} ({value.length} items)
+                  <FormattedMessage {...messages.itemCount} values={{ label, count: value.length }} />
                 </span>
                 {arrayEvalResult && !arrayEvalResult.matched && (
                   <ExtBox color="text-status-warning" fontSize="body-s">
@@ -1818,11 +2062,23 @@ const FormFieldRenderer = memo<Record<string, any>>(
               </SpaceBetween>
               {showComparison && arrayEvalResult && (
                 <ExtBox fontSize="body-s" color={arrayEvalResult.matched ? 'text-status-success' : 'text-status-warning'}>
-                  {`List Score: ${formatPercent(arrayEvalResult.score, { fractionDigits: 1 })}`}
-                  {arrayEvalResult.reason && ` - ${arrayEvalResult.reason}`}
+                  {arrayEvalResult.reason ? (
+                    <FormattedMessage
+                      {...messages.listScoreWithReason}
+                      values={{
+                        score: formatPercent(arrayEvalResult.score, { fractionDigits: 1 }),
+                        reason: String(arrayEvalResult.reason),
+                      }}
+                    />
+                  ) : (
+                    <FormattedMessage
+                      {...messages.listScore}
+                      values={{ score: formatPercent(arrayEvalResult.score, { fractionDigits: 1 }) }}
+                    />
+                  )}
                   {arrayEvalResult.evaluationMethod && (
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      Method: {arrayEvalResult.evaluationMethod}
+                      <FormattedMessage {...messages.method} values={{ method: String(arrayEvalResult.evaluationMethod) }} />
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -1955,17 +2211,25 @@ const FormFieldRenderer = memo<Record<string, any>>(
                       a score of, typically, 100%. */}
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
-                      {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
-                            confidenceInfo.confidenceThreshold ?? 0,
-                            { fractionDigits: 1 },
-                          )}`
-                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
+                      {confidenceInfo.displayMode === 'with-threshold' ? (
+                        <FormattedMessage
+                          {...messages.confidenceWithThreshold}
+                          values={{
+                            confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }),
+                            threshold: formatPercent(confidenceInfo.confidenceThreshold ?? 0, { fractionDigits: 1 }),
+                          }}
+                        />
+                      ) : (
+                        <FormattedMessage
+                          {...messages.confidence}
+                          values={{ confidence: formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 }) }}
+                        />
+                      )}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
-                      Edited — the model&apos;s confidence no longer applies
+                      <FormattedMessage {...messages.editedNoConfidence} />
                     </ExtBox>
                   )}
                 </ExtBox>

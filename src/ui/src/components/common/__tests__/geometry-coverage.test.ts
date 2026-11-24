@@ -142,7 +142,7 @@ describe('describeFieldGeometry', () => {
   it('never attributes a section-level outcome to the document or the configuration', () => {
     // A packet section can come back with no boxes while its siblings have them
     // under the same configuration, so neither can be claimed from here.
-    const all = (['located', 'no-value', 'unmatched', 'none-produced', 'no-data'] as const).map(describeFieldGeometry);
+    const all = (['no-value', 'unmatched', 'none-produced', 'no-data'] as const).map((state) => describeFieldGeometry(state));
     all.forEach((text) => {
       expect(text).not.toMatch(/this document/i);
       expect(text).not.toMatch(/geometry\.mode/i);
@@ -156,10 +156,10 @@ describe('describeFieldGeometry', () => {
     expect(describeFieldGeometry('no-data')).toMatch(/No bounding box recorded/);
   });
 
-  it('gives every state a sentence', () => {
+  it('gives every state without a box a sentence', () => {
     // A state with no wording renders an empty tooltip, which reads as a bug in
     // the viewer rather than an explanation.
-    (['located', 'no-value', 'unmatched', 'none-produced', 'no-data'] as const).forEach((state) => {
+    (['no-value', 'unmatched', 'none-produced', 'no-data'] as const).forEach((state) => {
       expect(describeFieldGeometry(state).length).toBeGreaterThan(10);
     });
   });

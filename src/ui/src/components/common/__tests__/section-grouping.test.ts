@@ -103,13 +103,13 @@ describe('validateGrouping', () => {
     const result = validateGrouping([{ sectionId: '1', pageIds: [1, 2, 3, 4] }], PAGES);
 
     expect(result.isValid).toBe(false);
-    expect(result.document.join(' ')).toMatch(/Page 5 is not in any section/);
+    expect(result.document).toEqual([{ code: 'pagesNotInSection', pageIds: [5] }]);
   });
 
   it('names every orphan, not just the first', () => {
     const result = validateGrouping([{ sectionId: '1', pageIds: [1] }], PAGES);
 
-    expect(result.document.join(' ')).toMatch(/Pages 2, 3, 4, 5 are not in any section/);
+    expect(result.document).toEqual([{ code: 'pagesNotInSection', pageIds: [2, 3, 4, 5] }]);
   });
 
   it('rejects a page claimed by two sections', () => {
@@ -122,7 +122,7 @@ describe('validateGrouping', () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.bySection['2'].join(' ')).toMatch(/Page 3 is already in section 1/);
+    expect(result.bySection['2']).toEqual([{ code: 'pageClaimed', pageId: 3, sectionId: '1' }]);
   });
 
   it('blocks an empty section rather than removing it silently', () => {
@@ -136,7 +136,7 @@ describe('validateGrouping', () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.bySection['2'].join(' ')).toMatch(/no pages/);
+    expect(result.bySection['2']).toEqual([{ code: 'noPages' }]);
   });
 
   it('rejects a page that is not in the document', () => {
@@ -149,7 +149,7 @@ describe('validateGrouping', () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.bySection['2'].join(' ')).toMatch(/Page 99 not in this document/);
+    expect(result.bySection['2']).toEqual([{ code: 'notInDocument', pageIds: [99] }]);
   });
 
   it('rejects duplicate section ids', () => {
@@ -162,7 +162,7 @@ describe('validateGrouping', () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.bySection['1'].join(' ')).toMatch(/used by more than one section/);
+    expect(result.bySection['1']).toEqual([{ code: 'duplicateId', sectionId: '1' }]);
   });
 
   it('reports every problem at once, not one per attempt', () => {

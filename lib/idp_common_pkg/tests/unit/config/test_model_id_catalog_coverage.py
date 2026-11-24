@@ -30,7 +30,6 @@ from idp_common.config import schema_constants
 from idp_common.config.merge_utils import (
     _CATALOG_MODEL_FIELDS,
     _load_valid_bedrock_models,
-    merge_config_with_defaults,
     validate_config,
 )
 from idp_common.config.models import IDPConfig
@@ -49,7 +48,10 @@ CLASSIFICATION_CALL_FIELDS = {
 
 # Model fields the catalog check leaves alone. Each premise is evaluated below.
 UNPRICED_MODEL_FIELDS = {
-    # Embedding models: pricing.yaml prices none, so the default is not in it.
+    # Embedding models. pricing.yaml prices the Cohere Embed v4 profiles the
+    # defaults resolve to, but these fields also take Titan Multimodal Embeddings,
+    # which the embeddings client supports and pricing.yaml does not list, so a
+    # catalog check would refuse a supported configuration.
     "classification.split_then_classify.section_classification.embeddings.model",
     "discovery.multi_document.embedding_model_id",
 }
@@ -235,19 +237,27 @@ def test_every_model_field_is_checked_or_named_as_unpriced() -> None:
 
 @pytest.mark.parametrize("path", sorted(UNPRICED_MODEL_FIELDS))
 def test_unpriced_field_premise_holds(path: str) -> None:
-    """Each exclusion rests on its own default being absent from the catalog."""
-    default = _idpconfig_model_fields()[path]
-    merged = merge_config_with_defaults({}, "pattern-2", validate=False)
-    node: Any = merged
-    for key in path.split("."):
-        node = node.get(key) if isinstance(node, dict) else None
-    shipped = node or default
-    if not shipped:
-        # No default anywhere: the field is an embeddings model by declaration.
-        assert "embed" in path
-        return
-    assert shipped not in _load_valid_bedrock_models(), (
-        f"{path}'s default {shipped!r} is now priced; move it to _CATALOG_MODEL_FIELDS"
+    """Each exclusion rests on the field taking a supported model the catalog lacks.
+
+    The field names an embedding model; the Bedrock embeddings client builds a
+    request body for Titan Multimodal Embeddings; and no catalog id is one. If
+    pricing.yaml gains a Titan Multimodal row, the premise is gone and the field
+    belongs in ``_CATALOG_MODEL_FIELDS``.
+    """
+    import idp_common.bedrock.client as bedrock_client
+
+    assert path in _idpconfig_model_fields()
+    assert "embed" in path
+    family = "titan-embed-image"
+    assert f'"{family}" in model_lower' in Path(bedrock_client.__file__).read_text(
+        encoding="utf-8"
+    ), f"the embeddings client no longer dispatches on {family}; re-read {path}"
+    catalog = _load_valid_bedrock_models()
+    assert catalog, "the catalog loaded empty, so the next assertion is about nothing"
+    priced = sorted(model for model in catalog if family in model)
+    assert not priced, (
+        f"pricing.yaml now prices {priced}, so {path} no longer takes a supported "
+        "model the catalog lacks; move it to _CATALOG_MODEL_FIELDS"
     )
 
 

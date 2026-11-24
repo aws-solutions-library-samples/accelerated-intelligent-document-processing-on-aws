@@ -13,6 +13,7 @@
 
 import React from 'react';
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import type { FormFieldWrapper } from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -46,6 +47,12 @@ const queue = (over: Partial<ReviewQueueDefinition> = {}): ReviewQueueDefinition
   ...over,
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const open = (props: Partial<React.ComponentProps<typeof QueueDefinitionModal>> = {}) => {
   const onSaved = vi.fn();
   render(
@@ -59,6 +66,7 @@ const open = (props: Partial<React.ComponentProps<typeof QueueDefinitionModal>> 
       onSaved={onSaved}
       {...props}
     />,
+    { wrapper: English },
   );
   return onSaved;
 };
@@ -198,7 +206,7 @@ describe("a save over someone else's change (#1727)", () => {
       onDismiss: () => undefined,
       onSaved: vi.fn(),
     };
-    const { rerender } = render(<QueueDefinitionModal {...props} queue={queue({ version: 1 })} />);
+    const { rerender } = render(<QueueDefinitionModal {...props} queue={queue({ version: 1 })} />, { wrapper: English });
     setInput('Priority', '3');
     clickSave();
     await waitFor(() => expect(changedAlert()).toBeTruthy());

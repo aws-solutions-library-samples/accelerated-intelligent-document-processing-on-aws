@@ -71,7 +71,7 @@ setting (#2032). `budget.py` holds the pieces:
 
 | Name | What it is |
 |---|---|
-| `estimate_tokens(text)` | An **estimate** from characters, since this package has no tokenizer: one token per digit or non-ASCII character, one per two other characters. It errs high. |
+| `estimate_tokens(text)` | An **estimate** from characters, since this package has no tokenizer, weighted per character class: a digit, an ASCII punctuation mark or a non-ASCII character is one token; a letter in a run of letters and digits that holds a digit (a serial, an invoice number) is 0.75 (`MIXED_RUN_LETTER_TOKENS`), and so is a letter in a letter-only run that reads as a code rather than a word (`CODE_RUN_LETTER_TOKENS`; `_reads_as_code`: the case flips at least once every three letters after the first, five consonants in a row, or under a fifth vowels in six letters or more); any other letter, and whitespace, is 0.5 (`WORD_LETTER_TOKENS`, `WHITESPACE_TOKENS`). A CJK ideograph in neither GB 2312's nor JIS X 0208's first level is 1.5 if it is in Big5's first level (`TRADITIONAL_IDEOGRAPH_TOKENS`), 2.5 otherwise (`RARE_IDEOGRAPH_TOKENS`), 3 in extension A and 4 above the Basic Multilingual Plane (`EXTENSION_A_IDEOGRAPH_TOKENS`, `SUPPLEMENTARY_IDEOGRAPH_TOKENS`: one token per UTF-8 byte), with the levels read from the standard library's codecs (#2212). Measured with the decider's tokenizer, it is within about 10% of the real count or above it on statement tables, figures, phone numbers, serials and hex ids, letter-only random codes (mixed-case, base64-like, capital letters), common CJK and rare CJK characters (GB 2312's second level, rare surnames and name kanji), and `PROMPT_RESERVE_TOKENS` covers the rest; on prose it is three to four times the real count. Against the estimate before #2212 it is 0.5% higher on English prose, unchanged on simplified Chinese and Japanese prose, 2 to 7% higher on Japanese names with rare kanji and 6 to 12% higher on traditional Chinese prose; half-width katakana, rare Hangul, emoji, Ethiopic and full-width Latin are still undercounted (to about 1.3 to 2.5 times a character); `tests/unit/decision_model/test_estimate.py` holds those margins and the tokenizer counts (#2051, #2212). |
 | `PROMPT_RESERVE_TOKENS` | 512, left in the window for the decider's own prompt |
 | `DEFAULT_MAX_INPUT_TOKENS` | the window less that reserve, 3584: the setting's default and the largest value it takes: `idp_common.config.models` caps a larger one, with a warning (#2111) |
 | `IMAGE_TOKENS` | 256 counted per image (196 for a square page at 448 px) |
@@ -110,9 +110,9 @@ call site's request, or the decider's pinned model. It is live and on demand, in
 neither CI; [run-stack-tests](../../../../.claude/skills/run-stack-tests.md) has
 the options.
 
-What three runs measured, in us-east-1 in November 2026, against the extension's
+What four runs measured, in us-east-1 in November 2026, against the extension's
 pinned model (the table and serial figures are from the third, the first to send
-those shapes):
+those shapes, and the fourth, the first with the per-class estimate):
 
 - The window is 4,096 tokens and holds the state and the **longest** question: a
   state that fits beside one question was answered with two. The refusal is a
@@ -126,20 +126,21 @@ those shapes):
   request. The decider's window counts a square page image at 448 px as 196 tokens
   (its refusal message names the image's share), and the image added 199 to a
   request's usage; a portrait page added 157 to usage. Both are under `IMAGE_TOKENS`.
-- **Extraction confidence overflows the window on dense table and serial text.**
-  At the default cap, a confidence request over one page of a markdown statement
-  table (`| 06/11/2026 | 39,595.05 | 49,865.35 |` rows) was refused at 4,159 and
-  4,170 tokens in `text` mode, and over a page of 17-character alphanumeric
-  serials at 4,293 and 4,304 in `text` mode and 4,189 and 4,200 in `both`. The
-  same table in `both` mode fit with 14 tokens to spare, and a table of figures
-  with 102. The estimate counts ASCII punctuation and letters at half a token
-  each; on these shapes the decider's tokenizer spends about 1.2 tokens for each
-  estimated one (measured offline with the model's tokenizer, and consistent with
-  the state counts in the refusal messages), and `PROMPT_RESERVE_TOKENS` does not absorb the difference.
-  Section classification fit on every shape (at most 3,659 tokens). Its question,
-  every class description counted as JSON, is estimated higher than the decider
-  counts it, which is inferred to be what leaves it the margin.
-  The estimate erred high on prose and CJK, by up to about 2,500 tokens.
+- **Dense table and serial text fits with the per-class estimate.** Under the
+  flat estimate it replaced (every character other than a digit or non-ASCII at
+  half a token), a confidence request at the default cap over one page of a
+  markdown statement table (`| 06/11/2026 | 39,595.05 | 49,865.35 |` rows) was
+  refused at 4,159 and 4,170 tokens in `text` mode, and over a page of
+  17-character alphanumeric serials at 4,293 and 4,304 in `text` mode and 4,189
+  and 4,200 in `both`: the decider's tokenizer spent 1.17 to 1.21 tokens for each
+  estimated one on those pages, more than `PROMPT_RESERVE_TOKENS` absorbs. With the
+  per-class estimate every request the check builds was answered; the largest was
+  3,671 tokens (confidence, `text`, a table of figures), the table 3,590 and the
+  serials 3,448 in `text` and 3,401 in `both`. Section classification fit on every
+  shape under both estimates (at most 3,659 tokens before, 3,091 after). Each of
+  those counts equals the model's tokenizer count of the request's state plus the
+  overheads above, so the tokenizer predicts the decider exactly for these pages.
+  The estimate errs high on prose and CJK, by up to about 2,500 tokens.
 
 ## Backends
 

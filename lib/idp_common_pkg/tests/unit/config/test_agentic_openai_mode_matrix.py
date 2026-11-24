@@ -281,3 +281,36 @@ def test_every_class_with_an_openai_escalation_override_is_named():
     assert len(errors) == 2, errors
     assert "Class 'invoice'" in errors[0]
     assert "Class 'receipt'" in errors[1]
+
+
+@pytest.mark.parametrize(("mode", "flag"), CELLS)
+def test_a_flag_the_mode_overrides_is_reported(mode, flag):
+    """`agentic.enabled: true` overridden by the mode is reported once.
+
+    A configuration downloaded in full carries `mode: simple`, so a true flag added
+    to it is overridden and simple extraction runs: the warning names the mode to
+    set. A false flag beside `mode: advanced` is what that download looks like once
+    the mode is set as documented, so it is not reported.
+    """
+    logging.disable(logging.CRITICAL)
+    try:
+        result = validate_config(_config(mode, flag, CONVERSE))
+    finally:
+        logging.disable(logging.NOTSET)
+    warnings = [w for w in result["warnings"] if "extraction.agentic.enabled is" in w]
+    overridden = flag is True and not _expected_agentic(mode, flag)
+    assert len(warnings) == int(overridden), warnings
+    if overridden:
+        assert "Set extraction.mode: advanced" in warnings[0]
+
+
+@pytest.mark.parametrize("written", ["true", "yes", "y", "t", "1", 1])
+def test_a_flag_written_as_text_is_read_as_the_runtime_reads_it(written):
+    config = _config("simple", UNSET, CONVERSE)
+    config["extraction"]["agentic"] = {"enabled": written}
+    logging.disable(logging.CRITICAL)
+    try:
+        result = validate_config(config)
+    finally:
+        logging.disable(logging.NOTSET)
+    assert any("Set extraction.mode: advanced" in w for w in result["warnings"])

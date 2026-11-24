@@ -1,10 +1,12 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
+import { createIntl } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import { formatDateTime as formatAbsoluteDateTime } from '../../i18n/format';
-import { formatDateTime, formatRelativeTime } from '../date-time';
+import { onIntlError } from '../../i18n/LocaleProvider';
+import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../date-time';
 
 const NOW = Date.UTC(2026, 9, 10, 12, 0, 0);
 const MINUTE = 60 * 1000;
@@ -62,9 +64,16 @@ describe('formatRelativeTime', () => {
       expect(formatRelativeTime(NOW - DAY - HOUR, 'fr-CA', NOW)).toBe('hier');
     });
 
-    it('keeps the "just now" literal', () => {
-      // The literal is not translated by this helper; the message catalog does that.
-      expect(formatRelativeTime(NOW - 10 * 1000, 'fr-CA', NOW)).toBe('just now');
+    it("returns the caller's just-now text", () => {
+      const intl = createIntl({
+        locale: 'fr-CA',
+        defaultLocale: 'en',
+        messages: { 'common.relativeTime.justNow': 'à l’instant' },
+        onError: onIntlError,
+      });
+      const justNow = intl.formatMessage(relativeTimeMessages.justNow);
+      expect(formatRelativeTime(NOW - 10 * 1000, 'fr-CA', NOW, justNow)).toBe('à l’instant');
+      expect(formatRelativeTime(NOW + 5 * MINUTE, 'fr-CA', NOW, justNow)).toBe('à l’instant');
     });
   });
 });

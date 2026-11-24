@@ -14,6 +14,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { fireEvent, render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { readFileSync } from 'node:fs';
@@ -24,6 +25,12 @@ import EditScreen, { CANCEL_ACCESSIBLE_NAME } from '../EditScreen';
 import type { EditActionsProps } from '../EditScreen';
 import { barButtonLabels, barButtons, buttonLabel, chooseMenuItem, findMenu, menuItems, menuNames } from './edit-bar';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderScreen = (actions: Partial<EditActionsProps> = {}, status: string | undefined = undefined) => {
   const onAction = vi.fn();
   const onShowHistory = vi.fn();
@@ -31,6 +38,7 @@ const renderScreen = (actions: Partial<EditActionsProps> = {}, status: string | 
     <EditScreen title="doc.pdf" status={status} objectKey="in/doc.pdf" actions={{ busy: null, onAction, onShowHistory, ...actions }}>
       <div />
     </EditScreen>,
+    { wrapper: English },
   );
   return { onAction, onShowHistory };
 };
@@ -94,6 +102,7 @@ describe('the edit screen action bar', () => {
       >
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     expect(menuItems('More Actions').find((i) => i.text === 'Use As Evaluation Baseline')).toMatchObject({
       disabled: true,

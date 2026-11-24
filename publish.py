@@ -98,6 +98,8 @@ def _publish_terraform_module(publisher, console) -> int:
     console.print(
         f"[dim]   sha256 {info['sha256']}; pointer {info['pointerUrl']}[/dim]"
     )
+    if info.get("versionsIndexUrl"):
+        console.print(f"[dim]   versions index {info['versionsIndexUrl']}[/dim]")
     return 0
 
 

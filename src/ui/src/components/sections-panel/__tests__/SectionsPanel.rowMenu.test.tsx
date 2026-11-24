@@ -15,6 +15,7 @@ import React from 'react';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { IntlProvider } from 'react-intl';
 
 const state = vi.hoisted(() => ({
   graphql: vi.fn(),
@@ -37,8 +38,14 @@ const SECTIONS = [
 ];
 const DOC = { objectKey: 'in/a.pdf', objectStatus: 'COMPLETED', evaluationStatus: 'COMPLETED' };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderPanel = (documentItem: Record<string, unknown> = DOC) =>
-  render(<SectionsPanel sections={SECTIONS as never} documentItem={documentItem as never} mergedConfig={{}} />);
+  render(<SectionsPanel sections={SECTIONS as never} documentItem={documentItem as never} mergedConfig={{}} />, { wrapper: English });
 
 const rowMenu = (id: string) =>
   createWrapper(document.body)
