@@ -1118,9 +1118,9 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'multi-document-discovery'", specifier = ">=1.14.0" },
     { name = "scipy", marker = "extra == 'test'", specifier = ">=1.14.0" },
     { name = "setuptools", marker = "extra == 'test'", specifier = ">=84.1.0" },
-    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'all'", specifier = "==1.0.0" },
-    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'evaluation'", specifier = "==1.0.0" },
-    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'test'", specifier = "==1.0.0" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'all'", specifier = "==1.0.1" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'evaluation'", specifier = "==1.0.1" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'test'", specifier = "==1.0.1" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agentic-extraction'", specifier = "==1.48.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agents'", specifier = "==1.48.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'all'", specifier = "==1.48.0" },
@@ -3276,7 +3276,7 @@ wheels = [
 
 [[package]]
 name = "stickler-eval"
-version = "1.0.0"
+version = "1.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "json-schema-to-pydantic" },
@@ -3288,9 +3288,9 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "rapidfuzz" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fd/e5/06766bc3c892fd4ff1a3280fe69945a0b01b56e6fc501e11c79c58304df2/stickler_eval-1.0.0.tar.gz", hash = "sha256:d711975aa322128092b2b6514278caf8b3c04964dfb7eab3cebfb6097e8d5328", size = 316012, upload-time = "2026-09-14T17:19:00.081Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/9a/e95fab9b621722930f6e939cf834e7d2692ec22011669bb816384d99ea3b/stickler_eval-1.0.1.tar.gz", hash = "sha256:4980b4b81b90f3762cf1a8dbb7cb82734a3ac5f8bef205e7beceaca919bad4fa", size = 352739, upload-time = "2026-11-02T23:39:13.434Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/bd/a5fe522cc92cb35149210de70db2f8dfb12d780176b5e3c9e942655e9e76/stickler_eval-1.0.0-py3-none-any.whl", hash = "sha256:e8bee25b0e45e0fa8e59023e882b66fe4ce9f5496e51d07683af8af85aae798c", size = 347922, upload-time = "2026-09-14T17:18:58.477Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/8d/a98432f2a0ece4f1a1e282f43f17f646042cba3f65e099f76dfb8034305b/stickler_eval-1.0.1-py3-none-any.whl", hash = "sha256:e8d74ab9b7fcc1ae68342576520ae4e62b888feba6572d6c7a63a5c57bdfd9d1", size = 370322, upload-time = "2026-11-02T23:39:11.798Z" },
 ]
 
 [package.optional-dependencies]

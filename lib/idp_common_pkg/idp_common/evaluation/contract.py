@@ -12,8 +12,9 @@ de-facto API. This module makes the contract explicit so a shape change fails
 loudly at read time rather than as wrong dashboard numbers downstream.
 
 Bump ``STICKLER_RESULT_VERSION`` on any change that alters the raw blob shape
-Stickler emits (a stickler-eval upgrade, a new ``compare_with`` flag, a
-different accumulator). The aggregation Lambda can key off it to reject
+Stickler emits (a stickler-eval upgrade that changes it, a new ``compare_with``
+flag, a different accumulator). A stickler-eval upgrade that leaves the shape
+and the count semantics unchanged gets a history note instead of a bump. The aggregation Lambda can key off it to reject
 mismatched blobs (or migrate) instead of silently doubling counters.
 """
 
@@ -791,4 +792,11 @@ def compare_with_flags() -> Dict[str, Any]:
 #         aggregation Lambda reports it at ``confidence_metrics.empty_values``;
 #         a 3.0 blob lacks the key and is counted there as
 #         ``sections_without_record``. No existing key changes meaning.
+#         Stickler 1.0.1 (#2117) keeps 3.1: it changes how a list's match
+#         matrix is built (once instead of three times) and treats a
+#         similarity within 1e-10 below its threshold as a match, but adds,
+#         removes or renames no blob key and changes no ``_stickler_counts``
+#         semantics. Re-scoring 3,067 documents (10,701 sections) on 1.0.0 and
+#         1.0.1 gave identical scores, verdicts, rows and counts, so a bump
+#         would only make the aggregation Lambda warn on every 3.1 blob.
 STICKLER_RESULT_VERSION = "3.1"

@@ -25,6 +25,8 @@ import types
 import typing
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from stickler.structured_object_evaluator.models.threshold_helper import ThresholdHelper
+
 from idp_common.evaluation.contract import (
     _is_match_true,
     aggregate_row_counts,
@@ -693,7 +695,12 @@ def transform_stickler_result(
                 applied = field_config.get("applied_threshold")
                 attr_threshold = applied if applied is not None else match_threshold
             try:
-                matched = float(score) >= float(attr_threshold)
+                # Stickler's own rule, so this fallback verdict agrees with the
+                # metrics Stickler reports: a score that floating-point rounding
+                # leaves within 1e-10 below the threshold counts as a match.
+                matched = ThresholdHelper.is_above_threshold(
+                    float(score), float(attr_threshold)
+                )
             except (TypeError, ValueError):
                 matched = False
 
