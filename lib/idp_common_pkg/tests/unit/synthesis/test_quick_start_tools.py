@@ -168,6 +168,7 @@ class TestGenerateFromExistingConfig:
             out = json.loads(bt.list_config_versions_impl())
         assert out["versions"][0]["versionName"] == "v1"
         assert out["versions"][0]["classes"] == ["Paystub"]
+        assert out["versions"][0]["managed"] is False
 
     def test_generate_from_existing_enqueues(self):
         from idp_common.agents.quick_start.tools import bootstrap_tools as bt
@@ -194,7 +195,10 @@ class TestGenerateFromExistingConfig:
         assert sent["body"]["targetVersion"] == "v1"
         assert sent["body"]["docCount"] == 2
         assert "NetPay" in sent["body"]["allowedFieldNames"]
-        assert sent["body"]["preauthoredSchema"]["title"] == "Paystub"
+        assert sent["body"]["fromExistingConfig"] is True
+        assert sent["body"]["configVersion"] == "v1"
+        assert sent["body"]["className"] == "Paystub"
+        assert "preauthoredSchema" not in sent["body"]
 
     def test_generate_from_existing_missing_class(self):
         from idp_common.agents.quick_start.tools import bootstrap_tools as bt
@@ -432,3 +436,32 @@ class TestGetClassSchema:
 
         out = json.loads(bt.get_class_schema_impl(""))
         assert out == {"error": "version_name is required"}
+
+
+class TestCreateConfigVersionErrors:
+    @staticmethod
+    def _create(merge_error):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        with (
+            patch("idp_common.config.configuration_manager.ConfigurationManager"),
+            patch.object(
+                bootstrap_mod, "merge_class_into_version", side_effect=merge_error
+            ),
+        ):
+            return json.loads(bt.create_config_version_impl(json.dumps(SCHEMA), "v1"))
+
+    def test_a_protected_profile_is_reported_as_refused(self):
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        out = self._create(bootstrap_mod.ProtectedProfileError("stack-managed"))
+        assert out["refused"] is True
+        assert out["activated"] is False
+        assert "stack-managed" in out["error"]
+
+    def test_a_failed_save_is_not_reported_as_a_refusal(self):
+        out = self._create(RuntimeError("throttled"))
+        assert out["refused"] is False
+        assert "try again" in out["error"]
+        assert "throttled" not in out["error"]

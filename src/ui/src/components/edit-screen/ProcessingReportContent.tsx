@@ -1,15 +1,24 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The edit screen's Processing Report, a tab of History: the open section's
+// The edit screen's Processing Report, in the bar's Reports menu: the open section's
 // processing report, rendered from the section result already loaded (no request of
 // its own).
 import React from 'react';
 import { Box } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 
 import ProcessingReportTab from '../document-viewer/ProcessingReportTab';
 
 type ProcessingReportProps = React.ComponentProps<typeof ProcessingReportTab>;
+
+const messages = defineMessages<{ noSection: NoMessageValues }>({
+  noSection: {
+    id: 'documents.processingReport.noSection',
+    defaultMessage: 'Open a section to see its processing report.',
+    description: "Shown in the edit page's Processing Report when no section is open.",
+  },
+});
 
 interface ProcessingReportContentProps {
   /** The open section's result. */
@@ -17,7 +26,13 @@ interface ProcessingReportContentProps {
 }
 
 const ProcessingReportContent = ({ sectionData }: ProcessingReportContentProps): React.JSX.Element => {
-  if (!sectionData) return <Box color="text-body-secondary">Open a section to see its processing report.</Box>;
+  if (!sectionData) {
+    return (
+      <Box color="text-body-secondary">
+        <FormattedMessage {...messages.noSection} />
+      </Box>
+    );
+  }
   const metadata = sectionData.metadata as ProcessingReportProps['metadata'];
   return (
     <ProcessingReportTab

@@ -40,6 +40,31 @@ What it costs, and why the caller must handle both:
   shipped preset classes contain. Names are sanitized on the way out and restored
   on the way back (#709), so nothing downstream sees a renamed field.
 
+Why a forced tool and not Bedrock structured outputs
+----------------------------------------------------
+Bedrock offers structured outputs for Claude models: constrained decoding to a
+JSON Schema, which guarantees the reply's shape where a forced tool only makes it
+likely. Adopting it was proposed in #1785 and implemented in PR #1935
+(https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1935), and that PR is on hold. The decision, and what would reopen it:
+
+* **No measured gap.** No case has yet been found where a forced tool returns
+  wrong or off-schema output that structured outputs would have prevented. The
+  live A/B in that PR compared structured outputs against the prompt-only path,
+  not against this module, so it shows that enforcing the schema helps, not that
+  constrained decoding beats a forced tool.
+* **Real cost.** It needs a schema preparer to fit class schemas into the
+  feature's limits (``additionalProperties: false`` everywhere, ``$ref`` inlined,
+  a cap on optional and nullable fields, unsupported keywords removed), a
+  per-model gate because only Claude models accept it, a fallback chain, a new
+  first-call compilation latency, and a config-format migration. Some of the
+  shipped preset classes do not fit the limits at all and would fall back anyway.
+* **What would reopen it.** A head-to-head of this module against structured
+  outputs on the same corpus and model, over several runs, that shows a
+  measurable difference in schema validity, JSON-repair rate or field accuracy.
+  The most likely place to find one is Claude Opus 5.5 and Sonnet 5.5, which
+  reject a forced ``toolChoice`` (see below) and so get no schema enforcement
+  from this module.
+
 Deliberately NOT done here: dropping the prose schema from the task prompt. It is
 the obvious follow-on saving (#710) and it is a *separate* question — removing the
 prose changes adherence, so bundling it would confound the very A/B this exists to

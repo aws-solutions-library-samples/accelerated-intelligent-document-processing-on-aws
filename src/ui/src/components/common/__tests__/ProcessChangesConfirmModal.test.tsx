@@ -9,11 +9,18 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { describe, expect, it, vi } from 'vitest';
 
 import ProcessChangesConfirmModal from '../ProcessChangesConfirmModal';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 describe('ProcessChangesConfirmModal for Save and Re-extract', () => {
   it('lists the sections and what re-extracting them does', () => {
@@ -27,13 +34,14 @@ describe('ProcessChangesConfirmModal for Save and Re-extract', () => {
         onConfirm={vi.fn()}
         onCancel={vi.fn()}
       />,
+      { wrapper: English },
     );
     const modal = createWrapper(document.body).findModal()!;
     expect(modal.findHeader().getElement().textContent).toBe('Confirm Reprocessing');
     const items = [...modal.findContent().getElement().querySelectorAll('li')].map((li) => li.textContent);
     expect(items).toEqual([
       'Section 1: FieldTicket, pages 1, 2, 3',
-      'Section 3: Invoice, pages 5',
+      'Section 3: Invoice, page 5',
       'Replace their extracted values, including any corrected by hand',
       'Record their classes as confirmed (class confidence 1.0)',
       "Mark this document's pending review as completed, if it has one",

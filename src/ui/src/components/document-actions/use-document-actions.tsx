@@ -55,6 +55,52 @@ const messages = defineMessages<{
   resubmitDescription: NoMessageValues;
   sentToReview: { readonly name: string };
   sendToReviewFailed: { readonly name: string; readonly outcome: string };
+  viewSwitch: NoMessageValues;
+  details: NoMessageValues;
+  source: NoMessageValues;
+  reports: NoMessageValues;
+  moreActions: NoMessageValues;
+  refresh: NoMessageValues;
+  troubleshoot: NoMessageValues;
+  startReview: NoMessageValues;
+  edit: NoMessageValues;
+  editInQueue: NoMessageValues;
+  summary: NoMessageValues;
+  evaluationReport: NoMessageValues;
+  ruleValidationSummary: NoMessageValues;
+  estimatedCost: NoMessageValues;
+  processingFlow: NoMessageValues;
+  editPageGrouping: NoMessageValues;
+  reextractSections: NoMessageValues;
+  editPageText: NoMessageValues;
+  resetPageClass: NoMessageValues;
+  useAsBaseline: NoMessageValues;
+  skipAllReviews: NoMessageValues;
+  reprocess: NoMessageValues;
+  abort: NoMessageValues;
+  deleteDocument: NoMessageValues;
+  baselineCopying: NoMessageValues;
+  baselineAvailable: NoMessageValues;
+  baselineFailed: NoMessageValues;
+  baselineNotApplicable: NoMessageValues;
+  baselineCopyStarted: { readonly name: string };
+  baselineUseFailed: { readonly name: string; readonly error: string };
+  baselineCopyFailed: { readonly name: string };
+  reviewClaimed: { readonly name: string };
+  reviewClaimFailed: { readonly error: string };
+  skipAllHeader: NoMessageValues;
+  skipAllConfirm: NoMessageValues;
+  skipAllWarning: NoMessageValues;
+  skipAllIntro: NoMessageValues;
+  skipAllMarkSkipped: NoMessageValues;
+  skipAllRecorded: NoMessageValues;
+  skipAllQuestion: NoMessageValues;
+  skippedAll: { readonly name: string };
+  skipAllFailed: { readonly error: string };
+  pageTextSaved: { readonly pageId: string; readonly name: string };
+  pageTextReprocessFailed: { readonly name: string; readonly error: string };
+  pageTextUnfinished: { readonly pageId: string; readonly name: string };
+  pageTextRetry: NoMessageValues;
 }>({
   sendToReview: {
     id: 'documentActions.moreActions.sendToReview',
@@ -81,6 +127,241 @@ const messages = defineMessages<{
     defaultMessage: 'Could not send {name} to review: {outcome}.',
     description:
       'Error notification when Send to review did not send the document. {name} is the document name; {outcome} is the reason shown for the outcome, e.g. "Not permitted".',
+  },
+  viewSwitch: {
+    id: 'documentActions.bar.viewSwitch',
+    defaultMessage: "Show the document's details or its source",
+    description: "Screen-reader name of the Details | Source switch at the start of the document page's action bar.",
+  },
+  details: {
+    id: 'documentActions.bar.details',
+    defaultMessage: 'Details',
+    description: "Option of the document page's view switch: shows the document's details, sections and pages.",
+  },
+  source: {
+    id: 'documentActions.bar.source',
+    defaultMessage: 'Source',
+    description: "Option of the document page's view switch: shows the source document in place of its details.",
+  },
+  reports: {
+    id: 'documentActions.bar.reports',
+    defaultMessage: 'Reports',
+    description: "Menu of the document page's action bar that opens the document's reports.",
+  },
+  moreActions: {
+    id: 'documentActions.bar.moreActions',
+    defaultMessage: 'More Actions',
+    description: "Menu of the document page's action bar with the changes, the downloads, and Reprocess, Abort and Delete.",
+  },
+  refresh: {
+    id: 'documentActions.bar.refresh',
+    defaultMessage: 'Refresh',
+    description: "Button of the document page's action bar that reads the document again.",
+  },
+  troubleshoot: {
+    id: 'documentActions.bar.troubleshoot',
+    defaultMessage: 'Troubleshoot',
+    description: "Button of the document page's action bar that opens Troubleshoot, where an agent looks into the document's processing.",
+  },
+  startReview: {
+    id: 'documentActions.bar.startReview',
+    defaultMessage: 'Start Review',
+    description: "Button of the document page's action bar with which a reviewer takes the document's pending review.",
+  },
+  edit: {
+    id: 'documentActions.bar.edit',
+    defaultMessage: 'Edit',
+    description: "Primary button of the document page's action bar: opens the document's edit page.",
+  },
+  editInQueue: {
+    id: 'documentActions.bar.editInQueue',
+    defaultMessage: 'Edit this document in its review queue',
+    description: 'Screen-reader name of the Edit button while the document is in a review queue, where Edit opens its queue item.',
+  },
+  summary: {
+    id: 'documentActions.reports.summary',
+    defaultMessage: 'Summary',
+    description: "Item of the document page's Reports menu: opens the document's summary.",
+  },
+  evaluationReport: {
+    id: 'documentActions.reports.evaluationReport',
+    defaultMessage: 'Evaluation Report',
+    description: "Item of the document page's Reports menu: opens the document's evaluation report.",
+  },
+  ruleValidationSummary: {
+    id: 'documentActions.reports.ruleValidationSummary',
+    defaultMessage: 'Rule Validation Summary',
+    description: "Item of the document page's Reports menu: opens the document's rule validation summary.",
+  },
+  estimatedCost: {
+    id: 'documentActions.reports.estimatedCost',
+    defaultMessage: 'Estimated Cost',
+    description: "Item of the document page's Reports menu: opens the estimated cost of processing the document.",
+  },
+  processingFlow: {
+    id: 'documentActions.reports.processingFlow',
+    defaultMessage: 'Processing Flow',
+    description: "Item of the document page's Reports menu: opens the diagram of the document's processing workflow.",
+  },
+  editPageGrouping: {
+    id: 'documentActions.moreActions.editPageGrouping',
+    defaultMessage: 'Edit Page Grouping',
+    description: "Item of the document page's More Actions menu: opens the board where the document's pages are regrouped into sections.",
+  },
+  reextractSections: {
+    id: 'documentActions.moreActions.reextractSections',
+    defaultMessage: 'Re-extract Sections',
+    description: "Item of the document page's More Actions menu: opens the dialog that extracts chosen sections again.",
+  },
+  editPageText: {
+    id: 'documentActions.moreActions.editPageText',
+    defaultMessage: 'Edit Page Text',
+    description: "Item of the document page's More Actions menu: opens the dialog that edits a page's text and reprocesses it.",
+  },
+  resetPageClass: {
+    id: 'documentActions.moreActions.resetPageClass',
+    defaultMessage: 'Reset Page Class',
+    description: "Item of the document page's More Actions menu: opens the dialog that classifies chosen pages again.",
+  },
+  useAsBaseline: {
+    id: 'documentActions.moreActions.useAsBaseline',
+    defaultMessage: 'Use As Evaluation Baseline',
+    description: "Item of the document page's More Actions menu: copies the document's results into the evaluation baseline.",
+  },
+  skipAllReviews: {
+    id: 'documentActions.moreActions.skipAllReviews',
+    defaultMessage: 'Skip All Reviews',
+    description: "Item of the document page's More Actions menu: asks why, then skips all of the document's pending section reviews.",
+  },
+  reprocess: {
+    id: 'documentActions.moreActions.reprocess',
+    defaultMessage: 'Reprocess',
+    description: "Item of the document page's More Actions menu: processes the document again.",
+  },
+  abort: {
+    id: 'documentActions.moreActions.abort',
+    defaultMessage: 'Abort',
+    description: "Item of the document page's More Actions menu: stops the document's processing.",
+  },
+  deleteDocument: {
+    id: 'documentActions.moreActions.delete',
+    defaultMessage: 'Delete',
+    description: "Item of the document page's More Actions menu, the last one: deletes the document.",
+  },
+  baselineCopying: {
+    id: 'documentActions.baseline.copying',
+    defaultMessage: 'Baseline copying in progress',
+    description: "Value of the Evaluation field of Document Details while the document's results are copied to the evaluation baseline.",
+  },
+  baselineAvailable: {
+    id: 'documentActions.baseline.available',
+    defaultMessage: 'Baseline available',
+    description: "Value of the Evaluation field of Document Details once the document's results are in the evaluation baseline.",
+  },
+  baselineFailed: {
+    id: 'documentActions.baseline.failed',
+    defaultMessage: 'Baseline copy failed',
+    description:
+      "Value of the Evaluation field of Document Details when the copy of the document's results to the evaluation baseline failed.",
+  },
+  baselineNotApplicable: {
+    id: 'documentActions.baseline.notApplicable',
+    defaultMessage: 'N/A',
+    description: 'Value of the Evaluation field of Document Details when the document has no evaluation status.',
+  },
+  baselineCopyStarted: {
+    id: 'documentActions.baseline.copyStarted',
+    defaultMessage: 'Copying {name} to the evaluation baseline. Its evaluation status shows when the copy is done.',
+    description: 'Success notification after Use As Evaluation Baseline started the copy. {name} is the document name.',
+  },
+  baselineUseFailed: {
+    id: 'documentActions.baseline.useFailed',
+    defaultMessage: 'Could not use {name} as the evaluation baseline: {error}',
+    description:
+      "Error notification when Use As Evaluation Baseline could not start the copy. {name} is the document name; {error} is the server's reason.",
+  },
+  baselineCopyFailed: {
+    id: 'documentActions.baseline.copyFailed',
+    defaultMessage: 'The copy of {name} to the evaluation baseline failed.',
+    description:
+      'Error notification when a running copy of the document to the evaluation baseline ended in an error. {name} is the document name.',
+  },
+  reviewClaimed: {
+    id: 'documentActions.startReview.claimed',
+    defaultMessage: 'You now hold the review of {name}. Choose Edit to work on it.',
+    description: 'Success notification after Start Review gave the user the review of the document. {name} is the document name.',
+  },
+  reviewClaimFailed: {
+    id: 'documentActions.startReview.failed',
+    defaultMessage: 'Failed to start review: {error}',
+    description: "Error notification when Start Review did not give the user the review. {error} is the server's reason.",
+  },
+  skipAllHeader: {
+    id: 'documentActions.skipAllReviews.header',
+    defaultMessage: 'Skip All Section Reviews',
+    description: "Title of the dialog that asks why before Skip All Reviews skips all of the document's pending section reviews.",
+  },
+  skipAllConfirm: {
+    id: 'documentActions.skipAllReviews.confirm',
+    defaultMessage: 'Skip All Reviews',
+    description: 'Confirm button of the Skip All Section Reviews dialog.',
+  },
+  skipAllWarning: {
+    id: 'documentActions.skipAllReviews.warning',
+    defaultMessage: 'This action will skip all pending section reviews and continue the document processing workflow.',
+    description: 'Warning at the top of the Skip All Section Reviews dialog.',
+  },
+  skipAllIntro: {
+    id: 'documentActions.skipAllReviews.intro',
+    defaultMessage: 'Skipping review will:',
+    description: 'Lead-in of the list of what skipping does, in the Skip All Section Reviews dialog.',
+  },
+  skipAllMarkSkipped: {
+    id: 'documentActions.skipAllReviews.markSkipped',
+    defaultMessage: 'Mark all pending sections as review skipped without human verification',
+    description: 'First item of the list of what skipping does, in the Skip All Section Reviews dialog.',
+  },
+  skipAllRecorded: {
+    id: 'documentActions.skipAllReviews.recorded',
+    defaultMessage: 'Record this action, with your reason, in the review history',
+    description: 'Second item of the list of what skipping does, in the Skip All Section Reviews dialog.',
+  },
+  skipAllQuestion: {
+    id: 'documentActions.skipAllReviews.question',
+    defaultMessage: 'Are you sure you want to skip all section reviews?',
+    description: 'Question above the reason in the Skip All Section Reviews dialog.',
+  },
+  skippedAll: {
+    id: 'documentActions.skipAllReviews.skipped',
+    defaultMessage: 'Skipped the review of {name}.',
+    description: "Success notification after Skip All Reviews skipped the document's pending section reviews. {name} is the document name.",
+  },
+  skipAllFailed: {
+    id: 'documentActions.skipAllReviews.failed',
+    defaultMessage: 'Failed to skip all sections: {error}',
+    description: "Error notification when Skip All Reviews did not skip the reviews. {error} is the server's reason.",
+  },
+  pageTextSaved: {
+    id: 'documentActions.unfinishedPageText.saved',
+    defaultMessage: "Saved page {pageId}'s text of {name}. The sections that hold it are being extracted again.",
+    description:
+      "Success notification after Retry reprocess reprocessed a page whose edited text was saved earlier. {pageId} is the page's number; {name} is the document name.",
+  },
+  pageTextReprocessFailed: {
+    id: 'documentActions.unfinishedPageText.reprocessFailed',
+    defaultMessage: 'Could not reprocess {name}: {error}',
+    description: "Error notification when Retry reprocess failed again. {name} is the document name; {error} is the server's reason.",
+  },
+  pageTextUnfinished: {
+    id: 'documentActions.unfinishedPageText.notice',
+    defaultMessage: "Page {pageId}'s text was saved, but {name} was not reprocessed.",
+    description:
+      "Error notice on the document page when a page's edited text was saved but reprocessing the document failed. {pageId} is the page's number; {name} is the document name.",
+  },
+  pageTextRetry: {
+    id: 'documentActions.unfinishedPageText.retry',
+    defaultMessage: 'Retry reprocess',
+    description: 'Button of the notice that a saved page text was not reprocessed: reprocesses the document again.',
   },
 });
 
@@ -183,39 +464,43 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
   const lastEvaluationStatus = useRef(item.evaluationStatus);
   useEffect(() => {
     if (lastEvaluationStatus.current === 'BASELINE_COPYING' && item.evaluationStatus === 'BASELINE_ERROR') {
-      setErrorMessage(`The copy of ${name} to the evaluation baseline failed.`);
+      // A notice, worded when it is raised; `intl` stays out of the dependencies.
+      setErrorMessage(intl.formatMessage(messages.baselineCopyFailed, { name }));
     }
     lastEvaluationStatus.current = item.evaluationStatus;
   }, [item.evaluationStatus]);
 
   const pages = item.pages ?? [];
   const displayedMetering = displayed.metering as Record<string, Record<string, unknown>> | null | undefined;
-  const gates = documentActionGates({
-    roles: {
-      isAdmin: !!roles.isAdmin,
-      isAuthor: !!roles.isAuthor,
-      isReviewer: !!roles.isReviewer,
-      isAnnotator: !!roles.isAnnotator,
-      isViewer: !!roles.isViewer,
-      isReviewerOnly: !!roles.isReviewerOnly,
-      canWorkReviewQueues: !!roles.canWorkReviewQueues,
+  const gates = documentActionGates(
+    {
+      roles: {
+        isAdmin: !!roles.isAdmin,
+        isAuthor: !!roles.isAuthor,
+        isReviewer: !!roles.isReviewer,
+        isAnnotator: !!roles.isAnnotator,
+        isViewer: !!roles.isViewer,
+        isReviewerOnly: !!roles.isReviewerOnly,
+        canWorkReviewQueues: !!roles.canWorkReviewQueues,
+      },
+      doc: {
+        ...item,
+        sectionCount: (item.sections ?? []).length,
+        pageCount: pages.length,
+        pagesWithText: pages.filter((p) => !!p.TextUri).length,
+      },
+      displayed: { ...displayed, hasCost: !!displayedMetering && Object.keys(displayedMetering).length > 0 },
+      isHistorical,
+      holdsReview:
+        (!!item.hitlReviewOwner && item.hitlReviewOwner === user?.username) ||
+        (!!item.hitlReviewOwnerEmail && item.hitlReviewOwnerEmail.toLowerCase() === (user?.signInDetails?.loginId ?? '').toLowerCase()),
+      bdaMode: isBdaModeConfig(mergedConfig),
+      configLoading,
+      baselineRequestInFlight,
+      defaultQueueEnabled: reviewSettings.defaultQueueEnabled,
     },
-    doc: {
-      ...item,
-      sectionCount: (item.sections ?? []).length,
-      pageCount: pages.length,
-      pagesWithText: pages.filter((p) => !!p.TextUri).length,
-    },
-    displayed: { ...displayed, hasCost: !!displayedMetering && Object.keys(displayedMetering).length > 0 },
-    isHistorical,
-    holdsReview:
-      (!!item.hitlReviewOwner && item.hitlReviewOwner === user?.username) ||
-      (!!item.hitlReviewOwnerEmail && item.hitlReviewOwnerEmail.toLowerCase() === (user?.signInDetails?.loginId ?? '').toLowerCase()),
-    bdaMode: isBdaModeConfig(mergedConfig),
-    configLoading,
-    baselineRequestInFlight,
-    defaultQueueEnabled: reviewSettings.defaultQueueEnabled,
-  });
+    intl,
+  );
 
   const board = usePageClassBoard(useDetailPageClassBoard({ item, gates, mergedConfig, refresh }), null, null);
 
@@ -225,10 +510,10 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     try {
       await reprocessPageText(key, unfinishedText);
       setUnfinishedText(null);
-      setSuccessMessage(`Saved page ${unfinishedText.pageId}'s text of ${name}. The sections that hold it are being extracted again.`);
+      setSuccessMessage(intl.formatMessage(messages.pageTextSaved, { pageId: unfinishedText.pageId, name }));
       void refresh();
     } catch (error) {
-      setErrorMessage(`Could not reprocess ${name}: ${getErrorMessage(error)}`);
+      setErrorMessage(intl.formatMessage(messages.pageTextReprocessFailed, { name, error: getErrorMessage(error) }));
     } finally {
       setRetryingText(false);
     }
@@ -257,11 +542,11 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
             hitlStatus: (claimed.HITLStatus as string | undefined) ?? prev.hitlStatus,
           }));
         }
-        setSuccessMessage(`You now hold the review of ${name}. Choose Edit to work on it.`);
+        setSuccessMessage(intl.formatMessage(messages.reviewClaimed, { name }));
         void refresh();
       } catch (error) {
         logger.error('Failed to claim review:', error);
-        setErrorMessage(`Failed to start review: ${getErrorMessage(error)}`);
+        setErrorMessage(intl.formatMessage(messages.reviewClaimFailed, { error: getErrorMessage(error) }));
       }
     });
 
@@ -271,11 +556,11 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
       try {
         // The Lambda returns as soon as the copy has started.
         await copyDocumentToBaseline(key);
-        setSuccessMessage(`Copying ${name} to the evaluation baseline. Its evaluation status shows when the copy is done.`);
+        setSuccessMessage(intl.formatMessage(messages.baselineCopyStarted, { name }));
         await refresh();
       } catch (error) {
         logger.error('Error initiating copy to evaluation baseline:', error);
-        setErrorMessage(`Could not use ${name} as the evaluation baseline: ${getErrorMessage(error)}`);
+        setErrorMessage(intl.formatMessage(messages.baselineUseFailed, { name, error: getErrorMessage(error) }));
       } finally {
         setBaselineRequestInFlight(false);
       }
@@ -308,11 +593,11 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
             hitlReviewHistory: reviewHistory ?? prev.hitlReviewHistory,
           }));
         }
-        setSuccessMessage(`Skipped the review of ${name}.`);
+        setSuccessMessage(intl.formatMessage(messages.skippedAll, { name }));
         void refresh();
       } catch (error) {
         logger.error('Failed to skip all sections review:', error);
-        setErrorMessage(`Failed to skip all sections: ${getErrorMessage(error)}`);
+        setErrorMessage(intl.formatMessage(messages.skipAllFailed, { error: getErrorMessage(error) }));
       }
     });
 
@@ -336,33 +621,33 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
   // The downloads' items are plain items (useDocumentDownload builds no groups).
   const downloads = download.items as ActionBarMenuItem[];
   const lifecycle = [
-    ...offered(gates.reprocess, 'reprocess', 'Reprocess'),
-    ...offered(gates.abort, 'abort', 'Abort'),
-    ...offered(gates.delete, 'delete', 'Delete'),
+    ...offered(gates.reprocess, 'reprocess', intl.formatMessage(messages.reprocess)),
+    ...offered(gates.abort, 'abort', intl.formatMessage(messages.abort)),
+    ...offered(gates.delete, 'delete', intl.formatMessage(messages.deleteDocument)),
   ];
 
   const bar: (ActionBarControl | false)[] = [
     {
       kind: 'switch',
       id: 'view',
-      label: "Show the document's details or its source",
+      label: intl.formatMessage(messages.viewSwitch),
       selectedId: view,
       options: [
-        { id: 'details', text: 'Details' },
-        { id: 'source', text: 'Source' },
+        { id: 'details', text: intl.formatMessage(messages.details) },
+        { id: 'source', text: intl.formatMessage(messages.source) },
       ],
       onChange: (id) => onViewChange(id as DocumentView),
     },
     {
       kind: 'menu',
       id: 'reports',
-      text: 'Reports',
+      text: intl.formatMessage(messages.reports),
       items: [
-        ...offered(gates.summary, 'summary', 'Summary'),
-        ...offered(gates.evaluation, 'evaluation', 'Evaluation Report'),
-        ...offered(gates['rule-validation'], 'rule-validation', 'Rule Validation Summary'),
-        ...offered(gates.cost, 'cost', 'Estimated Cost'),
-        ...offered(gates.flow, 'flow', 'Processing Flow'),
+        ...offered(gates.summary, 'summary', intl.formatMessage(messages.summary)),
+        ...offered(gates.evaluation, 'evaluation', intl.formatMessage(messages.evaluationReport)),
+        ...offered(gates['rule-validation'], 'rule-validation', intl.formatMessage(messages.ruleValidationSummary)),
+        ...offered(gates.cost, 'cost', intl.formatMessage(messages.estimatedCost)),
+        ...offered(gates.flow, 'flow', intl.formatMessage(messages.processingFlow)),
       ],
       onItemClick: (id) => {
         if (id === 'flow') setFlowOpen(true);
@@ -373,14 +658,14 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     {
       kind: 'menu',
       id: 'more',
-      text: 'More Actions',
+      text: intl.formatMessage(messages.moreActions),
       items: [
-        ...offered(gates.regroup, 'regroup', 'Edit Page Grouping'),
-        ...offered(gates.reextract, 'reextract', 'Re-extract Sections'),
-        ...offered(gates['page-text'], 'page-text', 'Edit Page Text'),
-        ...offered(gates['reset-class'], 'reset-class', 'Reset Page Class'),
-        ...offered(gates.baseline, 'baseline', 'Use As Evaluation Baseline'),
-        ...offered(gates['skip-all'], 'skip-all', 'Skip All Reviews'),
+        ...offered(gates.regroup, 'regroup', intl.formatMessage(messages.editPageGrouping)),
+        ...offered(gates.reextract, 'reextract', intl.formatMessage(messages.reextractSections)),
+        ...offered(gates['page-text'], 'page-text', intl.formatMessage(messages.editPageText)),
+        ...offered(gates['reset-class'], 'reset-class', intl.formatMessage(messages.resetPageClass)),
+        ...offered(gates.baseline, 'baseline', intl.formatMessage(messages.useAsBaseline)),
+        ...offered(gates['skip-all'], 'skip-all', intl.formatMessage(messages.skipAllReviews)),
         ...offered(gates['send-to-review'], 'send-to-review', intl.formatMessage(messages.sendToReview)),
         ...(downloads.length > 0 ? [{ kind: 'group' as const, items: downloads }] : []),
         ...(lifecycle.length > 0 ? [{ kind: 'group' as const, items: lifecycle }] : []),
@@ -393,7 +678,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     {
       kind: 'button',
       id: 'refresh',
-      text: 'Refresh',
+      text: intl.formatMessage(messages.refresh),
       iconName: 'refresh',
       disabledReason: gates.refresh.disabledReason,
       loading: busy === 'refresh',
@@ -405,14 +690,14 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     gates.troubleshoot.shown && {
       kind: 'button',
       id: 'troubleshoot',
-      text: 'Troubleshoot',
+      text: intl.formatMessage(messages.troubleshoot),
       iconName: 'gen-ai',
       onClick: () => setTroubleshootOpen(true),
     },
     gates['start-review'].shown && {
       kind: 'button',
       id: 'start-review',
-      text: 'Start Review',
+      text: intl.formatMessage(messages.startReview),
       iconName: 'user-profile',
       disabledReason: gates['start-review'].disabledReason,
       loading: busy === 'claim',
@@ -421,25 +706,32 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     gates.edit.shown && {
       kind: 'button',
       id: 'edit',
-      text: 'Edit',
+      text: intl.formatMessage(messages.edit),
       variant: 'primary',
       iconName: 'edit',
       href: documentEditHref(key, { from: 'document' }),
-      ariaLabel: gates.editInQueue ? 'Edit this document in its review queue' : undefined,
+      ariaLabel: gates.editInQueue ? intl.formatMessage(messages.editInQueue) : undefined,
       disabledReason: gates.edit.disabledReason,
     },
   ];
   const controls = bar.filter((c): c is ActionBarControl => !!c);
 
+  // The baseline copy's states are messages; any other evaluation status shows as stored.
   const evaluationStatusCell =
     baselineRequestInFlight || item.evaluationStatus === 'BASELINE_COPYING' ? (
-      <StatusIndicator type="in-progress">Baseline copying in progress</StatusIndicator>
+      <StatusIndicator type="in-progress">
+        <FormattedMessage {...messages.baselineCopying} />
+      </StatusIndicator>
     ) : item.evaluationStatus === 'BASELINE_AVAILABLE' ? (
-      <StatusIndicator type="success">Baseline available</StatusIndicator>
+      <StatusIndicator type="success">
+        <FormattedMessage {...messages.baselineAvailable} />
+      </StatusIndicator>
     ) : item.evaluationStatus === 'BASELINE_ERROR' ? (
-      <StatusIndicator type="error">Baseline copy failed</StatusIndicator>
+      <StatusIndicator type="error">
+        <FormattedMessage {...messages.baselineFailed} />
+      </StatusIndicator>
     ) : (
-      item.evaluationStatus || 'N/A'
+      item.evaluationStatus || <FormattedMessage {...messages.baselineNotApplicable} />
     );
 
   const dialogs = (
@@ -505,9 +797,9 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         <ReasonModal
           visible
           onDismiss={() => setAskSkipReason(false)}
-          header="Skip All Section Reviews"
+          header={intl.formatMessage(messages.skipAllHeader)}
           reasons={SKIP_ALL_REASONS}
-          confirmLabel="Skip All Reviews"
+          confirmLabel={intl.formatMessage(messages.skipAllConfirm)}
           loading={busy === 'skip-all'}
           extra={
             <Checkbox
@@ -521,13 +813,23 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
           onConfirm={(reason, note) => void skipAll(reason, note)}
         >
           <SpaceBetween size="s">
-            <Alert type="warning">This action will skip all pending section reviews and continue the document processing workflow.</Alert>
-            <Box>Skipping review will:</Box>
+            <Alert type="warning">
+              <FormattedMessage {...messages.skipAllWarning} />
+            </Alert>
+            <Box>
+              <FormattedMessage {...messages.skipAllIntro} />
+            </Box>
             <ul>
-              <li>Mark all pending sections as review skipped without human verification</li>
-              <li>Record this action, with your reason, in the review history</li>
+              <li>
+                <FormattedMessage {...messages.skipAllMarkSkipped} />
+              </li>
+              <li>
+                <FormattedMessage {...messages.skipAllRecorded} />
+              </li>
             </ul>
-            <Box>Are you sure you want to skip all section reviews?</Box>
+            <Box>
+              <FormattedMessage {...messages.skipAllQuestion} />
+            </Box>
           </SpaceBetween>
         </ReasonModal>
       )}
@@ -543,7 +845,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
               setSuccessMessage(intl.formatMessage(messages.sentToReview, { name }));
               void refresh();
             } else {
-              setErrorMessage(intl.formatMessage(messages.sendToReviewFailed, { name, outcome: outcomeView(outcome).label }));
+              setErrorMessage(intl.formatMessage(messages.sendToReviewFailed, { name, outcome: outcomeView(outcome, intl).label }));
             }
           }}
         />
@@ -556,10 +858,10 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         {
           id: 'page-text-unfinished',
           type: 'error',
-          content: `Page ${unfinishedText.pageId}'s text was saved, but ${name} was not reprocessed.`,
+          content: intl.formatMessage(messages.pageTextUnfinished, { pageId: unfinishedText.pageId, name }),
           action: (
             <Button loading={retryingText} onClick={() => void retryUnfinishedText()}>
-              Retry reprocess
+              <FormattedMessage {...messages.pageTextRetry} />
             </Button>
           ),
           onDismiss: () => setUnfinishedText(null),

@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { ButtonDropdown, Button } from '@cloudscape-design/components';
+import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import { listChatSessions, deleteChatSession, getChatMessages } from '../../graphql/generated';
 
@@ -13,11 +15,60 @@ import { useFormatters } from '../../i18n/format';
 const client = generateClient();
 const logger = new ConsoleLogger('AgentChatHistoryDropdown');
 
+const uiMessages = defineMessages<{
+  unknownDate: NoMessageValues;
+  empty: NoMessageValues;
+  untitled: NoMessageValues;
+  sessionMeta: { readonly date: string; readonly count: number };
+  deleteAriaLabel: { readonly title: string };
+  button: NoMessageValues;
+  selected: NoMessageValues;
+}>({
+  unknownDate: {
+    id: 'agentChat.history.unknownDate',
+    defaultMessage: 'Unknown date',
+    description: 'Shown in place of the date of a previous Agent Chat session when the date cannot be read.',
+  },
+  empty: {
+    id: 'agentChat.history.empty',
+    defaultMessage: 'No previous chat sessions found',
+    description: 'The only entry of the Agent Chat history list when the user has no previous session.',
+  },
+  untitled: {
+    id: 'agentChat.history.untitled',
+    defaultMessage: 'Untitled Chat',
+    description: 'Shown in the Agent Chat history list in place of the title of a session that has none.',
+  },
+  sessionMeta: {
+    id: 'agentChat.history.sessionMeta',
+    defaultMessage: '{date} • {count, plural, one {# message} other {# messages}}',
+    description:
+      'Line under the title of a previous session in the Agent Chat history list. {date} is when the session was last used; {count} is how many messages it holds.',
+  },
+  deleteAriaLabel: {
+    id: 'agentChat.history.deleteAriaLabel',
+    defaultMessage: 'Delete chat session: {title}',
+    description:
+      'Screen-reader label of the button that deletes a previous session from the Agent Chat history. {title} is the session title, cut to its first 50 characters.',
+  },
+  button: {
+    id: 'agentChat.history.button',
+    defaultMessage: 'Load previous chat',
+    description: 'Button that opens the list of previous Agent Chat sessions.',
+  },
+  selected: {
+    id: 'agentChat.history.selected',
+    defaultMessage: 'Selected chat',
+    description: 'Label of the Agent Chat history button when the selected session has no title to show.',
+  },
+});
+
 interface ChatSession {
   sessionId: string;
   title: string;
   updatedAt?: string;
-  messageCount?: number;
+  // `Int!` in the schema, so every listed session has one.
+  messageCount: number;
 }
 
 interface SelectedOption {
@@ -43,6 +94,7 @@ const AgentChatHistoryDropdown = ({
   const [selectedOption, setSelectedOption] = useState<SelectedOption | null>(null);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
   const lastFetchTimeRef = useRef(0);
+  const intl = useIntl();
   const { formatDateTime } = useFormatters();
 
   const fetchChatSessions = async (force = false) => {
@@ -209,23 +261,24 @@ const AgentChatHistoryDropdown = ({
       const date = new Date(dateString as string);
       // Check if date is valid
       if (Number.isNaN(date.getTime())) {
-        return 'Unknown date';
+        return intl.formatMessage(uiMessages.unknownDate);
       }
       return formatDateTime(date);
     } catch (e) {
       logger.warn(`Error formatting date: ${dateString}`, e);
-      return 'Unknown date';
+      return intl.formatMessage(uiMessages.unknownDate);
     }
   };
 
   // Create dropdown items with delete functionality
   const createDropdownItems = () => {
     if (chatSessions.length === 0) {
-      return [{ text: 'No previous chat sessions found', disabled: true }];
+      return [{ text: intl.formatMessage(uiMessages.empty), disabled: true }];
     }
 
     return chatSessions.map((session) => {
-      const displayText = session.title?.length > 50 ? `${session.title.substring(0, 50)}...` : session.title || 'Untitled Chat';
+      const displayText =
+        session.title?.length > 50 ? `${session.title.substring(0, 50)}...` : session.title || intl.formatMessage(uiMessages.untitled);
       const dateText = formatDate(session.updatedAt);
 
       return {
@@ -235,7 +288,7 @@ const AgentChatHistoryDropdown = ({
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 'normal', marginBottom: '2px' }}>{displayText}</div>
               <div style={{ fontSize: '12px', color: '#5f6b7a' }}>
-                {dateText} • {session.messageCount} messages
+                <FormattedMessage {...uiMessages.sessionMeta} values={{ date: dateText, count: session.messageCount }} />
               </div>
             </div>
             <Button
@@ -277,7 +330,7 @@ const AgentChatHistoryDropdown = ({
                   }, 100);
                 }
               }}
-              ariaLabel={`Delete chat session: ${displayText}`}
+              ariaLabel={intl.formatMessage(uiMessages.deleteAriaLabel, { title: displayText })}
             />
           </div>
         ),
@@ -288,18 +341,18 @@ const AgentChatHistoryDropdown = ({
 
   return (
     <ButtonDropdown
-      items={createDropdownItems() as import('@cloudscape-design/components').ButtonDropdownProps.ItemOrGroup[]}
+      items={createDropdownItems() as ButtonDropdownProps.ItemOrGroup[]}
       onItemClick={handleDropdownItemClick}
       {...({ onFocus: () => fetchChatSessions() } as Record<string, unknown>)}
       loading={isLoadingHistory}
       disabled={disabled}
     >
       {(() => {
-        if (!selectedOption) return 'Load previous chat';
+        if (!selectedOption) return <FormattedMessage {...uiMessages.button} />;
         if (selectedOption.label?.length > 40) {
           return `${selectedOption.label.substring(0, 40)}...`;
         }
-        return selectedOption.label || 'Selected chat';
+        return selectedOption.label || <FormattedMessage {...uiMessages.selected} />;
       })()}
     </ButtonDropdown>
   );

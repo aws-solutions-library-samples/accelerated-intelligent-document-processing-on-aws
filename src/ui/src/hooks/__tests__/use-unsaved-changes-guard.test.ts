@@ -109,6 +109,20 @@ describe('useUnsavedChangesGuard', () => {
     expect(confirm).toHaveBeenCalledTimes(1);
   });
 
+  it('confirms with the latest message, without subscribing again when it changes', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const addListener = vi.spyOn(document, 'addEventListener');
+    const { rerender } = renderHook(({ message }) => useUnsavedChangesGuard(true, message), {
+      initialProps: { message: 'discard?' },
+    });
+    rerender({ message: 'discard now?' });
+
+    clickAnchor('#/documents');
+
+    expect(confirm).toHaveBeenCalledWith('discard now?');
+    expect(addListener.mock.calls.filter(([type]) => type === 'click')).toHaveLength(1);
+  });
+
   it('stops guarding once unmounted', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const { unmount } = renderHook(() => useUnsavedChangesGuard(true, 'discard?'));

@@ -18,7 +18,6 @@ const skip = vi.fn();
 const exit = vi.fn();
 
 vi.mock('../test-set-item-edit-adapter', () => ({
-  NOT_ASSIGNED_MESSAGE: 'not assigned',
   useTestSetItemEdit: () => ({
     queue: { testSetId: 'ts-1', skipReasons: ['Out of time', 'Needs expert review'], documents: [] },
     doc: {

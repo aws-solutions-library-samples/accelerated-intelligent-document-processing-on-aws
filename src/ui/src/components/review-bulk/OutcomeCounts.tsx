@@ -49,7 +49,7 @@ const OutcomeCounts = ({ counts, preview = false }: OutcomeCountsProps): React.J
   return (
     <SpaceBetween size="xxs">
       {shown.map((c) => {
-        const view = outcomeView(c.outcome);
+        const view = outcomeView(c.outcome, intl);
         const label = preview && c.outcome === 'SKIPPED' ? intl.formatMessage(messages.willBeSkipped) : view.label;
         return (
           <StatusIndicator key={c.outcome} type={view.type}>

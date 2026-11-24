@@ -26,6 +26,7 @@
 
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockGraphql } = vi.hoisted(() => ({ mockGraphql: vi.fn() }));
@@ -48,6 +49,12 @@ interface PresignCall {
 
 const filesOf = (call: unknown): Array<{ s3Uri: string; versionId?: string }> => (call as PresignCall).variables.files;
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const signEverything = async (args: PresignCall) => ({
   data: {
     getFilePresignedUrls: {
@@ -68,7 +75,7 @@ const S3_PAGES = ['1', '2', '3'].map((Id) => ({ Id, ImageUri: `s3://out/doc/page
 
 describe('PageImageViewer presigning', () => {
   it('signs every s3:// page in a single batched call', async () => {
-    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />);
+    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByAltText('Page 1')).toBeDefined());
     expect(mockGraphql).toHaveBeenCalledTimes(1);
@@ -83,7 +90,7 @@ describe('PageImageViewer presigning', () => {
       { Id: '3', ImageUri: 'https://cdn.example.test/page-three.png' },
     ];
 
-    render(<PageImageViewer pageIds={pages.map((p) => p.Id)} documentPages={pages} />);
+    render(<PageImageViewer pageIds={pages.map((p) => p.Id)} documentPages={pages} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByAltText('Page 1')).toBeDefined());
     expect(screen.getByAltText('Page 1').getAttribute('src')).toBe('blob:http://localhost/page-one');
@@ -96,7 +103,7 @@ describe('PageImageViewer presigning', () => {
       { Id: '2', ImageUri: 's3://out/doc/pages/2/image.jpg' },
     ];
 
-    render(<PageImageViewer pageIds={['1', '2']} documentPages={pages} />);
+    render(<PageImageViewer pageIds={['1', '2']} documentPages={pages} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByAltText('Page 1')).toBeDefined());
     expect(mockGraphql).toHaveBeenCalledTimes(1);
@@ -114,7 +121,7 @@ describe('PageImageViewer presigning', () => {
       },
     }));
 
-    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />);
+    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('The page images for this document could not be loaded.')).toBeDefined());
     expect(screen.queryByAltText('Page 1')).toBeNull();
@@ -128,7 +135,7 @@ describe('PageImageViewer presigning', () => {
     // shape that produced a permanent spinner before this.
     mockGraphql.mockRejectedValue({ errors: [{ errorType: 'Unauthorized', message: 'Unauthorized' }] });
 
-    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />);
+    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText(FILE_ACCESS_DENIED_MESSAGE)).toBeDefined());
     expect(screen.queryByText('Loading image...')).toBeNull();
@@ -137,7 +144,7 @@ describe('PageImageViewer presigning', () => {
   it('says no image is available for a page that carries none, and calls it no failure', async () => {
     const pages = [{ Id: '1' }, { Id: '2', ImageUri: 's3://out/doc/pages/2/image.jpg' }];
 
-    render(<PageImageViewer pageIds={['1', '2']} documentPages={pages} />);
+    render(<PageImageViewer pageIds={['1', '2']} documentPages={pages} />, { wrapper: English });
 
     // Page 1 is current and has no ImageUri at all. That is not an error, so the
     // copy must not accuse the deployment of failing — and must not spin.
@@ -192,7 +199,7 @@ describe('PageImageViewer re-signs expiring page URLs', () => {
 
   it('signs again when the page turn comes after the refresh threshold', async () => {
     mockGraphql.mockImplementation(signWithPrefix('https://first.example/'));
-    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />);
+    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByAltText('Page 1')).toBeDefined());
     expect(mockGraphql).toHaveBeenCalledTimes(1);
@@ -212,7 +219,7 @@ describe('PageImageViewer re-signs expiring page URLs', () => {
 
   it('does not sign again when the page turn comes within the threshold', async () => {
     mockGraphql.mockImplementation(signWithPrefix('https://first.example/'));
-    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />);
+    render(<PageImageViewer pageIds={S3_PAGES.map((p) => p.Id)} documentPages={S3_PAGES} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByAltText('Page 1')).toBeDefined());
     expect(mockGraphql).toHaveBeenCalledTimes(1);
@@ -233,7 +240,7 @@ describe('PageImageViewer re-signs expiring page URLs', () => {
       { Id: '1', ImageUri: 'blob:http://localhost/page-one' },
       { Id: '2', ImageUri: 'blob:http://localhost/page-two' },
     ];
-    render(<PageImageViewer pageIds={['1', '2']} documentPages={pages} />);
+    render(<PageImageViewer pageIds={['1', '2']} documentPages={pages} />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByAltText('Page 1')).toBeDefined());
     vi.setSystemTime(Date.now() + PRESIGN_REFRESH_AFTER_MS * 10);

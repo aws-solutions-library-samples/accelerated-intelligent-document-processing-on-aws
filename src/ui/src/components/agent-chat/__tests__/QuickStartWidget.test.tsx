@@ -4,6 +4,7 @@
 import React from 'react';
 import { act, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import QuickStartWidget from '../QuickStartWidget';
@@ -21,11 +22,18 @@ vi.mock('../AgentChatLayout', () => ({
   default: () => <div data-testid="agent-chat-layout" />,
 }));
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderAt = (path: string) =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <QuickStartWidget />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 describe('QuickStartWidget', () => {

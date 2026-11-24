@@ -26,11 +26,11 @@ import {
   skipTestSetDocument,
 } from '../../graphql/generated';
 import type { GetAnnotationQueueDocumentQuery } from '../../graphql/generated/operation-types';
-import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
+import { isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { reviewErrorCode } from '../review-queues/review-api';
 import { currentDraft } from '../test-studio/annotation-edit-flags';
 import type { AnnotationDraft } from '../test-studio/annotation-edit-flags';
-import useAppContext from '../../contexts/app';
+import { EditPageError, editScreenSharedMessages } from './edit-messages';
 import { fetchSectionResult } from './section-result';
 import type { LoadedSection } from './types';
 
@@ -42,18 +42,17 @@ export type AnnotationQueue = NonNullable<GetAnnotationQueueDocumentQuery['getAn
 /** One document of the queue. `claimedByMe` is true when it is assigned to the caller. */
 export type QueueItem = AnnotationQueue['documents'][number];
 
-/** Shown when another session saved a newer draft of the open section. */
-export const STALE_DRAFT_MESSAGE = 'Someone saved newer changes to this section. It has been reloaded; reapply your last change.';
-
-export const NOT_ASSIGNED_MESSAGE =
-  "You can't open this document. Only the Annotators listed on its test set's queue can; ask an Admin to list you.";
-
 export interface TestSetItemEditModel {
   queue: AnnotationQueue | null;
   /** The document, or null while loading or when it is not in the set. */
   doc: QueueItem | null;
   loading: boolean;
-  loadError: string | null;
+  /**
+   * Why the last read failed, for the page to word: `'not-assigned'`, the server refused it
+   * (an authorization error, or NOT_ASSIGNED); `'load-failed'`, it returned no queue; otherwise
+   * the error it threw, as `cause`.
+   */
+  loadError: 'not-assigned' | 'load-failed' | { readonly cause: unknown } | null;
   /** Re-read the document; resolves to the fresh row, or null when the read failed. */
   reload: () => Promise<QueueItem | null>;
   /** The same read as `reload`, for Refresh: a failed read throws rather than showing the load error. */
@@ -67,6 +66,10 @@ export interface TestSetItemEditModel {
   loadSection: (sectionId: string, fallback: (sectionId: string) => Promise<LoadedSection>) => Promise<LoadedSection>;
   /** Bumped when the open section must be re-read (a newer draft arrived). */
   reloadToken: number;
+  /** What a save has to tell the user, for the page to word: `'stale-draft'`, a newer draft was found and reloaded. */
+  notice: 'stale-draft' | null;
+  /** The page has shown `notice`. */
+  clearNotice: () => void;
   /**
    * Apply every section, one at a time: a section's draft when it has one, otherwise
    * its label as it is. Resolves whether the server now counts the document reviewed.
@@ -83,10 +86,11 @@ export interface TestSetItemEditModel {
 export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSetItemEditModel => {
   const [queue, setQueue] = useState<AnnotationQueue | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<TestSetItemEditModel['loadError']>(null);
   const [openedDraft, setOpenedDraft] = useState<AnnotationDraft | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const { setErrorMessage } = useAppContext();
+  const [notice, setNotice] = useState<'stale-draft' | null>(null);
+  const clearNotice = useCallback(() => setNotice(null), []);
   // Each section's latest draft, as last read or saved. Refs rather than state, so a
   // save never changes the editor's sections (which would re-read the open one).
   const draftUris = useRef<Record<string, string>>({});
@@ -100,8 +104,8 @@ export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSe
         const r = await client.graphql({ query: getAnnotationQueueDocument, variables: { testSetId, objectKey } });
         const data = r.data?.getAnnotationQueue ?? null;
         if (!data) {
-          if (rethrow) throw new Error('The document could not be loaded.');
-          setLoadError('The document could not be loaded.');
+          if (rethrow) throw new EditPageError({ descriptor: editScreenSharedMessages.documentCouldNotLoad });
+          setLoadError('load-failed');
           return null;
         }
         const fresh = data.documents.find((d) => d.objectKey === objectKey) ?? null;
@@ -117,11 +121,7 @@ export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSe
       } catch (err) {
         logger.error('getAnnotationQueue failed', err);
         if (rethrow) throw err;
-        setLoadError(
-          isAuthorizationError(err) || reviewErrorCode(err) === 'NOT_ASSIGNED'
-            ? NOT_ASSIGNED_MESSAGE
-            : describeApiError(err, 'load the document'),
-        );
+        setLoadError(isAuthorizationError(err) || reviewErrorCode(err) === 'NOT_ASSIGNED' ? 'not-assigned' : { cause: err });
         return null;
       } finally {
         setLoading(false);
@@ -173,7 +173,7 @@ export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSe
         }
       } catch (err) {
         if (reviewErrorCode(err) === 'STALE_DRAFT') {
-          setErrorMessage(STALE_DRAFT_MESSAGE);
+          setNotice('stale-draft');
           await reload();
           setReloadToken((t) => t + 1);
           return;
@@ -181,13 +181,13 @@ export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSe
         throw err;
       }
     },
-    [testSetId, objectKey, reload, setErrorMessage],
+    [testSetId, objectKey, reload],
   );
 
   const applyAndComplete = useCallback(async (): Promise<{ reviewed: boolean }> => {
     // The drafts as the server holds them now, so another session's save is applied too.
     const fresh = await reload();
-    if (!fresh) throw new Error('The document could not be loaded.');
+    if (!fresh) throw new EditPageError({ descriptor: editScreenSharedMessages.documentCouldNotLoad });
     const drafts = new Map((fresh.draftSections ?? []).map((d) => [d.sectionId, d.draftUri]));
     let reviewed = false;
     // Sequential: every call updates the same document record.
@@ -231,6 +231,8 @@ export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSe
     saveDraft,
     loadSection,
     reloadToken,
+    notice,
+    clearNotice,
     applyAndComplete,
     skip,
   };

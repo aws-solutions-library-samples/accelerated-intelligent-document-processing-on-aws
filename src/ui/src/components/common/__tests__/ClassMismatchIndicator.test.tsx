@@ -15,6 +15,7 @@
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 import { PageClassMismatch, SectionClassMismatch, SectionClassEvaluation } from '../ClassMismatchIndicator';
 import { extractClassificationIndex, EMPTY_CLASSIFICATION_INDEX } from '../classification-comparison-utils';
@@ -31,6 +32,12 @@ const INDEX = extractClassificationIndex({
     ],
   },
 });
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 describe('PageClassMismatch', () => {
   it('renders nothing when the document has no ground truth', () => {
@@ -52,7 +59,7 @@ describe('PageClassMismatch', () => {
   });
 
   it('flags a mismatched page and names the expected class on hover', () => {
-    render(<PageClassMismatch index={INDEX} pageNumber={3} predictedClass="Invoice" />);
+    render(<PageClassMismatch index={INDEX} pageNumber={3} predictedClass="Invoice" />, { wrapper: English });
 
     const trigger = screen.getByText('Class mismatch');
     expect(trigger).toBeInTheDocument();
@@ -77,7 +84,7 @@ describe('SectionClassMismatch', () => {
   });
 
   it('flags a wrong class and names what ground truth expects', () => {
-    render(<SectionClassMismatch index={INDEX} pageNumbers={[3]} predictedClass="Invoice" />);
+    render(<SectionClassMismatch index={INDEX} pageNumbers={[3]} predictedClass="Invoice" />, { wrapper: English });
 
     fireEvent.click(screen.getByText('Class mismatch'));
     expect(screen.getByText('Does not match ground truth')).toBeInTheDocument();
@@ -88,7 +95,7 @@ describe('SectionClassMismatch', () => {
     // Pages 3-4 are BankStatement and Invoice in ground truth. The section is
     // "Invoice", so a class-only check would pass it — the boundary is what is
     // wrong, and both classes are the diagnostic.
-    render(<SectionClassMismatch index={INDEX} pageNumbers={[3, 4]} predictedClass="Invoice" />);
+    render(<SectionClassMismatch index={INDEX} pageNumbers={[3, 4]} predictedClass="Invoice" />, { wrapper: English });
 
     fireEvent.click(screen.getByText('Class mismatch'));
     expect(screen.getByText('Section spans more than one ground-truth class')).toBeInTheDocument();
@@ -99,7 +106,7 @@ describe('SectionClassMismatch', () => {
 
 describe('SectionClassEvaluation', () => {
   it('shows both classes when they agree, since evaluation view was asked for', () => {
-    render(<SectionClassEvaluation index={INDEX} pageNumbers={[1, 2]} predictedClass="W2" />);
+    render(<SectionClassEvaluation index={INDEX} pageNumbers={[1, 2]} predictedClass="W2" />, { wrapper: English });
 
     expect(screen.getByText('Document class (this run)')).toBeInTheDocument();
     expect(screen.getByText('Document class (ground truth)')).toBeInTheDocument();
@@ -107,7 +114,7 @@ describe('SectionClassEvaluation', () => {
   });
 
   it('shows the mismatch and why the field scores below it are a symptom', () => {
-    render(<SectionClassEvaluation index={INDEX} pageNumbers={[3]} predictedClass="Invoice" />);
+    render(<SectionClassEvaluation index={INDEX} pageNumbers={[3]} predictedClass="Invoice" />, { wrapper: English });
 
     expect(screen.getByText('Class mismatch')).toBeInTheDocument();
     expect(screen.getByText('BankStatement')).toBeInTheDocument();
@@ -117,7 +124,9 @@ describe('SectionClassEvaluation', () => {
   it('falls back to the baseline file class when there is no page-level comparison', () => {
     // A document with a baseline but no doc-split metrics still has a ground
     // truth class for the section.
-    render(<SectionClassEvaluation index={EMPTY_CLASSIFICATION_INDEX} pageNumbers={[1]} predictedClass="Invoice" baselineClass="W2" />);
+    render(<SectionClassEvaluation index={EMPTY_CLASSIFICATION_INDEX} pageNumbers={[1]} predictedClass="Invoice" baselineClass="W2" />, {
+      wrapper: English,
+    });
 
     expect(screen.getByText('W2')).toBeInTheDocument();
     expect(screen.getByText('Class mismatch')).toBeInTheDocument();

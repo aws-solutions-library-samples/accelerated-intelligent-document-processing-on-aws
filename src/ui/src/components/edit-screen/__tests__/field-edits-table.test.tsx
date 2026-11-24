@@ -12,6 +12,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { describe, expect, it } from 'vitest';
@@ -19,6 +20,12 @@ import { describe, expect, it } from 'vitest';
 import EditorHistoryModal from '../EditorHistoryModal';
 import FieldEditsTable, { fieldEditRows } from '../FieldEditsTable';
 import { buildEditEntry, diffLeafPaths } from '../document-edit-save';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const savedWith = (entries: unknown[]) => ({ inference_result: { Name: 'Bob' }, _editHistory: entries });
 
@@ -49,14 +56,14 @@ const headers = () =>
 
 describe('History › Field Edits', () => {
   it('is an empty table, not an alert, when nothing was edited', () => {
-    render(<FieldEditsTable sectionData={{ inference_result: {} }} />);
+    render(<FieldEditsTable sectionData={{ inference_result: {} }} />, { wrapper: English });
     expect(table().findEmptySlot()!.getElement().textContent).toBe('No field has been edited in this section yet.');
     expect(createWrapper(document.body).findAlert()).toBeNull();
     expect(headers()).toEqual(['When', 'By', 'Field', 'From', 'To']);
   });
 
   it('lists each field a save on the edit screen changed, as it records them', () => {
-    render(<FieldEditsTable sectionData={savedWith([clientEntry('2026-10-22T10:00:00Z')])} />);
+    render(<FieldEditsTable sectionData={savedWith([clientEntry('2026-10-22T10:00:00Z')])} />, { wrapper: English });
     const rows = table().findRows();
     expect(rows).toHaveLength(2);
     const text = rows.map((r) => r.getElement().textContent);
@@ -65,7 +72,7 @@ describe('History › Field Edits', () => {
   });
 
   it('lists a Test Studio label edit from the review API, by email, as a baseline edit', () => {
-    render(<FieldEditsTable sectionData={savedWith([serverEntry])} />);
+    render(<FieldEditsTable sectionData={savedWith([serverEntry])} />, { wrapper: English });
     expect(headers()).toEqual(['When', 'By', 'Field', 'From', 'To', 'Applies to']);
     expect(table().findRows()[0].getElement().textContent).toMatch(/ann@example\.com.*total.*100\.00.*105\.00.*Baseline/);
   });
@@ -85,7 +92,9 @@ describe('History › Field Edits', () => {
   });
 
   it('is the Field Edits tab of History, beside Review Activity', () => {
-    render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={savedWith([clientEntry('2026-10-22T10:00:00Z')])} />);
+    render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={savedWith([clientEntry('2026-10-22T10:00:00Z')])} />, {
+      wrapper: English,
+    });
     const tabs = createWrapper(document.body).findTabs()!;
     expect(tabs.findTabLinkByIndex(1)!.getElement().textContent).toBe('Field Edits');
     expect(tabs.findTabContent()!.findTable()!.findRows()).toHaveLength(2);

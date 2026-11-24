@@ -11,6 +11,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
@@ -57,6 +58,12 @@ const Probe = (): React.JSX.Element => {
   return <div data-testid="location">{useLocation().pathname}</div>;
 };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderAt = (path: string) =>
   render(
     <MemoryRouter initialEntries={[path]}>
@@ -66,6 +73,7 @@ const renderAt = (path: string) =>
       </Routes>
       <Probe />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 const page = () => createWrapper(document.body);

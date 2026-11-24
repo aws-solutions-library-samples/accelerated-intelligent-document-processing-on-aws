@@ -19,6 +19,8 @@
  * changes and fail if the wrapper ever goes back to being a button.
  */
 
+import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -26,6 +28,12 @@ import { describe, expect, it, vi } from 'vitest';
 import FormFieldRenderer from '../FormFieldRenderer';
 
 const GEOMETRY = { boundingBox: { Left: 0.1, Top: 0.2, Width: 0.3, Height: 0.05 }, page: 1 };
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const renderField = (overrides: Record<string, unknown> = {}) =>
   render(
@@ -38,6 +46,7 @@ const renderField = (overrides: Record<string, unknown> = {}) =>
       path={['AccountNumber']}
       {...overrides}
     />,
+    { wrapper: English },
   );
 
 describe('FormFieldRenderer accessibility', () => {
