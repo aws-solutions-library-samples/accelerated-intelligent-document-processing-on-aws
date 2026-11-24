@@ -6,6 +6,7 @@
 // progress dialog.
 import React, { useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import type { ActionBarMenu } from '../common/ActionBar';
 import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
@@ -13,6 +14,47 @@ import { exportDocument, isBaselineAvailable, triggerBrowserDownload } from '../
 import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
 
 const logger = new ConsoleLogger('DocumentDownload');
+
+const messages = defineMessages<{
+  download: NoMessageValues;
+  downloadAll: NoMessageValues;
+  downloadPredictions: NoMessageValues;
+  downloadBaselines: NoMessageValues;
+  failed: { readonly error: string };
+  unknownError: NoMessageValues;
+}>({
+  download: {
+    id: 'documentActions.download.menu',
+    defaultMessage: 'Download',
+    description: "Name of the document page's downloads menu, whose items show as a group in the More Actions menu.",
+  },
+  downloadAll: {
+    id: 'documentActions.download.all',
+    defaultMessage: 'Download All (ZIP)',
+    description: "Item of the document page's More Actions menu: downloads the document's files as a ZIP, after asking what to include.",
+  },
+  downloadPredictions: {
+    id: 'documentActions.download.predictions',
+    defaultMessage: 'Download Predictions (ZIP)',
+    description: "Item of the document page's More Actions menu: downloads the document's extraction results as a ZIP.",
+  },
+  downloadBaselines: {
+    id: 'documentActions.download.baselines',
+    defaultMessage: 'Download Baselines (ZIP)',
+    description: "Item of the document page's More Actions menu: downloads the document's evaluation baseline as a ZIP.",
+  },
+  failed: {
+    id: 'documentActions.download.failed',
+    defaultMessage: 'Download failed: {error}',
+    description:
+      'Error notification when a download from the document page failed. {error} is the reason as the browser or the server gave it, or "Unknown error".',
+  },
+  unknownError: {
+    id: 'documentActions.download.unknownError',
+    defaultMessage: 'Unknown error',
+    description: 'Stands for the reason in "Download failed: …" when the failure gave none.',
+  },
+});
 
 interface DocumentDownload {
   /** The downloads, as a menu: More Actions takes its items as a group, and its onItemClick for them. */
@@ -27,6 +69,7 @@ export const useDocumentDownload = (
   credentials: unknown,
   setErrorMessage: (message: string) => void,
 ): DocumentDownload => {
+  const intl = useIntl();
   const [downloadScope, setDownloadScope] = useState<ExportScope | null>(null);
   const [isDownloadOptionsOpen, setIsDownloadOptionsOpen] = useState(false);
   const [includePageImages, setIncludePageImages] = useState(false);
@@ -71,7 +114,9 @@ export const useDocumentDownload = (
         logger.info('Document export cancelled by user');
       } else {
         logger.error('Document export failed:', err);
-        setErrorMessage(`Download failed: ${(err as Error).message || 'Unknown error'}`);
+        setErrorMessage(
+          intl.formatMessage(messages.failed, { error: (err as Error).message || intl.formatMessage(messages.unknownError) }),
+        );
       }
     } finally {
       setIsDownloadInProgress(false);
@@ -83,11 +128,13 @@ export const useDocumentDownload = (
   const menu: ActionBarMenu = {
     kind: 'menu',
     id: 'download',
-    text: 'Download',
+    text: intl.formatMessage(messages.download),
     items: [
-      { id: 'all', text: 'Download All (ZIP)', iconName: 'download' },
-      { id: 'predictions', text: 'Download Predictions (ZIP)', iconName: 'download' },
-      ...(isBaselineAvailable(item) ? [{ id: 'baselines', text: 'Download Baselines (ZIP)', iconName: 'download' as const }] : []),
+      { id: 'all', text: intl.formatMessage(messages.downloadAll), iconName: 'download' },
+      { id: 'predictions', text: intl.formatMessage(messages.downloadPredictions), iconName: 'download' },
+      ...(isBaselineAvailable(item)
+        ? [{ id: 'baselines', text: intl.formatMessage(messages.downloadBaselines), iconName: 'download' as const }]
+        : []),
     ],
     disabled: isDownloadInProgress,
     loading: isDownloadInProgress,

@@ -190,11 +190,28 @@ From the panel you can:
 
 ### A save that changes nothing records nothing
 
-Saving a profile whose configuration is byte-for-byte unchanged does not create a
-revision. This matters because every stack deployment re-saves `default` and each
-managed profile whether or not the shipped configuration moved — without this, a
-handful of upgrades would fill the retention window with identical revisions and
+A save records a revision only when it changes the configuration new documents run,
+which is the profile's current revision. Saving the same configuration again does
+not create one. This matters because every stack deployment re-saves `default` and
+each managed profile whether or not the shipped configuration moved — without this,
+a handful of upgrades would fill the retention window with identical revisions and
 push your real history out of it.
+
+The save is compared with the current revision as the running release reads it,
+not with the profile's stored configuration, because after an upgrade the two can
+read differently:
+
+- **A setting the release adds** reads as its shipped default from the revision and
+  from the profile alike. It changes nothing documents run, so it records nothing.
+- **A setting whose shipped default changed from empty to a value**, as `max_tokens`
+  did for the classification calls and LLM evaluation, can differ. A profile does
+  not store an empty value while empty is the default, so a profile saved before the
+  change reads the new value. Its current revision stores the empty value, so
+  documents running it request the model's maximum. The stack update that ships the
+  change therefore records a revision of `default` and of each stack-managed profile,
+  with the notes **Updated by stack deployment**, and new documents run the new value
+  from then on. A custom profile gets its revision from the same update, as a
+  [setting filled in from `default`](#settings-filled-in-from-default-are-recorded-as-a-revision).
 
 ### Selecting a revision for processing or testing
 
@@ -369,7 +386,10 @@ state is flagged: the editor shows **New documents do not run this configuration
 naming the revision they do run, the revision history marks that revision
 **Differs from profile**, and the revision picker says so beside **Current**. To
 repair it, make any change in the editor and save, which records a revision matching
-what the editor shows; saving it unchanged does not.
+what the editor shows; saving it unchanged in the editor does not. Uploading its
+configuration with `idp-cli config-upload` repairs it too, changed or not, because a
+save is compared with the revision documents run. `default` and stack-managed
+profiles are repaired by the next stack update, which re-saves them.
 
 ### Settings filled in from `default` are recorded as a revision
 

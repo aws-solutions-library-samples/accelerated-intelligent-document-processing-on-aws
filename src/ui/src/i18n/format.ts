@@ -21,8 +21,7 @@
  * `useFormatters()`, and so does nearly every number. What remains on `toFixed` or
  * `toLocaleString` is either technical (exported, parsed back, compared as text, logged or fed
  * to a chart) or one of the exceptions named here: the test-run comparison's colour-graded
- * cells and its field-metrics string, which are parsed back; the sentence builders in
- * `promptCacheModel.ts` and `review-api.ts`, converted with their screens; and the capacity
+ * cells and its field-metrics string, which are parsed back; and the capacity
  * planner's quota strings, a follow-up.
  */
 import { useMemo } from 'react';

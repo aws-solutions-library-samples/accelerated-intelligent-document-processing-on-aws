@@ -12,7 +12,7 @@ import ClassConfidence, { compareClassConfidence } from '../common/ClassConfiden
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
 import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
-import { PAGE_NO_TEXT_REASON } from '../document-actions/action-reasons';
+import { actionReasonMessages } from '../document-actions/action-reasons';
 import { ColumnPreferences, fillTableColumns, useColumnPreferences } from '../common/detail-table-columns';
 
 interface PageItem {
@@ -203,7 +203,7 @@ const ActionsCell = ({
   pageTextEdit?: PagesPanelProps['pageTextEdit'];
 }): React.JSX.Element => {
   const intl = useIntl();
-  const noText = item.TextUri ? undefined : PAGE_NO_TEXT_REASON;
+  const noText = item.TextUri ? undefined : intl.formatMessage(actionReasonMessages.pageNoText);
   const editReason = pageTextEdit?.disabledReason ?? noText;
   const items: ButtonDropdownProps.Item[] = [
     { id: 'view-text', text: intl.formatMessage(messages.viewText), disabled: !!noText, disabledReason: noText },

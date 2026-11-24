@@ -32,11 +32,10 @@ let editorProps: Record<string, unknown> | null = null;
 let boardProps: Record<string, unknown> | null = null;
 /** Overrides of the document the adapter returns (authored ground truth has no review copy). */
 const docOver: Record<string, unknown> = {};
-/** The adapter's error from its last read; null when that read succeeded. */
-let adapterLoadError: string | null = null;
+/** The adapter's code for its last read's failure; null when that read succeeded. */
+let adapterLoadError: TestSetItemEditModel['loadError'] = null;
 
 vi.mock('../test-set-item-edit-adapter', () => ({
-  NOT_ASSIGNED_MESSAGE: 'not assigned',
   useTestSetItemEdit: () => ({
     queue: { testSetId: 'ts-1', name: 'Invoices', skipReasons: ['Out of time'], documents: [] },
     doc: {
@@ -150,6 +149,7 @@ vi.mock('../../../hooks/use-user-role', () => ({
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 
 import TestSetItemEdit from '../TestSetItemEdit';
+import type { TestSetItemEditModel } from '../test-set-item-edit-adapter';
 import { barButtonLabels, menuItems, menuNames } from './edit-bar';
 import { chooseRegroup, regroupItem } from './regroup-stand-in';
 
@@ -456,7 +456,7 @@ describe('the primary action on a Test Studio document', () => {
 
   it('says the saved grouping could not be re-read, and how to load it, when the re-read fails (#1895)', async () => {
     const view = await saveGroupingWithoutReread();
-    adapterLoadError = 'Could not load the document.';
+    adapterLoadError = 'load-failed';
     view.rerender(
       <MemoryRouter initialEntries={['/']}>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />

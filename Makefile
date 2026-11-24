@@ -1788,6 +1788,53 @@ ui-i18n-coverage: ## Report translation coverage for each locale catalog present
 	@# report); in CI that is an error. Exit 2 only when no report could be made.
 	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
 
+# A DEVELOPER TOOL, NOT A GATE: it calls Amazon Translate with the developer's own
+# AWS credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
+# `fastlint` or `lint-cicd`, and its name matches none of the check shapes
+# test_ci_gate_parity.py classifies by. It writes the missing and stale entries of
+# src/ui/src/i18n/<LOCALE>.json (review and commit them) and a provenance file under
+# test-reports/. Flags go through UI_I18N_TRANSLATE_ARGS: start with
+# `make ui-i18n-translate LOCALE=fr-CA UI_I18N_TRANSLATE_ARGS=--dry-run`, then e.g.
+# `UI_I18N_TRANSLATE_ARGS="--region ca-central-1 --profile <name> --limit 20"`.
+LOCALE ?=
+UI_I18N_TRANSLATE_ARGS ?=
+ui-i18n-translate: ## Draft the missing and stale entries of src/ui/src/i18n/<LOCALE>.json with Amazon Translate, using your AWS credentials (LOCALE=fr-CA; UI_I18N_TRANSLATE_ARGS=--dry-run first) (issue #1770)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-translate LOCALE=fr-CA$(NC)"; exit 2; fi
+	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
+	@# targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_translate.py --locale $(LOCALE) $(UI_I18N_TRANSLATE_ARGS)'
+
+# A DEVELOPER TOOL, NOT A GATE: it calls Amazon Bedrock with the developer's own AWS
+# credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
+# `fastlint` or `lint-cicd`, and its name matches none of the check shapes
+# test_ci_gate_parity.py classifies by. It changes no catalog: it reviews
+# src/ui/src/i18n/<LOCALE>.json and writes a report under test-reports/ for a person
+# to act on. Flags go through UI_I18N_REVIEW_ARGS: start with
+# `make ui-i18n-review LOCALE=fr-CA UI_I18N_REVIEW_ARGS=--dry-run`, then e.g.
+# `UI_I18N_REVIEW_ARGS="--region ca-central-1 --profile <name> --limit 40"`.
+UI_I18N_REVIEW_ARGS ?=
+ui-i18n-review: ## Review src/ui/src/i18n/<LOCALE>.json with a Bedrock model and write a report, using your AWS credentials (LOCALE=fr-CA; UI_I18N_REVIEW_ARGS=--dry-run first) (issue #1770)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-review LOCALE=fr-CA$(NC)"; exit 2; fi
+	@# It runs node out of src/ui/node_modules (the coverage worker), so it takes the
+	@# same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_review.py --locale $(LOCALE) $(UI_I18N_REVIEW_ARGS)'
+
+# A DEVELOPER TOOL, NOT A GATE: it calls Amazon Bedrock with the developer's own AWS
+# credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
+# `fastlint` or `lint-cicd`, and its name matches none of the check shapes
+# test_ci_gate_parity.py classifies by. It rewrites the entries of
+# src/ui/src/i18n/<LOCALE>.json that a ui-i18n-review report flagged, writes each
+# answer that passes the build's parity check (review and commit them), and writes a
+# provenance file under test-reports/. Flags go through UI_I18N_REVISE_ARGS: start with
+# `make ui-i18n-revise LOCALE=fr-CA UI_I18N_REVISE_ARGS="--review <report.json> --dry-run"`,
+# then e.g. `UI_I18N_REVISE_ARGS="--review <report.json> --region ca-central-1 --profile <name>"`.
+UI_I18N_REVISE_ARGS ?=
+ui-i18n-revise: ## Rewrite the entries of src/ui/src/i18n/<LOCALE>.json that a review flagged with a Bedrock model, writing only answers that pass the build's parity check, using your AWS credentials (LOCALE=fr-CA; UI_I18N_REVISE_ARGS="--review <report.json> --dry-run" first) (issue #1770)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-revise LOCALE=fr-CA$(NC)"; exit 2; fi
+	@# It runs node out of src/ui/node_modules (the coverage worker), so it takes the
+	@# same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_revise.py --locale $(LOCALE) $(UI_I18N_REVISE_ARGS)'
+
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
 	@$(UI_DEPS_LOCK) 'npm run codegen'
@@ -2187,6 +2234,26 @@ ai-ux-test-stories-judge: ## Re-judge a story run on the host, rewriting results
 ai-ux-test-stories-report: ## Write report.html, a story run as one page to open in a browser, and print its path (RUN=<dir holding story-run.json> required)
 	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-report RUN=<dir holding story-run.json>'; exit 2; }
 	@$(PYTHON) -B scripts/ux_runner/story_report.py "$$RUN"
+
+# The screen review of the translated web UI (scripts/sdlc/ai_ux_translation_review.py)
+# in the Docker runner (scripts/ux_runner/run_in_docker.py translation): fr-CA, then the
+# pseudo-locale en-XA, each in its own confined browser, with a model that may only
+# look (no click, no typing) under a spending cap (MAX_USD, default 40). STACK names
+# the stack; the UI is its web URL, or WEB_URL=, or BUILD_DIR=, and must hold the
+# locales (src/ui/src/i18n/README.md, "Reviewing translated screens"). GLOSSARY is the
+# fr-CA CSV (default src/ui/src/i18n/glossary.fr-CA.csv); LOCALE= reviews one locale.
+# BUILD_DIR and GLOSSARY reach the recipe through the environment, so a path with a
+# space arrives whole. Writes test-reports/ux-translation-review/<time>-review/ and
+# posts nothing. Needs host AWS credentials, UX_TEST_PERSONAS and
+# UX_TEST_AWS_ACCOUNT_ID, as ai-ux-test-local.
+.PHONY: ai-ux-translation-review
+
+ai-ux-translation-review: ## Review the translated UI's screens in fr-CA and the pseudo-locale in Docker, look-only, posting nothing (STACK= required; WEB_URL= or BUILD_DIR=; GLOSSARY=; LOCALE=; MAX_USD=)
+	@$(if $(STACK),,$(error set STACK=<stack name>, e.g. make ai-ux-translation-review STACK=idp-fr-test))
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py translation --stack $(STACK) \
+		$(if $(WEB_URL),--web-url $(WEB_URL)) $(if $(BUILD_DIR),--build-dir "$$BUILD_DIR") \
+		$(if $(GLOSSARY),--glossary "$$GLOSSARY") $(if $(LOCALE),--locale $(LOCALE)) \
+		$(if $(MAX_USD),--max-usd $(MAX_USD)) $(EXTRA_ARGS)
 
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common

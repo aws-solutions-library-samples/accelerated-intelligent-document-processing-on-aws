@@ -1,0 +1,156 @@
+en,fr-CA,note
+access key,clé d’accès,Noun.
+admin,administrateur,Role name; masculine generic. Alternative: administrateur ou administratrice.
+administrator,administrateur,Noun; masculine generic. Inclusive alternative: administrateur ou administratrice.
+agent,agent,Noun in this UI (AI agent); masculine generic. Alternative: agent conversationnel for chat context.
+agent chat,clavardage avec l’agent,Noun phrase; clavardage per OQLF.
+Amazon Athena,Amazon Athena,"Product name, unchanged."
+Amazon Bedrock,Amazon Bedrock,"Product name, unchanged."
+Amazon Cognito,Amazon Cognito,"Product name, unchanged."
+Amazon GuardDuty,Amazon GuardDuty,"Product name, unchanged."
+Amazon S3,Amazon S3,"Product name, unchanged."
+Amazon Textract,Amazon Textract,"Product name, unchanged."
+annotator,annotateur,Noun; masculine generic; alternative: annotateur ou annotatrice.
+annotators,annotateurs,"Noun, plural; masculine generic. Translate matches whole terms, so plurals get their own row."
+API key,clé d’API,Noun phrase; alternative: clé API.
+authentication,authentification,Noun.
+author,auteur,Role name; masculine generic.
+AWS Lambda,AWS Lambda,"Product name, unchanged."
+AWS Secrets Manager,AWS Secrets Manager,"Product name, unchanged."
+AWS Step Functions,AWS Step Functions,"Product name, unchanged."
+background job,travail en arrière-plan,Noun phrase; alternative: traitement en arrière-plan.
+Bedrock Data Automation,Bedrock Data Automation,"Product name, unchanged."
+bounding box,zone de délimitation,Noun phrase; alternative: cadre de délimitation.
+bounding boxes,zones de délimitation,"Noun phrase, plural."
+breadcrumbs,chemin de navigation,"Noun, UI nav; alternative: fil d’Ariane."
+capacity planning,planification de la capacité,Noun phrase.
+change history,historique des modifications,Noun phrase.
+chat history,historique de clavardage,Noun phrase.
+circuit breaker,disjoncteur,"Noun; software pattern, kept as the French pattern name."
+class,classe,Noun (document or page class); never a verb in this UI.
+classification,classification,Noun.
+classification method,méthode de classification,Noun phrase.
+confidence alert,alerte de confiance,Noun phrase; alternative: alerte de niveau de confiance.
+confidence score,score de confiance,Noun phrase; OQLF often prefers cote de confiance. Team to choose.
+confidence threshold,seuil de confiance,Noun phrase.
+configuration profile,profil de configuration,Noun phrase.
+configuration version,version de la configuration,Noun phrase.
+conflict mode,mode de conflit,Noun phrase.
+credential,identifiant,"Noun, singular; alternative: justificatif d’identité (Termium)."
+credentials,identifiants,"Noun, plural; alternative: justificatifs d’identité."
+custom model,modèle personnalisé,Noun phrase.
+data extraction,extraction de données,Noun phrase.
+date range,plage de dates,Noun phrase; alternative: intervalle de dates.
+default configuration,configuration par défaut,Noun phrase.
+discovery,découverte,Noun; feature name. Alternative: exploration.
+document class,classe de document,Noun phrase.
+document classes,classes de document,"Noun phrase, plural."
+document classification,classification de documents,Noun phrase.
+document extraction,extraction de documents,Noun phrase.
+document ID,identifiant de document,Noun phrase.
+document list,liste de documents,Noun phrase.
+document page,page de document,Noun phrase.
+document processing,traitement de documents,Noun phrase.
+document source,source du document,Noun phrase.
+document viewer,visionneuse de documents,"Noun phrase (the viewer component, not the Viewer role)."
+downstream processing,traitement en aval,Noun phrase.
+e-mail,courriel,Noun; OQLF. Alternative: adresse courriel for e-mail address.
+e-mail address,adresse courriel,Noun phrase.
+end date,date de fin,Noun phrase.
+endpoint,point de terminaison,Noun; alternative: point d’accès (Termium).
+error message,message d’erreur,Noun phrase.
+evaluation baseline,référence d’évaluation,"Noun phrase; alternative: base de référence d’évaluation, ligne de base."
+evaluation report,rapport d’évaluation,Noun phrase.
+evaluation results,résultats d’évaluation,Noun phrase.
+extraction results,résultats d’extraction,Noun phrase.
+extraction schema,schéma d’extraction,Noun phrase.
+field metrics,mesures des champs,Noun phrase; alternative: métriques des champs.
+ground truth,vérité terrain,Noun; ML term. OQLF prefers vérité de terrain; alternative: données de référence. Team to choose.
+home,accueil,"Navigation label (Home, Home › Tasks); Translate capitalizes it where the English is."
+hrs,h,Abbreviation for hours; Canadian French symbol h.
+human review,révision humaine,"Noun phrase; alternative: examen humain, vérification humaine. Team to choose."
+inbox,boîte de réception,Noun; also used for reviewer task inbox. Alternative: boîte de tâches.
+input bucket,compartiment d’entrée,Noun phrase; S3 bucket = compartiment (Quebec AWS usage).
+job,travail,"Noun (an asynchronous operation); OQLF term for a computing job, kept apart from task (tâche)."
+job ID,identifiant du travail,Noun phrase.
+jobs,travaux,"Noun, plural."
+knowledge base,base de connaissances,Noun phrase; feature name translated per decision.
+learn more,en savoir plus,Fixed UI phrase.
+loading profiles,chargement des profils,Noun phrase (gerund as noun).
+malware,maliciel,Noun; OQLF.
+manual review,révision manuelle,Noun phrase.
+MCP,MCP,"Acronym, unchanged (Model Context Protocol)."
+MCP agent,agent MCP,Noun phrase.
+MCP client,client MCP,Noun phrase.
+MCP connector,connecteur MCP,Noun phrase.
+MCP server,serveur MCP,Noun phrase.
+N/A,S. O.,Abbreviation; alternative: sans objet (spelled out). Non-breaking space between S. and O. recommended.
+next page,page suivante,Noun phrase.
+no configuration,aucune configuration,Fixed UI phrase.
+no documents,aucun document,Fixed UI phrase.
+no pending reviews,aucune révision en attente,Fixed UI phrase.
+no test sets,aucun jeu de tests,Fixed UI phrase.
+output bucket,compartiment de sortie,Noun phrase.
+page class,classe de page,Noun phrase.
+page grouping,regroupement de pages,Noun phrase.
+page size,taille de page,Noun phrase; alternative: nombre d’éléments par page.
+PDF viewer,visionneuse PDF,Noun phrase (component).
+pending reviews,révisions en attente,Noun phrase; alternative: examens en attente.
+policy group,groupe de politiques,Noun phrase.
+policy schema,schéma de politique,Noun phrase.
+post-processing hook,point d’ancrage de post-traitement,Noun phrase; alternative: crochet de post-traitement. Team to confirm.
+prefix mapping,mappage des préfixes,Noun phrase; alternative: correspondance des préfixes.
+previous page,page précédente,Noun phrase.
+processing settings,paramètres de traitement,Noun phrase.
+production queue,file d’attente de production,Noun phrase.
+profile,profil,Noun (configuration profile); never a verb in this UI.
+profiles,profils,"Noun, plural."
+progress bar,barre de progression,Noun phrase.
+queue,file d’attente,Noun; never a verb in this UI. Short form file where space is tight is a reviewer call.
+queues,files d’attente,"Noun, plural."
+Quick Start,démarrage rapide,"Feature name, translated. Lowercase on purpose: Translate capitalizes it where the English is capitalized."
+reason code,code de motif,Noun phrase; alternative: code de raison.
+Region,région,"AWS Region, also any region of a page; noun. Lowercase on purpose: Translate capitalizes it where the English is capitalized."
+review history,historique des révisions,Noun phrase.
+review management,gestion des révisions,Noun phrase.
+review queue,file d’attente de révision,Noun phrase; alternative: file de révision.
+Review Studio,Studio de révision,Feature name. Team decides between translation and keeping English name Review Studio.
+review studio documents,documents du Studio de révision,Noun phrase; follows Review Studio decision.
+reviewer,réviseur,Noun; masculine generic. In Quebec usage réviseur often means copy editor: vérificateur or personne chargée de la vérification are team options.
+reviewer inbox,boîte de réception du réviseur,Noun phrase.
+reviewers,réviseurs,"Noun, plural; masculine generic."
+role,rôle,Noun.
+rule validation,validation des règles,Noun phrase.
+secret,secret,Noun (Secrets Manager); alternative: clé secrète.
+section,section,Noun (document section).
+sections,sections,"Noun, plural."
+security group,groupe de sécurité,Noun phrase; AWS term.
+selected document,document sélectionné,Noun phrase.
+selected documents,documents sélectionnés,Noun phrase.
+service role,rôle de service,Noun phrase; AWS term.
+session,session,Noun.
+settings,paramètres,Noun (settings page and panels).
+side navigation,navigation latérale,Noun phrase.
+side panel,panneau latéral,Noun phrase.
+stack,pile,Noun; CloudFormation stack = pile (AWS fr-CA). Alternative: pile de ressources.
+start date,date de début,Noun phrase.
+status,statut,Noun; alternative: état.
+summarization,synthèse,Noun; alternative: résumé automatique.
+tags,étiquettes,"Noun, plural; alternative: balises."
+task,tâche,"Noun (a reviewer work item, Home › Tasks); kept apart from job (travail)."
+tasks,tâches,"Noun, plural."
+test execution,exécution de test,Noun phrase; alternative: exécution d’essai.
+test executions,exécutions de test,"Noun phrase, plural."
+test run,exécution de test,Noun phrase; alternative: série d’essais. Duplicate target with test execution intended.
+test set,jeu de tests,Noun phrase; alternative: ensemble de tests.
+test sets,jeux de tests,"Noun phrase, plural."
+Test Studio,Studio de test,Feature name. Team decides between translation and keeping English name Test Studio. Alternative: Studio d’essais.
+test studio documents,documents du Studio de test,Noun phrase; follows Test Studio decision.
+unknown error,erreur inconnue,Noun phrase.
+unread messages,messages non lus,Noun phrase.
+user guide,guide de l’utilisateur,Noun phrase; alternative: guide d’utilisation.
+user management,gestion des utilisateurs,Noun phrase; masculine generic. Alternative: gestion des comptes.
+user name,nom d’utilisateur,Noun phrase.
+version history,historique des versions,Noun phrase.
+web UI,interface Web,Noun phrase; OQLF writes Web with capital in noun use.
+workflow,flux de travail,Noun; alternative: processus.

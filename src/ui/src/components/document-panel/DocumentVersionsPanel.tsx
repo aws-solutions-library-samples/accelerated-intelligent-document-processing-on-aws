@@ -598,7 +598,7 @@ const DocumentVersionsPanel = ({
       <SpaceBetween size="m">
         {error && (
           <Alert type="error" dismissible onDismiss={() => setError(null)}>
-            {'action' in error ? describeApiError(error.cause, intl.formatMessage(error.action)) : <FormattedMessage {...error.message} />}
+            {'action' in error ? describeApiError(error.cause, error.action, intl) : <FormattedMessage {...error.message} />}
           </Alert>
         )}
         {viewingRunId && (

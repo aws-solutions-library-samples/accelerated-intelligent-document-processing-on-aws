@@ -6,6 +6,7 @@
 // edits without reprocessing (Save); and submits the document for
 // reprocessing (Complete).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { defineMessages, type NoMessageValues } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { generateClient } from '../../api/client-shim';
@@ -17,6 +18,7 @@ import mapDocumentsAttributes from '../common/map-document-attributes';
 import { submitProcessChanges } from '../common/process-changes';
 import { isInReviewQueue } from '../common/review-status';
 import { saveDirectSectionEdits } from './document-edit-save';
+import { EditPageError } from './edit-messages';
 import { fetchSectionResult } from './section-result';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 import type { SectionEvaluation } from './use-section-evaluation';
@@ -24,6 +26,21 @@ import type { RawDocument } from './use-edit-mode';
 
 const client = generateClient();
 const logger = new ConsoleLogger('DocumentEditAdapter');
+
+const messages = defineMessages<{ noResultToEdit: NoMessageValues; noResultToSave: NoMessageValues }>({
+  noResultToEdit: {
+    id: 'editScreen.directEdit.noResultToEdit',
+    defaultMessage: 'This section has no result to edit',
+    description:
+      'Why the section editor of a document\'s edit page could not open a section, shown after "Failed to load ground truth:": the section has no extraction result.',
+  },
+  noResultToSave: {
+    id: 'editScreen.directEdit.noResultToSave',
+    defaultMessage: 'This section has no result to save',
+    description:
+      'Why the section editor of a document\'s edit page could not save a section, shown after "Failed to save:": the section has no extraction result to write the changes to.',
+  },
+});
 
 /** The document fields the direct edit reads (from mapDocumentsAttributes). */
 export interface DirectEditDocument {
@@ -45,6 +62,7 @@ export interface DirectEditDocument {
 export interface DocumentEditModel {
   document: DirectEditDocument | null;
   loading: boolean;
+  /** Why the read failed: `'NOT_FOUND'`, the error's own text, or `'load-failed'` when it gave none. */
   loadError: string | null;
   reload: () => Promise<void>;
   /** The same read as `reload`, for Refresh: a failed read throws (a missing document still shows as not found). */
@@ -96,7 +114,7 @@ export const useDocumentEdit = (objectKey: string, seed?: { document: RawDocumen
       } catch (err) {
         logger.error('getDocument failed', err);
         if (rethrow) throw err;
-        setLoadError(err instanceof Error ? err.message : 'The document could not be loaded.');
+        setLoadError(err instanceof Error ? err.message : 'load-failed');
       } finally {
         setLoading(false);
       }
@@ -138,7 +156,7 @@ export const useDocumentEdit = (objectKey: string, seed?: { document: RawDocumen
   const loadSection = useCallback(
     async (sectionId: string): Promise<LoadedSection> => {
       const section = sections.find((s) => s.sectionId === sectionId);
-      if (!section?.resultUri) throw new Error('This section has no result to edit');
+      if (!section?.resultUri) throw new EditPageError({ descriptor: messages.noResultToEdit });
       const loaded = await fetchSectionResult(section.resultUri);
       originals.current[sectionId] = JSON.parse(loaded.raw) as Record<string, unknown>;
       return loaded;
@@ -151,7 +169,7 @@ export const useDocumentEdit = (objectKey: string, seed?: { document: RawDocumen
   const saveSection = useCallback(
     async (sectionId: string, data: Record<string, unknown>, evaluation?: SectionEvaluation): Promise<Record<string, unknown>> => {
       const section = sections.find((s) => s.sectionId === sectionId);
-      if (!section?.resultUri) throw new Error('This section has no result to save');
+      if (!section?.resultUri) throw new EditPageError({ descriptor: messages.noResultToSave });
       const saved = await saveDirectSectionEdits({
         objectKey,
         sectionId,
