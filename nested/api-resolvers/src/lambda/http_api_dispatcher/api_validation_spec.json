@@ -2471,6 +2471,17 @@
         }
       ]
     },
+    "selectActiveTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "sendAgentChatMessage": {
       "args": [
         {

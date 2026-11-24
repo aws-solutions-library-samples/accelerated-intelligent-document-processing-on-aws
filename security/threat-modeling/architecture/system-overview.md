@@ -25,7 +25,7 @@
 > `scripts/api_rbac_expectations.yaml`, the dispatcher / queue-processor /
 > review-queue / MCP interceptor source, the Terraform translator
 > (`terraform/translator`) and `lib/idp_sdk/idp_sdk/_core/terraform_deploy.py`. The
-> main user pool has **five** groups; **180** operations are routable through the
+> main user pool has **five** groups; **182** operations are routable through the
 > dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover;
 > §5.2 covers the three non-REST authenticated entry points (chat streaming, the
@@ -317,20 +317,20 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `allowedConfigVersions` and `allowedTestSets` scope, per-object ownership and review-queue eligibility**, and repeats the group check | Nothing forces a per-object check to exist or to match the right object (AUTH.T16) |
 
-**181 operations** are routable — 44 mapped directly by the
+**182 operations** are routable — 44 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **127** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **128** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 182, not 181, because one field (`getCircuitBreakerStatus`)
+three sets sum to 183, not 182, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 181, which is exactly the number of entries in
+union is 182, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
 | Admin only | 50 |
 | Admin + Author | 42 |
-| Any assigned group, whichever one (`ANY_GROUP`) | 27 |
+| Any assigned group, whichever one (`ANY_GROUP`) | 28 |
 | Admin + Author + Viewer | 15 |
 | Admin + Annotator + Reviewer | 14 |
 | Admin + Annotator + Author | 11 |
@@ -354,7 +354,7 @@ and Annotator (Admin and Annotator for `listTestSetQueues`, Annotator alone for
 `claimTestSetDocument`), so a Reviewer works production review queues only.
 
 `ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
-group added there joins those 27 without an edit per operation; what they refuse is a
+group added there joins those 28 without an edit per operation; what they refuse is a
 caller an administrator has not placed in any group, which domain-scoped self-signup
 produces. Every document read is in that set, including the ones that return an object
 key, an `s3://` URI, a list of extracted attribute names or a model-written page
@@ -384,7 +384,7 @@ at all; per-*tenant* isolation is, through tenant declarations (see
 [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)).
 
 Beyond the group check, **61** operations verify config-version scope, **10** filter
-their result rows by it, and **21** verify per-object ownership.
+their result rows by it, and **22** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
