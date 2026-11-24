@@ -1005,6 +1005,7 @@ def validate_config(
     _validate_schema_fields(config.get("classes", []), result)
     _validate_fallback_class(validated, result)
     _validate_page_order(validated, result)
+    _validate_agentic_flag_against_mode(config, validated, result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
     # and the runtime reads `config.extraction.agentic.enabled` off this same model.
@@ -2128,6 +2129,39 @@ def _validate_page_order(validated: Any, result: Dict[str, Any]) -> None:
             "from: every multi-page document keeps its scan order and carries a "
             "classification_page_order_not_applied warning."
         )
+
+
+def _validate_agentic_flag_against_mode(
+    config: Dict[str, Any], validated: Any, result: Dict[str, Any]
+) -> None:
+    """Warn when ``agentic.enabled: true`` is overridden by ``extraction.mode``.
+
+    ``extraction.mode`` decides the extraction path whenever it is set, and
+    ``agentic.enabled`` is derived from it (``reconcile_mode_and_agentic``). A
+    configuration downloaded in full carries ``mode: simple``, so adding
+    ``agentic.enabled: true`` to it runs simple extraction, and nothing in a result
+    says so except ``extraction_method: traditional``.
+
+    Only that direction is reported. The same full download also carries
+    ``agentic.enabled: false``, so following the documented fix, setting
+    ``mode: advanced``, submits a false flag beside an advanced mode, and a warning
+    there would tell the author to undo a correct edit. The flag is read with the
+    migration's ``_coerce_bool``, which agrees with how Pydantic parses it.
+    """
+    from idp_common.config.migrations.v05_to_v06 import _coerce_bool
+
+    extraction = config.get("extraction")
+    agentic = extraction.get("agentic") if isinstance(extraction, dict) else None
+    if not isinstance(agentic, dict) or agentic.get("enabled") is None:
+        return
+    if not _coerce_bool(agentic["enabled"]) or validated.extraction.agentic.enabled:
+        return
+    result["warnings"].append(
+        "extraction.agentic.enabled is true, but extraction.mode is "
+        f"'{validated.extraction.mode}', and the mode decides the extraction path, so "
+        "extraction will run in simple mode. Set extraction.mode: advanced to run "
+        "advanced extraction."
+    )
 
 
 def _validate_schema_fields(
