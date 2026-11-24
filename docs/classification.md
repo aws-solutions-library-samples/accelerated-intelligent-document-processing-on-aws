@@ -1110,7 +1110,10 @@ class, or a document-name regex match, under `sectionSplitting: disabled` or `pa
 The numbers come from the text the OCR step already wrote for each page, so no model
 is called; the only added cost is one read of each page's text. Only the first three
 and the last three non-empty lines of a page are looked at, which is where running
-headers and footers land, so a number in the body of a page is not read. Two kinds
+headers and footers land, so a number in the body of a page is not read. Notes the
+OCR step appends after the page text (the signature-detection summary and the
+`ocr.mark_handwriting` legend, each starting with a `--- OCR … ---` line) are not
+printed on the page and are not counted as its last lines. Two kinds
 of marking are recognised:
 
 - **Explicit**: `Page 3 of 7` or `Pg. 3/7` anywhere on one of those lines; `Page 3`,

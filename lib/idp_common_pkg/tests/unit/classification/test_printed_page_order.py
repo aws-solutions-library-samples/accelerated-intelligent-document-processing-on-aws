@@ -32,6 +32,7 @@ from idp_common.classification.page_order import (
 from idp_common.classification.service import ClassificationService
 from idp_common.config.models import DocumentShapeConfig
 from idp_common.models import Document, Page, ProcessingIssue, Status
+from idp_common.ocr.service import HANDWRITING_LEGEND
 
 
 def _class(name: str) -> Dict[str, Any]:
@@ -692,6 +693,42 @@ class TestReadingAPrintedPageNumber:
 
     def test_a_header_number_is_read(self):
         assert read_printed_page_number(f"Page 2 of 9\n{BODY}").number == 2
+
+    # The OCR step appends notes after the page text. They are not printed on
+    # the page, so a multi-line footer must still be read with a note below it.
+    FOOTER = "Rev. 01/2026\nPage 2 of 5\nConfidential"
+    SIGNATURE_NOTE = (
+        "--- OCR signature detections ---\n"
+        "The OCR engine flagged 1 region on this page as containing a signature.\n"
+        "- Signature 1: bottom right, confidence 98.1"
+    )
+
+    @pytest.mark.parametrize(
+        "notes",
+        [
+            pytest.param(lambda: [HANDWRITING_LEGEND], id="handwriting"),
+            pytest.param(
+                lambda: [TestReadingAPrintedPageNumber.SIGNATURE_NOTE], id="signature"
+            ),
+            pytest.param(
+                lambda: [
+                    HANDWRITING_LEGEND,
+                    TestReadingAPrintedPageNumber.SIGNATURE_NOTE,
+                ],
+                id="both",
+            ),
+        ],
+    )
+    def test_appended_ocr_notes_do_not_take_the_footer_zone(self, notes):
+        text = "\n\n".join([f"{BODY}\n{self.FOOTER}", *notes()])
+        reading = read_printed_page_number(text)
+        assert (reading.number, reading.total) == (2, 5)
+
+    def test_a_note_header_inside_the_page_text_is_not_a_note(self):
+        """Only a header after a blank line starts a note; the same text inside a
+        paragraph is page text."""
+        text = f"{BODY}\nsee --- OCR handwriting markers --- below\n{self.FOOTER}"
+        assert read_printed_page_number(text).number == 2
 
     @pytest.mark.parametrize(
         "line",

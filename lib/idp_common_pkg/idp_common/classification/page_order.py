@@ -142,8 +142,23 @@ class PageOrderPlan:
     problem_page_ids: List[str] = field(default_factory=list)
 
 
+# Notes the OCR step appends to the end of a page's text, after a blank line:
+# the handwriting-marker legend ("--- OCR handwriting markers ---") and the
+# signature-detection summary ("--- OCR signature detections ---"). They are not
+# printed on the page, so they must not take up the footer zone.
+_OCR_NOTE_HEADER_RE = re.compile(
+    r"(?:\A|\n[ \t]*\n)--- OCR [a-z][a-z ]* ---[ \t]*$", re.M
+)
+
+
+def _without_ocr_notes(text: str) -> str:
+    """The page text up to the first appended OCR note."""
+    match = _OCR_NOTE_HEADER_RE.search(text)
+    return text[: match.start()] if match else text
+
+
 def _zone_lines(text: str) -> List[str]:
-    lines = [line.strip(_DECORATION) for line in text.splitlines()]
+    lines = [line.strip(_DECORATION) for line in _without_ocr_notes(text).splitlines()]
     lines = [line for line in lines if line]
     if len(lines) <= 2 * ZONE_LINES:
         return lines
