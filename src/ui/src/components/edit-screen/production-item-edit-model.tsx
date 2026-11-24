@@ -468,12 +468,15 @@ export const useProductionItemEditModel = (
   // and an Annotator from Tasks.
   const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : 'tasks');
   const navigation: EditNavigation = {
-    trail: editTrail({
-      origin,
-      objectKey,
-      name: documentName(objectKey),
-      queue: queueCrumb ? { crumb: queueCrumb, view: 'production' } : null,
-    }),
+    trail: editTrail(
+      {
+        origin,
+        objectKey,
+        name: documentName(objectKey),
+        queue: queueCrumb ? { crumb: queueCrumb, view: 'production' } : null,
+      },
+      intl,
+    ),
     activeHref: editActiveHref(origin),
   };
 

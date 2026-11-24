@@ -5,9 +5,10 @@
  * catalog the notice after Save and the refusal when the server does not count the document
  * reviewed yet read French around the shared Process Changes; the adapter's codes for a newer
  * draft, a document the server refused to read and a read that returned no queue are worded
- * by the page; the alert count reads its plural for 1 and 3 fields beside Next alert. The
- * document is read once: not again when the catalog arrives, nor on a switch to English.
- * Under `en` the same renders read today's English.
+ * by the page; the alert count reads its plural for 1 and 3 fields beside Next alert; the
+ * breadcrumbs from Review Management and from Test Studio read French. The document is read
+ * once: not again when the catalog arrives, nor on a switch to English. Under `en` the same
+ * renders read today's English.
  */
 import React from 'react';
 import { act, screen, waitFor, within } from '@testing-library/react';
@@ -40,6 +41,8 @@ const state = vi.hoisted(() => ({
     onSave: (sectionId: string, data: Record<string, unknown>) => Promise<unknown>;
     onDirtyChange: (dirty: boolean) => void;
   } | null,
+  /** The breadcrumbs the page last gave its layout. */
+  trail: null as { text?: string }[] | null,
 }));
 
 vi.mock('virtual:i18n-catalogs', () => import('../../../test-utils/i18nCatalogsMock'));
@@ -51,7 +54,12 @@ vi.mock('../../../hooks/use-user-role', () => ({ default: () => state.role }));
 vi.mock('../../../hooks/use-test-doc-pages', () => ({ default: () => state.pages }));
 vi.mock('../../../hooks/use-configuration', () => ({ default: () => state.configuration }));
 vi.mock('../../../hooks/use-configuration-versions', () => ({ default: () => state.versions }));
-vi.mock('../../review-queues/ReviewQueuesLayout', () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
+vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
+  default: ({ children, trail }: { children: React.ReactNode; trail?: { text?: string }[] }) => {
+    state.trail = trail ?? null;
+    return <>{children}</>;
+  },
+}));
 vi.mock('../SectionEditor', () => ({
   default: (props: NonNullable<typeof state.editor> & { controllerRef: { current: unknown } }) => {
     state.editor = props;
@@ -67,6 +75,9 @@ import { barButtons, buttonLabel } from './edit-bar';
 
 /** The strings the assertions read; the rest fall back to English, as the app's error policy allows. */
 const FR = {
+  'breadcrumbs.reviewStudio.reviewStudio': 'Studio de révision',
+  'breadcrumbs.reviewStudio.reviewManagement': 'Gestion des révisions',
+  'breadcrumbs.reviewStudio.testStudio': 'Studio de test',
   'common.labels.processChanges': 'Traiter les modifications',
   'common.labels.nextAlert': 'Alerte suivante',
   'editScreen.bar.save': 'Enregistrer',
@@ -83,6 +94,7 @@ const FR = {
     'Seuls les annotateurs inscrits à la file de cet ensemble de test peuvent ouvrir ses documents. Les files qui vous incluent sont dans <link>Accueil › Files</link>.',
   'testStudio.itemEdit.alertCount':
     '{count, plural, one {# champ est sous le seuil de confiance.} other {# champs sont sous le seuil de confiance.}}',
+  'testStudio.itemEdit.testSetCrumb': 'Jeu de tests : {name}',
 };
 const FR_CA = { locale: 'fr-CA', enabledLocales: ['en', 'fr-CA'], messages: FR } as const;
 type IntlOptions = Parameters<typeof renderWithIntl>[1];
@@ -125,9 +137,9 @@ const queueReply = () => ({
 const queryOf = (call: unknown[]) => (call[0] as { query: unknown }).query;
 const documentReads = () => state.graphql.mock.calls.filter((c) => queryOf(c) === getAnnotationQueueDocument).length;
 
-const renderPage = (options: IntlOptions = {}) =>
+const renderPage = (options: IntlOptions = {}, path = '/') =>
   renderWithIntl(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <TestSetItemEdit testSetId="ts-1" objectKey={DOC_KEY} />
     </MemoryRouter>,
     options,
@@ -164,6 +176,7 @@ const alert = () => createWrapper(document.body).findAlert()!;
 beforeEach(() => {
   document.body.innerHTML = '';
   state.editor = null;
+  state.trail = null;
   server.doc = {};
   server.reviewed = false;
   server.read = 'ok';
@@ -253,6 +266,14 @@ describe('a test-set item’s edit page under fr-CA', () => {
     expect(await screen.findByText('1 field is below the confidence threshold.')).toBeInTheDocument();
     expect(documentReads()).toBe(1);
   });
+
+  it.each([
+    ['/?from=review', ['Studio de révision', 'Gestion des révisions', 'Jeu de tests : Set A', 'doc.pdf']],
+    ['/?from=test-studio', ['Studio de test', 'Set A', 'doc.pdf']],
+  ])('words the breadcrumbs of %s', async (path, trail) => {
+    renderPage(FR_CA, path);
+    await waitFor(() => expect(state.trail?.map((c) => c.text)).toEqual(trail));
+  });
 });
 
 describe('a test-set item’s edit page under en', () => {
@@ -312,5 +333,13 @@ describe('a test-set item’s edit page under en', () => {
     renderPage();
     expect(await screen.findByText(text)).toBeInTheDocument();
     expect(alert().findActionSlot()!.findButton()!.getElement().textContent).toBe('Next alert');
+  });
+
+  it.each([
+    ['/?from=review', ['Review Studio', 'Review Management', 'Test set: Set A', 'doc.pdf']],
+    ['/?from=test-studio', ['Test Studio', 'Set A', 'doc.pdf']],
+  ])('reads today’s English breadcrumbs of %s', async (path, trail) => {
+    renderPage({}, path);
+    await waitFor(() => expect(state.trail?.map((c) => c.text)).toEqual(trail));
   });
 });

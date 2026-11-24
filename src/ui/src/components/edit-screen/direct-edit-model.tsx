@@ -29,9 +29,10 @@ import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/cop
 import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { PROCESS_CHANGES_LABEL, sharedLabelMessages } from '../common/labels';
+import { statusLabel } from '../common/object-status-renderer';
 import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
-import { HOME_CRUMB, editActiveHref, editTrail } from '../review-queues/breadcrumbs';
+import { editActiveHref, editTrail, homeCrumb } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { useDocumentEdit } from './document-edit-adapter';
 import type { DirectEditDocument } from './document-edit-adapter';
@@ -292,9 +293,9 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
   const leaveTo = isAnnotatorOnly ? MY_TASKS_PATH : `${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}`;
   // The trail the user came by; without one, Tasks for an Annotator-only user, the document's page otherwise.
   const origin = parseEditOrigin(location.search) ?? (isAnnotatorOnly ? 'tasks' : 'document');
-  const navigation: EditNavigation = { trail: editTrail({ origin, objectKey, name }), activeHref: editActiveHref(origin) };
+  const navigation: EditNavigation = { trail: editTrail({ origin, objectKey, name }, intl), activeHref: editActiveHref(origin) };
   // Home only until the document is known.
-  const unloaded: EditNavigation = { trail: [HOME_CRUMB], activeHref: null };
+  const unloaded: EditNavigation = { trail: [homeCrumb(intl)], activeHref: null };
 
   if (loading && !doc) return loadingDocumentModel(intl);
   if (!doc) {
@@ -400,7 +401,8 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
       kind: 'ready',
       header: {
         title: name,
-        status,
+        // Worded as on the document page. An empty status stays empty: statusLabel would print Unknown for it.
+        status: status && statusLabel(status, intl),
         objectKey,
         source: { objectKey },
         summary: {
