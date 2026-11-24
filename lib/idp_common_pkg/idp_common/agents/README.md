@@ -533,8 +533,8 @@ the setting to write rather than `extraction.agentic.enabled`, because the confi
 model derives `agentic.enabled` from `mode` and `default` sets `mode: simple`. Only
 those keys change; the profile is saved as a full copy of its configuration, as every
 profile save is, so a later change to `default` does not reach it. A pre-0.9 flat
-`classification.sectionSplitting`, which wins when the profile is read, is given the
-same value, and `long_tables` is refused when the profile's extraction model is an
+`classification.sectionSplitting` needs no special case, because reading the profile
+migrates it into `classification.document_shape`; `long_tables` is refused when the profile's extraction model is an
 OpenAI GPT-5.x Responses model, which the advanced engine cannot call. The prompt has
 the agent choose them from the description and examples rather than ask, ask one plain
 question only when it cannot tell, and fix a wrongly split document, or rows missing
