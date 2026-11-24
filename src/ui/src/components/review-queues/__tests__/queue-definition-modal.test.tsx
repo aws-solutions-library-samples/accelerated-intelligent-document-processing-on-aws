@@ -86,6 +86,7 @@ const field = (label: string): FormFieldWrapper => {
 };
 
 const setInput = (label: string, value: string) => field(label).findControl()!.findInput()!.setInputValue(value);
+const placeholder = (label: string) => field(label).findControl()!.findInput()!.findNativeInput().getElement().placeholder;
 /** The footer's last button: Create or Save. */
 const primary = () => modal().findFooter()!.findAllButtons().at(-1)!;
 const clickSave = () => fireEvent.click(primary().getElement());
@@ -272,6 +273,37 @@ describe('the queue dialog', () => {
       expect(description.length, `${f.findLabel()?.getElement().textContent} description stays one line`).toBeLessThanOrEqual(50);
     }
     expect(field('Queue id').findDescription()!.getElement().textContent).not.toMatch(/hitl\.review_queues/);
+  });
+
+  it('shows an example name and an example id', () => {
+    open();
+    expect(placeholder('Name')).toBe('e.g. High-value claims');
+    expect(placeholder('Queue id')).toBe('e.g. claims-high-value');
+  });
+
+  it('words the example name in the UI language and keeps the example id as it is', () => {
+    render(
+      <IntlProvider
+        locale="fr-CA"
+        defaultLocale="en"
+        messages={{
+          'reviewQueues.queueSettings.example': 'p. ex. {example}',
+          'reviewQueues.queueSettings.nameExample': 'Réclamations de grande valeur',
+        }}
+      >
+        <QueueDefinitionModal
+          visible
+          queue={null}
+          existingIds={[]}
+          annotators={[]}
+          annotatorsLoading={false}
+          onDismiss={() => undefined}
+          onSaved={vi.fn()}
+        />
+      </IntlProvider>,
+    );
+    expect(placeholder('Name')).toBe('p. ex. Réclamations de grande valeur');
+    expect(placeholder('Queue id')).toBe('p. ex. claims-high-value');
   });
 
   it('has no confidence threshold field', () => {
