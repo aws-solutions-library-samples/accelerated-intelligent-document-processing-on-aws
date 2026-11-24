@@ -3,6 +3,7 @@
 
 """Unit tests for synthesis.bootstrap orchestration (no AWS, generator stubbed)."""
 
+import copy
 import json
 from unittest.mock import Mock
 
@@ -46,7 +47,9 @@ class _FakeConfigManager:
         self.saved = {}
 
     def get_raw_configuration(self, config_type, version):
-        return self.saved.get(version)
+        # A copy, as a real read returns: handing back the stored dict would let a
+        # function that edits what it read pass a test without ever saving it.
+        return copy.deepcopy(self.saved.get(version))
 
     def list_config_versions(self, raise_errors=False):
         return [{"versionName": name, "managed": False} for name in self.saved]

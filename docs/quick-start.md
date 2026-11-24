@@ -111,7 +111,8 @@ ends the conversation.
    deployed with — it becomes active straight away. Otherwise the agent asks
    before making it the active profile, because the active profile is what every
    new document on the stack is processed with.
-5. **Processing options.** For the profile it saves, the agent decides three
+5. **Save and choose processing options.** When you approve the schema, the agent
+   saves it as a new configuration profile. For that profile it then decides three
    things from your description and any examples, and tells you in one sentence
    what it chose:
 
@@ -131,8 +132,8 @@ ends the conversation.
    documents again. Other extraction settings, such as models and prompts, are not
    something Quick Start changes: they're under **Extraction** on the Configuration
    page.
-6. **Activate.** When you approve, the agent creates a configuration profile and
-   **activates** it, then confirms it's ready. As with attached documents, it
+6. **Activate.** The agent then **activates** the new profile and confirms it's
+   ready. As with attached documents, it
    activates straight away only on a stack with no profile of its own yet;
    otherwise it names the profile in use and asks first. Upload a document from
    **Upload Documents** in the side navigation and it's processed with your new
