@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-11-09 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-24 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 | **Methodology** | STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) |
@@ -20,7 +20,7 @@ data storage/analytics.
 
 > **How to read this document.** It is deliberately **category-level**: rows are
 > phrased as threat *classes* rather than as the numbered threat entries, so a
-> reader can scan a STRIDE category without holding 120 identifiers in their head.
+> reader can scan a STRIDE category without holding 123 identifiers in their head.
 > The authoritative per-threat record — identifier, score, status, and whether a
 > mitigation is present or pending — is the
 > [risk register](../risk-assessment/risk-matrix.md), which is derived from the
@@ -73,6 +73,8 @@ Tampering threats involve unauthorized modification of data or code.
 | **Discovery prompt injection** — adversarial sample documents | Discovery | High | Draft-only configs, human review required, schema validation |
 | **Decision model answers accepted as results** — a configured decision model function sets a section's class or a value's confidence with no independent check | Lambda Hooks (decision models) | Medium | Selecting a model is an Admin/Author versioned configuration change; responses must match the `SystemOneResponse` contract; an unknown class goes to the fallback class; the confidence source is recorded per value. See HOOK.T08 |
 | **Bulk skip releases unreviewed output** — one `bulkSkipAllReviews` request completes every pending review of a profile with its machine output | Review Queues | Medium | Admin and Reviewer only at the dispatcher and the resolver; profile scope checked before any document is read; per-document classification of what may be skipped; a required reason, review history and an Inbox notice; one job per stack. See HITL.T05 |
+| **Routing decides what a person reviews** — a profile's routing table, the Author-editable settings that feed it and reprocess skip options decide whether a document is held for review (HITL.T06) | Review Queues | Medium | Routing table Admin-only; S-FEEL parser with no interpreter; unevaluable tables fail to the Default queue; DMN parsed with `defusedxml`, DTDs forbidden; reprocess options Admin/Author and scope-checked |
+| **Uploader-asserted document attributes** — key-value pairs from upload metadata or a sidecar carried to results and hooks as if authoritative (PM.T10) | Document Ingest | Low | One validation module; values never logged; not used in prompts, paths, profile or tenant selection or routing; rendered as text |
 
 ### 3.2 Code/Infrastructure Tampering
 
@@ -190,6 +192,7 @@ These threats span multiple STRIDE categories and components:
 | **SDK dependency compromise** | Code execution on developer machines | Pinned versions, dependency scanning |
 | **Lambda layer compromise** | Code execution in processing pipeline | Verified layers, integrity checks; first-party packages installed from the checkout, not by name; custom-resource Lambdas carry the CloudFormation response helper beside the handler rather than installing `cfnresponse` from the public index |
 | **React dependency compromise** | XSS in web UI | Lock files, dependency scanning, CSP |
+| **In-account image built from third-party code** — the Strands Decider extension builds upstream source and model weights with CodeBuild (FEAT.T06) | Code processing document content inside the account, with egress | Commit-SHA pins for source and weights, fork and branch revisions refused, scan on push, logs-only function role |
 
 ### 8.2 AI/ML-Specific Threats
 

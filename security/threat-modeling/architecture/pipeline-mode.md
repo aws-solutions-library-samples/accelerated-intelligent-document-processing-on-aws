@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.1 |
-| **Last Updated** | 2026-11-17 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-11-24 |
 | **Applies to release** | v0.6.3 |
 | **Classification** | Internal |
 | **Processing Mode** | Pipeline (`use_bda: false`) |
@@ -201,7 +201,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Medium |
 | **Affected Components** | `idp_common/bedrock/openai_responses.py`, model config enums, config UI model dropdowns, pricing/limits tables |
 | **Mitigations** | All traffic stays **within Amazon Bedrock in the customer's own account** — this is a Bedrock-served model, not a call out to OpenAI's own API, so it does not leave the AWS trust boundary (TB4) and is covered by the same TLS/IAM controls and no-training posture. Model selection requires the **Admin/Author** group and is config-versioned and audit-logged, so a change is attributable and reversible (PM.T06 controls apply). Bedrock model access must be explicitly requested/enabled per model in the account, giving a second account-level gate outside the application. Region availability is enforced by Bedrock itself — an unavailable model fails loudly rather than silently rerouting. GovCloud deployments **cannot** select GPT-5.6 at all. Agentic extraction, Discovery, and Policy Discovery reject these models at `config-validate` and at runtime, and `idp-cli config-validate` and `config-upload` check every model ID in a configuration against `config_library/pricing.yaml`. A configured Bedrock Guardrail is not sent on the `bedrock-mantle` Responses route, and a warning is logged when one is configured (PM.T01). |
-| **Residual risk / recommendation** | The application does not implement an allow-list restricting *which* Bedrock models a deployment may select — any model in the enum is choosable by an Author. Deployments with vendor constraints should (1) restrict model access at the **Bedrock account level** (the effective control), and (2) treat the model fields in a config version as security-relevant in change review. Consider a stack parameter constraining the selectable model set for regulated deployments. |
+| **Residual risk / recommendation** | The application does not implement an allow-list restricting *which* Bedrock models a deployment may select — any model in the enum is choosable by an Author. Deployments with vendor constraints should (1) restrict model access at the **Bedrock account level** (the effective control), and (2) treat the model fields in a config version as security-relevant in change review. Consider a stack parameter constraining the selectable model set for regulated deployments. **Other model families reached in v0.6.16.** `section_classification.method: embeddings` sends each section's page images, with the class example images or descriptions, to Cohere Embed v4 on Bedrock through a cross-Region inference profile chosen for the stack's Region; the `decision_model` methods for section classification and extraction confidence send section text or page images, and for confidence the field names and values, to a decision model the deployment names — a Lambda it installs, such as the Strands Decider extension (FEAT.T06), or a SageMaker endpoint (HOOK.T08 to HOOK.T10). Each is opt-in per profile and selected by an Author, so the same recommendation applies: treat those settings as part of a profile's data-handling review. |
 | **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T09: Weaponized Document Exploits a File Parser on the Processing Path
@@ -220,11 +220,27 @@ Each step is independently configurable via the YAML configuration:
 | **Residual risk / recommendation** | The gate is **off by default**, and with it on the scan is signature, YARA and ML based with no behavioural analysis, so a novel exploit is reported clean. It is asynchronous: the object sits in the Input bucket, presignable, between upload and verdict. The plan protects the **Input** bucket only, so a `.zip` in the Staging bucket is opened by the batch pre-processor unscanned — its extracted members do pass the gate when written to the Input bucket, but the archive decoder itself is outside it. `make dep-audit` does not read the six `feature-platform/*/feature-ui` lockfiles. Enabling the gate is the recommendation for any deployment that accepts documents from outside its own organisation. |
 | **Evidence** | `make dep-audit`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
+### PM.T10: Caller-Supplied Document Attributes Are Untrusted Metadata Carried to Results
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | PM.T10 |
+| **Category** | STRIDE: Tampering, Information Disclosure |
+| **Description** | Since v0.6.16 an uploader can attach key-value **document attributes** (an account id, a claim number) that are carried from intake to the tracking row, the results JSON, the web UI, reprocessed runs and the post-processing hook. They arrive as inline `x-amz-meta-idp-attr-<name>` metadata, as a JSON **sidecar** in the Input bucket named by `x-amz-meta-idp-attributes-uri`, or through the SDK and CLI, which upload one of those two forms. The values are whatever the uploader wrote, and the queue sender reads a sidecar with its own role. A downstream system that treats an attribute as an authoritative identifier — routing a result to an account, joining it to a customer record — inherits the uploader's choice. |
+| **Attack Vector** | A principal with write access to the Input bucket sets attribute values that impersonate another account or case, or that carry markup or control characters into a consumer that renders or logs them; or overwrites a document's sidecar before the document arrives, where it can write that key. |
+| **Impact** | A result attributed to the wrong account or case by a downstream consumer; injected content in a consumer that does not escape values |
+| **Likelihood** | Low |
+| **Severity** | Medium |
+| **Affected Components** | `idp_common/document_attributes.py`, `queue_sender`, `idp_common/dynamodb/service.py` (tracking row), the results JSON and `get_results`, the post-processing hook payload, the SDK and CLI upload paths |
+| **Mitigations** | One validation module applies to every route: keys match `^[a-z0-9][a-z0-9_-]{0,62}$`; at most 100 attributes, 1,024 bytes per string, 50 items per list and 32 KB for the set; numbers are bounded; lone surrogates are refused. An invalid attribute is dropped at intake and named by key, quoted, in the log; values are never logged. The SDK and CLI refuse an invalid set rather than drop it. A sidecar is read only at the document's own key plus `.idp-attributes.json` in the document's Input bucket, so a document carries only the sidecar written beside it and cannot name one under another prefix; it is read with a range request bounded to 32 KB and is never processed as a document. Attributes are not used in any prompt, storage path, profile selection, tenant selection or routing rule, and control keys such as `config-version` are read before them. The web UI renders them as text. The web UI's presigned upload names only the profile and revision fields in its POST policy, so a UI upload carries no attributes. |
+| **Residual risk / recommendation** | Attributes are assertions by the uploader, not facts the solution verified; consumers should treat them as such and escape them. Values may contain any Unicode other than lone surrogates, including newlines and control characters. A sidecar is not deleted with its document. |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/test_document_attributes.py`; `lib/idp_sdk/tests/unit/test_document_attributes_sdk.py`; `lib/idp_cli_pkg/tests/test_document_attributes_cli.py`; UNVERIFIED: the citations cover validation, the binding of a sidecar to its document's key and the SDK and CLI routes; the absence of attributes from prompts and routing are not matched to a test |
+
 ## 4. Pipeline Mode Security Controls Summary
 
 | Control | Implementation | Threats Mitigated |
 |---------|---------------|-------------------|
-| **Input validation** | Document format/size checks, Lambda input validation | PM.T01, PM.T02 |
+| **Input validation** | Document format/size checks, Lambda input validation; one validation module for document attributes | PM.T01, PM.T02, PM.T10 |
 | **Malware ingest gate (optional)** | GuardDuty Malware Protection for S3 verdict applied by the queue sender before a workflow starts; refused statuses cannot be reprocessed | PM.T09 |
 | **Dependency audit** | Pinned dependencies; `make dep-audit` gates HIGH+ advisories in both CI systems | PM.T09 |
 | **Output validation** | JSON Schema validation of model outputs; off-schema field filtering | PM.T03, PM.T04 |

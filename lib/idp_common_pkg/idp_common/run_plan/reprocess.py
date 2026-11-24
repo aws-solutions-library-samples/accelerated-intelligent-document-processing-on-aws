@@ -1025,7 +1025,10 @@ class ReprocessService:
             ]
         else:
             intake = document_attributes.read_object_attributes(
-                (head or {}).get("Metadata") or {}, self._input_bucket, self._s3
+                (head or {}).get("Metadata") or {},
+                self._input_bucket,
+                self._s3,
+                document_key=object_key,
             )
             attributes = intake.attributes
             if intake.dropped:
