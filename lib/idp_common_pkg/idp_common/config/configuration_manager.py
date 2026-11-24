@@ -868,13 +868,25 @@ class ConfigurationManager:
             else 0
         )
         # A save that changes nothing cuts no revision anyway (`_record_revisions`),
-        # and rewriting an identical head creates no divergence, so it is not held
-        # to this. Stack deployments re-save every managed profile unchanged.
-        # `existing_record` exists only for a profile save, so the type is
-        # checked first.
+        # and rewriting the head with what documents already run creates no
+        # divergence, so it is not held to this. What it changes is judged against
+        # the published revision whenever that can be read
+        # (`_published_configuration`), not against the head it replaces, which
+        # can read differently after an upgrade. Stack deployments re-save every
+        # managed profile on every update. `existing_record` exists only for a
+        # profile save, so the type is checked first.
+        published_config = (
+            self._published_configuration(version, published_before)
+            if config_type == CONFIG_TYPE_CONFIG and cut_revision
+            else None
+        )
         changes_configuration = config_type == CONFIG_TYPE_CONFIG and (
             existing_record is None
-            or self._config_to_dict(existing_record.config)
+            or (
+                published_config
+                if published_config is not None
+                else self._config_to_dict(existing_record.config)
+            )
             != self._config_to_dict(config)
         )
         revision_required = bool(
@@ -913,6 +925,7 @@ class ConfigurationManager:
                     notes=revision_notes,
                     stored_hash=stored_hash,
                     previous_head=existing_item,
+                    published=published_config,
                 )
                 if revision_required and cut is not None:
                     # `set_published` logs rather than raises, so the head's
@@ -1137,6 +1150,7 @@ class ConfigurationManager:
         notes: Optional[str] = None,
         stored_hash: Optional[str] = None,
         previous_head: Optional[Dict[str, Any]] = None,
+        published: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         """
         Cut the revision(s) for a just-completed profile save.
@@ -1155,9 +1169,12 @@ class ConfigurationManager:
         stack deployment re-saves `default` and each managed profile whether or
         not the shipped configuration moved, so without this a handful of no-op
         upgrades would fill the retention window with identical revisions and
-        push a user's real history out of it. Such a save still refreshes the
-        published revision's stored-content hash, from the revision's body or
-        from `previous_head`, the decompressed head this save replaced (see
+        push a user's real history out of it. "Does not change" is judged against
+        `published`, the configuration of the revision new documents run
+        (`_published_configuration`), and against the configuration `previous`
+        held only when that is None. Such a save still refreshes the published
+        revision's stored-content hash, from the revision's body or from
+        `previous_head`, the decompressed head this save replaced (see
         `_refresh_published_stored_hash`).
         """
         if not self.revisions.enabled:
@@ -1204,7 +1221,9 @@ class ConfigurationManager:
                         f"snapshot r{backfilled} is the current revision"
                     )
                     return backfilled
-        elif unchanged and has_history:
+        elif has_history and (
+            unchanged if published is None else published == new_dict
+        ):
             logger.info(
                 f"Profile '{profile}' saved with no configuration change; "
                 f"not recording a revision"
@@ -1447,6 +1466,53 @@ class ConfigurationManager:
         ).to_dynamodb_item()
         item[_FULL_CONFIG_MARKER] = _FULL_CONFIG_VALUE
         return _stored_content_hash(item)
+
+    def _published_configuration(
+        self, profile: Optional[str], revision: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        The configuration published revision `revision` of `profile` holds, read the
+        way the head a save replaces is read, or None when its body cannot be read.
+
+        A save is compared with this to decide whether it changes the profile,
+        because new documents run the published revision, and a release can change
+        what a stored head reads as without anyone saving it. The head leaves out
+        an empty value while empty is that setting's default
+        (`ConfigurationRecord._omit_rollback_hostile_defaults`), but a revision
+        body holds it as `null`. Once a later release makes the default a value,
+        the head reads that value and the revision, which documents run, still
+        reads empty, so a save of the same settings changes nothing the head shows
+        and does change what documents run. Validated on its own, as the head is,
+        so a setting the revision lacks reads as its default on both sides and
+        does not count as a change.
+
+        Only the stored body is read. Once it has expired, the head can stand in
+        for it only when the head is that revision (`_read_revision_body`), and
+        then the head the save replaces is the same comparison. None as well when
+        history is disabled or no revision is published; a read that fails is
+        logged and also gives None.
+        """
+        if not profile or revision < 1 or not self.revisions.enabled:
+            return None
+        try:
+            body = self._migrated_body(self.revisions.get_body(profile, revision))
+            if body is None:
+                return None
+            return self._config_to_dict(
+                IDPConfig(
+                    **{
+                        k: v
+                        for k, v in body.items()
+                        if k not in (_FULL_CONFIG_MARKER, "config_type")
+                    }
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not read r{revision} of '{profile}' to compare a save with "
+                f"it; comparing with the configuration the save replaces: {e}"
+            )
+            return None
 
     def _refresh_published_stored_hash(
         self, profile: str, previous_head: Optional[Dict[str, Any]] = None

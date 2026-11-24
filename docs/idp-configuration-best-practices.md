@@ -1125,10 +1125,14 @@ Two things follow from where the value lives:
 
 - An empty value was not stored in a profile while empty was the shipped
   default, so a profile saved before the cap shipped resolves to 10000 like the
-  `default` profile. A document or test run pinned to a revision saved then reads
-  that revision as it was saved, with `max_tokens` empty, so it requests the
-  model's maximum (64,000 for Nova 2 Lite). A value you clear now is stored and
-  kept.
+  `default` profile. A revision saved then does store the empty value, so the
+  stack update that ships the cap records a new revision of `default`, of each
+  stack-managed profile and of each custom profile whose configuration is its
+  current revision, and new documents run 10000
+  ([A save that changes nothing records nothing](./configuration-profiles.md#a-save-that-changes-nothing-records-nothing)).
+  A document or test run pinned to an earlier revision reads that revision as it
+  was saved, with `max_tokens` empty, so it requests the model's maximum (64,000
+  for Nova 2 Lite). A value you clear now is stored and kept.
 - The cap stays when you change the step's model. If you choose a model for one
   of these steps that needs longer replies (Bedrock OCR of very dense pages, for
   example), raise the value or clear it.
