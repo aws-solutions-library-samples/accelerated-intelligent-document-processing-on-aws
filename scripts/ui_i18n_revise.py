@@ -4,7 +4,8 @@
 """Revise the entries of a web UI translation catalog that a review flagged, with a Bedrock model.
 
 ``make ui-i18n-revise LOCALE=fr-CA`` has the model of ``make ui-i18n-review`` write again
-the entries a review flagged, and writes each answer that passes the UI build's parity
+the entries a review flagged, or with ``--refresh`` every entry the catalog lacks or
+holds for an older English, and writes each answer that passes the UI build's parity
 check into ``src/ui/src/i18n/<locale>.json``. A person reviews the result before it is
 committed. Issue #1770.
 
@@ -16,8 +17,13 @@ the entries it could not review. An entry whose translation changed after that r
 is left out, so the run never writes over a later edit. ``--notes PATH`` takes a JSON
 object of message id to a note: what a person found where the message shows. A note
 adds its entry to the run, and may name an entry the catalog lacks, which is then
-drafted from the English. Entries the coverage worker calls invalid or stale are listed
-and never sent, as in the review.
+drafted from the English. ``--refresh`` adds every entry the coverage worker calls
+missing or stale, so one run brings a catalog up to date with the English: a missing
+entry is drafted from the English, as a note's is, and so is a stale one, whose request
+says that its English changed and carries neither its old translation nor a review's
+findings about it. Without ``--refresh``, entries the coverage worker calls stale are
+listed and never sent, even one a note names. Entries it calls invalid are listed and
+never sent, as in the review. The three combine.
 
 WHAT THE MODEL IS ASKED
 -----------------------
@@ -25,8 +31,9 @@ The task, the review's rules for the locale (``STYLE_RULES`` in ``ui_i18n_review
 the locale's rules for a revision (``REVISE_RULES``: for ``fr-CA``, Canadian French
 wherever it fits) and the whole glossary open every request and end in a cache point.
 Per entry: the English, the developer's description of where it appears, the current
-translation, the glossary terms its English uses, and the review's findings and the
-note when there are any. The model answers through one tool (``TOOL_NAME``) with the
+translation (none for a missing or stale entry, which a stale one's ``englishChanged``
+explains), the glossary terms its English uses, and the review's findings and the note
+when there are any. The model answers through one tool (``TOOL_NAME``) with the
 message only, per entry.
 
 WHAT IS WRITTEN
@@ -39,7 +46,8 @@ scratch catalog with the parity check the UI build applies: ICU that parses, and
 English's arguments, their kinds and its rich-text tags. An answer that fails, or that
 is not well formed, is refused with the reason, and its entry keeps the text it had.
 An answer that passes and differs from that text is written, with the ``sourceHash`` of
-its English; one that passes unchanged is counted as unchanged.
+its English; one that passes unchanged is counted as unchanged, except for a stale
+entry, which is always written, since its new ``sourceHash`` is the point.
 
 Every run that calls Bedrock writes a provenance file, before the catalog and never under
 ``src/`` (by default under the gitignored ``test-reports/ui-i18n-revise/``, or where
@@ -75,6 +83,7 @@ USAGE
         --review test-reports/ui-i18n-review/fr-CA-<stamp>/report.json
     python3 scripts/ui_i18n_revise.py --locale fr-CA --region ca-central-1 --profile <name> \\
         --review test-reports/ui-i18n-review/fr-CA-<stamp>/report.json --notes notes.json
+    python3 scripts/ui_i18n_revise.py --locale fr-CA --refresh --dry-run
 """
 
 from __future__ import annotations
@@ -159,6 +168,9 @@ class Target:
     #: The review's problems, reason and suggestion, for a disagreement.
     flagged: dict[str, Any] | None = None
     note: str = ""
+    #: ``before`` translates an older English (``--refresh``): it is not sent, and the
+    #: answer is written even when it is the same text, for its new ``sourceHash``.
+    stale: bool = False
     after: str | None = None
     outcome: str = "skipped"
     reason: str = ""
@@ -170,7 +182,9 @@ class Target:
             "english": self.english,
             "description": self.description,
         }
-        if self.before is not None:
+        if self.stale:
+            item["englishChanged"] = True
+        elif self.before is not None:
             item["translation"] = self.before
         if self.terms:
             item["glossaryTerms"] = self.terms
@@ -251,10 +265,12 @@ def plan_revision(
     reports: list[list[dict[str, Any]]],
     notes: Mapping[str, str],
     limit: int | None,
+    refresh: bool = False,
 ) -> Plan:
     """The entries to send, in id order: every entry a review flagged and every entry a
     note names, less the ones the build rejects, the stale ones and the ones edited
-    after their review."""
+    after their review. With ``refresh``, also every missing and every stale entry,
+    each drafted from the English."""
     path = layout.catalog(locale)
     if not path.is_file():
         raise ToolError(
@@ -275,6 +291,7 @@ def plan_revision(
         raise ToolError(f"the coverage worker reported nothing for {locale}")
     invalid = sorted(coverage.get("invalid") or [])
     stale = sorted(coverage.get("stale") or [])
+    refreshed = (set(coverage.get("missing") or []) | set(stale)) if refresh else set()
 
     flagged: dict[str, dict[str, Any] | None] = {}
     changed: set[str] = set()
@@ -284,16 +301,17 @@ def plan_revision(
                 changed.add(entry["id"])
             else:
                 flagged[entry["id"]] = findings(entry)
-    left_out = set(invalid) | set(stale)
+    left_out = set(invalid) | (set() if refresh else set(stale))
     ids = sorted(
         entry_id
-        for entry_id in set(flagged) | set(notes)
+        for entry_id in set(flagged) | set(notes) | refreshed
         if entry_id in english and entry_id not in left_out
     )
     targets = []
     for entry_id in ids:
         source = english[entry_id]
         message = source["defaultMessage"]
+        drafted = entry_id in stale  # only reached with refresh
         targets.append(
             Target(
                 id=entry_id,
@@ -301,8 +319,10 @@ def plan_revision(
                 description=str(source.get("description") or ""),
                 before=current_text(catalog, entry_id),
                 terms=glossary.terms_in(message) if glossary else [],
-                flagged=flagged.get(entry_id),
+                # A review judged the old translation, which is not sent.
+                flagged=None if drafted else flagged.get(entry_id),
                 note=notes.get(entry_id, ""),
+                stale=drafted,
             )
         )
     kept = targets if limit is None else targets[:limit]
@@ -311,8 +331,9 @@ def plan_revision(
         targets=kept,
         deferred=len(targets) - len(kept),
         invalid=invalid,
-        stale=stale,
-        changed=sorted(changed - set(notes)),
+        stale=[] if refresh else stale,
+        # An entry a note names or the refresh drafts is sent, edited after its review or not.
+        changed=sorted(changed - set(notes) - refreshed),
     )
 
 
@@ -376,7 +397,9 @@ def instructions(locale: str, glossary: review.Glossary | None) -> str:
         "(absent when the message has none yet) and the glossary terms its English uses. "
         "Some also carry review: the problems a review found in the current translation, "
         "its reason and its suggested translation. Some carry note: what a person found "
-        "where the message shows. Both are evidence: judge the message yourself.\n\n"
+        "where the message shows. Both are evidence: judge the message yourself. Some "
+        "carry englishChanged: the English changed since the message was translated, so "
+        "its old translation is not given; translate the English as it is now.\n\n"
         "For each message, write its best translation under the rules below: keep what "
         "the current translation gets right, and correct what it gets wrong.\n\n"
         "Keep the ICU MessageFormat of the English exactly: every argument in braces "
@@ -624,7 +647,7 @@ def check_answers(layout: review.Layout, locale: str, answered: list[Target]) ->
             target.reason = "the build's parity check refused it: " + (
                 "; ".join(said) or "its sourceHash is not the English's"
             )
-        elif target.after == target.before:
+        elif target.after == target.before and not target.stale:
             target.outcome = "unchanged"
         else:
             target.outcome = "revised"
@@ -665,6 +688,7 @@ def entry_record(target: Target) -> dict[str, Any]:
         "reason": target.reason,
         "flagged": target.flagged,
         "note": target.note or None,
+        "stale": target.stale,
     }
     if target.outcome == "revised":
         record["message"] = target.after  # what the review's --provenance reads
@@ -705,6 +729,11 @@ def main(argv: list[str] | None = None, *, layout: review.Layout | None = None) 
         help="a JSON object of message id to a note: revise those entries too, with the note",
     )
     parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="revise every entry the coverage report calls missing or stale too, drafting each from the English: the way to bring a catalog up to date with Bedrock",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the plan and the estimate; call nothing",
@@ -726,9 +755,10 @@ def main(argv: list[str] | None = None, *, layout: review.Layout | None = None) 
         help="where to write the provenance file (default under test-reports/ui-i18n-revise/)",
     )
     args = parser.parse_args(argv)
-    if not args.review and args.notes is None:
+    if not args.review and args.notes is None and not args.refresh:
         parser.error(
-            "name what to revise: --review <report.json>, --notes <file>, or both"
+            "name what to revise: --review <report.json>, --notes <file>, --refresh, "
+            "or more than one"
         )
     if args.limit is not None and args.limit < 1:
         parser.error("--limit takes a whole number from 1")
@@ -771,7 +801,9 @@ def revise_catalog(layout: review.Layout, args: argparse.Namespace) -> int:
     reports = [read_review(path, args.locale) for path in args.review]
     notes = read_notes(args.notes) if args.notes else {}
 
-    plan = plan_revision(layout, args.locale, glossary, reports, notes, args.limit)
+    plan = plan_revision(
+        layout, args.locale, glossary, reports, notes, args.limit, args.refresh
+    )
     prefix = instructions(args.locale, glossary)
     batches = make_batches(plan.targets)
     estimate = estimate_usd(rates, prefix, batches)
@@ -781,6 +813,10 @@ def revise_catalog(layout: review.Layout, args: argparse.Namespace) -> int:
         f"{len(batches)} batch{'' if len(batches) == 1 else 'es'} with {args.model}; "
         f"about US${estimate:.2f} (cap US${args.max_usd:.2f})"
     )
+    missing = sum(1 for target in plan.targets if target.before is None)
+    stale = sum(1 for target in plan.targets if target.stale)
+    if args.refresh or missing:
+        print(f"  drafted from the English: {missing} missing, {stale} stale")
     if plan.deferred:
         print(f"  {plan.deferred} more left for a later run by --limit")
     print(
@@ -831,6 +867,7 @@ def revise_catalog(layout: review.Layout, args: argparse.Namespace) -> int:
         },
         "reviews": [layout.relative(path) for path in args.review],
         "notes": layout.relative(args.notes) if args.notes else None,
+        "refresh": args.refresh,
         "cost": {
             "usd": round(spend.usd, 4),
             "maxUsd": args.max_usd,

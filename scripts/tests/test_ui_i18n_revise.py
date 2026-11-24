@@ -159,14 +159,14 @@ def _review_report(entries=None, *, locale="fr-CA", tool="ui-i18n-review") -> di
     }
 
 
-def _coverage(locale="fr-CA", invalid=(), stale=(), problems=()) -> str:
+def _coverage(locale="fr-CA", invalid=(), stale=(), problems=(), missing=()) -> str:
     return json.dumps(
         {
             "sourceKeys": len(EN),
             "locales": {
                 locale: {
                     "translated": 0,
-                    "missing": [],
+                    "missing": list(missing),
                     "stale": list(stale),
                     "invalid": list(invalid),
                     "problems": list(problems),
@@ -565,6 +565,134 @@ def test_batches_hold_at_most_40_entries_and_12000_characters():
     assert [len(batch) for batch in MODULE.make_batches(large)] == [2, 2, 1]
 
 
+# --- the refresh --------------------------------------------------------------------
+
+#: The worker's plan after the English changed: the catalog lacks ``nav.empty``, and its
+#: ``nav.greeting`` translates an older English.
+REFRESH_PLAN = _coverage(missing=["nav.empty"], stale=["nav.greeting"])
+
+
+def _stale_greeting() -> dict[str, Any]:
+    fr = _fr()
+    fr["nav.greeting"] = {"message": "Salut {name}", "sourceHash": "0123456789abcdef"}
+    return fr
+
+
+def test_refresh_sends_every_missing_and_stale_entry(tmp_path, monkeypatch):
+    layout, _, _, _ = _tree(
+        tmp_path, monkeypatch, fr=_stale_greeting(), planned=REFRESH_PLAN
+    )
+    client = FakeBedrock()
+    _use_client(monkeypatch, client)
+
+    assert MODULE.main([*RUN, "--refresh"], layout=layout) == 0
+
+    assert [item["id"] for item in sent(client.requests[0])] == [
+        "nav.empty",
+        "nav.greeting",
+    ]
+    record = _provenance(layout)
+    assert record["refresh"] is True
+    assert record["stale"] == []  # none left out
+    assert {entry["id"]: entry["stale"] for entry in record["entries"]} == {
+        "nav.empty": False,
+        "nav.greeting": True,
+    }
+    assert _catalog(layout)["nav.empty"]["message"] == "'<Aucun contenu>'"
+
+
+def test_a_stale_entry_is_drafted_from_the_english_and_written_with_its_new_sourcehash(
+    tmp_path, monkeypatch
+):
+    # The review flagged nav.greeting before its English changed.
+    layout, report_path, notes_path, _ = _tree(
+        tmp_path, monkeypatch, fr=_stale_greeting(), planned=REFRESH_PLAN
+    )
+    client = FakeBedrock(answer_with({"nav.greeting": "Salut {name}"}))
+    _use_client(monkeypatch, client)
+
+    assert _run(layout, report_path, notes_path, "--refresh") == 0
+
+    by_id = {item["id"]: item for item in sent(client.requests[0])}
+    # Neither the old translation nor the review's findings about it.
+    assert by_id["nav.greeting"] == {
+        "id": "nav.greeting",
+        "english": "Hello {name}",
+        "description": "Greeting",
+        "englishChanged": True,
+    }
+    prefix = client.requests[0]["system"][0]["text"]
+    assert "carry englishChanged: the English changed" in prefix
+    # The same text as before is written all the same, for its new sourceHash.
+    assert _catalog(layout)["nav.greeting"] == {
+        "message": "Salut {name}",
+        "sourceHash": source_hash("Hello {name}"),
+    }
+    entry = {e["id"]: e for e in _provenance(layout)["entries"]}["nav.greeting"]
+    assert (entry["before"], entry["outcome"], entry["flagged"], entry["stale"]) == (
+        "Salut {name}",
+        "revised",
+        None,
+        True,
+    )
+    assert entry["message"] == "Salut {name}"
+
+
+def test_with_refresh_a_note_on_a_stale_entry_is_sent_and_without_it_never(
+    tmp_path, monkeypatch
+):
+    notes = {
+        "nav.greeting": "Shown on the home page.",
+        "nav.upload": "Too long for its button.",
+    }
+    layout, report_path, notes_path, _ = _tree(
+        tmp_path,
+        monkeypatch,
+        fr=_stale_greeting(),
+        planned=REFRESH_PLAN,
+        report=_review_report([]),
+        notes=notes,
+    )
+    client = FakeBedrock()
+    _use_client(monkeypatch, client)
+
+    assert _run(layout, report_path, notes_path) == 0
+    assert [item["id"] for item in sent(client.requests[0])] == ["nav.upload"]
+
+    assert _run(layout, report_path, notes_path, "--refresh") == 0
+    by_id = {item["id"]: item for item in sent(client.requests[1])}
+    assert sorted(by_id) == ["nav.empty", "nav.greeting", "nav.upload"]
+    assert by_id["nav.greeting"]["note"] == "Shown on the home page."
+    assert by_id["nav.greeting"]["englishChanged"] is True
+    assert "translation" not in by_id["nav.greeting"]
+    assert by_id["nav.upload"]["translation"] == "Téléverser des documents"
+    assert by_id["nav.upload"]["note"] == "Too long for its button."
+
+
+def test_a_refresh_dry_run_prints_the_counts_and_the_estimate_and_calls_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    layout, _, _, calls = _tree(
+        tmp_path, monkeypatch, fr=_stale_greeting(), planned=REFRESH_PLAN
+    )
+    _no_client(monkeypatch)
+    before = layout.catalog("fr-CA").read_text(encoding="utf-8")
+
+    argv = ["--locale", "fr-CA", "--refresh", "--dry-run"]
+    assert MODULE.main(argv, layout=layout) == 0
+
+    out = capsys.readouterr().out
+    assert (
+        "fr-CA: 2 entries to revise in 1 batch with us.anthropic.claude-opus-5-5; about US$"
+        in out
+    )
+    assert "drafted from the English: 1 missing, 1 stale" in out
+    assert "left out: 0 invalid, 0 stale, 0 edited after their review" in out
+    assert calls == [layout.catalog_dir]
+    assert not (layout.repo_root / "test-reports").exists()
+    assert layout.catalog("fr-CA").read_text(encoding="utf-8") == before
+
+
 # --- what is written ----------------------------------------------------------------
 
 
@@ -881,6 +1009,7 @@ def test_the_provenance_records_the_run(tmp_path, monkeypatch, capsys):
     }
     assert record["reviews"] == ["review/report.json"]
     assert record["notes"] == "notes.json"
+    assert record["refresh"] is False
     assert record["cost"]["calls"] == 1
     by_id = {entry["id"]: entry for entry in record["entries"]}
     assert by_id["nav.greeting"] == {
@@ -892,6 +1021,7 @@ def test_the_provenance_records_the_run(tmp_path, monkeypatch, capsys):
         "reason": "",
         "flagged": GREETING_FINDINGS,
         "note": None,
+        "stale": False,
         "message": "Bonjour {name}",
     }
     assert by_id["nav.empty"]["before"] is None
@@ -1263,9 +1393,7 @@ class TempCatalog(REVIEW.Layout):
         return self.repo_root / "config_library" / "pricing.yaml"
 
 
-def test_end_to_end_the_build_parity_check_decides_what_is_written(
-    tmp_path, monkeypatch
-):
+def _real_tree(tmp_path: Path) -> TempCatalog:
     layout = TempCatalog(REPO_ROOT, directory=tmp_path)
     if not layout.parser_package.is_dir():
         if IN_CI:
@@ -1274,6 +1402,13 @@ def test_end_to_end_the_build_parity_check_decides_what_is_written(
             )
         pytest.skip("the UI's node_modules are not installed (run make setup-node)")
     layout.catalog_dir.mkdir()
+    return layout
+
+
+def test_end_to_end_the_build_parity_check_decides_what_is_written(
+    tmp_path, monkeypatch
+):
+    layout = _real_tree(tmp_path)
     layout.catalog("en").write_text(json.dumps(EN), encoding="utf-8")
     layout.catalog("fr-CA").write_text(
         json.dumps(_fr(), ensure_ascii=False), encoding="utf-8"
@@ -1313,3 +1448,36 @@ def test_end_to_end_the_build_parity_check_decides_what_is_written(
         "sourceHash": source_hash("'<No content>'"),
     }
     assert catalog["nav.greeting"]["message"] == "Salut {name}"
+
+
+def test_end_to_end_refresh_brings_the_catalog_up_to_date_with_the_english(
+    tmp_path, monkeypatch
+):
+    layout = _real_tree(tmp_path)
+    layout.catalog("en").write_text(json.dumps(EN), encoding="utf-8")
+    layout.catalog("fr-CA").write_text(
+        json.dumps(_stale_greeting(), ensure_ascii=False), encoding="utf-8"
+    )
+    layout.glossary("fr-CA").write_text(GLOSSARY, encoding="utf-8")
+    client = FakeBedrock(answer_with())
+    _use_client(monkeypatch, client)
+
+    provenance = tmp_path / "provenance.json"
+    argv = [*RUN, "--refresh", "--provenance", str(provenance)]
+    assert MODULE.main(argv, layout=layout) == 0
+
+    # The real worker found the missing entry and the stale one, and nothing else.
+    assert [item["id"] for item in sent(client.requests[0])] == [
+        "nav.empty",
+        "nav.greeting",
+    ]
+    report = REVIEW.call_worker(
+        layout, [str(layout.catalog_dir), "--json", "--locale", "fr-CA"]
+    )
+    coverage = report["locales"]["fr-CA"]
+    assert (coverage["missing"], coverage["stale"], coverage["invalid"]) == ([], [], [])
+    catalog = json.loads(layout.catalog("fr-CA").read_text(encoding="utf-8"))
+    assert catalog["nav.greeting"] == {
+        "message": "Bonjour {name}",
+        "sourceHash": source_hash("Hello {name}"),
+    }

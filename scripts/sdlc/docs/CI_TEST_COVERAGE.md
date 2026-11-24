@@ -128,7 +128,7 @@ Three things are deliberately **not** gated, and nothing else covers them:
 The translation tools are developer-only and run with the developer's own AWS
 credentials; no CI job calls any of them. `make ui-i18n-translate` drafts missing and
 stale entries with Amazon Translate, `make ui-i18n-review` and `make ui-i18n-revise`
-review and correct a catalog with a Bedrock model, and `make ai-ux-translation-review`
+review, correct and refresh a catalog with a Bedrock model, and `make ai-ux-translation-review`
 looks at the signed-in UI in `fr-CA` and `en-XA` in the UX runner's confined browser.
 Run them before a release, or after a batch of English changes, rather than expecting
 CI to report what they find.

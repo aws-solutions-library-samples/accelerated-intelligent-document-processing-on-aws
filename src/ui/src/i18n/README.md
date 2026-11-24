@@ -471,20 +471,30 @@ estimated cost and calls nothing; a real run needs `--region` (and `--profile` f
 ## Revising a translation
 
 `make ui-i18n-revise LOCALE=fr-CA` ([`ui_i18n_revise.py`](../../../../scripts/ui_i18n_revise.py)) has the review's
-model write again the entries of `<locale>.json` that a review flagged, and writes each answer that passes the build's
-parity check. It is a developer tool run with your own AWS credentials, like the other two. Start with
+model write again the entries of `<locale>.json` that a review flagged, or with `--refresh` every entry the catalog
+lacks or holds for an older English, and writes each answer that passes the build's parity check. It is a developer
+tool run with your own AWS credentials, like the other two. Start with
 `UI_I18N_REVISE_ARGS="--review <report.json> --dry-run"`, which prints the entries, the batches and the estimated cost
 and calls nothing; a real run needs `--region` (and `--profile` for a named profile).
 
 - **What is revised.** `--review <report.json>` (repeatable) takes a review's disagreements, each with the problems,
   reason and suggestion the review gave, and the entries it could not review. An entry whose translation changed
   after that review is left out. `--notes <file>`, a JSON object of message id to a note, adds entries no review
-  flagged, such as one a screen shows wrongly or one the catalog lacks. Invalid and stale entries are never sent.
+  flagged, such as one a screen shows wrongly or one the catalog lacks. Invalid entries are never sent, and stale
+  ones only with `--refresh`.
+- **Refreshing a catalog.** `--refresh` is the way to bring a catalog up to date with Bedrock after the English
+  changed: it adds every entry `make ui-i18n-coverage` calls missing or stale. A missing entry is drafted from the
+  English, and so is a stale one: its request says that its English changed and carries neither its old translation
+  nor a review's findings about it, and its answer is written with the new `sourceHash` even when the text is the
+  same. It combines with `--review` and `--notes`. `UI_I18N_REVISE_ARGS="--refresh --dry-run"` prints how many
+  entries are missing and stale and the estimated cost; after the run, `make ui-i18n-review` with
+  `--provenance <file>` reviews what it wrote.
 - **What the model is asked.** The review's rules for the locale come first, then the rules for a revision: for
   `fr-CA`, Canadian French wherever it fits (Quebec usage such as courriel, clavardage, téléverser and bogue), a
   no-break space before a colon that ends a phrase and none before `;`, `?` and `!`, then the whole glossary. Per
-  entry it gets the English, its `description`, the current translation, the glossary terms its English uses, and the
-  review's findings and the note when there are any. It answers with the message only.
+  entry it gets the English, its `description`, the current translation (none for a missing or stale entry), the
+  glossary terms its English uses, and the review's findings and the note when there are any. It answers with the
+  message only.
 - **What is written.** Each answer first gets the locale's spacing before punctuation by code, as the drafting tool
   applies it (the model does not keep no-break spaces). The coverage worker then checks every answer with the
   build's parity check. An answer that fails, or is not well formed, is refused with the reason, and its entry keeps
