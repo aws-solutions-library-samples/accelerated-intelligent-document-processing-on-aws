@@ -188,7 +188,7 @@ export const DocumentsQueryLayout = (): React.JSX.Element => {
       })
       .catch((err) => {
         logger.error('Error querying the knowledge base', err);
-        replacePlaceholder(describeApiError(err, intl.formatMessage(messages.queryAction)));
+        replacePlaceholder(describeApiError(err, messages.queryAction, intl));
       });
     setMeetingKbQueryStatus(false);
   };
