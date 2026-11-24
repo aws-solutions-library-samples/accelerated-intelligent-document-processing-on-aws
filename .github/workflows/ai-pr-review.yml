@@ -140,7 +140,8 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        # Node 22: @anthropic-ai/claude-code declares `engines: {node: ">=22"}`,
+        # Node 26, the major the other CI jobs use; @anthropic-ai/claude-code
+        # declares `engines: {node: ">=22"}`,
         # and an older major fails in the quietest way available — npm's
         # EBADENGINE is only a warning and `claude --version` succeeds on 20,
         # after which the CLI exits 1 with an empty stderr on the first real
@@ -149,7 +150,7 @@ jobs:
         # with BASH's status rather than curl's and so fails silently.
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version: 26
 
       - name: Install Claude Code
         run: |

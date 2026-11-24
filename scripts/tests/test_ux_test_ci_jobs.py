@@ -1210,8 +1210,8 @@ def test_the_setup_steps_create_the_environments_rotate_and_confirm(
 def test_the_docs_name_the_one_step_that_keeps_the_jobs_environment(
     ci_config, ci_text: str, build_job
 ) -> None:
-    """``.node_setup`` unpacks Node.js from nodejs.org and has its npm upgrade
-    itself with the job's environment, as in every job that builds the UI, so
+    """``.node_setup`` unpacks Node.js from nodejs.org, and uses its bundled npm,
+    with the job's environment, as in every job that builds the UI, so
     while ``ux_test_build`` includes it the security item and the comment above
     the wrapper name it, rather than saying no third-party step inherits the job's
     secrets."""
