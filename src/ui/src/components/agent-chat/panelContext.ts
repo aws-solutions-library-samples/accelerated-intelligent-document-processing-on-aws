@@ -8,6 +8,13 @@ const PANEL_CONTEXT_BLOCKS = /<panel-context>[\s\S]*?<\/panel-context>/g;
 const PANEL_CONTEXT_MARKERS = /<\/?panel-context>/g;
 
 /**
+ * What the user typed, as it is sent: without `<panel-context>` markers, which only the
+ * panel writes. A marker left in would hide the user's own words from their transcript,
+ * because the chat leaves out everything between a pair of them.
+ */
+export const typedText = (typed: string): string => typed.replace(PANEL_CONTEXT_MARKERS, '');
+
+/**
  * A message for the agent that the user sees only `visible` of: `context` is wrapped in
  * a `<panel-context>` block, which the chat, the session title and the session list
  * leave out. `idp_common.agents.common.chat_text` and the agent chat resolver strip the
@@ -16,7 +23,7 @@ const PANEL_CONTEXT_MARKERS = /<\/?panel-context>/g;
  * would close the block early, while one in `visible` would hide what the user typed.
  */
 export const withPanelContext = (visible: string, context: string): string => {
-  const shown = visible.replace(PANEL_CONTEXT_MARKERS, '');
+  const shown = typedText(visible);
   const block = OPEN_TAG + context.replace(PANEL_CONTEXT_MARKERS, '') + CLOSE_TAG;
   return shown ? shown + BLOCK_SEPARATOR + block : block;
 };

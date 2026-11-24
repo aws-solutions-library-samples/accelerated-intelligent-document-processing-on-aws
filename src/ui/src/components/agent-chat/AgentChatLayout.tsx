@@ -22,7 +22,7 @@ import {
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { DISCOVERY_JOB_PATH } from '../../routes/constants';
 import { activatesWithoutAsking, newQuickStartProfileName } from './quickStartDiscoveryTarget';
-import { visibleChatText, withPanelContext } from './panelContext';
+import { typedText, visibleChatText, withPanelContext } from './panelContext';
 import { SupportPromptGroup, LoadingBar } from '@cloudscape-design/chat-components';
 import SafeMarkdown from '../common/SafeMarkdown';
 import { generateClient } from '../../api/client-shim';
@@ -563,7 +563,7 @@ const AgentChatLayout = ({
         note,
       );
     } else {
-      messageToSend = prompt;
+      messageToSend = typedText(prompt);
     }
 
     updateAgentChatState({ inputValue: '' });

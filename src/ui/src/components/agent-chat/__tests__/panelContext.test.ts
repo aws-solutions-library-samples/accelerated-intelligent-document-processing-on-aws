@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { visibleChatText, withPanelContext } from '../panelContext';
+import { typedText, visibleChatText, withPanelContext } from '../panelContext';
 
 describe('a message the panel sends for the user', () => {
   it.each([
@@ -40,10 +40,18 @@ describe('a message the panel sends for the user', () => {
     expect(visibleChatText(message)).toBe('Typed by me');
   });
 
+  it('keeps what the user typed visible when no files are attached', () => {
+    const sent = typedText('What does <panel-context>x</panel-context> mean?');
+    expect(sent).toBe('What does x mean?');
+    expect(visibleChatText(sent)).toBe('What does x mean?');
+    expect(visibleChatText(typedText('<panel-context>only this</panel-context>'))).toBe('only this');
+  });
+
   it('is what the chat layout sends and renders', () => {
     const layout = readFileSync(join(__dirname, '..', 'AgentChatLayout.tsx'), 'utf-8');
     expect(layout).toMatch(/sendMessage\(withPanelContext\('', summaryFor\(/);
     expect(layout).toMatch(/messageToSend = withPanelContext\(\s*prompt\.trim\(\) \|\| intl\.formatMessage\(uiMessages\.attachedDocuments/);
+    expect(layout).toMatch(/messageToSend = typedText\(prompt\);/);
     expect(layout).toMatch(/if \(isUser\) \{\s*contentText = visibleChatText\(contentText\);\s*if \(!contentText\) return null;/);
   });
 });
