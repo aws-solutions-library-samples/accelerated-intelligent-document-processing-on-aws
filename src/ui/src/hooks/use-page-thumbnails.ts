@@ -59,11 +59,12 @@
  */
 
 import { useEffect, useState } from 'react';
+import { defineMessages, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { presignBatch, type PresignRequest } from '../api/presign-batch';
 import { useDocumentVersion } from '../contexts/document-version';
-import { FILE_ACCESS_DENIED_MESSAGE } from './utils/graphql-error';
+import { fileAccessMessages } from './utils/graphql-error';
 
 const logger = new ConsoleLogger('use-page-thumbnails');
 
@@ -91,13 +92,21 @@ export interface PageThumbnails {
   failure: ThumbnailFailure | null;
 }
 
+const messages = defineMessages<{ failed: NoMessageValues }>({
+  failed: {
+    id: 'documents.pageThumbnails.failed',
+    defaultMessage: 'Page thumbnails could not be loaded.',
+    description: 'Alert text shown with the page thumbnails when they could not be loaded.',
+  },
+});
+
 /**
  * What to show for each failure. One place, because both panels show it and a
  * second copy is how the two would drift.
  */
-export const THUMBNAIL_FAILURE_MESSAGES: Record<ThumbnailFailure, string> = {
-  'access-denied': FILE_ACCESS_DENIED_MESSAGE,
-  failed: 'Page thumbnails could not be loaded.',
+export const THUMBNAIL_FAILURE_MESSAGES: Record<ThumbnailFailure, TypedMessageDescriptor<NoMessageValues>> = {
+  'access-denied': fileAccessMessages.denied,
+  failed: messages.failed,
 };
 
 const NO_THUMBNAILS: PageThumbnails = { urls: {}, failure: null };

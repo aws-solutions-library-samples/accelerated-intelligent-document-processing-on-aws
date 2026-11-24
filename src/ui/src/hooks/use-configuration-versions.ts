@@ -29,7 +29,8 @@ interface UseConfigurationVersionsReturn {
   /** True once the first list request has settled, whether or not it succeeded. */
   loaded: boolean;
   error: string | null;
-  fetchVersions: () => Promise<void>;
+  /** Re-reads the profiles; resolves to the list the server returned, before this hook's scope filter, or null when the read failed. */
+  fetchVersions: () => Promise<ConfigVersion[] | null>;
   fetchVersion: (versionName: string) => Promise<{ schema: unknown; default: unknown; custom: unknown }>;
   setActiveVersion: (versionName: string) => Promise<Record<string, unknown>>;
   saveAsNewVersion: (
@@ -66,7 +67,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
     ? allVersions.filter((v) => scopeAllows(allowedConfigVersions, v.versionName))
     : allVersions;
 
-  const fetchVersions = async (): Promise<void> => {
+  const fetchVersions = async (): Promise<ConfigVersion[] | null> => {
     setLoading(true);
     setError(null);
 
@@ -89,6 +90,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
         fetchedVersions.map((v) => ({ name: v.versionName, description: v.description, created: v.created, isActive: v.isActive })),
       );
       setAllVersions(fetchedVersions);
+      return fetchedVersions;
     } catch (err: unknown) {
       logger.error('Error fetching configuration profiles:', err);
       console.error('Full error object:', err);
@@ -100,6 +102,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
         });
       }
       setError(graphqlErr.message || 'Failed to fetch versions');
+      return null;
     } finally {
       setLoading(false);
       setLoaded(true);

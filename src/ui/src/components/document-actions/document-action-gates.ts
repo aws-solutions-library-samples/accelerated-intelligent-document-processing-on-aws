@@ -17,39 +17,13 @@
 // availability. The actions that call processChanges are, for a caller who is not an
 // Admin, also refused unless the caller holds the document's open review (O), as the
 // server refuses them.
+import type { IntlShape, NoMessageValues, TypedMessageDescriptor } from 'react-intl';
+
 import { baselineCopyBlockedReason } from '../common/copy-to-baseline';
 import { ABORTABLE_STATUSES } from '../common/document-statuses';
 import { inReviewQueueEditReason, isHitlReviewFinished, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
-import {
-  BDA_REGROUP_REASON,
-  IN_REVIEW_SHORT_REASON,
-  NO_SECTIONS_REASON,
-  NO_SUMMARY_REASON,
-  PROCESSING_REASON,
-  isEditableStatus,
-} from '../edit-screen/document-edit-status';
-import {
-  BASELINE_COPYING_REASON,
-  BDA_REPROCESS_REASON,
-  CONFIG_LOADING_REASON,
-  HISTORICAL_REASON,
-  LEGACY_REVIEW_REGROUP_REASON,
-  NOT_ABORTABLE_REASON,
-  NO_COST_REASON,
-  NO_EVALUATION_REPORT_REASON,
-  NO_EXECUTION_REASON,
-  NO_PAGES_REASON,
-  NO_PAGE_TEXT_REASON,
-  NO_PENDING_REVIEW_REASON,
-  NOT_FINISHED_REASON,
-  ALREADY_IN_REVIEW_REASON,
-  REVIEW_QUEUE_OFF_REASON,
-  NO_RULE_VALIDATION_REASON,
-  REVIEWER_FINISHED_REASON,
-  REVIEWER_UNCLAIMED_REASON,
-  REVIEW_OWNER_REASON,
-  RULE_VALIDATION_HISTORICAL_REASON,
-} from './action-reasons';
+import { documentEditStatusMessages, isEditableStatus } from '../edit-screen/document-edit-status';
+import { actionReasonMessages } from './action-reasons';
 
 export type DocumentActionId =
   | 'summary'
@@ -210,15 +184,22 @@ export const isOfferedTo = (roles: ActionRoles, action: GatedAction): boolean =>
 /** The first reason that applies, in order. */
 const first = (...checks: [boolean, string | undefined][]): string | undefined => checks.find(([applies]) => applies)?.[1];
 
-export const documentActionGates = (input: GateInput): DocumentActionGates => {
+/**
+ * Every action's gate for one document. With `intl`, every reason is in the UI's language;
+ * without it, the English source text the exported reason constants hold.
+ */
+export const documentActionGates = (input: GateInput, intl?: IntlShape): DocumentActionGates => {
   const { roles, doc, displayed, isHistorical, holdsReview, bdaMode, configLoading, baselineRequestInFlight, defaultQueueEnabled } = input;
-  const H: [boolean, string] = [isHistorical, HISTORICAL_REASON];
+  // A reason in the UI's language; without `intl`, its English source text, the exported constant's value.
+  const reason = (message: TypedMessageDescriptor<NoMessageValues>): string =>
+    intl ? intl.formatMessage(message) : String(message.defaultMessage);
+  const H: [boolean, string] = [isHistorical, reason(actionReasonMessages.historical)];
   const inQueue = isInReviewQueue(doc.hitlStatus);
-  const Q: [boolean, string] = [inQueue, inReviewQueueEditReason(roles.canWorkReviewQueues)];
+  const Q: [boolean, string] = [inQueue, inReviewQueueEditReason(roles.canWorkReviewQueues, intl)];
   const processing = !isEditableStatus(doc.objectStatus);
-  const P: [boolean, string] = [processing, PROCESSING_REASON];
-  const C: [boolean, string] = [configLoading, CONFIG_LOADING_REASON];
-  const B: [boolean, string] = [bdaMode, BDA_REPROCESS_REASON];
+  const P: [boolean, string] = [processing, reason(documentEditStatusMessages.processing)];
+  const C: [boolean, string] = [configLoading, reason(actionReasonMessages.configLoading)];
+  const B: [boolean, string] = [bdaMode, reason(actionReasonMessages.bdaReprocess)];
 
   const hitl = normalizeHitlStatus(doc.hitlStatus);
   const hasOwner = !!(doc.hitlReviewOwner || doc.hitlReviewOwnerEmail);
@@ -230,9 +211,9 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
   const nonAdmin = !roles.isAdmin;
   const reviewOpen = ['pending', 'in_progress'].includes(hitl.kind);
   const O: [boolean, string][] = [
-    [nonAdmin && finished, REVIEWER_FINISHED_REASON],
-    [nonAdmin && reviewOpen && !hasOwner, REVIEWER_UNCLAIMED_REASON],
-    [nonAdmin && !(reviewOpen && holdsReview), REVIEW_OWNER_REASON],
+    [nonAdmin && finished, reason(actionReasonMessages.reviewerFinished)],
+    [nonAdmin && reviewOpen && !hasOwner, reason(actionReasonMessages.reviewerUnclaimed)],
+    [nonAdmin && !(reviewOpen && holdsReview), reason(actionReasonMessages.reviewOwner)],
   ];
 
   const gate = (action: GatedAction, ...checks: [boolean, string | undefined][]): ActionGate => ({
@@ -247,19 +228,19 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
     // available whatever the live document is doing.
     summary: gate(
       'summary',
-      [!isHistorical && inQueue, IN_REVIEW_SHORT_REASON],
-      [!isHistorical && processing, PROCESSING_REASON],
-      [!displayed.summaryReportUri, NO_SUMMARY_REASON],
+      [!isHistorical && inQueue, reason(documentEditStatusMessages.inReviewShort)],
+      [!isHistorical && processing, reason(documentEditStatusMessages.processing)],
+      [!displayed.summaryReportUri, reason(documentEditStatusMessages.noSummary)],
     ),
-    evaluation: gate('evaluation', [!displayed.evaluationReportUri, NO_EVALUATION_REPORT_REASON]),
+    evaluation: gate('evaluation', [!displayed.evaluationReportUri, reason(actionReasonMessages.noEvaluationReport)]),
     'rule-validation': gate(
       'rule-validation',
-      [isHistorical, RULE_VALIDATION_HISTORICAL_REASON],
-      [!displayed.ruleValidationResultUri, NO_RULE_VALIDATION_REASON],
+      [isHistorical, reason(actionReasonMessages.ruleValidationHistorical)],
+      [!displayed.ruleValidationResultUri, reason(actionReasonMessages.noRuleValidation)],
     ),
     // About the document as shown: a past version's cost is its own.
-    cost: gate('cost', [!displayed.hasCost, NO_COST_REASON]),
-    flow: gate('flow', [!doc.executionArn, NO_EXECUTION_REASON]),
+    cost: gate('cost', [!displayed.hasCost, reason(actionReasonMessages.noCost)]),
+    flow: gate('flow', [!doc.executionArn, reason(actionReasonMessages.noExecution)]),
     // More Actions.
     regroup: gate(
       'regroup',
@@ -268,37 +249,37 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
       P,
       C,
       // A BDA reprocess keeps the sections a document already has.
-      [bdaMode, BDA_REGROUP_REASON],
+      [bdaMode, reason(documentEditStatusMessages.bdaRegroup)],
       // The server refuses to regroup a legacy review in progress.
-      [doc.objectStatus === 'HITL_IN_PROGRESS' && !hitl.queueManaged, LEGACY_REVIEW_REGROUP_REASON],
-      [doc.sectionCount === 0, NO_SECTIONS_REASON],
+      [doc.objectStatus === 'HITL_IN_PROGRESS' && !hitl.queueManaged, reason(actionReasonMessages.legacyReviewRegroup)],
+      [doc.sectionCount === 0, reason(documentEditStatusMessages.noSections)],
     ),
-    reextract: gate('reextract', H, Q, P, C, B, ...O, [doc.sectionCount === 0, NO_SECTIONS_REASON]),
-    'page-text': gate('page-text', H, Q, P, C, B, ...O, [doc.pagesWithText === 0, NO_PAGE_TEXT_REASON]),
-    'reset-class': gate('reset-class', H, Q, P, C, B, ...O, [doc.pageCount === 0, NO_PAGES_REASON]),
+    reextract: gate('reextract', H, Q, P, C, B, ...O, [doc.sectionCount === 0, reason(documentEditStatusMessages.noSections)]),
+    'page-text': gate('page-text', H, Q, P, C, B, ...O, [doc.pagesWithText === 0, reason(actionReasonMessages.noPageText)]),
+    'reset-class': gate('reset-class', H, Q, P, C, B, ...O, [doc.pageCount === 0, reason(actionReasonMessages.noPages)]),
     baseline: gate(
       'baseline',
       H,
       Q,
       P,
-      [baselineRequestInFlight, BASELINE_COPYING_REASON],
-      [!!baselineCopyBlockedReason(doc.evaluationStatus), baselineCopyBlockedReason(doc.evaluationStatus)],
+      [baselineRequestInFlight, reason(actionReasonMessages.baselineCopying)],
+      [!!baselineCopyBlockedReason(doc.evaluationStatus), baselineCopyBlockedReason(doc.evaluationStatus, intl)],
     ),
     'skip-all': gate(
       'skip-all',
       H,
-      [hitl.queueManaged && hitl.kind === 'in_review', inReviewQueueEditReason(roles.canWorkReviewQueues)],
-      [!pendingReview, NO_PENDING_REVIEW_REASON],
+      [hitl.queueManaged && hitl.kind === 'in_review', inReviewQueueEditReason(roles.canWorkReviewQueues, intl)],
+      [!pendingReview, reason(actionReasonMessages.noPendingReview)],
     ),
     'send-to-review': gate(
       'send-to-review',
       H,
-      [defaultQueueEnabled === false, REVIEW_QUEUE_OFF_REASON],
-      [doc.objectStatus !== 'COMPLETED', NOT_FINISHED_REASON],
-      [(hitl.queueManaged && hitl.kind === 'in_review') || pendingReview, ALREADY_IN_REVIEW_REASON],
+      [defaultQueueEnabled === false, reason(actionReasonMessages.reviewQueueOff)],
+      [doc.objectStatus !== 'COMPLETED', reason(actionReasonMessages.notFinished)],
+      [(hitl.queueManaged && hitl.kind === 'in_review') || pendingReview, reason(actionReasonMessages.alreadyInReview)],
     ),
     reprocess: gate('reprocess', H),
-    abort: gate('abort', H, [!ABORTABLE_STATUSES.includes(String(doc.objectStatus ?? '')), NOT_ABORTABLE_REASON]),
+    abort: gate('abort', H, [!ABORTABLE_STATUSES.includes(String(doc.objectStatus ?? '')), reason(actionReasonMessages.notAbortable)]),
     delete: gate('delete', H),
     // Buttons.
     download: gate('download'),
@@ -310,7 +291,7 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
     },
     edit: {
       shown: editInQueue || inGroups(roles, EDIT_GROUPS),
-      disabledReason: first(H, [!editInQueue && processing, PROCESSING_REASON]),
+      disabledReason: first(H, [!editInQueue && processing, reason(documentEditStatusMessages.processing)]),
     },
     editInQueue,
     canChangeClass: !(roles.isReviewerOnly && ((!!doc.hitlTriggered && !hasOwner) || processing || finished)),

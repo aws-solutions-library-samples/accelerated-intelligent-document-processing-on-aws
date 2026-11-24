@@ -21,8 +21,24 @@
 
 import React from 'react';
 import { Button, Popover, Box } from '@cloudscape-design/components';
+import { defineMessages, useIntl } from 'react-intl';
 
 import { classifyFieldGeometry, describeFieldGeometry, hasDrawableGeometry } from './geometry-coverage';
+
+const messages = defineMessages<{ highlight: { readonly field: string }; why: { readonly field: string } }>({
+  highlight: {
+    id: 'common.geometry.highlight',
+    defaultMessage: 'Highlight {field} on the page image',
+    description:
+      "Screen-reader label of the button beside a field of the edit page's section editor that highlights the field on the page image. {field} is the field's name, as the document holds it.",
+  },
+  why: {
+    id: 'common.geometry.why',
+    defaultMessage: 'Why {field} has no bounding box',
+    description:
+      "Screen-reader label of the button beside a field of the edit page's section editor that shows why the field has no bounding box on the page image. {field} is the field's name, as the document holds it.",
+  },
+});
 
 interface FieldGeometryAffordanceProps {
   /** Label the control names, so the announcement identifies the row. */
@@ -62,6 +78,7 @@ const FieldGeometryAffordance = ({
   hasFieldData = true,
   onLocate,
 }: FieldGeometryAffordanceProps): React.JSX.Element => {
+  const intl = useIntl();
   // `hasDrawableGeometry`, not truthiness: an empty array and an entry with no
   // boundingBox are both truthy and neither is drawable, so the control would
   // offer a highlight the overlay cannot paint while the count — which uses
@@ -75,7 +92,7 @@ const FieldGeometryAffordance = ({
       <Button
         variant="inline-icon"
         iconName="search"
-        ariaLabel={`Highlight ${fieldKey} on the page image`}
+        ariaLabel={intl.formatMessage(messages.highlight, { field: fieldKey })}
         onClick={(e) => {
           // Stops the row's own click handler running a second locate.
           e.stopPropagation();
@@ -105,13 +122,13 @@ const FieldGeometryAffordance = ({
         position="top"
         size="small"
         triggerType="custom"
-        content={<Box variant="span">{describeFieldGeometry(state)}</Box>}
+        content={<Box variant="span">{describeFieldGeometry(state, intl)}</Box>}
       >
         {/* `status-info`, not a warning or an error: neither state is a fault. A
             field the model found nothing for is an ordinary outcome, and one whose
             value is not on the page may simply have been inferred from elsewhere in
             the document. */}
-        <Button variant="inline-icon" iconName="status-info" ariaLabel={`Why ${fieldKey} has no bounding box`} />
+        <Button variant="inline-icon" iconName="status-info" ariaLabel={intl.formatMessage(messages.why, { field: fieldKey })} />
       </Popover>
     </span>
   );

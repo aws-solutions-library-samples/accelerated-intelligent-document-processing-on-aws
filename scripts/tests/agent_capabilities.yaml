@@ -452,9 +452,13 @@ entries:
     control:
       - *safe_markdown_images
       - *safe_markdown_schema
+      - {symbol: lib/idp_common_pkg/idp_common/synthesis/bootstrap.py::refuse_protected_profile,
+         limits: configuration_write}
     test:
       - *safe_markdown_test
       - *markdown_surfaces_test
+      - lib/idp_common_pkg/tests/unit/config/test_managed_flag_survives_saves.py::test_bootstrap_leaves_a_managed_profile_as_it_was
+      - lib/idp_common_pkg/tests/unit/synthesis/test_bootstrap.py::TestProtectedProfiles::test_a_stack_managed_profile_is_refused
 
   sample-calculator-agent:
     surfaces:
@@ -711,7 +715,9 @@ entries:
     surfaces: [harness:scripts/ux_runner/agent.py::claude_argv]
     note: >-
       The MR UX test and the first-time-user stories (ai_ux_test, ai_ux_test_stories),
-      driving a confined browser against the shared review stack.
+      driving a confined browser against the shared review stack, and the screen
+      review of a translated UI (ai_ux_translation_review), which may only look and
+      writes local files, no comment.
     reads: [review_stack_session]
     inputs: [review_stack_pages]
     outputs: [review_comment]

@@ -10,6 +10,7 @@
 
 import React from 'react';
 import { act, render } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppContext } from '../app';
@@ -84,6 +85,12 @@ const Consumer = ({ index }: { index: number }): React.JSX.Element => {
 const setSuccessMessage = vi.fn();
 const setErrorMessage = vi.fn();
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderProvider = () =>
   render(
     <AppContext.Provider value={{ setSuccessMessage, setErrorMessage } as unknown as AppContextValue}>
@@ -93,6 +100,7 @@ const renderProvider = () =>
         <Consumer index={2} />
       </InboxProvider>
     </AppContext.Provider>,
+    { wrapper: English },
   );
 
 describe('InboxProvider', () => {

@@ -30,9 +30,16 @@ import {
   Tabs,
   Toggle,
 } from '@cloudscape-design/components';
-import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import { getErrorMessage } from '../../utils/errorUtils';
+import {
+  defineMessages,
+  FormattedMessage,
+  useIntl,
+  type IntlShape,
+  type MessageTag,
+  type NoMessageValues,
+  type TypedMessageDescriptor,
+} from 'react-intl';
 import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
@@ -44,8 +51,228 @@ import { collapseKeysAbove, focusFieldNode } from './field-focus';
 import type { FieldFocusRequest } from './field-focus';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 import type { SectionEvaluation } from './use-section-evaluation';
+import { editPageErrorText, editScreenSharedMessages } from './edit-messages';
 
 const logger = new ConsoleLogger('SectionEditor');
+
+type ErrorText = { readonly error: string };
+type Bold = { readonly b: MessageTag };
+
+const messages = defineMessages<{
+  sectionTab: { readonly sectionId: string; readonly documentClass: string };
+  sectionTabNoClass: { readonly sectionId: string };
+  loadFailed: ErrorText;
+  saveFailed: ErrorText;
+  unsavedChanges: NoMessageValues;
+  switchDiscardConfirm: NoMessageValues;
+  showEvaluation: NoMessageValues;
+  sectionAriaLabel: { readonly section: string };
+  sectionFallback: NoMessageValues;
+  filterAriaLabel: { readonly filter: string };
+  filterAll: NoMessageValues;
+  filterAlerts: NoMessageValues;
+  filterEvalMismatches: NoMessageValues;
+  filterNeedsEvaluation: NoMessageValues;
+  editPageGrouping: NoMessageValues;
+  noGeometry: NoMessageValues;
+  renderingPages: NoMessageValues;
+  loadingSection: NoMessageValues;
+  tabVisual: NoMessageValues;
+  tabJson: NoMessageValues;
+  comparisonHeader: NoMessageValues;
+  comparisonBody: NoMessageValues;
+  baselineHint: Bold;
+  fieldLinkLabel: NoMessageValues;
+  fieldLinkDescription: Bold & { readonly path: string };
+  fieldLinkCopy: NoMessageValues;
+  fieldLinkCopied: NoMessageValues;
+  fieldLinkCopyFailed: NoMessageValues;
+  noValuesHeader: NoMessageValues;
+  noValuesEmpty: NoMessageValues;
+  noValuesMissing: NoMessageValues;
+}>({
+  sectionTab: {
+    id: 'editScreen.sectionEditor.sectionTab',
+    defaultMessage: 'Section {sectionId} ({documentClass})',
+    description:
+      "A section's name in the Section menu of the edit page's section editor, and on the menu's button. {sectionId} is the section's id and {documentClass} its document class, as the document holds them.",
+  },
+  sectionTabNoClass: {
+    id: 'editScreen.sectionEditor.sectionTabNoClass',
+    defaultMessage: 'Section {sectionId} (no class)',
+    description:
+      "A section's name in the Section menu of the edit page's section editor, and on the menu's button, for a section with no document class. {sectionId} is the section's id.",
+  },
+  loadFailed: {
+    id: 'editScreen.sectionEditor.loadFailed',
+    defaultMessage: 'Failed to load ground truth: {error}',
+    description:
+      "Error in the edit page's section editor when the open section's results could not be read. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language.",
+  },
+  saveFailed: {
+    id: 'editScreen.sectionEditor.saveFailed',
+    defaultMessage: 'Failed to save: {error}',
+    description:
+      "Error in the edit page's section editor when the open section could not be saved. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language.",
+  },
+  unsavedChanges: {
+    id: 'editScreen.sectionEditor.unsavedChanges',
+    defaultMessage: 'You have unsaved changes. Leave this document and discard them?',
+    description:
+      'Confirmation the browser shows when the user follows a link in the app away from the edit page with unsaved edits in its section editor.',
+  },
+  switchDiscardConfirm: {
+    id: 'editScreen.sectionEditor.switchDiscardConfirm',
+    defaultMessage: 'You have unsaved ground truth changes. Discard them and switch sections?',
+    description:
+      "Confirmation the browser shows when the user picks another section in the Section menu of the edit page's section editor with unsaved edits.",
+  },
+  showEvaluation: {
+    id: 'editScreen.sectionEditor.showEvaluation',
+    defaultMessage: 'Show Evaluation',
+    description:
+      "Toggle in the header of the edit page's section editor that compares every field with the document's evaluation baseline.",
+  },
+  sectionAriaLabel: {
+    id: 'editScreen.sectionEditor.sectionAriaLabel',
+    defaultMessage: 'Section: {section}',
+    description:
+      "Screen-reader name of the Section menu in the header of the edit page's section editor. {section} is the open section's name, as the menu shows it.",
+  },
+  sectionFallback: {
+    id: 'editScreen.sectionEditor.sectionFallback',
+    defaultMessage: 'Section',
+    description: "Text of the Section menu's button in the header of the edit page's section editor when the document lists no section.",
+  },
+  filterAriaLabel: {
+    id: 'editScreen.sectionEditor.filterAriaLabel',
+    defaultMessage: 'Show fields: {filter}',
+    description:
+      "Screen-reader name of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows. {filter} is the current choice, as the menu shows it.",
+  },
+  filterAll: {
+    id: 'editScreen.sectionEditor.filter.all',
+    defaultMessage: 'All fields',
+    description:
+      "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: every field.",
+  },
+  filterAlerts: {
+    id: 'editScreen.sectionEditor.filter.alerts',
+    defaultMessage: 'Confidence alerts only',
+    description:
+      "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: the fields whose confidence is below their threshold.",
+  },
+  filterEvalMismatches: {
+    id: 'editScreen.sectionEditor.filter.evalMismatches',
+    defaultMessage: 'Evaluation mismatches only',
+    description:
+      "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: the fields that differ from the evaluation baseline.",
+  },
+  filterNeedsEvaluation: {
+    id: 'editScreen.sectionEditor.filterNeedsEvaluation',
+    defaultMessage: 'Turn on Show Evaluation first',
+    description:
+      "Why the Evaluation mismatches only choice of the edit page's section editor is unavailable. Show Evaluation is the toggle beside the menu.",
+  },
+  editPageGrouping: {
+    id: 'editScreen.sectionEditor.editPageGrouping',
+    defaultMessage: 'Edit Page Grouping',
+    description:
+      "Button in the header of the edit page's section editor that opens the Edit Page Grouping dialog, which groups the document's pages into sections.",
+  },
+  noGeometry: {
+    id: 'editScreen.sectionEditor.noGeometry',
+    defaultMessage: 'No field geometry available for this baseline — bounding-box highlighting is disabled.',
+    description:
+      "Note under the page images of the edit page's section editor when the open section's results hold no explainability_info, so no field can be highlighted on the page images.",
+  },
+  renderingPages: {
+    id: 'editScreen.sectionEditor.renderingPages',
+    defaultMessage: 'Rendering document pages…',
+    description: "Shown beside a spinner in the edit page's section editor while the document's page images load.",
+  },
+  loadingSection: {
+    id: 'editScreen.sectionEditor.loadingSection',
+    defaultMessage: 'Loading the section…',
+    description: "Shown beside a spinner in the edit page's section editor while the open section's results are read.",
+  },
+  tabVisual: {
+    id: 'editScreen.sectionEditor.tab.visual',
+    defaultMessage: 'Visual Editor',
+    description: "Tab of the edit page's section editor that shows the open section's fields as a form.",
+  },
+  tabJson: {
+    id: 'editScreen.sectionEditor.tab.json',
+    defaultMessage: 'JSON Editor',
+    description: "Tab of the edit page's section editor that shows the open section's results as raw JSON.",
+  },
+  comparisonHeader: {
+    id: 'editScreen.sectionEditor.comparison.header',
+    defaultMessage: 'Evaluation Comparison Mode',
+    description: "Heading of the note in the Visual Editor tab of the edit page's section editor while Show Evaluation is on.",
+  },
+  comparisonBody: {
+    id: 'editScreen.sectionEditor.comparison.body',
+    defaultMessage:
+      'Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores and reasons.',
+    description: "Text of the note in the Visual Editor tab of the edit page's section editor while Show Evaluation is on.",
+  },
+  baselineHint: {
+    id: 'editScreen.sectionEditor.baselineHint',
+    defaultMessage:
+      'This document has an evaluation baseline. Turn on <b>Show Evaluation</b> to compare every field against it, not just the class.',
+    description:
+      "Hint in the Visual Editor tab of the edit page's section editor while Show Evaluation is off and the document has an evaluation baseline. <b>Show Evaluation</b> names the toggle in the editor's header.",
+  },
+  fieldLinkLabel: {
+    id: 'editScreen.sectionEditor.fieldLink.label',
+    defaultMessage: 'Ask someone about this field',
+    description:
+      "Label above the button in the Visual Editor tab of the edit page's section editor that copies a link to the selected field.",
+  },
+  fieldLinkDescription: {
+    id: 'editScreen.sectionEditor.fieldLink.description',
+    defaultMessage:
+      'Copies a link that opens this document with <b>{path}</b> selected. Share it when you need a second opinion on a value.',
+    description:
+      "Text under Ask someone about this field in the Visual Editor tab of the edit page's section editor. {path} is the selected field's path in the document's results (such as LineItems[0].Rate), shown as is.",
+  },
+  fieldLinkCopy: {
+    id: 'editScreen.sectionEditor.fieldLink.copy',
+    defaultMessage: 'Copy link to field',
+    description: "Button in the Visual Editor tab of the edit page's section editor that copies a link to the selected field.",
+  },
+  fieldLinkCopied: {
+    id: 'editScreen.sectionEditor.fieldLink.copied',
+    defaultMessage: 'Field link copied',
+    description: "Shown after Copy link to field, in the edit page's section editor, copied the link.",
+  },
+  fieldLinkCopyFailed: {
+    id: 'editScreen.sectionEditor.fieldLink.copyFailed',
+    defaultMessage: 'Could not copy the field link',
+    description: "Shown after Copy link to field, in the edit page's section editor, could not copy the link.",
+  },
+  noValuesHeader: {
+    id: 'editScreen.sectionEditor.noValues.header',
+    defaultMessage: 'No field values for this section',
+    description:
+      "Heading of the note in the Visual Editor tab of the edit page's section editor when the open section's results hold no field.",
+  },
+  noValuesEmpty: {
+    id: 'editScreen.sectionEditor.noValues.empty',
+    defaultMessage: 'This section has an empty result: extraction ran but produced no fields.',
+    description: "Text of the note in the edit page's section editor when the open section's results hold an empty inference_result.",
+  },
+  noValuesMissing: {
+    id: 'editScreen.sectionEditor.noValues.missing',
+    defaultMessage: 'This section has no inference_result at all.',
+    description:
+      "Text of the note in the edit page's section editor when the open section's results hold no inference_result. inference_result is the results' JSON key, kept as is.",
+  },
+});
+
+/** Renders a `<b>...</b>` element value. */
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
 
 /** What the slots see of the editor's state for the open section. */
 export interface SectionEditorContext {
@@ -140,9 +367,13 @@ export interface SectionEditorProps {
   defaultFilter?: 'none' | 'confidence-alerts';
 }
 
-const FILTER_ALL: SelectProps.Option = { label: 'All fields', value: 'none' };
-const FILTER_ALERTS: SelectProps.Option = { label: 'Confidence alerts only', value: 'confidence-alerts' };
-const FILTER_EVAL_MISMATCHES: SelectProps.Option = { label: 'Evaluation mismatches only', value: 'eval-mismatches' };
+/** Which fields the Visual Editor tab shows: the values the field renderer filters by. */
+type FilterValue = 'none' | 'confidence-alerts' | 'eval-mismatches';
+const filterMessages: Record<FilterValue, TypedMessageDescriptor<NoMessageValues>> = {
+  none: messages.filterAll,
+  'confidence-alerts': messages.filterAlerts,
+  'eval-mismatches': messages.filterEvalMismatches,
+};
 /** The widget's panes fill the viewport below the screen's header, but never shrink below a usable height. */
 const WIDGET_PANE_HEIGHT = 'max(480px, calc(100vh - 260px))';
 
@@ -155,8 +386,10 @@ const WIDGET_PANE_HEIGHT = 'max(480px, calc(100vh - 260px))';
  * has no class" — and it is the reason the section has no extracted fields, so it is
  * worth saying out loud.
  */
-const sectionTabLabel = (sectionId: string, documentClass: string | null | undefined): string =>
-  documentClass ? `Section ${sectionId} (${documentClass})` : `Section ${sectionId} (no class)`;
+const sectionTabLabel = (sectionId: string, documentClass: string | null | undefined, intl: IntlShape): string =>
+  documentClass
+    ? intl.formatMessage(messages.sectionTab, { sectionId, documentClass })
+    : intl.formatMessage(messages.sectionTabNoClass, { sectionId });
 
 const SectionEditor = ({
   objectKey,
@@ -180,7 +413,7 @@ const SectionEditor = ({
   pagesLoading = false,
   autosaveMs,
   confirmSectionSwitch = true,
-  unsavedChangesMessage = 'You have unsaved changes. Leave this document and discard them?',
+  unsavedChangesMessage,
   controllerRef,
   recordEditHistory,
   onSavingChange,
@@ -192,6 +425,7 @@ const SectionEditor = ({
   regroup,
   defaultFilter = 'none',
 }: SectionEditorProps): React.JSX.Element => {
+  const intl = useIntl();
   const firstSectionId = (): string =>
     (initialSectionId && sections.some((s) => s.sectionId === initialSectionId) ? initialSectionId : sections[0]?.sectionId) ?? '1';
   const [selectedSectionId, setSelectedSectionId] = useState<string>(firstSectionId);
@@ -199,12 +433,13 @@ const SectionEditor = ({
   const [originalJson, setOriginalJson] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Held as the message and the error, and worded where it shows.
+  const [error, setError] = useState<{ message: TypedMessageDescriptor<ErrorText>; cause: unknown } | null>(null);
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
   // Canonical path of the field the reviewer last clicked, so it can be linked.
   const [selectedFieldPath, setSelectedFieldPath] = useState<string | null>(null);
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
-  const [filterMode, setFilterMode] = useState<SelectProps.Option>(defaultFilter === 'confidence-alerts' ? FILTER_ALERTS : FILTER_ALL);
+  const [filterMode, setFilterMode] = useState<FilterValue>(defaultFilter);
   const [activeTabId, setActiveTabId] = useState('visual');
   const [showEvaluation, setShowEvaluation] = useState(false);
   // Latest callbacks, so the load effect does not re-run when a parent re-renders.
@@ -244,7 +479,7 @@ const SectionEditor = ({
         if (onLoadedRef.current) onLoadedRef.current(selectedSection.sectionId, parsed);
       } catch (err) {
         logger.error('Error loading section:', err);
-        if (!cancelled) setError(`Failed to load ground truth: ${getErrorMessage(err)}`);
+        if (!cancelled) setError({ message: messages.loadFailed, cause: err });
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -306,7 +541,7 @@ const SectionEditor = ({
 
   // Test-set values carry a label source and are ground truth, not predictions.
   const labelSource = localData?.labelSource;
-  const valueLabels = useMemo(() => valueSourceLabel(typeof labelSource === 'string' ? labelSource : null), [labelSource]);
+  const valueLabels = useMemo(() => valueSourceLabel(intl, typeof labelSource === 'string' ? labelSource : null), [intl, labelSource]);
   const explainabilityInfo = (localData?.explainability_info as Record<string, unknown> | Record<string, unknown>[] | null) ?? null;
   const inferenceResult =
     (localData?.inference_result as Record<string, unknown> | undefined) ??
@@ -375,7 +610,7 @@ const SectionEditor = ({
       return true;
     } catch (err) {
       logger.error('Error saving section:', err);
-      setError(`Failed to save: ${getErrorMessage(err)}`);
+      setError({ message: messages.saveFailed, cause: err });
       return false;
     } finally {
       setIsSaving(false);
@@ -418,7 +653,7 @@ const SectionEditor = ({
   // Covers tab close AND in-app navigation. Only the former was handled, and the
   // latter is how edits were actually lost: a route change is not a page unload,
   // so clicking a nav link discarded everything with no prompt at all.
-  useUnsavedChangesGuard(isDirty, unsavedChangesMessage);
+  useUnsavedChangesGuard(isDirty, unsavedChangesMessage ?? intl.formatMessage(messages.unsavedChanges));
 
   // The parent's buttons read the latest state through these.
   const latest = useRef({ handleSave, handleDiscard, isDirty });
@@ -489,7 +724,7 @@ const SectionEditor = ({
   };
 
   const handleSectionChange = async (sectionId: string) => {
-    if (confirmSectionSwitch && isDirty && !window.confirm('You have unsaved ground truth changes. Discard them and switch sections?')) {
+    if (confirmSectionSwitch && isDirty && !window.confirm(intl.formatMessage(messages.switchDiscardConfirm))) {
       return;
     }
     setSelectedSectionId(sectionId);
@@ -526,7 +761,7 @@ const SectionEditor = ({
      result is still loading keeps an entry from flashing "(no class)" at a section
      that has one. */
   const sectionLabel = (s: ReviewSectionRef): string =>
-    sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass);
+    sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass, intl);
   // The widget's buttons, right-aligned in its header: Show Evaluation (where the document
   // has a baseline), the section, the fields to show, then Edit Page Grouping. They act
   // on the editor, so they are hidden while `body` (the source document) is shown.
@@ -536,7 +771,7 @@ const SectionEditor = ({
   const sectionOptions = sections.map((s) => ({ value: s.sectionId, label: sectionLabel(s) }));
   const currentSection = sectionOptions.find((o) => o.value === selectedSectionId) ?? sectionOptions[0];
   const fieldsShown = activeTabId === 'visual' && !isLoading && hasFieldValues;
-  const filterOptions = [FILTER_ALL, FILTER_ALERTS, ...(evaluation?.available ? [FILTER_EVAL_MISMATCHES] : [])];
+  const filterValues: FilterValue[] = ['none', 'confidence-alerts', ...(evaluation?.available ? (['eval-mismatches'] as const) : [])];
   const widgetButtons = (
     <SpaceBetween direction="horizontal" size="xs" alignItems="center">
       {evaluation?.available && (
@@ -546,13 +781,13 @@ const SectionEditor = ({
             disabled={evaluation.loading || !baselineData}
             onChange={({ detail }) => setShowEvaluation(detail.checked)}
           >
-            Show Evaluation
+            <FormattedMessage {...messages.showEvaluation} />
           </Toggle>
           {evaluation.loading && <Spinner />}
         </SpaceBetween>
       )}
       <ButtonDropdown
-        ariaLabel={`Section: ${currentSection?.label ?? ''}`}
+        ariaLabel={intl.formatMessage(messages.sectionAriaLabel, { section: currentSection?.label ?? '' })}
         disabled={sections.length < 2}
         expandToViewport
         items={sectionOptions.map((o) => ({
@@ -565,26 +800,28 @@ const SectionEditor = ({
           if (detail.id !== currentSection?.value) void handleSectionChange(detail.id);
         }}
       >
-        {currentSection?.label ?? 'Section'}
+        {currentSection?.label ?? <FormattedMessage {...messages.sectionFallback} />}
       </ButtonDropdown>
       {/* The filter applies to the Visual Editor's fields, so it is disabled on the JSON tab. */}
       <ButtonDropdown
-        ariaLabel={`Show fields: ${filterMode.label ?? ''}`}
+        ariaLabel={intl.formatMessage(messages.filterAriaLabel, { filter: intl.formatMessage(filterMessages[filterMode]) })}
         disabled={!fieldsShown}
         expandToViewport
-        items={filterOptions.map((o) => ({
-          id: o.value ?? '',
-          text: o.label ?? '',
+        items={filterValues.map((value) => ({
+          id: value,
+          text: intl.formatMessage(filterMessages[value]),
           itemType: 'checkbox' as const,
-          checked: o.value === filterMode.value,
-          ...(o === FILTER_EVAL_MISMATCHES && !showEvaluation ? { disabled: true, disabledReason: 'Turn on Show Evaluation first' } : {}),
+          checked: value === filterMode,
+          ...(value === 'eval-mismatches' && !showEvaluation
+            ? { disabled: true, disabledReason: intl.formatMessage(messages.filterNeedsEvaluation) }
+            : {}),
         }))}
         onItemClick={({ detail }) => {
-          const next = filterOptions.find((o) => o.value === detail.id);
+          const next = filterValues.find((value) => value === detail.id);
           if (next) setFilterMode(next);
         }}
       >
-        {filterMode.label}
+        <FormattedMessage {...filterMessages[filterMode]} />
       </ButtonDropdown>
       {regroup && (
         <Button
@@ -593,13 +830,12 @@ const SectionEditor = ({
           loading={regroup.loading}
           onClick={regroup.onClick}
         >
-          Edit Page Grouping
+          <FormattedMessage {...messages.editPageGrouping} />
         </Button>
       )}
     </SpaceBetween>
   );
-  const noGeometry =
-    !explainabilityInfo && localData ? 'No field geometry available for this baseline — bounding-box highlighting is disabled.' : null;
+  const noGeometry = !explainabilityInfo && localData ? intl.formatMessage(messages.noGeometry) : null;
 
   // The page image stays in view while the fields scroll, and the fields pane is sized
   // to the viewport rather than a fixed height.
@@ -608,7 +844,7 @@ const SectionEditor = ({
       <div style={{ flex: 1, minWidth: 0, position: 'sticky', top: 0 }}>
         {pagesLoading && (
           <Box textAlign="center" padding="xl">
-            <Spinner /> Rendering document pages…
+            <Spinner /> <FormattedMessage {...messages.renderingPages} />
           </Box>
         )}
         {pagesNotice}
@@ -625,7 +861,7 @@ const SectionEditor = ({
       <div style={{ flex: 1, minWidth: 0, maxHeight: WIDGET_PANE_HEIGHT, overflowY: 'auto' }}>
         {isLoading && (
           <Box textAlign="center" padding="xl">
-            <Spinner /> Loading the section…
+            <Spinner /> <FormattedMessage {...messages.loadingSection} />
           </Box>
         )}
         {!isLoading && localData && (
@@ -635,7 +871,7 @@ const SectionEditor = ({
             tabs={[
               {
                 id: 'visual',
-                label: 'Visual Editor',
+                label: intl.formatMessage(messages.tabVisual),
                 content: (
                   <SpaceBetween size="s">
                     {classSlot && classSlot(ctx)}
@@ -650,15 +886,13 @@ const SectionEditor = ({
                       />
                     )}
                     {comparing && (
-                      <Alert type="info" header="Evaluation Comparison Mode">
-                        Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores and
-                        reasons.
+                      <Alert type="info" header={intl.formatMessage(messages.comparisonHeader)}>
+                        <FormattedMessage {...messages.comparisonBody} />
                       </Alert>
                     )}
                     {baselineData && !showEvaluation && (
                       <Box variant="small" color="text-body-secondary">
-                        This document has an evaluation baseline. Turn on <b>Show Evaluation</b> to compare every field against it, not just
-                        the class.
+                        <FormattedMessage {...messages.baselineHint} values={{ b: bold }} />
                       </Box>
                     )}
                     {hasFieldValues ? (
@@ -669,20 +903,17 @@ const SectionEditor = ({
                               in order to look at it. */}
                         {buildFieldLink && selectedFieldPath && (
                           <FormField
-                            label="Ask someone about this field"
+                            label={intl.formatMessage(messages.fieldLinkLabel)}
                             description={
-                              <>
-                                Copies a link that opens this document with <b>{selectedFieldPath}</b> selected. Share it when you need a
-                                second opinion on a value.
-                              </>
+                              <FormattedMessage {...messages.fieldLinkDescription} values={{ path: selectedFieldPath, b: bold }} />
                             }
                           >
                             <CopyToClipboard
                               variant="button"
-                              copyButtonText="Copy link to field"
+                              copyButtonText={intl.formatMessage(messages.fieldLinkCopy)}
                               textToCopy={buildFieldLink(selectedFieldPath)}
-                              copySuccessText="Field link copied"
-                              copyErrorText="Could not copy the field link"
+                              copySuccessText={intl.formatMessage(messages.fieldLinkCopied)}
+                              copyErrorText={intl.formatMessage(messages.fieldLinkCopyFailed)}
                             />
                           </FormField>
                         )}
@@ -706,7 +937,7 @@ const SectionEditor = ({
                           baselineChanges={baselineChanges}
                           collapsedPaths={collapsedPaths}
                           onToggleCollapse={handleToggleCollapse}
-                          filterMode={filterMode.value}
+                          filterMode={filterMode}
                           displayPath={[]}
                           valueLabel={valueLabels}
                         />
@@ -714,10 +945,12 @@ const SectionEditor = ({
                     ) : emptyFieldsSlot ? (
                       emptyFieldsSlot(ctx)
                     ) : (
-                      <Alert type="info" header="No field values for this section">
-                        {inferenceResult
-                          ? 'This section has an empty result: extraction ran but produced no fields.'
-                          : 'This section has no inference_result at all.'}
+                      <Alert type="info" header={intl.formatMessage(messages.noValuesHeader)}>
+                        {inferenceResult ? (
+                          <FormattedMessage {...messages.noValuesEmpty} />
+                        ) : (
+                          <FormattedMessage {...messages.noValuesMissing} />
+                        )}
                       </Alert>
                     )}
                   </SpaceBetween>
@@ -725,7 +958,7 @@ const SectionEditor = ({
               },
               {
                 id: 'json',
-                label: 'JSON Editor',
+                label: intl.formatMessage(messages.tabJson),
                 content: (
                   <JSONEditorTab
                     predictionData={localData}
@@ -751,13 +984,17 @@ const SectionEditor = ({
     <Container
       header={
         <Header variant="h2" actions={body ? undefined : widgetButtons}>
-          Document Editor
+          <FormattedMessage {...editScreenSharedMessages.documentEditor} />
         </Header>
       }
     >
       <SpaceBetween size="s">
         {!body && headerExtras && headerExtras(ctx)}
-        {error && <Alert type="error">{error}</Alert>}
+        {error && (
+          <Alert type="error">
+            <FormattedMessage {...error.message} values={{ error: editPageErrorText(error.cause, intl) }} />
+          </Alert>
+        )}
         {body ?? panes}
       </SpaceBetween>
     </Container>

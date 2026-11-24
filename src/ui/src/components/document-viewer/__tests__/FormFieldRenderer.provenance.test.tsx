@@ -13,12 +13,21 @@
  */
 
 import React from 'react';
+import { createIntl, IntlProvider } from 'react-intl';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { valueSourceLabel } from '../../common/labels';
 import FormFieldRenderer from '../FormFieldRenderer';
 import JSONEditorTab from '../JSONEditorTab';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
+const en = createIntl({ locale: 'en', defaultLocale: 'en' });
 
 /**
  * Confidence reaches the renderer through the assessment's explainability data,
@@ -37,6 +46,7 @@ const renderField = (overrides: Record<string, unknown> = {}) =>
       path={['AccountNumber']}
       {...overrides}
     />,
+    { wrapper: English },
   );
 
 /** The renderer keys edits off the canonical comparison path, not the raw key. */
@@ -84,6 +94,7 @@ describe('FormFieldRenderer value provenance', () => {
         path={['LineItems', 3, 'Rate']}
         editedFieldPaths={edited}
       />,
+      { wrapper: English },
     );
     expect(row3.getByText('Your value:')).toBeInTheDocument();
     row3.unmount();
@@ -98,6 +109,7 @@ describe('FormFieldRenderer value provenance', () => {
         path={['LineItems', 4, 'Rate']}
         editedFieldPaths={edited}
       />,
+      { wrapper: English },
     );
     // An untouched row keeps the model's claim, because it is still the model's value.
     expect(row4.getByText('Predicted:')).toBeInTheDocument();
@@ -114,14 +126,14 @@ describe('FormFieldRenderer value provenance', () => {
   });
 
   it('labels a test-set value (labelSource reviewed-human) as ground truth, not "Predicted"', () => {
-    renderField({ valueLabel: valueSourceLabel('reviewed-human') });
+    renderField({ valueLabel: valueSourceLabel(en, 'reviewed-human') });
 
     expect(screen.getByText('Ground truth:')).toBeInTheDocument();
     expect(screen.queryByText('Predicted:')).not.toBeInTheDocument();
   });
 
   it('keeps "Your value:" for an edited ground-truth value', () => {
-    renderField({ valueLabel: valueSourceLabel('draft-machine'), predictionChanges: EDITED });
+    renderField({ valueLabel: valueSourceLabel(en, 'draft-machine'), predictionChanges: EDITED });
 
     expect(screen.getByText('Your value:')).toBeInTheDocument();
     expect(screen.queryByText('Ground truth:')).not.toBeInTheDocument();
@@ -135,8 +147,9 @@ describe('FormFieldRenderer value provenance', () => {
         onChange={vi.fn()}
         isReadOnly={false}
         path={[]}
-        valueLabel={valueSourceLabel('uploaded')}
+        valueLabel={valueSourceLabel(en, 'uploaded')}
       />,
+      { wrapper: English },
     );
 
     expect(screen.getAllByText('Ground truth:')).toHaveLength(2);
@@ -146,12 +159,12 @@ describe('FormFieldRenderer value provenance', () => {
 
 describe('valueSourceLabel', () => {
   it('uses prediction wording when there is no label source', () => {
-    expect(valueSourceLabel(null)).toEqual({ value: 'Predicted:', changed: 'Your value:', panelTitle: 'Predicted Results' });
-    expect(valueSourceLabel(undefined).value).toBe('Predicted:');
+    expect(valueSourceLabel(en, null)).toEqual({ value: 'Predicted:', changed: 'Your value:', panelTitle: 'Predicted Results' });
+    expect(valueSourceLabel(en, undefined).value).toBe('Predicted:');
   });
 
   it.each(['draft-machine', 'reviewed-human', 'synthetic', 'uploaded'])('uses ground-truth wording for %s', (source) => {
-    expect(valueSourceLabel(source)).toEqual({ value: 'Ground truth:', changed: 'Your value:', panelTitle: 'Ground truth' });
+    expect(valueSourceLabel(en, source)).toEqual({ value: 'Ground truth:', changed: 'Your value:', panelTitle: 'Ground truth' });
   });
 });
 
@@ -167,6 +180,7 @@ describe('JSONEditorTab values panel title', () => {
         loadingEvaluation={false}
         {...props}
       />,
+      { wrapper: English },
     );
 
   it('defaults to "Predicted Results"', () => {
@@ -175,7 +189,7 @@ describe('JSONEditorTab values panel title', () => {
   });
 
   it('shows the given title for ground truth', () => {
-    renderTab({ predictionTitle: valueSourceLabel('reviewed-human').panelTitle });
+    renderTab({ predictionTitle: valueSourceLabel(en, 'reviewed-human').panelTitle });
     expect(screen.getByText('Ground truth')).toBeInTheDocument();
     expect(screen.queryByText('Predicted Results')).not.toBeInTheDocument();
   });

@@ -48,6 +48,9 @@ class _FakeConfigManager:
     def get_raw_configuration(self, config_type, version):
         return self.saved.get(version)
 
+    def list_config_versions(self, raise_errors=False):
+        return [{"versionName": name, "managed": False} for name in self.saved]
+
     def save_raw_configuration(
         self, config_type, config_dict, version, description=None
     ):
@@ -100,6 +103,63 @@ class TestMergeClassIntoVersion:
         assert len(cm.saved["v1"]["classes"]) == 1
         bootstrap.merge_class_into_version(VALID_SCHEMA, "v1", config_manager=cm)
         assert len(cm.saved["v1"]["classes"]) == 1
+
+
+class TestProtectedProfiles:
+    @staticmethod
+    def _manager(versions):
+        cm = Mock()
+        cm.list_config_versions.return_value = versions
+        cm.get_raw_configuration.return_value = {"classes": []}
+        return cm
+
+    def test_default_is_refused(self):
+        cm = self._manager([{"versionName": "default", "managed": False}])
+        with pytest.raises(bootstrap.ProtectedProfileError, match="'default'"):
+            bootstrap.merge_class_into_version(
+                VALID_SCHEMA, "default", config_manager=cm
+            )
+        cm.save_raw_configuration.assert_not_called()
+
+    def test_a_stack_managed_profile_is_refused(self):
+        cm = self._manager([{"versionName": "docsplit", "managed": True}])
+        with pytest.raises(bootstrap.ProtectedProfileError, match="stack-managed"):
+            bootstrap.merge_class_into_version(
+                VALID_SCHEMA, "docsplit", config_manager=cm
+            )
+        cm.save_raw_configuration.assert_not_called()
+
+    def test_an_unreadable_profile_listing_writes_nothing(self):
+        cm = self._manager([])
+        cm.list_config_versions.side_effect = RuntimeError("scan throttled")
+        with pytest.raises(RuntimeError, match="scan throttled"):
+            bootstrap.merge_class_into_version(
+                VALID_SCHEMA, "docsplit", config_manager=cm
+            )
+        cm.list_config_versions.assert_called_once_with(raise_errors=True)
+        cm.save_raw_configuration.assert_not_called()
+
+    def test_a_protected_target_is_refused_before_any_model_call(self):
+        cm = self._manager([])
+        bedrock = Mock()
+        req = bootstrap.BootstrapRequest(prompt="a paystub", target_version="default")
+        result = bootstrap.run_bootstrap(req, config_manager=cm, bedrock_client=bedrock)
+        assert not result.success
+        assert result.error and "'default'" in result.error
+        bedrock.invoke_model.assert_not_called()
+        cm.save_raw_configuration.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "versions",
+        [[], [{"versionName": "team-invoices", "managed": False}]],
+        ids=["new profile", "existing user profile"],
+    )
+    def test_a_user_profile_is_written(self, versions):
+        cm = self._manager(versions)
+        bootstrap.merge_class_into_version(
+            VALID_SCHEMA, "team-invoices", config_manager=cm
+        )
+        cm.save_raw_configuration.assert_called_once()
 
 
 class TestRunBootstrap:

@@ -5,6 +5,7 @@ import React from 'react';
 import { render, renderHook, screen } from '@testing-library/react';
 import { TopNavigation } from '@cloudscape-design/components';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { InboxContextValue } from '../../../contexts/inbox';
@@ -39,7 +40,13 @@ const setInbox = (over: Partial<InboxContextValue>) => {
   inboxRef.current = { unreadCount: 0, recent: [], loaded: true, markMessages, markAllRead, ...over };
 };
 
-const utility = () => renderHook(() => useInboxBellUtility()).result.current;
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
+const utility = () => renderHook(() => useInboxBellUtility(), { wrapper: English }).result.current;
 
 const groups = (items: ButtonDropdownProps.Items) => items as ReadonlyArray<ButtonDropdownProps.ItemGroup>;
 const recentItems = (items: ButtonDropdownProps.Items) => groups(items)[0].items as ReadonlyArray<ButtonDropdownProps.Item>;
@@ -137,7 +144,7 @@ describe('useInboxBellUtility', () => {
       const inbox = useInboxBellUtility();
       return <TopNavigation identity={{ href: '#', title: 'Console' }} utilities={[inbox]} />;
     };
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     expect(screen.getAllByLabelText('Inbox, 3 unread messages').length).toBeGreaterThan(0);
   });
 });

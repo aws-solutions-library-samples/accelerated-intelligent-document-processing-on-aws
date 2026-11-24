@@ -70,7 +70,7 @@ const TestSetQueuePage = (): React.JSX.Element => {
   const name = loaded?.id === testSetId ? loaded.name : testSetId;
   const { isAdmin } = useUserRole();
   const intl = useIntl();
-  const trail = queuePageTrail(!!isAdmin, { text: intl.formatMessage(messages.testSetCrumb, { name }), href: '#' }, 'test');
+  const trail = queuePageTrail(!!isAdmin, { text: intl.formatMessage(messages.testSetCrumb, { name }), href: '#' }, 'test', intl);
   return (
     <ReviewQueuesLayout trail={trail} tools={<QueueToolsPanel />}>
       <AnnotationWorkspace key={testSetId} onName={onName} />
@@ -85,7 +85,8 @@ const ProductionQueuePage = (): React.JSX.Element => {
   const onName = useCallback((name: string) => setLoaded({ id: queue, name }), [queue]);
   const name = loaded?.id === queue ? loaded.name : queue;
   const { isAdmin } = useUserRole();
-  const trail = queuePageTrail(!!isAdmin, { text: name, href: '#' }, 'production');
+  const intl = useIntl();
+  const trail = queuePageTrail(!!isAdmin, { text: name, href: '#' }, 'production', intl);
   return (
     <ReviewQueuesLayout trail={trail} tools={<QueueToolsPanel />}>
       <ReviewQueuePage onName={onName} />

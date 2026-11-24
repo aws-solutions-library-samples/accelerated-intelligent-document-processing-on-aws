@@ -1112,6 +1112,365 @@ class TestLibraryProfileStoredHash:
         assert served is not None and head is not None
         assert served.model_dump() == head.model_dump()
 
+    @pytest.mark.parametrize("path", _LIBRARY_PROFILES, ids=_profile_id)
+    def test_a_shipped_profile_redeployed_unchanged_records_nothing(
+        self, monkeypatch, path
+    ):
+        """
+        Every stack deployment re-saves `default` and each managed profile. A save
+        that changes nothing documents run must cut nothing, for every profile the
+        stack ships, including those whose classes carry numbers the head stores
+        as strings.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        config = _library_profile(path)
+        for _ in range(3):
+            manager.save_configuration(
+                CONFIG_TYPE_CONFIG, copy.deepcopy(config), version="p"
+            )
+
+        assert [r["revision"] for r in manager.list_revisions("p")] == [1]
+        assert manager.head_matches_published("p") is True
+
+
+#: A setting whose shipped default changed from empty to a value, as
+#: `max_tokens` on the classification calls did.
+_EMPTY_BEFORE_THE_UPGRADE = ("classification", "combined", "llm", "max_tokens")
+
+#: A setting an earlier release did not have.
+_ADDED_BY_THE_UPGRADE = ("classification", "document_shape")
+
+
+def _node(config_dict, path):
+    for key in path[:-1]:
+        config_dict = config_dict[key]
+    return config_dict
+
+
+def _as_an_earlier_release_stored_it(
+    manager, profile, revision=1, *, empty=True, added=False
+):
+    """
+    Store `profile` and its revision `revision` as a release before the upgrade wrote
+    them, then return the profile's head item.
+
+    With `empty`, that release's default for `_EMPTY_BEFORE_THE_UPGRADE` was empty.
+    It left an empty value out of the head while empty was the default
+    (`ConfigurationRecord._omit_rollback_hostile_defaults`), and the revision body,
+    a plain dump of the configuration, holds it as `null`. With `added`, it had no
+    `_ADDED_BY_THE_UPGRADE` at all. The revision records the stored hash of the head
+    that release wrote, as every published revision does.
+    """
+    from idp_common.config.configuration_manager import _stored_content_hash
+
+    head = _head_item(manager, profile)
+    body = manager.revisions.get_body(profile, revision)
+    if empty:
+        _node(head, _EMPTY_BEFORE_THE_UPGRADE).pop(_EMPTY_BEFORE_THE_UPGRADE[-1])
+        _node(body, _EMPTY_BEFORE_THE_UPGRADE)[_EMPTY_BEFORE_THE_UPGRADE[-1]] = None
+    if added:
+        _node(head, _ADDED_BY_THE_UPGRADE).pop(_ADDED_BY_THE_UPGRADE[-1])
+        _node(body, _ADDED_BY_THE_UPGRADE).pop(_ADDED_BY_THE_UPGRADE[-1])
+    manager.table.put_item(Item=manager._compress_item(head))
+    manager.revisions.put_body(profile, revision, body)
+    assert manager.revisions.update_entry(
+        profile, revision, storedHash=_stored_content_hash(head)
+    )
+    return head
+
+
+def _max_tokens(config):
+    return config.classification.combined.llm.max_tokens
+
+
+def _deploy(manager, config, profile="default"):
+    """Save `config` the way the configuration custom resource re-saves a profile."""
+    manager.save_configuration(
+        CONFIG_TYPE_CONFIG,
+        config,
+        version=profile,
+        created_by="stack-deployment",
+        revision_notes="Updated by stack deployment",
+    )
+
+
+@pytest.mark.unit
+@mock_aws
+class TestAnUpgradeThatChangesADefault:
+    """
+    A release can change what a stored configuration means without anyone saving
+    it. An earlier release stored an empty `max_tokens` in a revision body as
+    `null` and left it out of the head, so once the default becomes 10000 the head
+    reads 10000 while the revision documents run still reads empty, which requests
+    the model's maximum. The stack deployment then re-saves the profile with the
+    same settings. That save must record a revision, so that the profile and what
+    new documents run agree, and the editor's warning that they differ is shown
+    only when they do.
+    """
+
+    def test_the_deployment_records_a_revision_documents_then_run(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("live"))
+        _as_an_earlier_release_stored_it(manager, "default")
+        assert manager.head_matches_published("default") is True
+        assert _max_tokens(manager.get_merged_configuration("default")) == 10000
+        assert (
+            _max_tokens(manager.get_merged_configuration("default", revision=1)) is None
+        )
+
+        _deploy(manager, _config("live"))
+
+        assert [r["revision"] for r in manager.list_revisions("default")] == [2, 1]
+        newest = manager.list_revisions("default")[0]
+        assert newest["published"] is True
+        assert newest["createdBy"] == "stack-deployment"
+        assert newest["notes"] == "Updated by stack deployment"
+        assert manager.head_matches_published("default") is True
+        assert (
+            _max_tokens(manager.get_merged_configuration("default", revision=2))
+            == 10000
+        )
+        assert (
+            manager.get_revision("default", 1)["classification"]["combined"]["llm"][
+                "max_tokens"
+            ]
+            is None
+        )
+
+    def test_later_deployments_that_change_nothing_record_nothing(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("live"))
+        _as_an_earlier_release_stored_it(manager, "default")
+
+        for _ in range(3):
+            _deploy(manager, _config("live"))
+
+        assert [r["revision"] for r in manager.list_revisions("default")] == [2, 1]
+        assert manager.head_matches_published("default") is True
+
+    def test_a_setting_added_at_its_default_records_nothing(self, monkeypatch):
+        """
+        A setting the earlier release did not have reads as its default from the
+        revision and from the head alike, so it changes nothing documents run. The
+        stored hash is refreshed for the head the save wrote instead.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("live"))
+        _as_an_earlier_release_stored_it(manager, "default", empty=False, added=True)
+
+        _deploy(manager, _config("live"))
+
+        assert [r["revision"] for r in manager.list_revisions("default")] == [1]
+        assert manager.head_matches_published("default") is True
+        assert manager.revisions.get_entry("default", 1)[
+            "storedHash"
+        ] == _stored_content_hash(_head_item(manager, "default"))
+
+    def test_a_real_change_still_records_a_revision(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("live"))
+        _as_an_earlier_release_stored_it(manager, "default")
+
+        _deploy(manager, _config("changed"))
+
+        assert [r["revision"] for r in manager.list_revisions("default")] == [2, 1]
+        assert _notes_of(manager.get_revision("default", 2)) == "changed"
+        assert manager.head_matches_published("default") is True
+
+    def test_a_profile_left_differing_is_repaired_by_the_next_deployment(
+        self, monkeypatch
+    ):
+        """
+        The state a deployment that recorded no revision left behind: the head
+        rewritten under the new default, and the published revision's stored hash
+        refreshed from its own body, which no longer matches that head.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("live"))
+        _as_an_earlier_release_stored_it(manager, "default")
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("live"), version="default", cut_revision=False
+        )
+        manager.revisions.update_entry(
+            "default",
+            1,
+            storedHash=manager._stored_hash_of_body(
+                "default", manager.revisions.get_body("default", 1)
+            ),
+        )
+        assert manager.head_matches_published("default") is False
+
+        _deploy(manager, _config("live"))
+
+        assert [r["revision"] for r in manager.list_revisions("default")] == [2, 1]
+        assert manager.head_matches_published("default") is True
+        assert (
+            _max_tokens(manager.get_merged_configuration("default", revision=2))
+            == 10000
+        )
+
+    def test_a_revision_that_cannot_be_read_leaves_the_head_as_the_baseline(
+        self, monkeypatch, caplog
+    ):
+        """
+        Reading the revision is how a save learns what documents run, not a step it
+        depends on, so a read that fails is logged and the save is compared with
+        the head it replaces, which changes nothing here.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("live"))
+        _as_an_earlier_release_stored_it(manager, "default")
+
+        def unreadable(profile, revision):
+            raise PermissionError("403 on the revision body")
+
+        monkeypatch.setattr(manager.revisions, "get_body", unreadable)
+        with caplog.at_level(logging.WARNING):
+            _deploy(manager, _config("live"))
+
+        assert "Could not read r1 of 'default' to compare a save with it" in (
+            caplog.text
+        )
+        assert [r["revision"] for r in manager.list_revisions("default")] == [1]
+
+    def test_a_save_whose_revision_cannot_be_recorded_is_refused_and_undone(
+        self, monkeypatch
+    ):
+        from idp_common.config.revisions import RevisionNotRecordedError
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("live"))
+        before = _as_an_earlier_release_stored_it(manager, "default")
+
+        def failing_cut(*args, **kwargs):
+            raise RuntimeError("throttled")
+
+        monkeypatch.setattr(manager.revisions, "cut", failing_cut)
+        with pytest.raises(RevisionNotRecordedError, match="undone"):
+            _deploy(manager, _config("live"))
+
+        after = _head_item(manager, "default")
+        assert after["classification"] == before["classification"]
+        assert manager.resolve_published_revision("default") == 1
+        assert manager.head_matches_published("default") is True
+
+    def test_a_process_without_history_still_refuses_a_change(self, monkeypatch):
+        from idp_common.config.revisions import RevisionNotRecordedError
+
+        _make_table()
+        _deploy(_manager(monkeypatch), _config("live"))
+        _as_an_earlier_release_stored_it(_manager(monkeypatch), "default")
+        manager = _manager(monkeypatch, with_bucket=False)
+
+        with pytest.raises(RevisionNotRecordedError, match="CONFIGURATION_BUCKET"):
+            _deploy(manager, _config("changed"))
+
+        assert manager.get_configuration(CONFIG_TYPE_CONFIG, "default").notes == "live"
+
+    def test_the_upgrade_revision_is_held_to_the_retention_cap(self, monkeypatch):
+        _make_table()
+        monkeypatch.setenv("CONFIG_REVISION_CAP", "2")
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("first"))
+        _deploy(manager, _config("live"))
+        _as_an_earlier_release_stored_it(manager, "default", revision=2)
+
+        _deploy(manager, _config("live"))
+
+        assert [r["revision"] for r in manager.list_revisions("default")] == [3, 2]
+        assert manager.get_revision("default", 1) is None
+        assert manager.head_matches_published("default") is True
+
+    def test_a_custom_profile_records_its_resolution_against_default(
+        self, monkeypatch, caplog
+    ):
+        """
+        A deployment does not re-save a custom profile; it records the profile's
+        resolution against `default` (#1782). That resolution's save changes what
+        the head reads by nothing, so it must be judged against the revision
+        documents run, or it rewrites the head, records nothing, and every later
+        deployment refuses the profile as no longer provably that revision.
+        """
+        from idp_common.config.configuration_manager import (
+            RESOLVED_AGAINST_DEFAULT_NOTES,
+        )
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("default"))
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("lending"), version="lending"
+        )
+        _as_an_earlier_release_stored_it(manager, "lending")
+
+        assert manager.record_resolution_against_default("lending") == 2
+        with caplog.at_level(logging.WARNING):
+            assert manager.record_resolution_against_default("lending") is None
+
+        newest = manager.list_revisions("lending")[0]
+        assert newest["notes"] == RESOLVED_AGAINST_DEFAULT_NOTES
+        assert manager.head_matches_published("lending") is True
+        assert (
+            _max_tokens(manager.get_merged_configuration("lending", revision=2))
+            == 10000
+        )
+        assert "Not recording the resolution" not in caplog.text
+
+    def test_a_custom_profile_left_differing_is_repaired_by_an_unchanged_upload(
+        self, monkeypatch, caplog
+    ):
+        """
+        A deployment cannot show that a custom profile whose head was rewritten
+        without a revision is still its current revision, so it records nothing and
+        leaves the profile for a person to save. An upload that changes nothing the
+        profile shows, as `idp-cli config-upload` of its own configuration does,
+        records the revision documents then run.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        _deploy(manager, _config("default"))
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("lending"), version="lending"
+        )
+        _as_an_earlier_release_stored_it(manager, "lending")
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            manager.get_merged_configuration("lending"),
+            version="lending",
+            cut_revision=False,
+        )
+        manager.revisions.update_entry(
+            "lending",
+            1,
+            storedHash=manager._stored_hash_of_body(
+                "lending", manager.revisions.get_body("lending", 1)
+            ),
+        )
+        with caplog.at_level(logging.WARNING):
+            assert manager.record_resolution_against_default("lending") is None
+        assert "Not recording the resolution of 'lending'" in caplog.text
+
+        manager.handle_update_custom_configuration(
+            json.dumps({"notes": "lending"}), version="lending"
+        )
+
+        assert manager.resolve_published_revision("lending") == 2
+        assert manager.head_matches_published("lending") is True
+        assert (
+            _max_tokens(manager.get_merged_configuration("lending", revision=2))
+            == 10000
+        )
+
 
 def _plant_pre_0_9_body(profile, revision, model="MARKER-MODEL"):
     """

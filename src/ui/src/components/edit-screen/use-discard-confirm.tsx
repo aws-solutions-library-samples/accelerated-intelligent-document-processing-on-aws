@@ -6,12 +6,26 @@
 // already saved is kept.
 import React, { useCallback, useState } from 'react';
 import { Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
-export const DISCARD_BODY = 'The changes you made since the last save are lost. Anything already saved is kept.';
+const messages = defineMessages<{ body: NoMessageValues; keepEditing: NoMessageValues }>({
+  body: {
+    id: 'editScreen.discard.body',
+    defaultMessage: 'The changes you made since the last save are lost. Anything already saved is kept.',
+    description: 'Text of the dialog the edit page shows before an action, such as Cancel or Refresh, loses unsaved changes.',
+  },
+  keepEditing: {
+    id: 'editScreen.discard.keepEditing',
+    defaultMessage: 'Keep editing',
+    description: 'Button of the dialog that asks before unsaved changes are lost: it closes the dialog and keeps the changes.',
+  },
+});
 
 interface DiscardQuestion {
-  header: string;
-  confirmLabel: string;
+  /** The dialog's title, worded when the dialog shows. */
+  header: TypedMessageDescriptor<NoMessageValues>;
+  /** The confirm button's label, worded when the dialog shows. */
+  confirmLabel: TypedMessageDescriptor<NoMessageValues>;
   onConfirm: () => void;
 }
 
@@ -23,19 +37,20 @@ interface DiscardConfirm {
 }
 
 const useDiscardConfirm = (): DiscardConfirm => {
+  const intl = useIntl();
   const [question, setQuestion] = useState<DiscardQuestion | null>(null);
   const ask = useCallback((q: DiscardQuestion) => setQuestion(q), []);
 
   const dialog = question && (
     <Modal
       visible
-      header={question.header}
+      header={intl.formatMessage(question.header)}
       onDismiss={() => setQuestion(null)}
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
             <Button variant="link" onClick={() => setQuestion(null)}>
-              Keep editing
+              <FormattedMessage {...messages.keepEditing} />
             </Button>
             <Button
               variant="primary"
@@ -44,13 +59,13 @@ const useDiscardConfirm = (): DiscardConfirm => {
                 question.onConfirm();
               }}
             >
-              {question.confirmLabel}
+              <FormattedMessage {...question.confirmLabel} />
             </Button>
           </SpaceBetween>
         </Box>
       }
     >
-      {DISCARD_BODY}
+      <FormattedMessage {...messages.body} />
     </Modal>
   );
 

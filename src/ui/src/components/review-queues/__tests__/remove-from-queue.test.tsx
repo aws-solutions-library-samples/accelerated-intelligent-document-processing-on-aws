@@ -15,6 +15,7 @@ import { fireEvent, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
@@ -45,6 +46,12 @@ const Harness = () => {
   return supervisor.modals;
 };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const removeDialog = () => {
   const m = createWrapper(document.body)
     .findAllModals()
@@ -67,7 +74,7 @@ beforeEach(() => {
 
 describe('Remove from queue', () => {
   it('is offered for a waiting or assigned item, and not for one being completed', () => {
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     for (const state of ['OPEN', 'CLAIMED']) {
       const remove = adminItems(item('a.pdf', state)).find((e) => e.id === 'remove');
       expect(remove?.text).toBe('Remove from queue…');
@@ -82,7 +89,7 @@ describe('Remove from queue', () => {
       if (variables.objectKey === 'bad.pdf') throw { errors: [{ message: 'INVALID_STATE: the item is FINALIZING' }] };
       return { data: { removeReviewItem: { objectKey: variables.objectKey } } };
     });
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     await waitFor(() => expect(api).not.toBeNull());
     const selected = [item('a.pdf', 'OPEN'), item('b.pdf', 'CLAIMED'), item('bad.pdf', 'OPEN'), item('done.pdf', 'FINALIZING')];
     React.act(() => api!.open('remove', selected));
@@ -106,7 +113,7 @@ describe('Remove from queue', () => {
 
   it('sends no note when none is written', async () => {
     graphql.mockResolvedValue({ data: { removeReviewItem: { objectKey: 'a.pdf' } } });
-    render(<Harness />);
+    render(<Harness />, { wrapper: English });
     await waitFor(() => expect(api).not.toBeNull());
     React.act(() => api!.open('remove', [item('a.pdf', 'OPEN')]));
     fireEvent.click(removeDialog().findFooter()!.findAllButtons().at(-1)!.getElement());
@@ -133,8 +140,8 @@ describe('the queue page', () => {
     const start = source.indexOf('actions={\n            isAdmin ? (');
     const adminBranch = source.slice(start, source.indexOf(') : (', start));
     expect(adminBranch.match(/<Button\b/g)).toHaveLength(2);
-    expect(adminBranch).toContain("counted('Assign to…', assignable.length)");
-    expect(adminBranch).toContain("counted('Unassign', unassignable.length)");
+    expect(adminBranch).toContain('counted(intl.formatMessage(messages.assignTo), assignable.length)');
+    expect(adminBranch).toContain('counted(intl.formatMessage(messages.unassign), unassignable.length)');
   });
 
   it('gives the row menu the Admin actions only to Admins', () => {

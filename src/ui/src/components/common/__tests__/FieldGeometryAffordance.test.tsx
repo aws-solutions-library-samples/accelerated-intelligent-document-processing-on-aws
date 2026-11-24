@@ -24,6 +24,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -61,6 +63,12 @@ const EXPLAINABILITY = [
   },
 ];
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderSection = (overrides: Record<string, unknown> = {}) =>
   render(
     <FormFieldRenderer
@@ -74,6 +82,7 @@ const renderSection = (overrides: Record<string, unknown> = {}) =>
       explainabilityInfo={EXPLAINABILITY}
       {...overrides}
     />,
+    { wrapper: English },
   );
 
 const locateControls = () => screen.queryAllByRole('button', { name: /Highlight .* on the page image/i });

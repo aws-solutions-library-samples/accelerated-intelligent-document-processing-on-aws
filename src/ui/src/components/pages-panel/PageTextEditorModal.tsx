@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Modal, Box, SpaceBetween, Button, SegmentedControl, Alert, Spinner, Badge } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Editor } from '@monaco-editor/react';
@@ -18,6 +19,284 @@ const EDITOR_HEIGHT = '600px';
 // Confidence color thresholds for OCR bounding-box overlays.
 const CONFIDENCE_HIGH = 90;
 const CONFIDENCE_MEDIUM = 70;
+
+const messages = defineMessages<{
+  loadFailed: { readonly error: string };
+  saveFailed: { readonly page: string; readonly error: string };
+  restored: { readonly page: string };
+  restoreFailed: { readonly error: string };
+  navBlockedUnfinished: NoMessageValues;
+  navBlockedUnsaved: NoMessageValues;
+  viewTitle: { readonly page: string };
+  editTitle: { readonly page: string };
+  previousPage: NoMessageValues;
+  nextPage: NoMessageValues;
+  cancel: NoMessageValues;
+  close: NoMessageValues;
+  save: NoMessageValues;
+  errorHeader: NoMessageValues;
+  retry: NoMessageValues;
+  restore: NoMessageValues;
+  unfinished: { readonly message: string };
+  loading: NoMessageValues;
+  viewOcrLines: NoMessageValues;
+  viewMarkdown: NoMessageValues;
+  viewRendered: NoMessageValues;
+  viewRaw: NoMessageValues;
+  viewRawEditable: NoMessageValues;
+  ocrTextLines: NoMessageValues;
+  noGeometry: NoMessageValues;
+  noLines: NoMessageValues;
+  emptyLine: NoMessageValues;
+  signatures: { readonly count: number };
+  signatureRegion: { readonly index: number };
+  confidenceLegend: NoMessageValues;
+  below: NoMessageValues;
+  rawReadOnly: NoMessageValues;
+  rawEditable: NoMessageValues;
+  renderedReadOnly: NoMessageValues;
+  markdownNote: NoMessageValues;
+}>({
+  loadFailed: {
+    id: 'documents.pageText.loadFailed',
+    defaultMessage: 'Failed to load page content: {error}',
+    description: "Error in the page text dialog when the page's text could not be loaded. {error} is the error's own text.",
+  },
+  saveFailed: {
+    id: 'documents.pageText.saveFailed',
+    defaultMessage: "Could not save page {page}'s text: {error}. Nothing was changed.",
+    description: "Error when the page's edited text could not be uploaded. {page} is the page number; {error} is the error's own text.",
+  },
+  restored: {
+    id: 'documents.pageText.restored',
+    defaultMessage: "Page {page}'s original text is restored. Nothing was reprocessed.",
+    description: 'Confirmation after Restore original text. {page} is the page number.',
+  },
+  restoreFailed: {
+    id: 'documents.pageText.restoreFailed',
+    defaultMessage: 'Could not restore the original text: {error}',
+    description: "Shown when Restore original text fails. {error} is the error's own text.",
+  },
+  navBlockedUnfinished: {
+    id: 'documents.pageText.navBlockedUnfinished',
+    defaultMessage: 'Reprocess or restore this page first',
+    description: "Why Previous Page and Next Page are unavailable: the page's text was saved but not reprocessed.",
+  },
+  navBlockedUnsaved: {
+    id: 'documents.pageText.navBlockedUnsaved',
+    defaultMessage: 'Save or discard your changes first',
+    description: 'Why Previous Page and Next Page are unavailable: the text has unsaved changes.',
+  },
+  viewTitle: {
+    id: 'documents.pageText.viewTitle',
+    defaultMessage: 'View Page {page} Text',
+    description: "Title of the dialog that shows a page's text, read-only. {page} is the page number.",
+  },
+  editTitle: {
+    id: 'documents.pageText.editTitle',
+    defaultMessage: 'Edit Page {page} Text',
+    description: "Title of the dialog that edits a page's text. {page} is the page number.",
+  },
+  previousPage: {
+    id: 'documents.pageText.previousPage',
+    defaultMessage: 'Previous Page',
+    description: 'Footer button of the page text dialog that shows the previous page.',
+  },
+  nextPage: {
+    id: 'documents.pageText.nextPage',
+    defaultMessage: 'Next Page',
+    description: 'Footer button of the page text dialog that shows the next page.',
+  },
+  cancel: {
+    id: 'documents.pageText.cancel',
+    defaultMessage: 'Cancel',
+    description: 'Footer button that closes the page text dialog while the text has unsaved changes.',
+  },
+  close: {
+    id: 'documents.pageText.close',
+    defaultMessage: 'Close',
+    description: 'Footer button that closes the page text dialog.',
+  },
+  save: {
+    id: 'documents.pageText.save',
+    defaultMessage: 'Save',
+    description: 'Footer button that saves the edited page text, when the screen names no other label.',
+  },
+  errorHeader: {
+    id: 'documents.pageText.errorHeader',
+    defaultMessage: 'Error',
+    description: 'Heading of the error alert in the page text dialog.',
+  },
+  retry: {
+    id: 'documents.pageText.retry',
+    defaultMessage: 'Retry reprocess',
+    description: 'Button that reprocesses the document again after a failed reprocess, without uploading the text again.',
+  },
+  restore: {
+    id: 'documents.pageText.restore',
+    defaultMessage: 'Restore original text',
+    description: "Button that uploads the page's text as the dialog opened it; nothing is reprocessed.",
+  },
+  unfinished: {
+    id: 'documents.pageText.unfinished',
+    defaultMessage: 'The page text was saved, but the document was not reprocessed: {message}',
+    description: "Error after a save whose reprocess failed. {message} is the error's own text.",
+  },
+  loading: {
+    id: 'documents.pageText.loading',
+    defaultMessage: 'Loading page content...',
+    description: "Shown while the page text dialog loads the page's text.",
+  },
+  viewOcrLines: {
+    id: 'documents.pageText.view.ocrLines',
+    defaultMessage: 'OCR Lines',
+    description: "Option of the page text dialog's view switcher: the page's OCR text lines.",
+  },
+  viewMarkdown: {
+    id: 'documents.pageText.view.markdown',
+    defaultMessage: 'Markdown',
+    description: "Option of the page text dialog's view switcher: the page's text as markdown.",
+  },
+  viewRendered: {
+    id: 'documents.pageText.view.rendered',
+    defaultMessage: 'Rendered',
+    description: 'Option of the markdown view: the markdown as formatted text.',
+  },
+  viewRaw: {
+    id: 'documents.pageText.view.raw',
+    defaultMessage: 'Raw',
+    description: 'Option of the markdown view: the markdown source, read-only.',
+  },
+  viewRawEditable: {
+    id: 'documents.pageText.view.rawEditable',
+    defaultMessage: 'Raw (editable)',
+    description: 'Option of the markdown view: the markdown source, which can be edited.',
+  },
+  ocrTextLines: {
+    id: 'documents.pageText.ocrTextLines',
+    defaultMessage: 'OCR Text Lines',
+    description: "Label above the list of the page's OCR text lines.",
+  },
+  noGeometry: {
+    id: 'documents.pageText.noGeometry',
+    defaultMessage: 'This OCR backend did not provide bounding-box geometry for this page, so lines cannot be highlighted on the image.',
+    description: 'Notice above the OCR text lines when the OCR gave no positions for them.',
+  },
+  noLines: {
+    id: 'documents.pageText.noLines',
+    defaultMessage: 'No OCR text lines available for this page.',
+    description: 'Shown in place of the OCR text lines when the page has none.',
+  },
+  emptyLine: {
+    id: 'documents.pageText.emptyLine',
+    defaultMessage: '(empty)',
+    description: 'Shown in place of an OCR text line that has no text.',
+  },
+  signatures: {
+    id: 'documents.pageText.signatures',
+    defaultMessage: 'Signature detections ({count, number})',
+    description: 'Heading of the signature regions the OCR detected on the page. {count} is how many.',
+  },
+  signatureRegion: {
+    id: 'documents.pageText.signatureRegion',
+    defaultMessage: '[SIGNATURE] region {index, number}',
+    description: 'One detected signature region. [SIGNATURE] is the marker the page text uses for it; {index} counts from 1.',
+  },
+  confidenceLegend: {
+    id: 'documents.pageText.confidenceLegend',
+    defaultMessage: 'Confidence color:',
+    description: 'Label before the badges that explain the colors of the confidence scores.',
+  },
+  below: {
+    id: 'documents.pageText.below',
+    defaultMessage: 'below',
+    description: 'Badge for confidence scores below the lower threshold; it follows the badges ≥ 90 and ≥ 70.',
+  },
+  rawReadOnly: {
+    id: 'documents.pageText.rawReadOnly',
+    defaultMessage: 'Raw markdown (read-only)',
+    description: 'Label above the markdown source when it cannot be edited.',
+  },
+  rawEditable: {
+    id: 'documents.pageText.rawEditable',
+    defaultMessage: 'Raw markdown (editable)',
+    description: 'Label above the markdown source when it can be edited.',
+  },
+  renderedReadOnly: {
+    id: 'documents.pageText.renderedReadOnly',
+    defaultMessage: 'Rendered markdown (read-only)',
+    description: 'Label above the markdown shown as formatted text.',
+  },
+  markdownNote: {
+    id: 'documents.pageText.markdownNote',
+    defaultMessage: 'Confidence scores and bounding boxes are not available in the markdown view — switch to OCR Lines for those.',
+    description: "Note in the markdown view. OCR Lines is the view switcher's option.",
+  },
+});
+
+/** The hint under OCR Text Lines: up to three sentences, each shown on its own, so each is a whole message. */
+const hintMessages = defineMessages<{
+  highlight: NoMessageValues;
+  noBoundingBoxes: NoMessageValues;
+  confidence: NoMessageValues;
+  noConfidence: NoMessageValues;
+  signatures: NoMessageValues;
+}>({
+  highlight: {
+    id: 'documents.pageText.hint.highlight',
+    defaultMessage: 'Click a row to highlight its bounding box on the image.',
+    description: 'First sentence of the hint under OCR Text Lines, when the lines have positions on the page image.',
+  },
+  noBoundingBoxes: {
+    id: 'documents.pageText.hint.noBoundingBoxes',
+    defaultMessage: 'Bounding boxes are not available for this page.',
+    description: 'First sentence of the hint under OCR Text Lines, when the lines have no positions on the page image.',
+  },
+  confidence: {
+    id: 'documents.pageText.hint.confidence',
+    defaultMessage: 'The number on the right is the OCR confidence score for the line.',
+    description: 'Second sentence of the hint under OCR Text Lines, when the lines have confidence scores.',
+  },
+  noConfidence: {
+    id: 'documents.pageText.hint.noConfidence',
+    defaultMessage: 'Confidence scores are not available for this page.',
+    description: 'Second sentence of the hint under OCR Text Lines, when the lines have no confidence scores.',
+  },
+  signatures: {
+    id: 'documents.pageText.hint.signatures',
+    defaultMessage:
+      'Detected signature regions are listed at the end — a low confidence there means a faint or ambiguous mark rather than a clear signature.',
+    description: 'Last sentence of the hint under OCR Text Lines, when the OCR detected signature regions.',
+  },
+});
+
+const unsavedMessages = defineMessages<{
+  title: NoMessageValues;
+  continueEditing: NoMessageValues;
+  discard: NoMessageValues;
+  body: NoMessageValues;
+}>({
+  title: {
+    id: 'documents.pageText.unsaved.title',
+    defaultMessage: 'Unsaved Changes',
+    description: 'Title of the dialog shown when the page text dialog is closed with unsaved changes.',
+  },
+  continueEditing: {
+    id: 'documents.pageText.unsaved.continue',
+    defaultMessage: 'Continue Editing',
+    description: 'Button of the unsaved-changes dialog that goes back to the editor.',
+  },
+  discard: {
+    id: 'documents.pageText.unsaved.discard',
+    defaultMessage: 'Discard Changes',
+    description: 'Button of the unsaved-changes dialog that closes without saving.',
+  },
+  body: {
+    id: 'documents.pageText.unsaved.body',
+    defaultMessage: 'You have unsaved changes. Are you sure you want to close without saving?',
+    description: 'Question in the unsaved-changes dialog.',
+  },
+});
 
 /**
  * One text unit (LINE) from the consolidated pageData.json artifact.
@@ -74,7 +353,7 @@ interface PageTextEditorModalProps {
    * no new upload) and Restore original text.
    */
   onSave?: (page: { pageId: string; textUri: string }) => void | Promise<void>;
-  /** The save button's label. */
+  /** The save button's label; Save when not given. */
   saveLabel?: string;
   /** Why the save button is unavailable now, if it is. */
   saveDisabledReason?: string;
@@ -134,12 +413,13 @@ const PageTextEditorModal = ({
   initialPageId,
   isReadOnly = true,
   onSave,
-  saveLabel = 'Save',
+  saveLabel,
   saveDisabledReason,
   saveNotice,
   onUnfinished,
   onClose,
 }: PageTextEditorModalProps): React.JSX.Element => {
+  const intl = useIntl();
   // Which page is currently shown; navigation (arrows / Next-Previous) moves it.
   const [currentPageId, setCurrentPageId] = useState<string | number | undefined>(initialPageId);
 
@@ -295,7 +575,8 @@ const PageTextEditorModal = ({
       }
     } catch (err) {
       logger.error('Error fetching content:', err);
-      setError(`Failed to load page content: ${(err as Error).message}`);
+      // String(), as the template literal did: the API client rejects with a plain `{ errors }` object, which has no message.
+      setError(intl.formatMessage(messages.loadFailed, { error: String((err as Error).message) }));
     } finally {
       setIsLoading(false);
     }
@@ -318,7 +599,7 @@ const PageTextEditorModal = ({
       logger.info('Saved text content to:', savedUri);
     } catch (err) {
       logger.error('Error saving content:', err);
-      setError(`Could not save page ${id}'s text: ${(err as Error).message}. Nothing was changed.`);
+      setError(intl.formatMessage(messages.saveFailed, { page: id, error: String((err as Error).message) }));
       setIsSaving(false);
       return;
     }
@@ -360,10 +641,10 @@ const PageTextEditorModal = ({
       await saveToS3(unfinished.page.textUri, wrapInJson(unfinished.originalText), 'application/json');
       setTextContent(unfinished.originalText);
       setOriginalTextContent(unfinished.originalText);
-      setRestored(`Page ${unfinished.page.pageId}'s original text is restored. Nothing was reprocessed.`);
+      setRestored(intl.formatMessage(messages.restored, { page: unfinished.page.pageId }));
       setUnfinished(null);
     } catch (err) {
-      setUnfinished({ ...unfinished, restoreError: `Could not restore the original text: ${(err as Error).message}` });
+      setUnfinished({ ...unfinished, restoreError: intl.formatMessage(messages.restoreFailed, { error: String((err as Error).message) }) });
     } finally {
       setIsRetrying(false);
     }
@@ -466,9 +747,9 @@ const PageTextEditorModal = ({
 
   // Moving to another page would lose unsaved edits, or leave a saved text unreprocessed.
   const navigationReason = unfinished
-    ? 'Reprocess or restore this page first'
+    ? intl.formatMessage(messages.navBlockedUnfinished)
     : hasUnsavedChanges && !isReadOnly
-      ? 'Save or discard your changes first'
+      ? intl.formatMessage(messages.navBlockedUnsaved)
       : undefined;
 
   const goToPage = (targetIndex: number) => {
@@ -484,7 +765,7 @@ const PageTextEditorModal = ({
         visible={visible}
         onDismiss={handleCloseClick}
         size="max"
-        header={`${isReadOnly ? 'View' : 'Edit'} Page ${pageId} Text`}
+        header={intl.formatMessage(isReadOnly ? messages.viewTitle : messages.editTitle, { page: String(pageId) })}
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
@@ -498,7 +779,7 @@ const PageTextEditorModal = ({
                     disabled={!canGoPrevious || isSaving || !!navigationReason}
                     disabledReason={canGoPrevious ? navigationReason : undefined}
                   >
-                    Previous Page
+                    <FormattedMessage {...messages.previousPage} />
                   </Button>
                   <Button
                     iconAlign="right"
@@ -508,12 +789,12 @@ const PageTextEditorModal = ({
                     disabled={!canGoNext || isSaving || !!navigationReason}
                     disabledReason={canGoNext ? navigationReason : undefined}
                   >
-                    Next Page
+                    <FormattedMessage {...messages.nextPage} />
                   </Button>
                 </>
               )}
               <Button onClick={handleCloseClick} disabled={isSaving || isRetrying}>
-                {hasUnsavedChanges ? 'Cancel' : 'Close'}
+                <FormattedMessage {...(hasUnsavedChanges ? messages.cancel : messages.close)} />
               </Button>
               {!isReadOnly && (
                 <Button
@@ -523,7 +804,7 @@ const PageTextEditorModal = ({
                   disabledReason={saveDisabledReason}
                   loading={isSaving}
                 >
-                  {saveLabel}
+                  {saveLabel ?? <FormattedMessage {...messages.save} />}
                 </Button>
               )}
             </SpaceBetween>
@@ -538,7 +819,7 @@ const PageTextEditorModal = ({
           )}
           {error && (
             <Box margin={{ bottom: 's' }}>
-              <Alert type="error" header="Error">
+              <Alert type="error" header={intl.formatMessage(messages.errorHeader)}>
                 {error}
               </Alert>
             </Box>
@@ -550,15 +831,15 @@ const PageTextEditorModal = ({
                 action={
                   <SpaceBetween direction="horizontal" size="xs">
                     <Button loading={isRetrying} onClick={() => void retryUnfinished()}>
-                      Retry reprocess
+                      <FormattedMessage {...messages.retry} />
                     </Button>
                     <Button disabled={isRetrying} onClick={() => void restoreOriginal()}>
-                      Restore original text
+                      <FormattedMessage {...messages.restore} />
                     </Button>
                   </SpaceBetween>
                 }
               >
-                The page text was saved, but the document was not reprocessed: {unfinished.message}
+                <FormattedMessage {...messages.unfinished} values={{ message: unfinished.message }} />
                 {unfinished.restoreError && <Box color="text-status-error">{unfinished.restoreError}</Box>}
               </Alert>
             </Box>
@@ -573,7 +854,7 @@ const PageTextEditorModal = ({
             <Box textAlign="center" padding="xxl">
               <Spinner size="large" />
               <Box variant="p" color="text-body-secondary">
-                Loading page content...
+                <FormattedMessage {...messages.loading} />
               </Box>
             </Box>
           ) : (
@@ -603,8 +884,8 @@ const PageTextEditorModal = ({
                       selectedId={viewMode}
                       onChange={({ detail }) => setViewMode(detail.selectedId)}
                       options={[
-                        { id: 'ocr-lines', text: 'OCR Lines' },
-                        { id: 'markdown', text: 'Markdown' },
+                        { id: 'ocr-lines', text: intl.formatMessage(messages.viewOcrLines) },
+                        { id: 'markdown', text: intl.formatMessage(messages.viewMarkdown) },
                       ]}
                     />
                     {viewMode === 'markdown' && (
@@ -612,8 +893,8 @@ const PageTextEditorModal = ({
                         selectedId={markdownSubMode}
                         onChange={({ detail }) => setMarkdownSubMode(detail.selectedId)}
                         options={[
-                          { id: 'rendered', text: 'Rendered' },
-                          { id: 'raw', text: isReadOnly ? 'Raw' : 'Raw (editable)' },
+                          { id: 'rendered', text: intl.formatMessage(messages.viewRendered) },
+                          { id: 'raw', text: intl.formatMessage(isReadOnly ? messages.viewRaw : messages.viewRawEditable) },
                         ]}
                       />
                     )}
@@ -623,22 +904,22 @@ const PageTextEditorModal = ({
                 {viewMode === 'ocr-lines' ? (
                   <>
                     <Box fontSize="body-s" color="text-label" margin={{ bottom: 'xxxs' }}>
-                      OCR Text Lines
+                      <FormattedMessage {...messages.ocrTextLines} />
                     </Box>
                     <Box fontSize="body-s" color="text-body-secondary" margin={{ bottom: 'xxs' }}>
-                      {hasVisualView && geometryAvailable
-                        ? 'Click a row to highlight its bounding box on the image.'
-                        : 'Bounding boxes are not available for this page.'}
-                      {hasConfidence
-                        ? ' The number on the right is the OCR confidence score for the line.'
-                        : ' Confidence scores are not available for this page.'}
-                      {signatures.length > 0 &&
-                        ' Detected signature regions are listed at the end — a low confidence there means a faint or ambiguous mark rather than a clear signature.'}
+                      <FormattedMessage {...(hasVisualView && geometryAvailable ? hintMessages.highlight : hintMessages.noBoundingBoxes)} />{' '}
+                      <FormattedMessage {...(hasConfidence ? hintMessages.confidence : hintMessages.noConfidence)} />
+                      {signatures.length > 0 && (
+                        <>
+                          {' '}
+                          <FormattedMessage {...hintMessages.signatures} />
+                        </>
+                      )}
                     </Box>
                     {hasVisualView && !geometryAvailable && (
                       <Box margin={{ bottom: 'xs' }}>
                         <Alert type="info">
-                          This OCR backend did not provide bounding-box geometry for this page, so lines cannot be highlighted on the image.
+                          <FormattedMessage {...messages.noGeometry} />
                         </Alert>
                       </Box>
                     )}
@@ -652,7 +933,7 @@ const PageTextEditorModal = ({
                     >
                       {lines.length === 0 && signatures.length === 0 ? (
                         <Box padding="m" color="text-body-secondary">
-                          No OCR text lines available for this page.
+                          <FormattedMessage {...messages.noLines} />
                         </Box>
                       ) : (
                         lines.map((line, index) => {
@@ -688,7 +969,11 @@ const PageTextEditorModal = ({
                               }}
                             >
                               <span style={{ fontSize: '13px', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
-                                {line.text || <em style={{ color: '#888' }}>(empty)</em>}
+                                {line.text || (
+                                  <em style={{ color: '#888' }}>
+                                    <FormattedMessage {...messages.emptyLine} />
+                                  </em>
+                                )}
                               </span>
                               {line.confidence != null && (
                                 <span style={{ flexShrink: 0, color: confidenceColor(line.confidence), fontSize: '12px', fontWeight: 600 }}>
@@ -706,7 +991,7 @@ const PageTextEditorModal = ({
                       {signatures.length > 0 && (
                         <>
                           <Box padding={{ vertical: 'xxs', horizontal: 's' }} fontSize="body-s" color="text-label" fontWeight="bold">
-                            Signature detections ({signatures.length})
+                            <FormattedMessage {...messages.signatures} values={{ count: signatures.length }} />
                           </Box>
                           {signatures.map((signature, index) => {
                             const canHighlight = hasVisualView && Boolean(signature.geometry?.boundingBox);
@@ -740,7 +1025,9 @@ const PageTextEditorModal = ({
                                 }}
                               >
                                 <span style={{ fontSize: '13px' }}>
-                                  <em>[SIGNATURE] region {index + 1}</em>
+                                  <em>
+                                    <FormattedMessage {...messages.signatureRegion} values={{ index: index + 1 }} />
+                                  </em>
                                 </span>
                                 {signature.confidence != null && (
                                   <span
@@ -762,20 +1049,25 @@ const PageTextEditorModal = ({
                     </div>
                     {(hasConfidence || signatures.some((s) => s.confidence != null)) && (
                       <Box fontSize="body-s" color="text-body-secondary" margin={{ top: 'xxs' }}>
-                        Confidence color: <Badge color="green">≥ {CONFIDENCE_HIGH}</Badge>{' '}
-                        <Badge color="severity-medium">≥ {CONFIDENCE_MEDIUM}</Badge> <Badge color="red">below</Badge>
+                        <FormattedMessage {...messages.confidenceLegend} /> <Badge color="green">≥ {CONFIDENCE_HIGH}</Badge>{' '}
+                        <Badge color="severity-medium">≥ {CONFIDENCE_MEDIUM}</Badge>{' '}
+                        <Badge color="red">
+                          <FormattedMessage {...messages.below} />
+                        </Badge>
                       </Box>
                     )}
                   </>
                 ) : (
                   <>
                     <Box fontSize="body-s" color="text-label" margin={{ bottom: 'xxxs' }}>
-                      {markdownSubMode === 'raw'
-                        ? `Raw markdown (${isReadOnly ? 'read-only' : 'editable'})`
-                        : 'Rendered markdown (read-only)'}
+                      {markdownSubMode === 'raw' ? (
+                        <FormattedMessage {...(isReadOnly ? messages.rawReadOnly : messages.rawEditable)} />
+                      ) : (
+                        <FormattedMessage {...messages.renderedReadOnly} />
+                      )}
                     </Box>
                     <Box fontSize="body-s" color="text-body-secondary" margin={{ bottom: 'xxs' }}>
-                      Confidence scores and bounding boxes are not available in the markdown view — switch to OCR Lines for those.
+                      <FormattedMessage {...messages.markdownNote} />
                     </Box>
                     {markdownSubMode === 'raw' ? (
                       <div style={{ border: '1px solid #e9ebed', height: EDITOR_HEIGHT }}>
@@ -823,19 +1115,21 @@ const PageTextEditorModal = ({
       <Modal
         visible={showCloseWarning}
         onDismiss={() => setShowCloseWarning(false)}
-        header="Unsaved Changes"
+        header={intl.formatMessage(unsavedMessages.title)}
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
-              <Button onClick={() => setShowCloseWarning(false)}>Continue Editing</Button>
+              <Button onClick={() => setShowCloseWarning(false)}>
+                <FormattedMessage {...unsavedMessages.continueEditing} />
+              </Button>
               <Button variant="primary" onClick={handleForceClose}>
-                Discard Changes
+                <FormattedMessage {...unsavedMessages.discard} />
               </Button>
             </SpaceBetween>
           </Box>
         }
       >
-        You have unsaved changes. Are you sure you want to close without saving?
+        <FormattedMessage {...unsavedMessages.body} />
       </Modal>
     </>
   );

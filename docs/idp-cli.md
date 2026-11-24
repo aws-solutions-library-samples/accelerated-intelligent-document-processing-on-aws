@@ -1067,8 +1067,8 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 - `--stack-name`: Target CloudFormation stack. **Omit for local mode** (print schema, no save).
 - `--class-name`: Document class name to use as the schema `$id` / document type.
 - `--field-hint`: A field the schema must include. Repeatable: `--field-hint X --field-hint Y`.
-- `--config-profile` (alias: `--config-version`): Existing configuration profile to source catalog classes from / merge the new class into.
-- `--target-profile` (alias: `--target-version`): Name of the configuration profile to create (default: `bootstrap-<class>`).
+- `--config-profile` (alias: `--config-version`): Existing configuration profile whose classes are searched for a template to adapt. Nothing is written to it.
+- `--target-profile` (alias: `--target-version`): Configuration profile to create, or to add the class to (default: `bootstrap-<class>`). `default` and stack-managed profiles are refused.
 - `--count`, `-c`: Number of synthetic documents to generate (default: `3`).
 - `--threshold`: Generation quality threshold, 1–10 (default: `7`).
 - `--augment`: Apply scan/fax-style image augmentation to generated documents.
@@ -2789,6 +2789,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it. `{DOCUMENT_IMAGE}` may appear at most once in the prompt the confidence pass sends — this prompt with comments removed, plus `extraction.geometry.task_prompt_bbox` when `extraction.geometry.mode` is `llm` or `llm_grounded` — because the pass refuses the document otherwise. An explicit empty prompt (`task_prompt: ""`, or one holding only a comment) is refused for the same reason. Both checks run in `integrated` mode too, where the separate pass still runs for some sections; leave the key out to use the system default
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
+- **Extraction mode** - Warns when the file sets `extraction.agentic.enabled: true` but `extraction.mode` resolves to `simple`, because the mode decides the extraction path and the document would run simple extraction. A file downloaded in full carries `mode: simple`, which is how this happens; the warning names `mode: advanced` as the setting to change. It is a warning, not an error
 - **Pre-0.9 classification layout** - Warns when the file still uses the flat
   classification keys, naming the ones it converted, so you can save the nested
   form and keep it. A second warning appears for the one conversion that
