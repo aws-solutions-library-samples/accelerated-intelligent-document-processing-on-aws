@@ -432,6 +432,8 @@
         "scripts/terraform_scan_diff.py": 51.9,
         "scripts/ui_deps_freshness.py": 93.75,
         "scripts/ui_i18n_coverage.py": 95.83,
+        "scripts/ui_i18n_review.py": 95.58,
+        "scripts/ui_i18n_revise.py": 99.18,
         "scripts/ui_i18n_translate.py": 94.86,
         "scripts/ux_recorder.py": 54.11,
         "scripts/ux_recorder_cdp.py": 74.6,
