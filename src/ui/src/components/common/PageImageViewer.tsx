@@ -3,14 +3,156 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef, memo, useCallback, useImperativeHandle } from 'react';
 import { Box, Spinner, Button } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { presignBatch, presignedUrlsNeedRefresh, type PresignBatchResult } from '../../api/presign-batch';
-import { FILE_ACCESS_DENIED_MESSAGE } from '../../hooks/utils/graphql-error';
+import { fileAccessMessages } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { rotateBoundingBox, rotateOffset, rotationFitScale } from './page-rotation-utils';
 import type { NormalisedBox } from './page-rotation-utils';
 import { useDocumentVersion } from '../../contexts/document-version';
 
 const logger = new ConsoleLogger('PageImageViewer');
+
+const messages = defineMessages<{
+  loadFailed: NoMessageValues;
+  loading: NoMessageValues;
+  none: NoMessageValues;
+  noImage: NoMessageValues;
+  alt: { readonly page: string };
+  position: { readonly page: number; readonly total: number };
+  previous: NoMessageValues;
+  next: NoMessageValues;
+  zoom: NoMessageValues;
+  pan: NoMessageValues;
+  rotate: NoMessageValues;
+  zoomOut: NoMessageValues;
+  zoomIn: NoMessageValues;
+  panLeft: NoMessageValues;
+  panRight: NoMessageValues;
+  panUp: NoMessageValues;
+  panDown: NoMessageValues;
+  rotateLeft: NoMessageValues;
+  rotateLeftAriaLabel: NoMessageValues;
+  rotateRight: NoMessageValues;
+  rotateRightAriaLabel: NoMessageValues;
+  reset: NoMessageValues;
+}>({
+  loadFailed: {
+    id: 'documents.pageImage.loadFailed',
+    defaultMessage: 'The page images for this document could not be loaded.',
+    description: 'Shown in the page image viewer when the page images could not be loaded.',
+  },
+  loading: {
+    id: 'documents.pageImage.loading',
+    defaultMessage: 'Loading page images...',
+    description: 'Shown while the page image viewer loads the page images.',
+  },
+  none: {
+    id: 'documents.pageImage.none',
+    defaultMessage: 'No page images available',
+    description: 'Shown in the page image viewer when there are no pages to show.',
+  },
+  noImage: {
+    id: 'documents.pageImage.noImage',
+    defaultMessage: 'No image is available for this page.',
+    description: 'Shown in the page image viewer for a page that has no image.',
+  },
+  alt: {
+    id: 'documents.pageImage.alt',
+    defaultMessage: 'Page {page}',
+    description: 'Alternative text of the page image. {page} is the page number.',
+  },
+  position: {
+    id: 'documents.pageImage.position',
+    defaultMessage: 'Page {page, number} of {total, number}',
+    description: "The page image viewer's position: which page is shown, out of how many.",
+  },
+  previous: {
+    id: 'documents.pageImage.previous',
+    defaultMessage: 'Previous page',
+    description: "Screen-reader label of the page image viewer's arrow to the previous page.",
+  },
+  next: {
+    id: 'documents.pageImage.next',
+    defaultMessage: 'Next page',
+    description: "Screen-reader label of the page image viewer's arrow to the next page.",
+  },
+  zoom: {
+    id: 'documents.pageImage.zoom',
+    defaultMessage: 'Zoom:',
+    description: 'Label before the zoom controls of the page image viewer.',
+  },
+  pan: {
+    id: 'documents.pageImage.pan',
+    defaultMessage: 'Pan:',
+    description: 'Label before the arrows that move the zoomed page image.',
+  },
+  rotate: {
+    id: 'documents.pageImage.rotate',
+    defaultMessage: 'Rotate:',
+    description: 'Label before the rotation controls of the page image viewer.',
+  },
+  zoomOut: {
+    id: 'documents.pageImage.zoomOut',
+    defaultMessage: 'Zoom Out',
+    description: 'Tooltip of the page image viewer control that zooms out.',
+  },
+  zoomIn: {
+    id: 'documents.pageImage.zoomIn',
+    defaultMessage: 'Zoom In',
+    description: 'Tooltip of the page image viewer control that zooms in.',
+  },
+  panLeft: {
+    id: 'documents.pageImage.panLeft',
+    defaultMessage: 'Pan Left',
+    description: 'Tooltip of the control that moves the zoomed page image left.',
+  },
+  panRight: {
+    id: 'documents.pageImage.panRight',
+    defaultMessage: 'Pan Right',
+    description: 'Tooltip of the control that moves the zoomed page image right.',
+  },
+  panUp: {
+    id: 'documents.pageImage.panUp',
+    defaultMessage: 'Pan Up',
+    description: 'Tooltip of the control that moves the zoomed page image up.',
+  },
+  panDown: {
+    id: 'documents.pageImage.panDown',
+    defaultMessage: 'Pan Down',
+    description: 'Tooltip of the control that moves the zoomed page image down.',
+  },
+  rotateLeft: {
+    id: 'documents.pageImage.rotateLeft',
+    defaultMessage: 'Rotate Left 90°',
+    description: 'Tooltip of the control that turns the page image a quarter turn anticlockwise.',
+  },
+  rotateLeftAriaLabel: {
+    id: 'documents.pageImage.rotateLeftAriaLabel',
+    defaultMessage: 'Rotate left 90 degrees',
+    description: 'Screen-reader label of the control that turns the page image a quarter turn anticlockwise.',
+  },
+  rotateRight: {
+    id: 'documents.pageImage.rotateRight',
+    defaultMessage: 'Rotate Right 90°',
+    description: 'Tooltip of the control that turns the page image a quarter turn clockwise.',
+  },
+  rotateRightAriaLabel: {
+    id: 'documents.pageImage.rotateRightAriaLabel',
+    defaultMessage: 'Rotate right 90 degrees',
+    description: 'Screen-reader label of the control that turns the page image a quarter turn clockwise.',
+  },
+  reset: {
+    id: 'documents.pageImage.reset',
+    defaultMessage: 'Reset View',
+    description: 'Tooltip of the control that resets zoom, pan and rotation of the page image.',
+  },
+});
+
+/** Drawn in place of a page image that fails to load: an image asset (a grey SVG reading "Image load error"), not text. */
+const FALLBACK_IMAGE_SRC =
+  'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iI2YwZjBmMCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM5OTkiPkltYWdlIGxvYWQgZXJyb3I8L3RleHQ+PC9zdmc+';
 
 interface BoundingBoxGeometry {
   boundingBox?: NormalisedBox;
@@ -242,6 +384,8 @@ const PageImageViewer = ({
   boundingBoxes = [],
   zoomHandle,
 }: PageImageViewerProps): React.JSX.Element => {
+  const intl = useIntl();
+  const { formatPercent } = useFormatters();
   // Pin page images to the selected run's object versions when viewing history.
   const { versionIdForUri, runId: viewingRunId } = useDocumentVersion();
   const [pageImages, setPageImages] = useState<Record<string, string>>({});
@@ -251,9 +395,10 @@ const PageImageViewer = ({
    * simply having no image. Without it a refused document showed a spinner for
    * ever: the resolver's per-document scope check fails the WHOLE batch with a
    * 403, so every page is missing at once and "still loading" is indistinguishable
-   * from "never allowed" (issue #1033).
+   * from "never allowed" (issue #1033). Held as a message and formatted at render, so it
+   * follows a language switch.
    */
-  const [imageErrorMessage, setImageErrorMessage] = useState<string | null>(null);
+  const [imageErrorMessage, setImageErrorMessage] = useState<TypedMessageDescriptor<NoMessageValues> | null>(null);
   const [currentPage, setCurrentPage] = useState<string | null>(initialPage || (pageIds.length > 0 ? pageIds[0] : null));
   const [zoomLevel, setZoomLevel] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -328,7 +473,7 @@ const PageImageViewer = ({
           toSign.push({ pageId, s3Uri: uri });
         }
 
-        let failureMessage: string | null = null;
+        let failureMessage: TypedMessageDescriptor<NoMessageValues> | null = null;
         // Nothing signed yet for this run of the effect. A view whose pages are all
         // `blob:`/`data:`/`https:` leaves it null and so never re-signs — there is
         // no capability to expire.
@@ -350,8 +495,8 @@ const PageImageViewer = ({
           // The reason comes from the call, not from counting absences: the whole
           // batch is refused together, so a 403 and "this document has no page
           // images" produce the same empty record.
-          if (signed.accessDenied) failureMessage = FILE_ACCESS_DENIED_MESSAGE;
-          else if (signed.failed || missing > 0) failureMessage = 'The page images for this document could not be loaded.';
+          if (signed.accessDenied) failureMessage = fileAccessMessages.denied;
+          else if (signed.failed || missing > 0) failureMessage = messages.loadFailed;
         }
         setImageErrorMessage(failureMessage);
 
@@ -589,18 +734,14 @@ const PageImageViewer = ({
   // double-click), and an effect keyed on the geometry cannot tell them apart.
   useImperativeHandle(zoomHandle, () => ({ zoomToField }), [zoomToField]);
 
-  const fallbackImage =
-    'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6' +
-    'Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iI2Yw' +
-    'ZjBmMCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMjAi' +
-    'IHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiM5OTkiPkltYWdlIGxvYWQgZXJyb3I8L3RleHQ+PC9zdmc+';
-
   if (loadingImages) {
     return (
       <div style={{ height }}>
         <Box padding="xl" textAlign="center">
           <Spinner />
-          <div>Loading page images...</div>
+          <div>
+            <FormattedMessage {...messages.loading} />
+          </div>
         </Box>
       </div>
     );
@@ -610,7 +751,7 @@ const PageImageViewer = ({
     return (
       <div style={{ height }}>
         <Box padding="xl" textAlign="center">
-          No page images available
+          <FormattedMessage {...messages.none} />
         </Box>
       </div>
     );
@@ -645,7 +786,7 @@ const PageImageViewer = ({
             <img
               ref={imageRef}
               src={pageImages[currentPage]}
-              alt={`Page ${currentPage}`}
+              alt={intl.formatMessage(messages.alt, { page: currentPage })}
               style={{
                 maxWidth: '100%',
                 maxHeight: '100%',
@@ -668,7 +809,7 @@ const PageImageViewer = ({
               onLoad={measureRotationFit}
               onError={(e) => {
                 logger.error(`Error loading image for page ${currentPage}:`, e);
-                (e.target as HTMLImageElement).src = fallbackImage;
+                (e.target as HTMLImageElement).src = FALLBACK_IMAGE_SRC;
               }}
             />
             {/* Active field bounding box: page and currentPage use the same currentPage value (pageId) */}
@@ -706,7 +847,7 @@ const PageImageViewer = ({
              with no URL is a settled outcome — a refusal, a failure, or a page
              that carries no image — and each of those says so. */
           <Box padding="xl" textAlign="center" color={imageErrorMessage ? 'text-status-error' : 'inherit'}>
-            {imageErrorMessage ?? 'No image is available for this page.'}
+            <FormattedMessage {...(imageErrorMessage ?? messages.noImage)} />
           </Box>
         )}
       </div>
@@ -729,7 +870,7 @@ const PageImageViewer = ({
           <Button
             iconName="angle-left"
             variant="icon"
-            ariaLabel="Previous page"
+            ariaLabel={intl.formatMessage(messages.previous)}
             onClick={goToPreviousPage}
             disabled={currentPageIndex === 0}
           />
@@ -738,7 +879,7 @@ const PageImageViewer = ({
           <Button
             iconName="angle-right"
             variant="icon"
-            ariaLabel="Next page"
+            ariaLabel={intl.formatMessage(messages.next)}
             onClick={goToNextPage}
             disabled={currentPageIndex === pageIds.length - 1}
           />
@@ -766,7 +907,7 @@ const PageImageViewer = ({
               borderRadius: '4px',
             }}
           >
-            Page {currentPageIndex + 1} of {pageIds.length}
+            <FormattedMessage {...messages.position} values={{ page: currentPageIndex + 1, total: pageIds.length }} />
           </div>
 
           {/* Zoom and Pan Controls */}
@@ -787,7 +928,9 @@ const PageImageViewer = ({
               fontSize: '12px',
             }}
           >
-            <span style={{ fontWeight: 'bold' }}>Zoom:</span>
+            <span style={{ fontWeight: 'bold' }}>
+              <FormattedMessage {...messages.zoom} />
+            </span>
             <span
               onClick={handleZoomOut}
               onKeyDown={(e) => e.key === 'Enter' && handleZoomOut()}
@@ -801,11 +944,14 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 4px',
               }}
-              title="Zoom Out"
+              title={intl.formatMessage(messages.zoomOut)}
             >
               −
             </span>
-            <span style={{ fontSize: '12px', minWidth: '30px', textAlign: 'center' }}>{Math.round(zoomLevel * 100)}%</span>
+            <span style={{ fontSize: '12px', minWidth: '30px', textAlign: 'center' }}>
+              {/* Math.round first, as before: alone, Intl would show 1.005 as 101%, where Math.round(1.005 * 100) gives 100. */}
+              {formatPercent(Math.round(zoomLevel * 100) / 100, { fractionDigits: 0 })}
+            </span>
             <span
               onClick={handleZoomIn}
               onKeyDown={(e) => e.key === 'Enter' && handleZoomIn()}
@@ -819,11 +965,13 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 4px',
               }}
-              title="Zoom In"
+              title={intl.formatMessage(messages.zoomIn)}
             >
               +
             </span>
-            <span style={{ fontWeight: 'bold', marginLeft: '4px' }}>Pan:</span>
+            <span style={{ fontWeight: 'bold', marginLeft: '4px' }}>
+              <FormattedMessage {...messages.pan} />
+            </span>
             <span
               onClick={handlePanLeft}
               onKeyDown={(e) => e.key === 'Enter' && handlePanLeft()}
@@ -836,7 +984,7 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 3px',
               }}
-              title="Pan Left"
+              title={intl.formatMessage(messages.panLeft)}
             >
               ←
             </span>
@@ -852,7 +1000,7 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 3px',
               }}
-              title="Pan Right"
+              title={intl.formatMessage(messages.panRight)}
             >
               →
             </span>
@@ -868,7 +1016,7 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 3px',
               }}
-              title="Pan Up"
+              title={intl.formatMessage(messages.panUp)}
             >
               ↑
             </span>
@@ -884,11 +1032,13 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 3px',
               }}
-              title="Pan Down"
+              title={intl.formatMessage(messages.panDown)}
             >
               ↓
             </span>
-            <span style={{ fontWeight: 'bold', marginLeft: '4px' }}>Rotate:</span>
+            <span style={{ fontWeight: 'bold', marginLeft: '4px' }}>
+              <FormattedMessage {...messages.rotate} />
+            </span>
             <span
               onClick={handleRotateLeft}
               onKeyDown={(e) => e.key === 'Enter' && handleRotateLeft()}
@@ -900,11 +1050,11 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 3px',
               }}
-              title="Rotate Left 90°"
+              title={intl.formatMessage(messages.rotateLeft)}
               // The content is a glyph, so without this the accessible name is
               // "anticlockwise open circle arrow". `title` is only a fallback
               // and is not announced dependably.
-              aria-label="Rotate left 90 degrees"
+              aria-label={intl.formatMessage(messages.rotateLeftAriaLabel)}
             >
               ↺
             </span>
@@ -920,8 +1070,8 @@ const PageImageViewer = ({
                 userSelect: 'none',
                 padding: '2px 3px',
               }}
-              title="Rotate Right 90°"
-              aria-label="Rotate right 90 degrees"
+              title={intl.formatMessage(messages.rotateRight)}
+              aria-label={intl.formatMessage(messages.rotateRightAriaLabel)}
             >
               ↻
             </span>
@@ -937,7 +1087,7 @@ const PageImageViewer = ({
                 padding: '2px 3px',
                 marginLeft: '2px',
               }}
-              title="Reset View"
+              title={intl.formatMessage(messages.reset)}
             >
               ⟲
             </span>

@@ -20,6 +20,7 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 
 import ConfigRevisionSelector from '../ConfigRevisionSelector';
 import type { ConfigProfileRevision } from '../../../hooks/use-config-profile-revisions';
@@ -43,6 +44,12 @@ const REVISIONS: ConfigProfileRevision[] = [
   { revision: 4, published: false, createdAt: '2026-08-27T10:00:00Z' },
 ];
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 beforeEach(() => {
   state.revisions = [];
   state.profileMatchesPublished = null;
@@ -54,7 +61,7 @@ beforeEach(() => {
 describe('ConfigRevisionSelector', () => {
   it('renders nothing until a profile is chosen', () => {
     state.revisions = REVISIONS;
-    const { container } = render(<ConfigRevisionSelector profileName={null} value={null} onChange={vi.fn()} />);
+    const { container } = render(<ConfigRevisionSelector profileName={null} value={null} onChange={vi.fn()} />, { wrapper: English });
     expect(container).toBeEmptyDOMElement();
     expect(loadRevisions).not.toHaveBeenCalled();
   });
@@ -63,31 +70,31 @@ describe('ConfigRevisionSelector', () => {
     // The normal state on a deployment that has not saved a configuration since
     // revisions were introduced.
     state.revisions = [];
-    const { container } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+    const { container } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />, { wrapper: English });
     expect(container).toBeEmptyDOMElement();
   });
 
   it('renders nothing when the only revision is the current one', () => {
     state.revisions = [REVISIONS[0]];
-    const { container } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+    const { container } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />, { wrapper: English });
     expect(container).toBeEmptyDOMElement();
   });
 
   it('loads the revisions of the selected profile', () => {
     state.revisions = REVISIONS;
-    render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+    render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />, { wrapper: English });
     expect(loadRevisions).toHaveBeenCalledWith('lending');
   });
 
   it('defaults to the current revision, naming it', () => {
     state.revisions = REVISIONS;
-    render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+    render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />, { wrapper: English });
     expect(screen.getByText('Current (r7)')).toBeInTheDocument();
   });
 
   it('shows the pinned revision when one is selected', () => {
     state.revisions = REVISIONS;
-    render(<ConfigRevisionSelector profileName="lending" value={5} onChange={vi.fn()} />);
+    render(<ConfigRevisionSelector profileName="lending" value={5} onChange={vi.fn()} />, { wrapper: English });
     expect(screen.getByText('r5')).toBeInTheDocument();
   });
 
@@ -104,7 +111,7 @@ describe('ConfigRevisionSelector', () => {
     // that mattered was the one being discarded.
     state.revisions = REVISIONS;
     const onChange = vi.fn();
-    render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />);
+    render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />, { wrapper: English });
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -113,7 +120,7 @@ describe('ConfigRevisionSelector', () => {
     // is unrelated to r5 of `claims`.
     state.revisions = REVISIONS;
     const onChange = vi.fn();
-    const { rerender } = render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />);
+    const { rerender } = render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />, { wrapper: English });
     rerender(<ConfigRevisionSelector profileName="claims" value={5} onChange={onChange} />);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith(null);
@@ -125,7 +132,7 @@ describe('ConfigRevisionSelector', () => {
     // property and both need pinning.
     state.revisions = REVISIONS;
     const onChange = vi.fn();
-    const { rerender } = render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />);
+    const { rerender } = render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />, { wrapper: English });
     rerender(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} disabled />);
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -133,7 +140,7 @@ describe('ConfigRevisionSelector', () => {
   it('surfaces a load error rather than silently offering only "Current"', () => {
     state.revisions = REVISIONS;
     state.error = 'Failed to load revision history';
-    render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+    render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />, { wrapper: English });
     expect(screen.getByText('Failed to load revision history')).toBeInTheDocument();
   });
 
@@ -143,7 +150,7 @@ describe('ConfigRevisionSelector', () => {
     // the two were the same.
     state.revisions = REVISIONS;
     state.profileMatchesPublished = false;
-    const { container } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+    const { container } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />, { wrapper: English });
     createWrapper(container).findSelect()!.openDropdown();
     expect(screen.getByText("r7, which differs from the profile's configuration in the editor")).toBeInTheDocument();
   });
@@ -152,7 +159,9 @@ describe('ConfigRevisionSelector', () => {
     state.revisions = REVISIONS;
     for (const matches of [true, null]) {
       state.profileMatchesPublished = matches;
-      const { container, unmount } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+      const { container, unmount } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />, {
+        wrapper: English,
+      });
       createWrapper(container).findSelect()!.openDropdown();
       expect(screen.getByText('Whatever the profile holds when the work runs')).toBeInTheDocument();
       expect(screen.queryByText(/differs from the profile/)).not.toBeInTheDocument();

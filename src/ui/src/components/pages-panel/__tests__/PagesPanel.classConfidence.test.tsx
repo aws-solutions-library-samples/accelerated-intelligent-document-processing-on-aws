@@ -23,6 +23,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 vi.mock('../../../api/client-shim', () => ({
   generateClient: () => ({ graphql: vi.fn() }),
@@ -59,11 +60,18 @@ const PAGES = [
 ];
 const DOC = { objectKey: 'doc', objectStatus: 'COMPLETED' };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderPanel = () =>
   render(
     <DocumentVersionProvider runId={null} files={[]}>
       <PagesPanel {...({ pages: PAGES, documentItem: DOC } as Record<string, unknown>)} />
     </DocumentVersionProvider>,
+    { wrapper: English },
   );
 
 const columnIndex = (header: string): number => {
