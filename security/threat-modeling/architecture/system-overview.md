@@ -384,7 +384,7 @@ at all; per-*tenant* isolation is, through tenant declarations (see
 [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)).
 
 Beyond the group check, **65** operations verify config-version scope, **10** filter
-their result rows by it, and **21** verify per-object ownership.
+their result rows by it, and **22** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in

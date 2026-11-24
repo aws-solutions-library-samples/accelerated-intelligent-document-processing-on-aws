@@ -516,7 +516,10 @@ first, which raises `ProtectedProfileError` for `default` and for any profile
 a managed profile from its preset, so a class written there would be lost, and a
 class in `default` applies to every document. The listing is read with
 `raise_errors=True`, so a listing that cannot be read refuses the write rather than
-reading as "nothing is managed". `create_config_version` returns a refusal as an
+reading as "nothing is managed". `request_document_generation` calls
+`refuse_protected_profile` itself before it enqueues a generation job, so a job
+aimed at a protected profile is refused in the chat rather than failing later in the
+processor, and `set_processing_options` calls it before it reads the profile. `create_config_version` returns a refusal as an
 `error` rather than raising, and the processor fails the job without asking SQS to
 retry it. Generating a test set from a class that already exists
 (`generate_from_existing_config`, or the generator's own generate-from-configuration)
