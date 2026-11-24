@@ -31,12 +31,14 @@ and driven through its typed `Generator` API by `idp_common.synthesis.engine`
   — the arm64 container that actually runs generation. Installs `seed-data` +
   `idp_common[synthesis]`.
 
-### numpy isolation (important)
+### Dependency isolation (important)
 
-`seed-data` requires **numpy 2.x** (opencv/scikit-image/numba), which conflicts
-with the `numpy==1.26.4` pin in `idp_common`'s `ocr`/`evaluation`/`all` extras.
-The image therefore installs only `idp_common[synthesis]` (jsonschema-only), and
-the generator runs in its own container — never co-located with those extras.
+`seed-data` brings its own numpy 2.x stack (opencv/scikit-image/numba) and needs a
+Pillow older than the one `idp_common` pins. `idp_common`'s `ocr`/`evaluation`/`all`
+extras pin numpy and Pillow exactly, and nothing keeps those pins in step with
+`seed-data`'s. The image therefore installs only `idp_common[synthesis]`
+(jsonschema-only), and the generator runs in its own container — never co-located
+with those extras.
 
 ## What the generator's model can do
 

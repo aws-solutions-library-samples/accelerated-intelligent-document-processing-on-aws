@@ -57,6 +57,9 @@ dev = [
 # validates against.
 terraform = [
     "aws-sam-translator>=1.109.0,<2",
+    # S3 conditional writes (If-Match and If-None-Match on PutObject), which the
+    # Terraform module versions index uses; 1.35.99 is the first with both.
+    "botocore>=1.35.99",
     "pyyaml>=6.0",
 ]
 lambda = [

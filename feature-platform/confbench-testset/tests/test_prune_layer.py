@@ -12,10 +12,12 @@ load-bearing. These tests pin that behaviour.
 from __future__ import annotations
 
 import importlib.util
+import re
 import struct
 from pathlib import Path
 
 import pytest
+import yaml
 
 _SHARED = Path(__file__).resolve().parent.parent / "shared"
 
@@ -79,32 +81,43 @@ def _elf64(needed: list[str]) -> bytes:
     return bytes(header) + dynamic + strtab + sections
 
 
-def _layer(root: Path, *, flight_needed_by_lib: bool = False) -> Path:
-    """A miniature stand-in for the built layer, matching pyarrow's real layout."""
+def _layer(
+    root: Path, *, flight_needed_by_lib: bool = False, s3_needed_by_lib: bool = False
+) -> Path:
+    """A miniature stand-in for the built layer, matching pyarrow 26's layout."""
     pa = root / "python" / "pyarrow"
     _write(root / "python" / "variants.py", 11_010)
 
     # Prunable: build-time-only trees, Cython sources, C API headers.
     _write(pa / "include" / "arrow" / "api.h", 4_000)
+    # From pyarrow 26 the C API headers live here, not at the package root.
+    _write(pa / "include" / "arrow" / "python" / "lib.h", 500)
     _write(pa / "src" / "arrow" / "python" / "pyarrow.h", 1_000)
     _write(pa / "tests" / "test_table.py", 2_000)
     _write(pa / "table.pxi", 1_500)
     _write(pa / "lib.pyx", 1_500)
     _write(pa / "includes" / "libarrow.pxd", 1_500)
-    _write(pa / "lib.h", 500)
 
     # Prunable: the Flight RPC stack.
-    _write(pa / "libarrow_flight.so.2300", 24_000)
+    _write(pa / "libarrow_flight.so.2600", 24_000)
     _write(pa / "libarrow_python_flight.so", 200)
     _write(pa / "_flight.cpython-312-aarch64-linux-gnu.so", 1_000)
 
+    # Prunable: the S3 filesystem, which only `_s3fs` links.
+    _write(pa / "libarrow_s3.so.2600", 16_000)
+    (pa / "_s3fs.cpython-312-aarch64-linux-gnu.so").write_bytes(
+        _elf64(["libarrow_s3.so.2600", "libarrow.so.2600"])
+    )
+
     # Kept: the parquet read path. `lib` links the libraries that must survive.
-    lib_needs = ["libarrow.so.2300", "libparquet.so.2300"]
+    lib_needs = ["libarrow.so.2600", "libparquet.so.2600"]
     if flight_needed_by_lib:
-        lib_needs.append("libarrow_flight.so.2300")
+        lib_needs.append("libarrow_flight.so.2600")
+    if s3_needed_by_lib:
+        lib_needs.append("libarrow_s3.so.2600")
     (pa / "lib.cpython-312-aarch64-linux-gnu.so").write_bytes(_elf64(lib_needs))
-    _write(pa / "libarrow.so.2300", 45_000)
-    _write(pa / "libparquet.so.2300", 11_000)
+    _write(pa / "libarrow.so.2600", 45_000)
+    _write(pa / "libparquet.so.2600", 11_000)
     _write(pa / "parquet" / "__init__.py", 100)
     return root
 
@@ -136,9 +149,11 @@ class TestCollect:
         targets, unmatched = prune_layer.collect(_layer(tmp_path))
         assert unmatched == []
         names = {p.name for p in targets}
-        assert "libarrow_flight.so.2300" in names
+        assert "libarrow_flight.so.2600" in names
+        assert "libarrow_s3.so.2600" in names
+        assert "_s3fs.cpython-312-aarch64-linux-gnu.so" in names
         assert "table.pxi" in names
-        assert "libarrow.so.2300" not in names  # load-bearing, must survive
+        assert "libarrow.so.2600" not in names  # load-bearing, must survive
 
     def test_reports_rules_that_match_nothing(self, tmp_path: Path) -> None:
         """A pyarrow layout change must surface as unmatched rules, not silence."""
@@ -148,7 +163,16 @@ class TestCollect:
             prune_layer.PRUNE_DIRS
             + prune_layer.PRUNE_GLOBS
             + prune_layer.PRUNE_GLOBS_FLIGHT
+            + prune_layer.PRUNE_GLOBS_S3
         )
+
+    def test_a_root_level_header_rule_would_match_nothing(self, tmp_path: Path) -> None:
+        """pyarrow 26 moved lib.h/lib_api.h under include/; pin that no rule
+        still expects them at the package root."""
+        root = _layer(tmp_path)
+        assert not list((root / "python" / "pyarrow").glob("*.h"))
+        _, unmatched = prune_layer.collect(root)
+        assert unmatched == []
 
 
 class TestLinkIntegrity:
@@ -165,7 +189,16 @@ class TestLinkIntegrity:
         targets, _ = prune_layer.collect(root)
         problems = prune_layer.check_link_integrity(root, targets)
         assert len(problems) == 1
-        assert "libarrow_flight.so.2300" in problems[0]
+        assert "libarrow_flight.so.2600" in problems[0]
+
+    def test_fails_when_a_kept_object_links_libarrow_s3(self, tmp_path: Path) -> None:
+        """The S3 prune is safe only while `_s3fs` is the sole object linking it."""
+        root = _layer(tmp_path, s3_needed_by_lib=True)
+        targets, _ = prune_layer.collect(root)
+        problems = prune_layer.check_link_integrity(root, targets)
+        assert problems == [
+            "python/pyarrow/lib.cpython-312-aarch64-linux-gnu.so -> libarrow_s3.so.2600"
+        ]
 
 
 class TestMain:
@@ -177,9 +210,10 @@ class TestMain:
 
         assert after < before
         assert not (root / "python" / "pyarrow" / "include").exists()
-        assert not (root / "python" / "pyarrow" / "libarrow_flight.so.2300").exists()
+        assert not (root / "python" / "pyarrow" / "libarrow_flight.so.2600").exists()
+        assert not (root / "python" / "pyarrow" / "libarrow_s3.so.2600").exists()
         # The parquet read path and the catalog module survive.
-        assert (root / "python" / "pyarrow" / "libparquet.so.2300").exists()
+        assert (root / "python" / "pyarrow" / "libparquet.so.2600").exists()
         assert (root / "python" / "variants.py").exists()
         assert "prune_layer:" in capsys.readouterr().out
 
@@ -204,3 +238,97 @@ class TestMain:
             prune_layer.LAMBDA_UNZIPPED_LIMIT - prune_layer.LEGACY_INGEST_CODE_BYTES
         )
         assert prune_layer.LAYER_CEILING == 117_588_694
+
+
+# The layer prunes pyarrow's S3 filesystem (`PRUNE_GLOBS_S3`), which is only safe
+# while nothing that mounts the layer reaches S3 through pyarrow. These names are
+# how such code would spell it: the module, the class, the extension, or an
+# `s3://` URI handed to a pyarrow reader (which resolves to S3FileSystem).
+_PYARROW_S3_USE = re.compile(
+    r"pyarrow\.fs|from\s+pyarrow\s+import\s+[^\n]*\bfs\b|S3FileSystem|_s3fs"
+    r"|\b(?:pq|pa|pyarrow|ds)\.[\w.]+\([^)\n]*['\"]s3://"
+)
+
+
+class _CfnLoader(yaml.SafeLoader):
+    """SafeLoader that reads CloudFormation short-form tags as plain values."""
+
+
+_CfnLoader.add_multi_constructor(
+    "!",
+    lambda loader, _suffix, node: (
+        loader.construct_scalar(node)
+        if isinstance(node, yaml.ScalarNode)
+        else loader.construct_sequence(node)
+        if isinstance(node, yaml.SequenceNode)
+        else loader.construct_mapping(node)
+    ),
+)
+
+
+def _shared_layer_consumers() -> list[Path]:
+    """CodeUri directories of every function in template.yaml that mounts SharedLayer."""
+    template = yaml.load(
+        (_SHARED.parent / "template.yaml").read_text(), Loader=_CfnLoader
+    )
+    dirs = []
+    for resource in template["Resources"].values():
+        props = resource.get("Properties") or {}
+        if "SharedLayer" in (props.get("Layers") or []):
+            dirs.append(_SHARED.parent / props["CodeUri"])
+    return sorted(set(dirs))
+
+
+def _pyarrow_s3_uses(root: Path) -> list[str]:
+    hits = []
+    for path in sorted(root.rglob("*.py")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _PYARROW_S3_USE.search(line):
+                hits.append(
+                    f"{path.relative_to(_SHARED.parent)}:{lineno}: {line.strip()}"
+                )
+    return hits
+
+
+class TestS3PruneIsSafe:
+    def test_consumers_are_found(self) -> None:
+        """Non-vacuity: the scan below must be reading the code that imports pyarrow."""
+        consumers = _shared_layer_consumers()
+        assert _SHARED.parent / "ingest" in consumers
+        assert (
+            "import pyarrow.parquet"
+            in (_SHARED.parent / "ingest" / "planner.py").read_text()
+        )
+
+    def test_no_layer_consumer_uses_pyarrow_s3(self) -> None:
+        hits = [h for d in _shared_layer_consumers() for h in _pyarrow_s3_uses(d)]
+        assert hits == [], (
+            "shared/prune_layer.py removes pyarrow's S3 filesystem from the layer, "
+            "but these lines in a function that mounts it would need it. Read the "
+            "file through boto3, or drop PRUNE_GLOBS_S3 and re-check the size "
+            "ceiling:\n  " + "\n  ".join(hits)
+        )
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "import pyarrow.fs",
+            "from pyarrow import fs",
+            "from pyarrow import parquet, fs",
+            "fs = pyarrow.fs.S3FileSystem(region='us-east-1')",
+            "table = pq.read_table('s3://bucket/key.parquet')",
+        ],
+    )
+    def test_the_scan_recognises_s3_use(self, line: str) -> None:
+        assert _PYARROW_S3_USE.search(line), line
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "import pyarrow.parquet as pq",
+            "table = pq.read_table(parquet_path)",
+            'logger.info("Wrote rows to s3://%s/%s", bucket, key)',
+        ],
+    )
+    def test_the_scan_ignores_local_parquet_reads(self, line: str) -> None:
+        assert not _PYARROW_S3_USE.search(line), line

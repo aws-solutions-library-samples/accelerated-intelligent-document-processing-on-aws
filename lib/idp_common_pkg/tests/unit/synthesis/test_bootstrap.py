@@ -162,6 +162,185 @@ class TestProtectedProfiles:
         cm.save_raw_configuration.assert_called_once()
 
 
+class TestSetProcessingOptions:
+    @staticmethod
+    def _profile(**config):
+        cm = _FakeConfigManager()
+        cm.saved["invoices"] = {"classes": [VALID_SCHEMA], **config}
+        return cm
+
+    @pytest.mark.parametrize(
+        ("documents_per_file", "splitting"),
+        [("one", "disabled"), ("several", "llm_determined"), ("one_per_page", "page")],
+    )
+    def test_documents_per_file_sets_section_splitting(
+        self, documents_per_file, splitting
+    ):
+        cm = self._profile()
+        applied = bootstrap.set_processing_options(
+            "invoices", config_manager=cm, documents_per_file=documents_per_file
+        )
+        saved = cm.saved["invoices"]
+        assert (
+            saved["classification"]["document_shape"]["sectionSplitting"] == splitting
+        )
+        assert applied == {"classification.document_shape.sectionSplitting": splitting}
+        assert "summarization" not in saved
+        assert saved["classes"] == [VALID_SCHEMA]
+
+    def test_summaries_set_only_summarization(self):
+        cm = self._profile()
+        bootstrap.set_processing_options("invoices", config_manager=cm, summaries=False)
+        saved = cm.saved["invoices"]
+        assert saved["summarization"] == {"enabled": False}
+        assert "classification" not in saved
+
+    @pytest.mark.parametrize(
+        ("long_tables", "mode"), [(True, "advanced"), (False, "simple")]
+    )
+    def test_long_tables_sets_the_extraction_mode(self, long_tables, mode):
+        cm = self._profile(extraction={"model": "m"})
+        applied = bootstrap.set_processing_options(
+            "invoices", config_manager=cm, long_tables=long_tables
+        )
+        assert cm.saved["invoices"]["extraction"] == {"model": "m", "mode": mode}
+        assert applied == {"extraction.mode": mode}
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"extraction": {"model": "openai.gpt-5.5"}},
+            {"extraction": {"model": "m"}, "class_model": "openai.gpt-5.5"},
+        ],
+        ids=["global model", "class override"],
+    )
+    def test_long_tables_is_refused_for_a_model_the_advanced_engine_cannot_call(
+        self, config
+    ):
+        class_model = config.pop("class_model", None)
+        cm = self._profile(**config)
+        if class_model:
+            cm.saved["invoices"]["classes"] = [
+                {**VALID_SCHEMA, "x-aws-idp-extraction-model": class_model}
+            ]
+        before = json.dumps(cm.saved, sort_keys=True)
+        with pytest.raises(ValueError, match="advanced extraction engine"):
+            bootstrap.set_processing_options(
+                "invoices", config_manager=cm, long_tables=True
+            )
+        assert json.dumps(cm.saved, sort_keys=True) == before
+
+    def test_a_sparse_profile_is_judged_by_the_model_it_inherits_from_default(self):
+        """A profile naming no extraction model runs with default's, so that one counts."""
+        cm = self._profile()
+        cm.saved["default"] = {"extraction": {"model": "openai.gpt-5.5"}}
+        before = json.dumps(cm.saved, sort_keys=True)
+        with pytest.raises(ValueError, match="openai.gpt-5.5"):
+            bootstrap.set_processing_options(
+                "invoices", config_manager=cm, long_tables=True
+            )
+        assert json.dumps(cm.saved, sort_keys=True) == before
+
+    def test_the_profiles_own_model_wins_over_the_one_default_names(self):
+        cm = self._profile(extraction={"model": "m"})
+        cm.saved["default"] = {"extraction": {"model": "openai.gpt-5.5"}}
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, long_tables=True
+        )
+        assert cm.saved["invoices"]["extraction"]["mode"] == "advanced"
+        assert "mode" not in cm.saved["default"]["extraction"]
+
+    def test_long_tables_is_refused_for_an_escalation_model_it_cannot_call(self):
+        cm = self._profile(
+            extraction={
+                "model": "m",
+                "validation": {
+                    "enabled": True,
+                    "fail_action": "escalate",
+                    "escalation_model": "openai.gpt-5.5",
+                },
+            }
+        )
+        with pytest.raises(ValueError, match="openai.gpt-5.5"):
+            bootstrap.set_processing_options(
+                "invoices", config_manager=cm, long_tables=True
+            )
+
+    def test_simple_extraction_is_still_allowed_for_that_model(self):
+        cm = self._profile(extraction={"model": "openai.gpt-5.5"})
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, long_tables=False
+        )
+        assert cm.saved["invoices"]["extraction"]["mode"] == "simple"
+
+    def test_other_classification_settings_are_kept(self):
+        cm = self._profile(
+            classification={"model": "m", "document_shape": {"pageOrder": "scan"}}
+        )
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, documents_per_file="one"
+        )
+        classification = cm.saved["invoices"]["classification"]
+        assert classification["model"] == "m"
+        assert classification["document_shape"] == {
+            "pageOrder": "scan",
+            "sectionSplitting": "disabled",
+        }
+
+    def test_a_flat_section_splitting_key_is_migrated_before_it_is_written(self):
+        """The read path migrates the pre-0.9 flat key, so only the nested one is saved."""
+        from idp_common.config.migrations import migrate_config
+
+        cm = self._profile(classification={"sectionSplitting": "llm_determined"})
+        stored = cm.get_raw_configuration
+        cm.get_raw_configuration = lambda *a, **k: migrate_config(stored(*a, **k))
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, documents_per_file="one"
+        )
+        classification = cm.saved["invoices"]["classification"]
+        assert "sectionSplitting" not in classification
+        assert classification["document_shape"]["sectionSplitting"] == "disabled"
+
+    @pytest.mark.parametrize(
+        ("version", "listed", "match"),
+        [
+            ("default", [], "'default'"),
+            (
+                "docsplit",
+                [{"versionName": "docsplit", "managed": True}],
+                "stack-managed",
+            ),
+        ],
+    )
+    def test_a_protected_profile_is_refused(self, version, listed, match):
+        cm = Mock()
+        cm.list_config_versions.return_value = listed
+        with pytest.raises(bootstrap.ProtectedProfileError, match=match):
+            bootstrap.set_processing_options(
+                version, config_manager=cm, documents_per_file="one"
+            )
+        cm.save_raw_configuration.assert_not_called()
+
+    def test_a_profile_that_does_not_exist_is_not_created(self):
+        cm = _FakeConfigManager()
+        with pytest.raises(ValueError, match="does not exist"):
+            bootstrap.set_processing_options(
+                "missing", config_manager=cm, documents_per_file="one"
+            )
+        assert cm.saved == {}
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [({"documents_per_file": "two"}, "must be one of"), ({}, "Nothing to set")],
+    )
+    def test_an_invalid_request_writes_nothing(self, kwargs, match):
+        cm = self._profile()
+        before = json.dumps(cm.saved, sort_keys=True)
+        with pytest.raises(ValueError, match=match):
+            bootstrap.set_processing_options("invoices", config_manager=cm, **kwargs)
+        assert json.dumps(cm.saved, sort_keys=True) == before
+
+
 class TestRunBootstrap:
     def test_config_only_when_generator_unavailable(self, monkeypatch):
         from idp_common.synthesis import engine

@@ -29,6 +29,11 @@
 # Python SDK for programmatic access.
 /lib/idp_sdk/                                     @rstrahan @webarch-ai
 
+# PII Anonymizer extension, vendored from awslabs/pii-anonymizer, whose
+# maintainer co-owns it here.
+/feature-platform/pii-anonymizer/                 @nooneyak @rstrahan
+/docs/extensions/pii-anonymizer.md                @nooneyak @rstrahan
+
 # Workshop content.
 /workshop/                                        @tomron-aws @rstrahan
 
