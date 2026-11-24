@@ -13,13 +13,13 @@
 # on it ships `manylinux_2_28_aarch64` only. So a cross-arch build on an x86_64
 # host fails with `PythonPipBuilder:ResolveDependencies - {pyarrow==...(wheel)}`.
 # Downgrading is not an option: pyarrow <= 23.0.0 is affected by CVE-2026-25087
-# (use-after-free, HIGH), fixed in the 23.0.1 pinned repo-wide. Installing it
+# (use-after-free, HIGH), fixed in 23.0.1; the repo pins a later release. Installing it
 # here lets us name the modern tag explicitly, which is what the python3.12
 # runtime actually wants — Lambda runs it on AL2023 (glibc 2.34), well past the
 # 2.28 floor. Keeping it in the layer rather than in each function's
 # requirements.txt also means one copy for the four functions sharing ingest/.
 #
-# The pip install is followed by prune_layer.py, which strips the ~35 MB of
+# The pip install is followed by prune_layer.py, which strips the ~57 MB of
 # pyarrow that `pyarrow.parquet` cannot reach at runtime and then FAILS THE BUILD
 # if the layer is still too large to combine with the pre-2026-08-13 ingest code
 # during an in-place stack update. That transition, not the steady state, is the

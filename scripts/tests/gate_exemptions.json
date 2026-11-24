@@ -292,6 +292,17 @@
       "reason": "Layer size reduction, not a gate.",
       "ratchetGap": "Not a gate; same as PRUNE_DIRS."
     },
+    "feature-platform/confbench-testset/shared/prune_layer.py::PRUNE_GLOBS_S3": {
+      "kind": "prune",
+      "memberKind": "path",
+      "turnsOff": "Lambda layer packaging, for pyarrow's S3 filesystem",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "feature-platform/confbench-testset/shared/prune_layer.py",
+      "reason": "Layer size reduction, not a gate. The build fails if either glob matched nothing or if a surviving object links libarrow_s3, and tests/test_prune_layer.py fails if a function that mounts the layer names pyarrow.fs, S3FileSystem or an s3:// URI in a pyarrow call."
+    },
     "feature-platform/seller-entitlement-service/tests/test_payload_robustness.py::_ALLOWED": {
       "kind": "enforced-universe",
       "memberKind": "response shape",
@@ -749,7 +760,7 @@
         1142,
         2049
       ],
-      "reason": "The one member, RecordEvaluationFailure, runs EvaluationFunction in its record_failure_only branch, which makes no model call and never raises, so a handler wrapper would convert nothing and a TransientError entry would retry nothing; it is in the universe only because the function's Bedrock grant serves the LLM-judge calls of the scoring state that shares it, which converted in #2049, and it keeps its deliberately shorter transient tier because it runs on the failure path. Converting is two halves that land together: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. The member's reason in the dict is specific to it, and the gate asserts reasons stay distinct if a second member is added, because length plus a substring would accept identical strings, and that this entry names every member and no state that converts. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
+      "reason": "The one member, RecordEvaluationFailureStep, runs EvaluationFunction in its record_failure_only branch, which makes no model call and never raises, so a handler wrapper would convert nothing and a TransientError entry would retry nothing; it is in the universe only because the function's Bedrock grant serves the LLM-judge calls of the scoring state that shares it, which converted in #2049, and it keeps its deliberately shorter transient tier because it runs on the failure path. Converting is two halves that land together: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. The member's reason in the dict is specific to it, and the gate asserts reasons stay distinct if a second member is added, because length plus a substring would accept identical strings, and that this entry names every member and no state that converts. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
       "ratchetGap": "The predicate answers 'permitted to invoke a model', not 'does invoke one', so an entry can be justified by a grant its handler never uses. It reads actions out of Action: position rather than out of the block's raw text, which is what stops an ARN's wildcard REGION (arn:<partition>:bedrock:*::foundation-model/*, twelve of them here) being read as a bedrock:* action -- there is no such action in this template, and reading one put a data-automation-only function in the universe. What remains loose is the action pattern itself: any future action whose name begins InvokeModel or Converse would qualify regardless of what it does. Over-inclusion is the safe direction for a closure. The closure is also one-directional by design: a state that is NOT Bedrock-capable may still list TransientError legitimately (PolicyClassificationStep does, for DynamoDB and S3 transients), so nothing here detects a listing that is no longer needed."
     },
     "pyrightconfig.json::exclude": {
@@ -3141,7 +3152,7 @@
       ],
       "ratchet": "universe-closure",
       "ratchetEvidence": "scripts/tests/test_ux_story_relay.py",
-      "reason": "The suite derives every mutation src/ui/src declares and fails on one that is in neither MUTATION_CONTROLS, which names the shipped controls that send it and checks that each is still in its file and refused by the guard, nor this list, so a mutation the UI gains reaches the relay's owners as an unaccounted one. Three members, RejectReviewItem, RenewReviewLease and UpdateChatSessionTitle, each of which the UI declares among its operations and sends from no component or hook; the same suite checks per member that no file outside src/ui/src/graphql calls it, so a caller added later fails there and the mutation has to move to MUTATION_CONTROLS with its control.",
+      "reason": "The suite derives every mutation src/ui/src declares and fails on one that is in neither MUTATION_CONTROLS, which names the shipped controls that send it and checks that each is still in its file and refused by the guard, nor this list, so a mutation the UI gains reaches the relay's owners as an unaccounted one. Two members, RenewReviewLease and UpdateChatSessionTitle, each of which the UI declares among its operations and sends from no component or hook; the same suite checks per member that no file outside src/ui/src/graphql calls it, so a caller added later fails there and the mutation has to move to MUTATION_CONTROLS with its control.",
       "memberKind": "GraphQL mutation name"
     },
     "scripts/ux_runner/agent.py::CHILD_ENV_ALLOWLIST": {
@@ -3300,7 +3311,7 @@
       "issues": [
         1555
       ],
-      "reason": "Four members, each with its own reason beside it in the constant. status_reason is a Document attribute the summarization Lambda sets when the stage fails, which the prompt names as where the generic wrapper message shows up; assessment_incomplete is a ProcessingIssue code the prompt names as a non-fatal example; log_group and log_stream are keys of search_cloudwatch_logs results that the evidence template asks the model to quote in full. Whether an identifier in prose is data or a tool reference is a reading of the sentence, not a property of the tree, so it is JUDGEMENT. test_no_non_tool_identifier_is_stale fails on a member no shipped prompt contains, and test_no_non_tool_identifier_is_a_tool fails if a member collides with a registered tool or parameter name."
+      "reason": "Five members, each with its own reason beside it in the constant. status_reason is a Document attribute the summarization Lambda sets when the stage fails, which the prompt names as where the generic wrapper message shows up; assessment_incomplete is a ProcessingIssue code the prompt names as a non-fatal example; log_group and log_stream are keys of search_cloudwatch_logs results that the evidence template asks the model to quote in full; BDA_AssembleDocumentStep is the name of a Step Functions state, the last of the BDA branch, which the prompt names so the model can match it against an execution's history. Whether an identifier in prose is data or a tool reference is a reading of the sentence, not a property of the tree, so it is JUDGEMENT. test_no_non_tool_identifier_is_stale fails on a member no shipped prompt contains, and test_no_non_tool_identifier_is_a_tool fails if a member collides with a registered tool or parameter name."
     },
     "scripts/tests/test_test_set_label_writers.py::ALLOWED": {
       "kind": "exemption",

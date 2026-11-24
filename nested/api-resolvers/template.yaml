@@ -859,11 +859,28 @@ Resources:
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          # Review routing: a save that changes a profile's routing rules checks
+          # that each queue a rule names is a production review queue, read from
+          # HITLTable (read-only grant below). Empty on a stack with no review
+          # table, where queue ids are checked for their form only.
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref ConfigurationResolverFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTableName
+        # Review routing: read queue definitions. No write: the resolver never
+        # creates, changes or seeds a queue.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+          - !Ref AWS::NoValue
         - S3ReadPolicy:
             BucketName: !Ref ConfigurationBucketName
         - Statement:
@@ -1053,6 +1070,11 @@ Resources:
           WORKING_BUCKET: !Ref WorkingBucketName
           INPUT_BUCKET: !Ref InputBucketName
           OUTPUT_BUCKET: !Ref OutputBucketName
+          # testRoutingTable reads the configuration at the revision a document
+          # is pinned to (config_revisions/ prefix).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
+          # sendBackReviewItem asks the reprocess function for the run.
+          REPROCESS_FUNCTION_NAME: !Ref ReprocessDocumentResolverFunction
       LoggingConfig:
         LogGroup: !Ref ReviewQueuesResolverFunctionLogGroup
       Policies:
@@ -1128,6 +1150,23 @@ Resources:
               Action:
                 - s3:PutObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucketName}/*"
+            # testRoutingTable: the configuration at the revision a document is
+            # pinned to. ListBucket is limited to the revisions prefix; without
+            # it S3 answers a missing body with 403 instead of 404 (#878).
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
+            # sendBackReviewItem: the run is asked of the reprocess function, and
+            # of no other.
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt ReprocessDocumentResolverFunction.Arn
             # Reassign eligibility and group fan-out of Inbox notices.
             - Effect: Allow
               Action:
@@ -2745,13 +2784,15 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
-        # Review queues: read the document's review item (its state and holder).
+        # Review queues: read the document's review item (its state and holder),
+        # and delete the draft records of the sections a regroup in review removes.
         - !If
           - HasHITLTable
           - Statement:
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
+                  - dynamodb:DeleteItem
                 Resource:
                   - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
           - !Ref AWS::NoValue
@@ -2999,9 +3040,21 @@ Resources:
           # The config prefix mappings, so a reprocess with no explicit profile
           # re-resolves them — which is how an operator re-runs a backlog under a
           # new profile. This resolver had no ConfigurationTable grant at all
-          # before; see `_version_for_document` for why the mapping is consulted
-          # only AFTER a scoped caller's pin.
+          # before; see `ReprocessService._version_for_document` in
+          # `idp_common.run_plan.reprocess` for why the mapping is consulted only
+          # AFTER a scoped caller's pin.
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          # Which steps a run can start at depends on the processing mode at the
+          # revision the document is pinned to, and on the mode and hooks of the
+          # revision it would run under. A revision's body is read from the
+          # Configuration bucket (read-only grant below).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
+          # A reprocess from a later step queues the document with its pages and
+          # sections. The document is stored in the working bucket, with a
+          # reference in the message, so a large one stays under the queue's
+          # message size. A reprocess from the beginning queues an empty document
+          # and stores nothing.
+          WORKING_BUCKET: !Ref WorkingBucketName
           # Namespace for the ``StaleOutputPurgeFailed`` metric emitted
           # on partial-purge failure — parity with queue_sender's #719
           # telemetry so operators can alarm on both ingest and
@@ -3055,15 +3108,39 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
                 - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
-        # Read-only: this resolver reads the prefix mappings, never writes them.
+        # Read-only: this resolver reads the prefix mappings and the profiles'
+        # processing mode, never writes them.
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTableName
+        # Pinned revision bodies, so the processing mode and the preprocessing
+        # hook are read from the revision itself. Same grant the queue processor
+        # and ProcessChangesResolverFunction carry.
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so an expired
+            # published revision could not fall back to the profile head (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - SQSSendMessagePolicy:
             QueueName: !Ref DocumentQueueName
         - S3ReadPolicy:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:
             BucketName: !Ref OutputBucketName
+        # The document a reprocess from a later step queues (Document.compress
+        # writes it under compressed_documents/). Write only, and that prefix
+        # only: the queue processor reads it back, not this function.
+        - Statement:
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucketName}/compressed_documents/*"
         # #719 parity: emit ``StaleOutputPurgeFailed`` on partial-purge
         # failure so operators can alarm on the metric rather than
         # scraping ERROR logs. Namespace-scoped to prevent this Lambda
@@ -4934,3 +5011,14 @@ Outputs:
   AbortTestRunsResolverFunctionArn:
     Description: ARN of the Abort Test Runs Lambda function
     Value: !GetAtt AbortTestRunsResolverFunction.Arn
+
+  # Invoked directly by the SDK, the CLI and the MCP handler (IAM on the function
+  # ARN), which have no REST identity to reprocess documents with.
+  ReprocessDocumentResolverFunctionArn:
+    Description: ARN of the Reprocess Document Resolver Lambda function
+    Value: !GetAtt ReprocessDocumentResolverFunction.Arn
+
+  # Invoked directly by the SDK and the CLI for review queue administration.
+  ReviewQueuesResolverFunctionArn:
+    Description: ARN of the Review Queues Resolver Lambda function
+    Value: !GetAtt ReviewQueuesResolverFunction.Arn

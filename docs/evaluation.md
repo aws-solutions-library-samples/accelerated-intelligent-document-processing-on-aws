@@ -16,7 +16,7 @@ The GenAIIDP solution includes a built-in evaluation framework to assess the acc
 ## Enhanced Reporting
 
 The evaluation framework runs on the pinned `stickler-eval` release
-(currently 1.0.0 — see `stickler_version.STICKLER_VERSION` for the resolved
+(the version pinned in `lib/idp_common_pkg/pyproject.toml` — see `stickler_version.STICKLER_VERSION` for the resolved
 version). Reports include confidence calibration metrics:
 
 - **📊 Confidence Calibration Metrics** - ECE (Expected Calibration Error), Brier score, and AUROC analyze how well-calibrated confidence predictions are
@@ -131,7 +131,7 @@ The evaluation framework is powered by [Stickler](https://github.com/awslabs/sti
 - **Extensible Comparators**: Support for exact, fuzzy, numeric, semantic, and LLM-based comparison
 - **Native JSON Schema Support**: Direct use of JSON Schema with custom extensions
 
-The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.0`, verified at import via `idp_common.evaluation.stickler_version`).
+The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.1`, verified at import via `idp_common.evaluation.stickler_version`).
 
 ### Architecture
 
@@ -282,7 +282,7 @@ Name-token overrides (fire on top of the type rule, using the field name):
 | `*_date`, `*_time`, `date`, `dob` | DateComparator | 0.95 |
 
 For the authoritative and current list see Stickler's release notes
-([v1.0.0](https://github.com/awslabs/stickler/releases/tag/v1.0.0)) — this
+([releases](https://github.com/awslabs/stickler/releases)) — this
 table is a summary; upstream is the source of truth. The applied comparator
 and its provenance (`configured` vs `auto-inferred`) are recorded per
 attribute in every `results.json` (`inference_source` + `inference_why`),
@@ -402,6 +402,8 @@ The dynamic schema generation uses:
 ## Evaluation Methods
 
 The framework supports multiple comparison methods. All method names in evaluation reports use **PascalCase** formatting (e.g., `Fuzzy`, `NumericExact`) to match the UI configuration interface.
+
+A score that floating-point rounding leaves within 1e-10 below its threshold counts as a match, the same tolerance Stickler applies, so a value that scores, say, 0.7999999999 against a 0.8 threshold is a match.
 
 ### Supported Methods and Their Characteristics
 
@@ -1663,7 +1665,7 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 
 ### Stickler Version Information
 
-The solution installs Stickler from PyPI (`stickler-eval==1.0.0`, pinned in
+The solution installs Stickler from PyPI (`stickler-eval==1.0.1`, pinned in
 `lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from

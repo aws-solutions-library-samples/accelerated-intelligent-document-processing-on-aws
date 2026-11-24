@@ -4,8 +4,9 @@
  * The edit page's help panel under `fr-CA`: with a fixture catalog its title and headings read
  * French, each control it names in bold stays inside its French sentence (Process Changes and
  * Next alert with the shared labels' French), and the Learn more links read French with the
- * same documentation URLs. Under `en` the same render reads today's English, and its footer
- * renders the same HTML as a footer written out link by link.
+ * same documentation URLs. Under `en` the same render reads today's English, Process Changes
+ * lists what it does by where the document was opened from, Reports names the Policy Rule
+ * Validation Summary, and its footer renders the same HTML as a footer written out link by link.
  */
 import React from 'react';
 import { screen, within } from '@testing-library/react';
@@ -30,8 +31,7 @@ const FR = {
   'editScreen.toolsPanel.heading.documentEditor': 'Éditeur de document',
   'editScreen.toolsPanel.button.refresh':
     '<b>Actualiser</b> recharge le document; s’il reste des modifications non enregistrées, il demande d’abord.',
-  'editScreen.toolsPanel.button.processChanges':
-    '<b>{processChanges}</b> enregistre, puis traite les modifications : l’évaluation et le résumé sont relancés.',
+  'editScreen.toolsPanel.button.processChanges': '<b>{processChanges}</b> enregistre, puis traite les modifications :',
   'editScreen.toolsPanel.editor.buttons':
     'Ses boutons, à droite de son titre : <b>Afficher l’évaluation</b> (si le document a une référence d’évaluation), <b>Section</b>, <b>Afficher les champs</b> et <b>Modifier le regroupement des pages</b>, qui déplace des pages entre les sections et change la classe d’une section.',
   'editScreen.toolsPanel.editor.reviewReason':
@@ -51,9 +51,16 @@ afterEach(() => {
   I18n.setLanguage('');
 });
 
-/** The list item whose whole text is `text`. */
-const item = (text: string): HTMLElement => screen.getByText((_, el) => el?.tagName === 'LI' && el.textContent === text);
-const boldIn = (el: HTMLElement): string[] => Array.from(el.querySelectorAll('b'), (b) => b.textContent ?? '');
+/** A list item's own text, without the list nested in it (Process Changes has one). */
+const ownText = (el: Element): string =>
+  Array.from(el.childNodes, (node) => (node instanceof HTMLUListElement ? '' : (node.textContent ?? ''))).join('');
+/** The list item whose own text is `text`. */
+const item = (text: string): HTMLElement => screen.getByText((_, el) => el?.tagName === 'LI' && ownText(el) === text);
+/** The bold texts of a list item's own sentence. */
+const boldIn = (el: HTMLElement): string[] =>
+  Array.from(el.children).flatMap((child) => (child.tagName === 'B' ? [child.textContent ?? ''] : []));
+/** The own texts of the items of the list nested in a list item. */
+const nestedItems = (el: HTMLElement): string[] => Array.from(el.querySelectorAll(':scope > ul > li'), ownText);
 const subHeadings = (): string[] => screen.getAllByRole('heading', { level: 3 }).map((h) => (h.textContent ?? '').trim());
 const links = (scope: HTMLElement = document.body): string[][] =>
   within(scope)
@@ -120,9 +127,7 @@ describe('the edit page’s help panel under fr-CA', () => {
   it('names Process Changes and Next alert in bold with the shared labels’ French', async () => {
     renderWithIntl(<EditScreenToolsPanel />, FR_CA);
     await screen.findByRole('heading', { level: 2, name: 'Modifier le document' });
-    const processChanges = item(
-      'Traiter les modifications enregistre, puis traite les modifications : l’évaluation et le résumé sont relancés.',
-    );
+    const processChanges = item('Traiter les modifications enregistre, puis traite les modifications :');
     expect(boldIn(processChanges)).toEqual(['Traiter les modifications']);
     const reviewReason = item(
       'La raison de révision d’un élément de file dit pourquoi il est en révision, la plus grave d’abord. Choisissez une raison, ou Alerte suivante, pour aller à son champ.',
@@ -155,14 +160,35 @@ describe('the edit page’s help panel under en', () => {
       "Its buttons, right of its title: Show Evaluation (where the document has an evaluation baseline), Section, Show Fields and Edit Page Grouping, which moves pages between sections and changes a section's class.",
     );
     expect(boldIn(editorButtons)).toEqual(['Show Evaluation', 'Section', 'Show Fields', 'Edit Page Grouping']);
-    const processChanges = item(
-      'Process Changes saves, then processes the changes: evaluation and summarization re-run, and OCR, classification and extraction are not repeated. It finishes a queue item. On a Test Studio document it also writes the labels as reviewed ground truth; when no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.',
-    );
+    const processChanges = item('Process Changes saves, then processes the changes:');
     expect(boldIn(processChanges)).toEqual(['Process Changes']);
     const reviewReason = item(
       "A queue item's Review Reason lists why it is in review, worst first. Choose a reason, or Next alert, to move to its field.",
     );
     expect(boldIn(reviewReason)).toEqual(['Next alert']);
+  });
+
+  it('lists what Process Changes does on a document, a queue item and a Test Studio document', () => {
+    renderWithIntl(<EditScreenToolsPanel />);
+    expect(nestedItems(item('Process Changes saves, then processes the changes:'))).toEqual([
+      'On a document opened from its page, it asks you to confirm and lists the steps of the run that follows. The steps before the one it starts at are not repeated.',
+      'On a queue item, it asks how the review ends and lists the steps of the run that follows. Complete the review keeps your corrections; a section whose pages you changed is extracted again first. Send back for reprocessing discards your corrections and any page regrouping, and the document is processed again from classification (from the beginning in BDA mode).',
+      'On a Test Studio document, it also writes the labels as reviewed ground truth. When no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.',
+    ]);
+    const queueItem = screen.getByText((_, el) => el?.tagName === 'LI' && ownText(el).startsWith('On a queue item,'));
+    expect(boldIn(queueItem)).toEqual(['Complete the review', 'Send back for reprocessing']);
+  });
+
+  it('names the Policy Rule Validation Summary under Reports, between Summary and Processing Report', () => {
+    renderWithIntl(<EditScreenToolsPanel />);
+    const policyReport = item('Policy Rule Validation Summary: the policy rules the document passed and failed, with the reason for each.');
+    expect(boldIn(policyReport)).toEqual(['Policy Rule Validation Summary']);
+    expect(Array.from(policyReport.parentElement!.children, (li) => boldIn(li as HTMLElement)[0])).toEqual([
+      'History',
+      'Summary',
+      'Policy Rule Validation Summary',
+      'Processing Report',
+    ]);
   });
 
   it('links the same documentation pages, with the HTML of a footer written out link by link', () => {

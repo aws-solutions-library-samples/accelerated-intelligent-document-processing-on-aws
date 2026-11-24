@@ -80,6 +80,7 @@ except ImportError as exc:
 # use of a None stub would surface as an unrelated AttributeError far from the
 # real cause.
 try:
+    from idp_common.run_plan import steps as run_steps
     from idp_sdk import IDPClient
     from idp_sdk.models import DocumentBucket, classify_document_state
 
@@ -91,6 +92,7 @@ except ImportError as exc:
         DocumentBucket = None
         classify_document_state = None
         display = None
+        run_steps = None
 
 # Configure logging
 logging.basicConfig(
@@ -921,9 +923,9 @@ def cli():
     # root template dropped EnableHITL in v0.4.11 — now says so instead of failing
     # at CreateStack with an undeclared-parameter error.
     help=(
-        "Deprecated and refused if 'true'. HITL is a configuration setting, not a "
-        "stack parameter: enable it in the Web UI under Configuration → "
-        "Human-in-the-Loop (HITL) Review, or in the config YAML."
+        "Deprecated and refused if 'true'. Human review is a configuration setting, "
+        "not a stack parameter: enable it in the Web UI under Configuration → "
+        "Processing Settings → Review Routing, or in the config YAML."
     ),
 )
 @click.option(
@@ -1256,9 +1258,9 @@ def deploy(
             # template" at CreateStack, with nothing created.
             console.print(
                 "[red]✗ Error: --enable-hitl is no longer a stack parameter.[/red]\n"
-                "  HITL became a configuration setting in v0.4.11. Enable it in the "
-                "Web UI under Configuration → Human-in-the-Loop (HITL) Review, or "
-                "in the config YAML passed to --custom-config."
+                "  Human review became a configuration setting in v0.4.11. Enable it "
+                "in the Web UI under Configuration → Processing Settings → Review "
+                "Routing, or in the config YAML passed to --custom-config."
             )
             sys.exit(1)
 
@@ -2831,34 +2833,85 @@ def process(
     )
 
 
+def _start_step_choices() -> List[str]:
+    """What `--step` accepts: the step ids, the alias `ocr`, and `resume`.
+
+    Read from `idp_common.run_plan.steps`, the one declaration of the pipeline's
+    steps, so this module holds no step list of its own. Empty when the packages
+    are not installed: `main()` then reports that before any command runs.
+    """
+    return list(run_steps.start_values()) if run_steps else []
+
+
+def _skippable_step_choices() -> List[str]:
+    """What `--skip` accepts: the steps a run can leave out."""
+    return list(run_steps.optional_step_ids()) if run_steps else []
+
+
+def _reprocess_options(command):
+    """The options `reprocess` and its deprecated alias `rerun-inference` share."""
+    options = [
+        click.option("--stack-name", required=True, help="CloudFormation stack name"),
+        click.option(
+            "--step",
+            required=True,
+            type=click.Choice(_start_step_choices()),
+            help=(
+                "Pipeline step to start at. 'ocr' is the beginning; 'resume' "
+                "starts each document at the first step it has no output for"
+            ),
+        ),
+        click.option(
+            "--skip",
+            multiple=True,
+            type=click.Choice(_skippable_step_choices()),
+            help="Optional step to leave out of the run (repeat for several)",
+        ),
+        click.option(
+            "--profile",
+            help=(
+                "Configuration profile to process the documents under "
+                "(default: the profile each document was processed with)"
+            ),
+        ),
+        click.option(
+            "--revision",
+            type=int,
+            help="Revision of --profile to process the documents under",
+        ),
+        click.option(
+            "--document-ids",
+            help="Comma-separated list of document IDs to reprocess",
+        ),
+        click.option(
+            "--batch-id",
+            help="Batch ID to get document IDs from (alternative to --document-ids)",
+        ),
+        click.option("--force", is_flag=True, help="Skip confirmation prompt"),
+        click.option(
+            "--monitor", is_flag=True, help="Monitor progress until completion"
+        ),
+        click.option(
+            "--refresh-interval",
+            default=5,
+            type=int,
+            help="Seconds between status checks (default: 5)",
+        ),
+        click.option("--region", help="AWS region (optional)"),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
 @cli.command(name="reprocess")
-@click.option("--stack-name", required=True, help="CloudFormation stack name")
-@click.option(
-    "--step",
-    required=True,
-    type=click.Choice(["classification", "extraction"]),
-    help="Pipeline step to rerun from",
-)
-@click.option(
-    "--document-ids",
-    help="Comma-separated list of document IDs to reprocess",
-)
-@click.option(
-    "--batch-id",
-    help="Batch ID to get document IDs from (alternative to --document-ids)",
-)
-@click.option("--force", is_flag=True, help="Skip confirmation prompt")
-@click.option("--monitor", is_flag=True, help="Monitor progress until completion")
-@click.option(
-    "--refresh-interval",
-    default=5,
-    type=int,
-    help="Seconds between status checks (default: 5)",
-)
-@click.option("--region", help="AWS region (optional)")
+@_reprocess_options
 def reprocess(
     stack_name: str,
     step: str,
+    skip: tuple,
+    profile: Optional[str],
+    revision: Optional[int],
     document_ids: Optional[str],
     batch_id: Optional[str],
     force: bool,
@@ -2867,31 +2920,46 @@ def reprocess(
     region: Optional[str],
 ):
     """
-    Reprocess documents from a specific step
-    
-    Reprocesses documents already in InputBucket, leveraging existing OCR data.
-    
-    Steps:
-      - classification: Reruns classification and all subsequent steps
-      - extraction: Reruns extraction and assessment (keeps classification)
-    
+    Process documents again, starting at a step
+
+    The stack decides, for each document, whether it can start at the step,
+    clears the outputs the run will produce again and queues it. A document
+    that cannot be processed again is reported with the reason and does not
+    stop the others.
+
+    A run produces the output of its start step and of every later step again.
+    The outputs of the earlier steps are kept and read. --skip leaves an
+    optional step out: its existing output is kept.
+
+    Not every step exists in both processing modes: 'assessment' is a Pipeline
+    mode step, and in BDA mode 'classification' and 'extraction' mean the
+    beginning.
+
     Document ID Format: Use the S3 key format (e.g., "batch-id/document.pdf")
-    
+
     Examples:
-    
-      # Rerun classification for specific documents
+
+      # Start again at classification for specific documents
       idp-cli reprocess \\
           --stack-name my-stack \\
           --step classification \\
           --document-ids "batch-123/doc1.pdf,batch-123/doc2.pdf" \\
           --monitor
-      
-      # Rerun extraction for all documents in a batch
+
+      # Run extraction again for a batch, without summarization and evaluation
       idp-cli reprocess \\
           --stack-name my-stack \\
           --step extraction \\
+          --skip summarization --skip evaluation \\
           --batch-id cli-batch-20251015-143000-7f3a9c1e \\
           --monitor
+
+      # Finish documents that stopped part-way, under a profile revision
+      idp-cli reprocess \\
+          --stack-name my-stack \\
+          --step resume \\
+          --profile claims --revision 4 \\
+          --batch-id cli-batch-20251015-143000-7f3a9c1e
     """
     # Call the shared implementation directly. `rerun_inference` is the
     # `click.Command` the decorator stack leaves behind, not a function, so
@@ -2905,6 +2973,9 @@ def reprocess(
         monitor,
         refresh_interval,
         region,
+        skip=skip,
+        profile=profile,
+        revision=revision,
     )
 
 
@@ -3056,33 +3127,13 @@ def run_inference(
 
 
 @cli.command(name="rerun-inference")
-@click.option("--stack-name", required=True, help="CloudFormation stack name")
-@click.option(
-    "--step",
-    required=True,
-    type=click.Choice(["classification", "extraction"]),
-    help="Pipeline step to rerun from",
-)
-@click.option(
-    "--document-ids",
-    help="Comma-separated list of document IDs to reprocess",
-)
-@click.option(
-    "--batch-id",
-    help="Batch ID to get document IDs from (alternative to --document-ids)",
-)
-@click.option("--force", is_flag=True, help="Skip confirmation prompt")
-@click.option("--monitor", is_flag=True, help="Monitor progress until completion")
-@click.option(
-    "--refresh-interval",
-    default=5,
-    type=int,
-    help="Seconds between status checks (default: 5)",
-)
-@click.option("--region", help="AWS region (optional)")
+@_reprocess_options
 def rerun_inference(
     stack_name: str,
     step: str,
+    skip: tuple,
+    profile: Optional[str],
+    revision: Optional[int],
     document_ids: Optional[str],
     batch_id: Optional[str],
     force: bool,
@@ -3103,7 +3154,73 @@ def rerun_inference(
         monitor,
         refresh_interval,
         region,
+        skip=skip,
+        profile=profile,
+        revision=revision,
     )
+
+
+def _mode_name(mode: str) -> str:
+    return "BDA mode" if mode == run_steps.BDA else "Pipeline mode"
+
+
+def _print_cleared_and_kept(
+    cleared: List[str], kept: List[str], left_out: List[str]
+) -> None:
+    """One mode's inventory: what the run produces again, and what it reads."""
+    console.print("[bold]What will be cleared and produced again:[/bold]")
+    for name in cleared:
+        console.print(f"  • {name}")
+    console.print()
+    console.print("[bold]What will be kept:[/bold]")
+    for name in kept:
+        console.print(f"  • {name}")
+    for name in left_out:
+        console.print(f"  • {name} (skipped)")
+    if not kept and not left_out:
+        console.print("  • Nothing: the run starts at the beginning")
+
+
+def _describe_reprocess(step: str, skip: tuple) -> None:
+    """Say what a reprocess from ``step`` clears and keeps, before it is confirmed.
+
+    The inventory is the planned steps of the run (``planned.describe_start``),
+    per processing mode. Which mode a document is in is the stack's to say, so
+    both are shown: the first output has a different name in each, so the two
+    never read the same.
+    """
+    from idp_common.run_plan.planned import describe_start
+
+    console.print(f"[bold yellow]⚠️  Rerun Step: {step}[/bold yellow]")
+    console.print("━" * 60)
+    if step == run_steps.RESUME:
+        console.print(
+            "Each document starts at the first step it has no output for. "
+            "What it already has is kept; that step and the later ones run."
+        )
+        if skip:
+            console.print(f"Left out of the run: {', '.join(skip)}")
+        console.print("━" * 60)
+        console.print()
+        return
+
+    for index, mode in enumerate(run_steps.MODES):
+        if index:
+            console.print()
+        console.print(f"[bold cyan]{_mode_name(mode)}[/bold cyan]")
+        try:
+            description = describe_start(step, mode, skip=skip)
+        except run_steps.StepNotInMode:
+            console.print(
+                f"  The step '{step}' does not exist in {_mode_name(mode)}: "
+                "such a document is refused"
+            )
+            continue
+        _print_cleared_and_kept(
+            description.cleared, description.kept, description.left_out
+        )
+    console.print("━" * 60)
+    console.print()
 
 
 # Implementation moved from rerun_inference - now used by re_process
@@ -3116,6 +3233,9 @@ def _rerun_inference_impl(
     monitor: bool,
     refresh_interval: int,
     region: Optional[str],
+    skip: tuple = (),
+    profile: Optional[str] = None,
+    revision: Optional[int] = None,
 ):
     try:
         # Validate mutually exclusive options
@@ -3129,6 +3249,10 @@ def _rerun_inference_impl(
             console.print(
                 "[red]✗ Error: Cannot specify both --document-ids and --batch-id[/red]"
             )
+            sys.exit(1)
+
+        if revision is not None and not profile:
+            console.print("[red]✗ Error: --revision needs --profile[/red]")
             sys.exit(1)
 
         from idp_sdk import IDPClient
@@ -3158,31 +3282,9 @@ def _rerun_inference_impl(
             reprocess_doc_ids = doc_id_list
             reprocess_batch_id = None  # Pass explicit list so SDK doesn't re-fetch
 
-        # Show what will be cleared based on step
+        # Show what will be cleared and kept, from the step list
         console.print()
-        console.print(f"[bold yellow]⚠️  Rerun Step: {step}[/bold yellow]")
-        console.print("━" * 60)
-
-        if step == "classification":
-            console.print("[bold]What will be cleared:[/bold]")
-            console.print("  • All page classifications")
-            console.print("  • All document sections")
-            console.print("  • All extraction results")
-            console.print()
-            console.print("[bold]What will be kept:[/bold]")
-            console.print("  • OCR data (pages, images, text)")
-        else:  # extraction
-            console.print("[bold]What will be cleared:[/bold]")
-            console.print("  • Section extraction results")
-            console.print("  • Section attributes")
-            console.print()
-            console.print("[bold]What will be kept:[/bold]")
-            console.print("  • OCR data (pages, images, text)")
-            console.print("  • Page classifications")
-            console.print("  • Document sections structure")
-
-        console.print("━" * 60)
-        console.print()
+        _describe_reprocess(step, skip)
 
         # Confirmation unless --force
         if not force:
@@ -3202,21 +3304,38 @@ def _rerun_inference_impl(
                 step=step,
                 document_ids=reprocess_doc_ids,
                 batch_id=reprocess_batch_id,
+                skip=list(skip),
+                version=profile,
+                revision=revision,
             )
 
-        # Show results
+        # Show results: the counts, then each document's own
         console.print()
         if result.documents_queued > 0:
             console.print(
                 f"[green]✓ Queued {result.documents_queued} documents for {step} reprocessing[/green]"
             )
+            for queued in result.results:
+                if queued.queued:
+                    console.print(
+                        f"  • {escape(queued.document_id)}: starts at "
+                        f"{queued.start_step or step}"
+                    )
 
         if result.documents_failed > 0:
             console.print(
                 f"[red]✗ Failed to queue {result.documents_failed} documents[/red]"
             )
             for failed in result.failed_documents:
-                console.print(f"  • {failed['object_key']}: {failed['error']}")
+                reason = failed.get("reason")
+                console.print(
+                    f"  • {escape(failed['object_key'])}: {escape(failed['error'])}"
+                    + (
+                        f" ({escape(reason)})"
+                        if reason and reason != failed["error"]
+                        else ""
+                    )
+                )
 
         console.print()
 
@@ -4614,6 +4733,27 @@ def _batch_status_to_display_dicts(batch_status):
             # in_review / complete / rejected (review queues); None if never routed.
             "review_status": getattr(doc.review_status, "value", doc.review_status),
         }
+        review = getattr(doc, "review", None)
+        if review is not None:
+            # The queue as people know it, and what placed the document there.
+            # Left out when the stack does not record them.
+            queue = review.queue_name or review.queue
+            if queue:
+                doc_dict["review_queue"] = queue
+            routed_by = display.routed_by_text(review.routed_by)
+            if routed_by:
+                doc_dict["routed_by"] = routed_by
+            # What the reviewer reads, and the policy rules the document failed.
+            if review.reason:
+                doc_dict["routing_reason"] = review.reason
+            if review.policy_failure_count or review.policy_failures:
+                doc_dict["policy_failures"] = [
+                    failure.model_dump() for failure in review.policy_failures
+                ]
+                # Of every failed policy rule; the list holds the first of them.
+                doc_dict["policy_failure_count"] = max(
+                    review.policy_failure_count, len(review.policy_failures)
+                )
         # The producer's own verdict wins when it recorded one, and
         # `idp_sdk.models.classify_document_state` -- total over `DocumentState`
         # -- answers when it did not. The chain this replaced named eleven
@@ -5737,7 +5877,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat and rule_validation; on upload every setting it writes resets that deployment's value to the default, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat, rule_validation and routing; on upload every setting it writes resets that deployment's value to the default, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",
@@ -5771,7 +5911,7 @@ def config_create(
       min:  classification, extraction (simplest); switches
             summarization and evaluation off and leaves confidence scoring on
       core: min + ocr, with summarization and evaluation left at their defaults
-      all:  every section except hitl, chat and rule_validation. Uploaded
+      all:  every section except hitl, chat, rule_validation and routing. Uploaded
             unedited, every setting it writes resets the deployment's value
             to the default (summarization and evaluation switch back on where
             a preset turned them off; prompts left out keep their own)
@@ -5785,7 +5925,7 @@ def config_create(
       # Generate minimal config to stdout
       idp-cli config-create
 
-      # Generate a config with every section except hitl, chat and rule_validation
+      # Generate a config with every section except hitl, chat, rule_validation and routing
       idp-cli config-create --features all --output full-config.yaml
 
       # Include full prompts (verbose)
@@ -6024,6 +6164,118 @@ def _print_config_warnings(warnings: list[str]) -> None:
     console.print("[bold yellow]Warnings:[/bold yellow]")
     for warning in warnings:
         console.print(f"  ⚠ {escape(warning)}")
+
+
+@cli.command(name="config-routing-export")
+@click.option(
+    "--config-file",
+    "-f",
+    required=True,
+    type=click.Path(exists=True),
+    help="Configuration file (YAML or JSON) whose routing section is exported",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(),
+    help="File to write the DMN XML to ('-' writes it to stdout)",
+)
+@click.option(
+    "--dmn-version",
+    type=click.Choice(["1.5", "1.3"]),
+    default="1.5",
+    show_default=True,
+    help="DMN version to write",
+)
+def config_routing_export(config_file: str, output: str, dmn_version: str):
+    """
+    Write a configuration's review routing table as a DMN file
+
+    Reads the routing section of a configuration file and writes it as a DMN
+    decision table, which a DMN editor can open. The conversion is local: no
+    stack is read and no AWS call is made.
+
+    Examples:
+
+      # Export the routing table of a configuration file
+      idp-cli config-routing-export --config-file ./config.yaml --output routing.dmn
+
+      # Write DMN 1.3, for a tool that does not read 1.5
+      idp-cli config-routing-export -f ./config.yaml -o routing.dmn --dmn-version 1.3
+    """
+    try:
+        from idp_sdk import IDPClient
+
+        xml = IDPClient().config.routing_to_dmn(config_file, dmn_version=dmn_version)
+        if output == "-":
+            emit_raw(xml)
+            return
+        Path(output).write_text(xml, encoding="utf-8")
+        console.print(f"[green]✓ Wrote the routing table as DMN to {output}[/green]")
+    except Exception as e:
+        logger.error(f"Error exporting the routing table: {e}", exc_info=True)
+        err_console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
+        sys.exit(1)
+
+
+@cli.command(name="config-routing-import")
+@click.option(
+    "--dmn-file",
+    required=True,
+    type=click.Path(exists=True),
+    help="DMN file that holds a review routing decision table",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(),
+    help=(
+        "Configuration file to write the routing section to: YAML, or JSON when "
+        "the name ends in .json ('-' writes YAML to stdout)"
+    ),
+)
+def config_routing_import(dmn_file: str, output: str):
+    """
+    Read a DMN file as a review routing section
+
+    Writes a configuration file that holds only the routing section. Upload it
+    with config-upload to replace a profile's routing table; the queues its rules
+    name are checked against the stack then. The conversion is local: no stack is
+    read and no AWS call is made.
+
+    Examples:
+
+      # Read a DMN file and upload the routing table to a profile
+      idp-cli config-routing-import --dmn-file routing.dmn --output routing.yaml
+      idp-cli config-upload --stack-name my-stack \\
+          --config-file routing.yaml --config-profile claims
+    """
+    try:
+        import yaml
+
+        from idp_sdk import IDPClient
+
+        section = IDPClient().config.routing_from_dmn(
+            Path(dmn_file).read_text(encoding="utf-8")
+        )
+        if output.endswith(".json"):
+            text = json.dumps(section, indent=2) + "\n"
+        else:
+            text = yaml.safe_dump(section, sort_keys=False)
+        if output == "-":
+            emit_raw(text)
+            return
+        Path(output).write_text(text, encoding="utf-8")
+        rules = len(section["routing"]["tables"][0]["rules"])
+        console.print(
+            f"[green]✓ Wrote the routing section ({rules} rule(s)) to {output}[/green]"
+        )
+    except Exception as e:
+        logger.error(f"Error importing the routing table: {e}", exc_info=True)
+        err_console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
+        sys.exit(1)
 
 
 @cli.command(name="config-upload")
@@ -8832,6 +9084,11 @@ cli.add_command(_mcp_group)
 from .fit_check import fit_check as _fit_check_command  # noqa: E402
 
 cli.add_command(_fit_check_command)
+
+# `idp-cli review-queues ...`, likewise.
+from .review_queues import review_queues as _review_queues_group  # noqa: E402
+
+cli.add_command(_review_queues_group)
 
 # `idp-cli terraform ...` (Terraform-only commands) likewise.
 from .terraform import configure as _configure_terraform  # noqa: E402

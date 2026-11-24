@@ -82,7 +82,7 @@ const REPORTS: readonly ReportCase[] = [
   },
   {
     report: 'ruleValidation',
-    printTitle: 'Rule Validation Summary',
+    printTitle: 'Policy Rule Validation Summary',
     content: '# Rule Validation Summary: doc.pdf\n\nAll rules passed.',
     toolbar: { fr: ['Télécharger', 'Imprimer'], en: ['Download', 'Print'] },
     fr: {
@@ -91,9 +91,9 @@ const REPORTS: readonly ReportCase[] = [
       failed: 'Échec du chargement du sommaire de validation des règles. Veuillez réessayer.',
     },
     en: {
-      loading: 'Loading rule validation summary...',
-      binary: 'This file contains binary content that cannot be viewed in the rule validation summary.',
-      failed: 'Failed to load rule validation summary. Please try again.',
+      loading: 'Loading policy rule validation summary...',
+      binary: 'This file contains binary content that cannot be viewed in the policy rule validation summary.',
+      failed: 'Failed to load policy rule validation summary. Please try again.',
     },
   },
 ];

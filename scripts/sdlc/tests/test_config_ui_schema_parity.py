@@ -122,6 +122,11 @@ EXEMPT_SUBTREES: dict[str, str] = {
         "Notebook/standalone only — the deployed pipeline uses "
         "orchestrator._extract_z3_values_from_facts with fact_extraction settings."
     ),
+    "routing": (
+        "Edited in the Routing tab of the configuration page, not in the generated "
+        "form: a routing table is an ordered list of rules with its own editor, "
+        "test panel and DMN import and export."
+    ),
 }
 
 #: Individual fields that should never have a control.

@@ -24,7 +24,7 @@ agents:
       - Evaluation Stage (optional): Scores extraction accuracy against ground truth
 
       BDA Alternative Branch:
-      - InvokeBDA → BDA Completion (EventBridge-triggered) → BDA ProcessResults
+      - InvokeDataAutomationStep → BDA Completion (EventBridge-triggered) → BDA_AssembleDocumentStep
       - BDA jobs are asynchronous; failures may appear in EventBridge delivery or the BDA service itself
 
       Key AWS services involved:

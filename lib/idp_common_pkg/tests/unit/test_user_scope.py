@@ -451,3 +451,263 @@ def test_a_write_failure_raises():
 
     with pytest.raises(RuntimeError, match="throttled"):
         _grant(Broken(), ["tenant.acme"], email="ann@example.com")
+
+
+# ---------------------------------------------------------------------------
+# TenantSelection=UserSelect: a user granted several tenants chooses one
+# ---------------------------------------------------------------------------
+
+BOTH = ["IdP-Viewers", "tenant.acme", "tenant.globex"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "selection,source,expected",
+    [
+        ("UserSelect", "IdpClaim", True),
+        # The list a user chooses from is written from the claim, so any other grant
+        # source has nothing to choose from.
+        ("UserSelect", "Manual", False),
+        ("UserSelect", "Api", False),
+        ("UserSelect", None, False),
+        ("Disabled", "IdpClaim", False),
+        ("", "IdpClaim", False),
+        (None, "IdpClaim", False),
+        ("userselect", "IdpClaim", False),
+    ],
+)
+def test_tenant_selection_enabled(selection, source, expected):
+    env = {}
+    if selection is not None:
+        env[us.TENANT_SELECTION_ENV] = selection
+    if source is not None:
+        env[TENANT_GRANT_SOURCE_ENV] = source
+    assert us.tenant_selection_enabled(env) is expected
+
+
+@pytest.mark.unit
+def test_eligible_tenant_ids_lists_every_tenant_the_values_grant():
+    assert t.eligible_tenant_ids(BOTH, TENANTS) == ["acme", "globex"]
+    assert t.eligible_tenant_ids(["IdP-Viewers", "tenant.acme"], TENANTS) == ["acme"]
+    assert t.eligible_tenant_ids(["IdP-Viewers"], TENANTS) == []
+    assert t.eligible_tenant_ids([], TENANTS) == []
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_grant_records_the_eligible_tenants_and_clears_them():
+    _, table = _users_table()
+    _row(table, "u1", email="ann@example.com", persona="Viewer", cognitoSub="sub-1")
+    _grant(
+        table,
+        BOTH,
+        email="ann@example.com",
+        cognito_sub="sub-1",
+        eligible_tenants=["acme", "globex"],
+    )
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    # Granted none until the user chooses.
+    assert row["allowedConfigVersions"] == [us.NO_TENANT_GRANTED]
+    assert row["eligibleTenants"] == ["acme", "globex"]
+
+    # None leaves the list alone (an API push, or a selection).
+    _grant(table, BOTH, email="ann@example.com", cognito_sub="sub-1")
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert row["eligibleTenants"] == ["acme", "globex"]
+
+    # An empty list removes it, which is how a user who drops to one tenant stops
+    # being offered a choice.
+    _grant(
+        table,
+        ["IdP-Viewers", "tenant.acme"],
+        email="ann@example.com",
+        cognito_sub="sub-1",
+        eligible_tenants=[],
+    )
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert "eligibleTenants" not in row
+    assert row["allowedConfigVersions"] == ["acme-*"]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_created_row_carries_the_eligible_tenants():
+    _, table = _users_table()
+    _grant(
+        table,
+        BOTH,
+        email="new@example.com",
+        cognito_sub="sub-9",
+        eligible_tenants=["acme", "globex"],
+    )
+    row = table.query(
+        IndexName="EmailIndex",
+        KeyConditionExpression=boto3.dynamodb.conditions.Key("email").eq(
+            "new@example.com"
+        ),
+    )["Items"][0]
+    assert row["eligibleTenants"] == ["acme", "globex"]
+
+
+def _chosen_user(table, **attrs):
+    _row(
+        table,
+        "u1",
+        email="ann@example.com",
+        persona=attrs.pop("persona", "Viewer"),
+        cognitoSub="sub-1",
+        allowedConfigVersions=[us.NO_TENANT_GRANTED],
+        scopeSource="idp",
+        eligibleTenants=attrs.pop("eligibleTenants", ["acme", "globex"]),
+        **attrs,
+    )
+
+
+@pytest.mark.unit
+@mock_aws
+def test_selecting_an_eligible_tenant_scopes_the_user_to_it():
+    ddb, table = _users_table()
+    _chosen_user(table)
+    result = us.select_active_tenant(
+        table, email="ann@example.com", cognito_sub="sub-1", tenant=GLOBEX
+    )
+    assert result["action"] == "updated"
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert row["allowedConfigVersions"] == ["globex_*"]
+    assert row["scopeTenant"] == "globex"
+    assert row["scopeSource"] == "idp"
+    # The list is untouched, so the user can switch again.
+    assert row["eligibleTenants"] == ["acme", "globex"]
+    # What every scope reader sees.
+    assert _resolve(ddb, "ann@example.com", "sub-1") == ["globex_*"]
+
+    us.select_active_tenant(
+        table, email="ann@example.com", cognito_sub="sub-1", tenant=ACME
+    )
+    assert _resolve(ddb, "ann@example.com", "sub-1") == ["acme-*"]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_tenant_outside_the_eligible_list_is_refused_and_nothing_is_written():
+    _, table = _users_table()
+    _chosen_user(table, eligibleTenants=["acme", "initech"])
+    with pytest.raises(PermissionError):
+        us.select_active_tenant(
+            table, email="ann@example.com", cognito_sub="sub-1", tenant=GLOBEX
+        )
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert row["allowedConfigVersions"] == [us.NO_TENANT_GRANTED]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_user_with_no_eligible_list_cannot_select_a_tenant():
+    _, table = _users_table()
+    _row(
+        table,
+        "u1",
+        email="ann@example.com",
+        persona="Viewer",
+        cognitoSub="sub-1",
+        allowedConfigVersions=["acme-*"],
+    )
+    with pytest.raises(PermissionError):
+        us.select_active_tenant(
+            table, email="ann@example.com", cognito_sub="sub-1", tenant=GLOBEX
+        )
+    assert table.get_item(Key=user_row_key("u1"))["Item"]["allowedConfigVersions"] == [
+        "acme-*"
+    ]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_an_admin_cannot_select_a_tenant():
+    _, table = _users_table()
+    _chosen_user(table, persona="Admin")
+    with pytest.raises(PermissionError):
+        us.select_active_tenant(
+            table, email="ann@example.com", cognito_sub="sub-1", tenant=ACME
+        )
+    assert table.get_item(Key=user_row_key("u1"))["Item"]["allowedConfigVersions"] == [
+        us.NO_TENANT_GRANTED
+    ]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_selection_needs_the_callers_sub():
+    """Without a sub the row would be found by address, which Cognito does not keep
+    unique, so a selection could land on another account's record."""
+    _, table = _users_table()
+    _chosen_user(table)
+    with pytest.raises(ValueError):
+        us.select_active_tenant(
+            table, email="ann@example.com", cognito_sub="", tenant=ACME
+        )
+
+
+@pytest.mark.unit
+@mock_aws
+def test_a_selection_never_reaches_another_accounts_row():
+    """Two accounts share an address; the one whose sub the row does not record gets
+    no record of its own from a selection."""
+    _, table = _users_table()
+    _chosen_user(table)
+    with pytest.raises(ValueError):
+        us.select_active_tenant(
+            table, email="ann@example.com", cognito_sub="sub-other", tenant=ACME
+        )
+    assert table.get_item(Key=user_row_key("u1"))["Item"]["allowedConfigVersions"] == [
+        us.NO_TENANT_GRANTED
+    ]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_an_undeclared_tenant_is_refused():
+    _, table = _users_table()
+    _chosen_user(table)
+    with pytest.raises(ValueError):
+        us.select_active_tenant(
+            table,
+            email="ann@example.com",
+            cognito_sub="sub-1",
+            tenant={"tenantId": "acme"},
+        )
+
+
+@pytest.mark.unit
+@mock_aws
+def test_the_write_repeats_the_eligibility_check():
+    """The list is read, then written to. If the trigger rewrites the list between the
+    two, the condition on the write refuses the selection."""
+    _, table = _users_table()
+    _chosen_user(table, eligibleTenants=["acme", "globex"])
+    with pytest.raises(PermissionError):
+        us.apply_tenant_grant(
+            table,
+            email="ann@example.com",
+            cognito_sub="sub-1",
+            resolution={"tenant": GLOBEX},
+            source=us.SCOPE_SOURCE_IDP,
+            create_missing=False,
+            require_eligible_tenant="initech",
+        )
+    assert table.get_item(Key=user_row_key("u1"))["Item"]["allowedConfigVersions"] == [
+        us.NO_TENANT_GRANTED
+    ]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_clearing_an_admins_granted_scope_also_clears_the_eligible_list():
+    _, table = _users_table()
+    _chosen_user(table, persona="Admin")
+    us.clear_granted_scope(
+        table, email="ann@example.com", cognito_sub="sub-1", source="idp"
+    )
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert "eligibleTenants" not in row
+    assert "allowedConfigVersions" not in row

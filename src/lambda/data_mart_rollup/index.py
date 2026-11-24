@@ -3211,6 +3211,9 @@ def _discover_control_plane_lambdas() -> List[str]:
         "rulevalidation",
         "bda",
         "processresults",
+        # Review routing and the step that applies a completed review: per doc.
+        "routingfunction",
+        "applyreviewchanges",
     ]
     for arn in control_plane:
         function_name = arn.rsplit(":", 1)[-1].lower()
@@ -4080,6 +4083,10 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"summarizationfunction"), "summarization"),
     (re.compile(r"evaluationfunction"), "evaluation"),
     (re.compile(r"processresultsfunction"), "process-results"),
+    # ``applyreviewchanges`` and not the whole logical id: the id is longer than
+    # the 24 characters CloudFormation keeps of it (see the note below).
+    (re.compile(r"routingfunction"), "routing"),
+    (re.compile(r"applyreviewchanges"), "apply-review-changes"),
     (re.compile(r"shardruntimefunction"), "shard-runtime"),
     (re.compile(r"savereportingdata"), "save-reporting"),
     (re.compile(r"workflowtracker"), "workflow-tracker"),

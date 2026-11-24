@@ -455,6 +455,8 @@ memory_only_document = evaluation_service.evaluate_document(
 
 The service supports multiple evaluation methods that can be configured for each attribute:
 
+A score that floating-point rounding leaves within 1e-10 below its threshold counts as a match, the same tolerance Stickler applies, so a value that scores, say, 0.7999999999 against a 0.8 threshold is a match.
+
 - `EXACT`: Exact string match (after normalizing whitespace and punctuation)
 - `NUMERIC_EXACT`: Exact match for numeric values (after normalizing currency symbols)
 - `FUZZY`: Fuzzy string matching with configurable evaluation_threshold

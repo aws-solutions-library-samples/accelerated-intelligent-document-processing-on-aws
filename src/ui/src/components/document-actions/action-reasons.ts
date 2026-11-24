@@ -110,13 +110,14 @@ export const actionReasonMessages = defineMessages<{
   },
   noRuleValidation: {
     id: 'documentActions.reasons.noRuleValidation',
-    defaultMessage: 'This document has no rule validation summary',
-    description: "Why Rule Validation Summary in the document page's Reports menu is unavailable.",
+    defaultMessage: 'This document has no policy rule validation summary',
+    description: "Why Policy Rule Validation Summary in the document page's Reports menu is unavailable.",
   },
   ruleValidationHistorical: {
     id: 'documentActions.reasons.ruleValidationHistorical',
-    defaultMessage: "Rule validation isn't kept for past versions",
-    description: "Why Rule Validation Summary in the document page's Reports menu is unavailable while the page shows a past version.",
+    defaultMessage: "Policy rule validation isn't kept for past versions",
+    description:
+      "Why Policy Rule Validation Summary in the document page's Reports menu is unavailable while the page shows a past version.",
   },
   noCost: {
     id: 'documentActions.reasons.noCost',

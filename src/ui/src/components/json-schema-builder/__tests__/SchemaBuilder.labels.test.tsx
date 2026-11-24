@@ -9,7 +9,8 @@
  * Policy Schema tab, "No Rules Types".
  */
 
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import { describe, expect, it } from 'vitest';
 import type { ComponentProps } from 'react';
 

@@ -31,10 +31,9 @@ Adds a **Claims Review** page with two tabs:
    validation, with a deterministic claim status, the Pass / Fail / Information
    Not Found counts, and a drill-down showing each rule's recommendation,
    supporting pages, and reasoning (plus the full markdown summary).
-2. **Rules Discovery** — upload a payer policy document (e.g. an NCCI Medicare
-   Policy Manual) and the host's Rules Discovery pipeline extracts the
-   validation rules into a configuration profile, which the tab then renders as
-   a browsable rule set.
+2. **Rules Discovery** — upload a payer policy document and the host's Rules
+   Discovery pipeline extracts the validation rules into a configuration
+   profile, which the tab then renders as a browsable rule set.
 
 ## Claim status
 
@@ -67,7 +66,11 @@ It exercises the full host contract:
   pipeline-hooks dispatcher (which reads hooks from the configuration profile the document is processed
   under — the active one unless another was chosen at upload)
   invokes the feature's hook Lambda, which derives the claim status and records
-  it in the feature's own DynamoDB table. The hook is shipped as part of the
+  it in the feature's own DynamoDB table, with whether a reviewer had completed a
+  review (`reviewed`) and what started the run (`runKind`). A document held in a
+  review queue reaches the hook twice, before the review and after it, and the
+  later status replaces the earlier one; a document whose review is rejected keeps
+  the status recorded before the review. The hook is shipped as part of the
   config preset above rather than via a separate `registerFeatureHooks` call —
   that keeps it attached to the very profile the admin activates, instead of
   being orphaned in whatever profile happened to be active at install time.
@@ -94,16 +97,19 @@ After installing:
 
 1. Open **Configuration**, find the `sample-health-insurance-review` profile, and
    **activate** it.
-2. Upload the sample prior-auth packet
-   `samples/rule-validation/medicare_respiratory_pa_packet.pdf` to the input
-   bucket. (Its content — a Medicare respiratory prior-auth request — matches
-   the NCCI policy rules the bundled preset ships with, so rules evaluate to
-   real Pass/Fail results.)
+2. Upload a prior authorization packet of your own to the input bucket; the
+   repository ships no sample document for this feature. The policy classes of
+   the bundled preset apply to a document whose file name matches their
+   `x-aws-idp-document-name-regex`: a name that contains `prior_auth`,
+   `pa_packet`, `medicare` or `medicaid`, for example `prior_auth_packet.pdf`.
+   The policy rules are National Correct Coding Initiative (NCCI) rules about
+   surgical procedures, such as global periods, bundling and separate
+   procedures. **Information Not Found** is the recommendation for a policy
+   rule the packet holds no information for.
 3. When processing finishes, the claim appears in the **Claims Dashboard** with
    its status and per-rule breakdown.
-4. In the **Rules Discovery** tab, upload
-   `samples/rule-validation/NCCI Medicare Policy Manual.pdf`, watch the job run,
-   and browse the discovered rules.
+4. In the **Rules Discovery** tab, upload a payer policy document of your own
+   (a PDF), watch the job run, and browse the discovered rules.
 
 ## Source & authoring
 

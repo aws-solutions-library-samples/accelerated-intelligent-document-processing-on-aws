@@ -22,3 +22,12 @@ development. Before deploying to production environments, you are solely respons
 
 AWS products or services are provided "as is" without warranties, representations, or 
 conditions of any kind, whether express or implied.
+
+Third-party test fixtures
+
+This repository includes unmodified test fixtures from the DMN Technology 
+Compatibility Kit (https://github.com/dmn-tck/tck), licensed under the Apache 
+License, Version 2.0. They are in 
+lib/idp_common_pkg/tests/unit/decision_tables/tck/, with the license text 
+(LICENSE) and their source, commit and checksums (PROVENANCE.md) beside them. 
+They are used only by unit tests and are not part of any deployed artifact.

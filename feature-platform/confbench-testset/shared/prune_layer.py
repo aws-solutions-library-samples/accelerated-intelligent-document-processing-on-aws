@@ -4,15 +4,15 @@
 """Strip build-time-only files from the built SharedLayer, then assert it fits.
 
 Run by `build-SharedLayer` in this directory's Makefile, against the layer SAM
-has just populated. Removes ~35 MB of pyarrow that `pyarrow.parquet` cannot
+has just populated. Removes ~57 MB of pyarrow that `pyarrow.parquet` cannot
 reach at runtime (C++ headers, vendored sources, Cython sources, the Arrow
-Flight RPC stack), then refuses to let the build proceed if the result would
-break an in-place stack update.
+Flight RPC stack, the S3 filesystem), then refuses to let the build proceed if
+the result would break an in-place stack update.
 
 Why a size ceiling at all
 -------------------------
 Lambda caps *code + all layers* at 262,144,000 bytes unzipped. The steady state
-here is nowhere near it (layer ~101 MB + ingest code ~8.5 MB). The binding
+here is nowhere near it (layer ~99 MB + ingest code ~8.5 MB). The binding
 constraint is the *transition*: when CloudFormation updates a function it calls
 UpdateFunctionConfiguration (attaching the new layer) before UpdateFunctionCode,
 so for one moment the new layer is combined with the OLD code. Feature versions
@@ -60,13 +60,14 @@ PRUNE_DIRS = (
     "python/pyarrow/tests",  # pyarrow's own test suite
 )
 
-# Cython inputs, already compiled into the shipped extension modules, plus the
-# `lib.h` / `lib_api.h` C API headers third-party Cython code would #include.
+# Cython inputs, already compiled into the shipped extension modules. The
+# `lib.h` / `lib_api.h` C API headers sat at the package root up to pyarrow 23;
+# from 26 they live under `include/arrow/python/`, which PRUNE_DIRS removes, so
+# a root-level `*.h` rule would now match nothing and fail the build.
 PRUNE_GLOBS = (
     "python/pyarrow/**/*.pxi",
     "python/pyarrow/**/*.pyx",
     "python/pyarrow/**/*.pxd",
-    "python/pyarrow/*.h",
 )
 
 # Arrow Flight — a gRPC client/server stack. `libarrow_flight` is the single
@@ -79,6 +80,19 @@ PRUNE_GLOBS_FLIGHT = (
     "python/pyarrow/libarrow_flight.so*",
     "python/pyarrow/libarrow_python_flight.so*",
     "python/pyarrow/_flight.*.so",
+)
+
+# The S3 filesystem. From pyarrow 26 it is its own 16 MB `libarrow_s3` (it was
+# part of `libarrow` before), and only the `_s3fs` extension module links it.
+# Nothing that mounts this layer reads from S3 through pyarrow: the planner
+# hands `pq.read_table` a local path from `hf_hub_download`, which resolves to
+# `LocalFileSystem`. `pyarrow/fs.py` imports `_s3fs` inside try/except
+# ImportError, so `import pyarrow.fs` still succeeds without it — only
+# `S3FileSystem` is absent. `tests/test_prune_layer.py` fails if a consumer of
+# the layer starts naming `pyarrow.fs` or `S3FileSystem`.
+PRUNE_GLOBS_S3 = (
+    "python/pyarrow/libarrow_s3.so*",
+    "python/pyarrow/_s3fs.*.so",
 )
 
 
@@ -150,7 +164,7 @@ def collect(root: Path) -> Tuple[List[Path], List[str]]:
         else:
             unmatched.append(f"{rel}/")
 
-    for pattern in PRUNE_GLOBS + PRUNE_GLOBS_FLIGHT:
+    for pattern in PRUNE_GLOBS + PRUNE_GLOBS_FLIGHT + PRUNE_GLOBS_S3:
         hits = [p for p in root.glob(pattern) if p.is_file()]
         if hits:
             targets.extend(hits)

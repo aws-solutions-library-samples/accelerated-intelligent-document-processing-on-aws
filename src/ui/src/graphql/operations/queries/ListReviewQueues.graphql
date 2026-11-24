@@ -1,16 +1,19 @@
-query ListReviewQueues {
-  listReviewQueues {
-    id
-    name
-    description
-    priority
-    checklist
-    rejectReasons
-    skipReasons
-    timeLimitMinutes
-    eligibleAnnotators
-    isDefaultQueue
-    enabled
-    version
+query ListReviewQueues($limit: Int, $nextToken: String) {
+  listReviewQueues(limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      name
+      description
+      priority
+      checklist
+      rejectReasons
+      skipReasons
+      timeLimitMinutes
+      eligibleAnnotators
+      isDefaultQueue
+      enabled
+      version
+    }
+    nextToken
   }
 }

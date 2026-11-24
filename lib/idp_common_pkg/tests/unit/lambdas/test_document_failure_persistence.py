@@ -624,7 +624,7 @@ def test_orchestration_exception_propagates_unchanged():
 #: A Bedrock throttle as botocore actually raises it. `botocore.errorfactory` names
 #: the dynamic class after the modeled error CODE, so the class name is
 #: `ThrottlingException` — which is what Step Functions matches against
-#: `RuleValidationOrchestration`'s `Retry.ErrorEquals`. Constructing a bare
+#: `PolicyRuleConsolidationStep`'s `Retry.ErrorEquals`. Constructing a bare
 #: `ClientError` instead gives the class name `ClientError`, which that list does
 #: NOT contain: same error code, opposite retry outcome. See
 #: `test_a_transient_that_the_state_machine_will_not_retry_records_nothing`.
@@ -657,7 +657,7 @@ def test_orchestration_transient_failure_records_nothing():
         {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "Converse"
     )
     assert type(throttle).__name__ == "ThrottlingException", "fixture precondition"
-    names = _retry_names("RuleValidationOrchestration")
+    names = _retry_names("PolicyRuleConsolidationStep")
     assert "ThrottlingException" in names, "the name that already agreed"
     with pytest.raises(TransientError) as surfaced:
         _orch_invoke(
@@ -726,7 +726,7 @@ def test_a_transient_under_any_class_name_is_surfaced_as_the_name_that_is_retrie
     These two shapes are transient by error code and by exception type, but neither
     class NAME — ``ClientError``, ``ReadTimeoutError`` — is a name a ``Retry`` list
     can usefully carry. The handler converts them to ``TransientError``, which
-    ``RuleValidationOrchestration`` lists, so the eight-attempt ladder runs. Nothing
+    ``PolicyRuleConsolidationStep`` lists, so the eight-attempt ladder runs. Nothing
     is recorded on the sections, and that suppression is now sound rather than
     coincidental: the same predicate decides both, so a record is withheld exactly
     when a retry is genuinely coming.
@@ -748,7 +748,7 @@ def test_a_transient_under_any_class_name_is_surfaced_as_the_name_that_is_retrie
             _document(Status.RULE_VALIDATION_ORCHESTRATOR), service, fails_with=error
         )
     # Step Functions matches the CLASS NAME, so that is what has to be in the list.
-    assert type(surfaced.value).__name__ in _retry_names("RuleValidationOrchestration")
+    assert type(surfaced.value).__name__ in _retry_names("PolicyRuleConsolidationStep")
     assert surfaced.value.__cause__ is error, "the cause must stay readable"
     service.update_document.assert_not_called()
 
@@ -768,7 +768,7 @@ def test_a_deterministic_failure_is_still_recorded_and_keeps_its_own_name():
             service,
             fails_with=ValueError("rule schema is malformed"),
         )
-    assert "ValueError" not in _retry_names("RuleValidationOrchestration")
+    assert "ValueError" not in _retry_names("PolicyRuleConsolidationStep")
     service.update_document.assert_called_once()
 
 
@@ -926,9 +926,9 @@ def test_orchestration_passes_an_empty_list_not_none_when_no_section_wrote_outpu
     full — the worst case of #1143 rather than an edge of it.
 
     The reachable shape is a Map over **zero** sections, not a run whose sections all
-    failed: ``ProcessRuleValidationSections`` carries no ``Catch`` and no
-    tolerated-failure setting, and neither does ``RuleValidationStep`` inside it, so
-    one failed iteration fails the Map and ``RuleValidationOrchestration`` never runs.
+    failed: ``ValidatePolicyRulesBySection`` carries no ``Catch`` and no
+    tolerated-failure setting, and neither does ``PolicyRuleValidationStep`` inside it, so
+    one failed iteration fails the Map and ``PolicyRuleConsolidationStep`` never runs.
     This test drives the handler directly, which is why it can present a shape the
     workflow itself would not produce.
     """

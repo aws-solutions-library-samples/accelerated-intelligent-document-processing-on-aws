@@ -7,16 +7,10 @@ import { Box, Badge } from '@cloudscape-design/components';
 import './FlowDiagram.css';
 import type { MalwareScanFields } from '../common/malware-scan';
 import { stepLabelMessages, stepName, stepStatusLabel } from './step-labels';
+import { isStepDisabled, type StepConfig } from './is-step-disabled';
+import SkippedStatus from './SkippedStatus';
+import { SKIPPED_STATUS } from './skipped-steps';
 import { withWordBreaks } from './word-breaks';
-
-interface StepConfig {
-  summarization?: { enabled?: boolean };
-  // v0.6: confidence enablement lives under extraction.confidence; the slim
-  // assessment carrier still exposes `enabled` for the step itself.
-  extraction?: { confidence?: { enabled?: boolean } };
-  assessment?: { enabled?: boolean };
-  evaluation?: { enabled?: boolean };
-}
 
 interface Step {
   name: string;
@@ -29,6 +23,8 @@ interface Step {
   parentMapName?: string;
   mapIterations?: number;
   mapIterationDetails?: Step[];
+  /** Set on the entry of a step the run plan skipped: why it was not done. */
+  skipNote?: string;
   /** Set on the Malware Scan step only: the document's verdict, which the step is recognised and worded by. */
   malwareScan?: MalwareScanFields;
 }
@@ -92,30 +88,6 @@ const messages = defineMessages<{
     description: 'Legend of the flow diagram in Reports › Processing Flow on the document page: the colour of a pending step.',
   },
 });
-
-// Helper function to check if a step is disabled based on configuration
-const isStepDisabled = (name: string, config: StepConfig | null): boolean => {
-  if (!config) return false;
-
-  const stepNameLower = name.toLowerCase();
-
-  // Check if this is a summarization step
-  if (stepNameLower.includes('summarization') || stepNameLower.includes('summary')) {
-    return config.summarization?.enabled === false;
-  }
-
-  // Check if this is an assessment step
-  if (stepNameLower.includes('assessment') || stepNameLower.includes('assess')) {
-    return (config.extraction?.confidence?.enabled ?? config.assessment?.enabled) === false;
-  }
-
-  // Check if this is an evaluation step
-  if (stepNameLower.includes('evaluation') || stepNameLower.includes('evaluate')) {
-    return config.evaluation?.enabled === false;
-  }
-
-  return false;
-};
 
 const FlowDiagram = ({
   steps = [],
@@ -181,7 +153,9 @@ const FlowDiagram = ({
           // Check if this is a Map state
           const isMapState = step.type === 'Map';
           const mapIterationsForThisStep = mapIterationsByParent[step.name] || [];
-          const stepDisabled = isStepDisabled(step.name, mergedConfig);
+          // A step the run plan skipped is greyed out like a disabled one, and says Skipped.
+          const stepSkipped = step.status === SKIPPED_STATUS;
+          const stepDisabled = !stepSkipped && isStepDisabled(step.name, mergedConfig);
 
           return (
             <React.Fragment key={`main-step-${step.name}-${step.type}-${step.startDate || index}`}>
@@ -189,7 +163,7 @@ const FlowDiagram = ({
               <div
                 className={`flow-step ${getStepStatus(step)} ${selectedStep?.name === step.name ? 'selected' : ''} ${
                   isMapState ? 'map-step' : ''
-                } ${stepDisabled ? 'step-disabled' : ''}`}
+                } ${stepDisabled || stepSkipped ? 'step-disabled' : ''}`}
                 onClick={() => onStepClick(step)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
@@ -198,7 +172,7 @@ const FlowDiagram = ({
                 }}
                 role="button"
                 tabIndex={0}
-                title={stepDisabled ? intl.formatMessage(stepLabelMessages.disabledTitle) : ''}
+                title={stepDisabled ? intl.formatMessage(stepLabelMessages.disabledTitle) : (step.skipNote ?? '')}
               >
                 <div className="step-icon-container">
                   {getStepIcon(step.name, step.type, step.status)}
@@ -218,7 +192,9 @@ const FlowDiagram = ({
                       </Badge>
                     )}
                   </div>
-                  <div className={`step-status-text status-text-${step.status.toLowerCase()}`}>{stepStatusLabel(step.status, intl)}</div>
+                  <div className={`step-status-text status-text-${step.status.toLowerCase()}`}>
+                    {stepSkipped ? <SkippedStatus /> : stepStatusLabel(step.status, intl)}
+                  </div>
                   {step.error && (
                     <div className="step-error-indicator">
                       <span className="error-icon">⚠️</span>

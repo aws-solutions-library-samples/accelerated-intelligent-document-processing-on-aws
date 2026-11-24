@@ -368,9 +368,11 @@ idp-cli deploy [OPTIONS]
 - `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
 - `--enable-hitl`: **Deprecated and refused if `true`.** HITL is a configuration
   setting rather than a stack parameter (the `EnableHITL` parameter was removed in
-  v0.4.11) — enable it in the Web UI under **Configuration → Human-in-the-Loop
-  (HITL) Review (Optional)**, or set `hitl.enabled` in the config YAML passed to
-  `--custom-config`. The flag is
+  v0.4.11) — it is the **Review Routing** switch in the Web UI under
+  **Configuration → Processing Settings → Review Routing (Optional)**, or
+  `hitl.enabled` in the config YAML passed to `--custom-config`. A new stack turns
+  it on (see [The Review Routing switch](./review-routing.md#the-review-routing-switch)).
+  The flag is
   still accepted as `false` so existing scripts keep working.
 - `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
   new pair starts at a comma or whitespace followed by `key=` (so a space-separated
@@ -1154,15 +1156,17 @@ retention has elapsed does not look like a slow query.
 
 **A document waiting for human review ends the monitor.**
 
-With review queues on (`hitl.enabled: true`), a document that raises a
-confidence alert ends its first processing run as `HITL_IN_PROGRESS` and waits
+With Review Routing on (`hitl.enabled: true`), a document that a routing rule
+holds for review (with the built-in routing rules, one that raises a confidence
+alert, for example) ends its first processing run as `HITL_IN_PROGRESS` and waits
 for a reviewer. Nothing more happens to it until someone works it, so
 `--monitor` counts it under **Awaiting Review** rather than **Running**, and
 stops once no document is queued or running. The final summary says how many
 documents are awaiting review, lists them, and says where to work them: the
 web UI's review queues (**Home › Queues**, or **Review Studio › Review
-Management** for an Admin). Completing or rejecting a review continues the
-document; run `idp-cli status --batch-id <id>` afterwards to see the outcome.
+Management** for an Admin). The document moves on when its review ends
+(completed, rejected or sent back); run `idp-cli status --batch-id <id>`
+afterwards to see the outcome.
 
 **Test Set Integration:**
 For test runs to appear properly in the Test Studio UI, use either:
@@ -1239,7 +1243,7 @@ idp-cli process \
 
 ### `reprocess` / `rerun-inference`
 
-Reprocess existing documents from a specific pipeline step.
+Process existing documents again, starting at a step.
 
 **Usage:**
 ```bash
@@ -1248,14 +1252,31 @@ idp-cli reprocess [OPTIONS]
 idp-cli rerun-inference [OPTIONS]
 ```
 
+The stack does the work. For each document it checks that the document can start at
+the step, clears the outputs the run will produce again and queues the run, so the
+CLI, the SDK, the web UI's **Reprocess** dialog and the MCP tool offer the same steps
+and refuse the same requests. See
+[Reprocessing](./document-versions.md#reprocessing).
+
 **Use Cases:**
 - Test different classification or extraction configurations without re-running OCR
 - Fix classification errors and reprocess extraction
-- Iterate on prompt engineering rapidly
+- Run policy rule validation, summarization or evaluation again after a configuration change
+- Finish documents that failed part-way (`--step resume`)
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--step` (required): Pipeline step to rerun from (`classification` or `extraction`)
+- `--step` (required): The step the run starts at: `beginning` (alias `ocr`),
+  `classification`, `extraction`, `assessment`, `policy_rule_validation`,
+  `summarization`, `evaluation`, or `resume`, which starts each failed document at the
+  first step it has no output for
+- `--skip`: An optional step to leave out of the run (`assessment`,
+  `policy_rule_validation`, `summarization`, `evaluation`); repeat for several. A
+  skipped step keeps the output it has
+- `--profile`: Configuration profile to process the documents under (default: the
+  profile each document was processed with). Another profile starts at the beginning
+  only
+- `--revision`: Revision of `--profile` to process the documents under
 - **Document Source** (choose ONE):
   - `--document-ids`: Comma-separated document IDs
   - `--batch-id`: Batch ID to get all documents from
@@ -1264,52 +1285,73 @@ idp-cli rerun-inference [OPTIONS]
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
 
-**Step Behavior:**
-- `classification`: Clears page classifications and sections, reruns classification → extraction → assessment
-- `extraction`: Keeps classifications, clears extraction data, reruns extraction → assessment
-
 **Examples:**
 
 ```bash
-# Rerun classification for specific documents
+# Start again at classification for specific documents
 idp-cli reprocess \
     --stack-name my-stack \
     --step classification \
     --document-ids "batch-123/doc1.pdf,batch-123/doc2.pdf" \
     --monitor
 
-# Rerun extraction for entire batch
+# Run extraction again for a batch, without summarization and evaluation
 idp-cli reprocess \
     --stack-name my-stack \
     --step extraction \
+    --skip summarization --skip evaluation \
     --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --monitor
 
-# Automated rerun (skip confirmation - perfect for CI/CD)
+# Finish documents that stopped part-way (skip confirmation - for CI/CD)
 idp-cli reprocess \
     --stack-name my-stack \
-    --step classification \
+    --step resume \
     --batch-id test-set \
     --force \
     --monitor
 ```
 
-**Documents that could not be queued** are listed after the summary, one per line,
-with the reason. `Document not found` means the stack's tracking table has no record
-for that key. Any other failure — a stack with no tracking table, a DynamoDB error,
-a document the malware gate refuses — is printed as itself.
+**What a start step does:**
 
-**What Gets Cleared:**
+| Step | The run does | Kept |
+|------|--------------|------|
+| `beginning` | Every step | Nothing: the output is cleared, except the version history |
+| `classification` | Classification and every later step | OCR data (pages, images, text) |
+| `extraction` | Extraction and every later step | OCR data, page classifications, section structure |
+| `assessment` | Assessment and every later step | The extracted values |
+| `policy_rule_validation` | Policy rule validation, Review Routing, summarization, evaluation | Extraction and assessment results |
+| `summarization` | Review Routing, summarization, evaluation | The policy rule validation result as well |
+| `evaluation` | Review Routing, evaluation | The summary as well |
 
-| Step | Clears | Keeps |
-|------|--------|-------|
-| `classification` | Page classifications, sections, extraction results | OCR data (pages, images, text) |
-| `extraction` | Section extraction results, attributes | OCR data, page classifications, section structure |
+`classification`, `extraction` and `assessment` are steps of Pipeline mode. For a
+BDA-mode document `classification` and `extraction` mean the beginning, and
+`assessment` is refused.
 
-**Benefits:**
-- Leverages existing OCR data (saves time and cost)
-- Rapid iteration on classification/extraction configurations
-- Perfect for prompt engineering experiments
+**Before it asks for confirmation**, the command prints what the run does to the
+outputs a document has, once for Pipeline mode and once for BDA mode, because the
+stack decides which mode a document is in: **What will be cleared and produced
+again** (the output of the start step and of every later step) and **What will be
+kept** (the outputs of the earlier steps, and of a step left out with `--skip`,
+marked `(skipped)`). A step that does not exist in a mode is reported as refused for
+documents of that mode. For `--step resume` it says that each document starts at the
+first step it has no output for. `--force` skips the confirmation; the description
+is still printed.
+
+**Results.** After the summary each document is listed on its own line: queued, with
+the step its run starts at, or not queued, with the stack's message and a reason code
+(`RUN_IN_PROGRESS`, `OUTPUT_MISSING`, `STEP_NOT_IN_MODE`, `NOT_FAILED`,
+`OTHER_PROFILE_BEGINNING_ONLY`, `MALWARE_GATE`, …). Each failure carries its own
+message: a document the stack has no record of cannot start at a later step
+(`OUTPUT_MISSING`), a document the malware gate refuses, or whose status could not be
+read, is `MALWARE_GATE`, and a document whose file is not in the input bucket is
+reported as not found there. A document that cannot be reprocessed does not stop the
+others.
+
+**Permissions.** The caller's credentials need `lambda:InvokeFunction` on the stack's
+reprocess resolver function, and `cloudformation:DescribeStackResources` and
+`cloudformation:DescribeStacks` on the stack, which is how the CLI finds the function.
+A stack deployed from a release that has no such function is reported as such.
 
 **Demo:**
 
@@ -1343,6 +1385,24 @@ idp-cli status [OPTIONS]
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--format`: Output format - `table` (default) or `json`
 - `--region`: AWS region (optional)
+
+A single document's status also shows its review, when it has one: the review status
+(`in_review`, `complete` or `rejected`), **Review queue** (the queue's name),
+**Routed by** (the routing rule that placed the document; see
+[Review Routing](./review-routing.md)), **Reason** (what the reviewer is told: the
+routing rule's [reason](./review-routing.md#the-reason) with the document's values
+in it) and **Failed policy rules** (how many policy rules the document failed):
+
+```
+Review queue: Approvals
+Routed by: rule 'Invoices over 1000'
+Reason: Invoice total 1250.00 is over 1000. Check the total against the line items.
+Failed policy rules: 1
+FINAL STATUS: HITL_IN_PROGRESS | Duration: 84.2s | Exit Code: 2
+```
+
+Each line is printed only when the document has that value. The reason can hold
+extracted values, so treat the output as document content.
 
 **How --batch-id Works:**
 
@@ -1517,12 +1577,43 @@ $ idp-cli status --stack-name my-stack --document-id batch-123/invoice.pdf --for
   "exit_code": 0
 }
 
+# A document held in a review queue also carries its review
+$ idp-cli status --stack-name my-stack --document-id batch-123/big-invoice.pdf --format json
+{
+  "document_id": "batch-123/big-invoice.pdf",
+  "status": "HITL_IN_PROGRESS",
+  "duration": 84.2,
+  "start_time": "2025-01-01T10:30:45Z",
+  "end_time": "2025-01-01T10:32:09Z",
+  "review_status": "in_review",
+  "review_queue": "Approvals",
+  "routed_by": "rule 'Invoices over 1000'",
+  "routing_reason": "Invoice total 1250.00 is over 1000. Check the total against the line items.",
+  "policy_failures": [
+    {
+      "rule_id": "invoice_controls.total_matches_lines",
+      "policy": "invoice_controls",
+      "name": "total_matches_lines",
+      "reason": "The line items add up to 1200.00, not 1250.00.",
+      "pages": [1]
+    }
+  ],
+  "policy_failure_count": 1,
+  "current_step": "HITL_IN_PROGRESS",
+  "exit_code": 2
+}
+
 # Table output includes final status summary
 $ idp-cli status --stack-name my-stack --document-id batch-123/invoice.pdf
 [status table]
 
 FINAL STATUS: COMPLETED | Duration: 125.4s | Exit Code: 0
 ```
+
+`review_queue`, `routed_by`, `routing_reason`, `policy_failures` and
+`policy_failure_count` are present only for a document that was placed in a review
+queue and has that value. `policy_failures` lists the first failed policy rules and
+`policy_failure_count` counts all of them.
 
 **Scripting Examples:**
 
@@ -2748,7 +2839,7 @@ idp-cli config-create [OPTIONS]
 - `--features`: Feature set (default: `min`)
   - `min`: classification and extraction only (simplest). It also writes `enabled: false` for summarization and evaluation, so those are switched off. It leaves **confidence scoring on**: confidence is configured under `extraction.confidence`, which comes with `extraction` at its default `mode: separate`. To turn it off, set `extraction.confidence.mode: off` in the generated file
   - `core`: the sections of min plus ocr. Unlike min, it does not turn summarization or evaluation off. Confidence scoring is configured under `extraction.confidence`, so it comes with `extraction`
-  - `all`: every section at its default values, except `hitl`, `chat` and `rule_validation`. ⚠️ On upload the file is merged over the stack's preset or the profile's current configuration, so **every setting it writes is reset to its default there**: `summarization` and `evaluation` are written `enabled: true`, for example, and switch back on where a preset turned them off. Without `--include-prompts` the long prompt fields are not written, so those keep the deployment's own values. Edit the file before uploading, or ask for only the sections you mean to change. The three sections are left out so that the reset does not also switch human review, the chat companion or rule validation on or off. Name them explicitly to include them (`--features hitl`, or a comma-separated list of section names); a feature set cannot be combined with section names, so `all` plus one of them means listing every section
+  - `all`: every section at its default values, except `hitl`, `chat`, `rule_validation` and `routing`. ⚠️ On upload the file is merged over the stack's preset or the profile's current configuration, so **every setting it writes is reset to its default there**: `summarization` and `evaluation` are written `enabled: true`, for example, and switch back on where a preset turned them off. Without `--include-prompts` the long prompt fields are not written, so those keep the deployment's own values. Edit the file before uploading, or ask for only the sections you mean to change. Those sections are left out so that the reset does not also switch human review, the chat companion or rule validation on or off, or replace a profile's review routing rules with the built-in table. Name them explicitly to include them (`--features hitl`, or a comma-separated list of section names); a feature set cannot be combined with section names, so `all` plus one of them means listing every section
   - Or one or more section names, comma-separated: `summarization`, or `"classification,extraction,summarization"`. A single name and a list are read the same way. A name that is not a section of the configuration is **refused** with exit 1 and the list of valid sections, rather than dropped, and a feature set cannot be combined with section names
 - No feature set writes a `classes` section. The system defaults define no document classes, and an empty `classes: []` uploaded over a profile would replace the profile's classes with none, so the key is left out and the profile keeps its own. `--features classes` on its own is refused for the same reason. Add your classes under a top-level `classes:` key
 - The header comment of the generated file states which sections it copies, which it switches off, which it leaves out, and whether confidence scoring is on
@@ -2762,7 +2853,7 @@ idp-cli config-create [OPTIONS]
 # Generate minimal config to stdout
 idp-cli config-create
 
-# Generate a config with every section except hitl, chat and rule_validation
+# Generate a config with every section except hitl, chat, rule_validation and routing
 idp-cli config-create --features all --output full-config.yaml
 
 # Custom section selection
@@ -2931,14 +3022,30 @@ Nothing is printed when the stack has no revision history. A save that changes
 nothing records no new revision, so the number printed is then the revision
 already current — which is still the correct one to pin.
 
-**Warnings:** when validation runs (the default), the command prints the same
-warnings [`config-validate`](#config-validate) reports for the file, under a
-`Warnings:` heading: for example an unread key, with the field it was probably
-meant to be, or a class whose prompt is too short for prompt caching to engage.
+**Warnings:** the command prints every warning once, under a `Warnings:` heading
+on standard output. There are two kinds:
+
+- When validation runs (the default), the same warnings
+  [`config-validate`](#config-validate) reports for the file: for example an unread
+  key, with the field it was probably meant to be, or a class whose prompt is too
+  short for prompt caching to engage.
+- What the saved configuration will not do although the upload is accepted: for
+  example a routing rule that tests a policy rule result in a profile where policy
+  rule validation is off or has no policies. Every upload is checked for these, not
+  only one that changes the routing table. See
+  [Warnings](./review-routing.md#warnings).
+
+```
+Warnings:
+  ⚠ Routing table 'review-routing', rule 'compliance-check': this routing rule tests a policy rule result (failed_policy_rule_count), and policy rule validation is off for this profile or it has no policies, so the routing rule never matches.
+```
+
 They are non-fatal. The configuration is stored and the exit code stays 0. When
-validation refuses the upload, the warnings are printed beside the error,
-because an unread key is often the reason a value did not take. With
-`--no-validate`, nothing is checked and no warnings are printed. Both commands print each warning exactly as written, so a key or value containing square brackets is shown verbatim.
+validation refuses the upload, the validation warnings are printed beside the
+error, because an unread key is often the reason a value did not take. With
+`--no-validate` the file is not validated, so only the second kind is printed.
+Both commands print each warning exactly as written, so a key or value containing
+square brackets is shown verbatim.
 
 ---
 
@@ -3137,6 +3244,67 @@ and `run-inference`; omit it to process under the profile's current configuratio
 For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
 
 This uses the same mechanism as the Web UI configuration management system.
+
+---
+
+### `config-routing-export` and `config-routing-import`
+
+Convert a configuration's [review routing](./review-routing.md) table to DMN XML and
+back. Both work on local files: no stack is read and no AWS call is made.
+
+```bash
+# Write the routing table of a configuration file as DMN (1.5 by default)
+idp-cli config-routing-export --config-file ./config.yaml --output routing.dmn
+idp-cli config-routing-export -f ./config.yaml -o routing.dmn --dmn-version 1.3
+
+# Read a DMN file as a routing section, and upload it to a profile
+idp-cli config-routing-import --dmn-file routing.dmn --output routing.yaml
+idp-cli config-upload --stack-name my-stack \
+    --config-file routing.yaml --config-profile claims
+```
+
+`config-routing-import` writes a configuration file that holds only the `routing`
+section (YAML, or JSON when the name ends in `.json`; `-` writes YAML to stdout).
+Uploading it replaces the profile's routing table. The queues the rules name are
+checked when the file is uploaded. A DMN file the importer cannot represent is
+refused with the construct it stopped at; see
+[DMN XML export and import](./review-routing.md#dmn-xml-export-and-import).
+
+---
+
+### `review-queues`
+
+Administer the production [review queues](./review-queues.md): `list`, `create`,
+`update` and `delete`. The commands invoke the stack's review queues resolver function
+with the caller's credentials, which need `lambda:InvokeFunction` on it and
+`cloudformation:DescribeStackResources` and `cloudformation:DescribeStacks` on the
+stack.
+
+```bash
+# List the queues (--json for scripting; --limit and --next-token page through them)
+idp-cli review-queues list --stack-name my-stack
+
+# Create a queue and list two Annotators on it
+idp-cli review-queues create --stack-name my-stack \
+    --id approvals --name Approvals \
+    --annotator ana@example.com --annotator ben@example.com
+
+# Replace a queue's definition from a file; options given with it override it
+idp-cli review-queues update --stack-name my-stack --file approvals.yaml --disabled
+
+# Delete a queue; the documents in it move to the Default queue
+idp-cli review-queues delete --stack-name my-stack --id approvals --yes
+```
+
+`create` and `update` take the definition from `--file` (YAML or JSON), from options
+(`--id`, `--name`, `--description`, `--priority`, `--time-limit-minutes`, `--annotator`,
+`--checklist-item`, `--reject-reason`, `--skip-reason`, `--enabled` / `--disabled`), or
+both. Only the id is required to create a queue. An update replaces the definition: a
+setting left out is reset to its default, except Enabled and the skip reasons.
+
+A profile's routing rules name a queue by its id, and a save is refused when a
+routing rule names a queue the stack does not have, so create the queue first.
+See [Review Routing](./review-routing.md).
 
 ---
 

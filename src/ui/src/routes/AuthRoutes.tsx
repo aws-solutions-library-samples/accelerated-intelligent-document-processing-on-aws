@@ -30,6 +30,8 @@ import ReviewQueuesRoutes from './ReviewQueuesRoutes';
 import MyWorkRoutes from './MyWorkRoutes';
 import WelcomePage from '../pages/WelcomePage';
 import { NoRoleAssigned, SessionError } from './SessionStates';
+import TenantSelectionGate from '../components/tenant-selection/TenantSelectionGate';
+import { clearTenantHint, needsTenantChoice } from '../utils/tenant-selection';
 
 import {
   DOCUMENTS_PATH,
@@ -68,7 +70,18 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isQueueWorker, isAnnotatorOnly, isReviewerOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
+  const {
+    isQueueWorker,
+    isAnnotatorOnly,
+    isReviewerOnly,
+    hasNoRole,
+    sessionError,
+    retrySession,
+    allowedConfigVersions,
+    eligibleTenants,
+    subject,
+    loading: roleLoading,
+  } = useUserRole();
   const quickStartAvailable = useQuickStartAvailable();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
@@ -149,6 +162,25 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
     return (
       <SettingsContext.Provider value={settingsContextValue}>
         <NoRoleAssigned onSignOut={signOut} />
+      </SettingsContext.Provider>
+    );
+  }
+
+  // TenantSelection=UserSelect: the identity provider granted this user several
+  // tenants and none is active yet. The app mounts only once they choose, so no page
+  // requests data under a scope that shows them nothing. An Admin, a user with one
+  // tenant and a user granted none never reach this: there is nothing for them to pick.
+  if (needsTenantChoice(allowedConfigVersions, eligibleTenants)) {
+    return (
+      <SettingsContext.Provider value={settingsContextValue}>
+        <TenantSelectionGate
+          eligibleTenants={eligibleTenants}
+          subject={subject}
+          onSignOut={() => {
+            clearTenantHint();
+            signOut();
+          }}
+        />
       </SettingsContext.Provider>
     );
   }

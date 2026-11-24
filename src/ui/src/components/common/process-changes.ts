@@ -14,9 +14,10 @@ const client = generateClient();
 export const PROCESS_CHANGES_TIMEOUT_MS = 30000;
 
 /**
- * Reprocess the document. With no section or page changes, only evaluation and
- * summarization re-run; a modified section is extracted again; a modified page has its
- * text re-read (`textModified`) or the document classified again (`classReset`).
+ * Reprocess the document. With no section or page changes the run starts at policy
+ * rule validation (the server decides, and extracts a section that has no result); a
+ * modified section is extracted again; a modified page has its text re-read
+ * (`textModified`) or the document classified again (`classReset`).
  * `modifiedPages` is sent only when there are some. Throws with the server's message
  * when the request is refused or times out.
  */

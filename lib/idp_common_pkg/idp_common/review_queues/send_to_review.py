@@ -27,6 +27,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from idp_common.run_plan.restart import layout_of
+
 from . import keys, status_object
 from . import notify as notify_module
 from .bulk_models import (
@@ -228,6 +230,7 @@ class SendToReviewService:
                 prior_hitl_status=row.get("HITLStatus"),
                 prior_hitl_completed=row.get("HITLCompleted"),
             ),
+            placed_layout=layout_of(document),
             history_count=1,
         )
         history = self.store.history_txn_item(

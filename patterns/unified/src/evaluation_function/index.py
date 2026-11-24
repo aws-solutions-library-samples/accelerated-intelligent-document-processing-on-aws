@@ -539,7 +539,7 @@ def _handle(event, context):
         # recorded as a FAILED evaluation first: the document would show as
         # failed until the retry overwrote it, and returning here would end the
         # step with nothing to retry. If the retries run out, the state's Catch
-        # routes to RecordEvaluationFailure, which records the failure then.
+        # routes to RecordEvaluationFailureStep, which records the failure then.
         if is_transient_error(e):
             logger.warning(
                 f"Transient evaluation failure ({type(e).__name__}); raising "

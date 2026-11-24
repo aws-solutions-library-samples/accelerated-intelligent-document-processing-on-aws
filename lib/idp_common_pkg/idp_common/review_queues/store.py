@@ -660,6 +660,16 @@ class ReviewStore:
             out.extend(DraftRecord.from_item(i) for i in page.get("Items", []))
         return out
 
+    def delete_draft(self, doc_key: str, cycle_id: str, section_id: str) -> None:
+        """Delete a section's draft record of a cycle.
+
+        A record that is not there is not an error. The draft's objects in S3
+        are left where they are: nothing reads them without the record.
+        """
+        self.client.delete_item(
+            {"PK": keys.doc_pk(doc_key), "SK": keys.draft_sk(cycle_id, section_id)}
+        )
+
     # ---------------------------------------------------------------- history
 
     def history_txn_item(

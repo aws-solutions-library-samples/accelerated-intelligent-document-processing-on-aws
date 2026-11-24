@@ -27,7 +27,7 @@ const messages = defineMessages<{
   notice: {
     id: 'documentActions.editPageText.notice',
     defaultMessage:
-      "Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.",
+      "Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.",
     description: "Notice in the document page's page text editor: what Save and Reprocess, the label of its save button, replaces.",
   },
   saved: {

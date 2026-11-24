@@ -78,6 +78,42 @@ _REAL_MODULES: tuple[tuple[str, str], ...] = (
         "idp_common.utils.metering",
         "lib/idp_common_pkg/idp_common/utils/metering.py",
     ),
+    # start_workflow routes a run by the real mode resolver: the tests assert the
+    # ``use_bda`` and ``bda_project_arn`` it writes into the execution input.
+    # Stdlib only.
+    (
+        "idp_common.run_plan.mode",
+        "lib/idp_common_pkg/idp_common/run_plan/mode.py",
+    ),
+    # start_workflow writes the run plan a message carries into the execution
+    # input, and the tests assert that block, so the plan model and its mapping
+    # are the real ones. ``steps`` is listed FIRST and ``models`` before ``asl``:
+    # each imports the one before it, and resolves it from ``sys.modules``.
+    # ``steps`` and ``asl`` are stdlib only; ``models`` needs pydantic, which the
+    # library itself requires.
+    (
+        "idp_common.run_plan.steps",
+        "lib/idp_common_pkg/idp_common/run_plan/steps.py",
+    ),
+    (
+        "idp_common.run_plan.models",
+        "lib/idp_common_pkg/idp_common/run_plan/models.py",
+    ),
+    (
+        "idp_common.run_plan.asl",
+        "lib/idp_common_pkg/idp_common/run_plan/asl.py",
+    ),
+    # ``policyRuleValidationEnabled`` in that block is the real flag reader's
+    # answer for the pinned configuration. Stdlib only; ``flags`` first, as
+    # ``feature_flags`` imports it.
+    (
+        "idp_common.config.flags",
+        "lib/idp_common_pkg/idp_common/config/flags.py",
+    ),
+    (
+        "idp_common.config.feature_flags",
+        "lib/idp_common_pkg/idp_common/config/feature_flags.py",
+    ),
 )
 
 

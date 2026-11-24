@@ -1,0 +1,9 @@
+mutation SendBackReviewItem($objectKey: String!, $cycleId: String!, $note: String) {
+  sendBackReviewItem(objectKey: $objectKey, cycleId: $cycleId, note: $note) {
+    objectKey
+    status
+    startStep
+    reason
+    message
+  }
+}

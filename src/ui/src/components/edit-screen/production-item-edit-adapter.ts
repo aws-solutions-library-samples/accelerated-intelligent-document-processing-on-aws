@@ -53,6 +53,8 @@ export interface ProductionItemEditModel {
   refresh: () => Promise<void>;
   /** The document's summary report, once summarization has run (after the review). */
   summaryReportUri: string | null;
+  /** The document's policy rule validation report, when policy rule validation has run (before the review). */
+  ruleValidationResultUri: string | null;
   /** The document's evaluation status (BASELINE_COPYING while a baseline copy runs). */
   evaluationStatus: string | null;
   /** Bumped when the open section must be re-read (a newer draft arrived). */
@@ -104,6 +106,7 @@ export const useProductionItemEdit = (
   const [pagesLoading, setPagesLoading] = useState(!seed);
   const [documentSections, setDocumentSections] = useState<ReviewSectionRef[]>(() => sectionsOf(seed?.document));
   const [summaryReportUri, setSummaryReportUri] = useState<string | null>(seed?.document.SummaryReportUri || null);
+  const [ruleValidationResultUri, setRuleValidationResultUri] = useState<string | null>(seed?.document.RuleValidationResultUri || null);
   const [evaluationStatus, setEvaluationStatus] = useState<string | null>(seed?.document.EvaluationStatus || null);
   const [reloadToken, setReloadToken] = useState(0);
   const [notice, setNotice] = useState<'stale-draft' | null>(null);
@@ -154,6 +157,7 @@ export const useProductionItemEdit = (
       if (read !== documentRead.current) return;
       const doc = result.data?.getDocument;
       setSummaryReportUri(doc?.SummaryReportUri || null);
+      setRuleValidationResultUri(doc?.RuleValidationResultUri || null);
       setEvaluationStatus(doc?.EvaluationStatus || null);
       setPages(pagesOf(doc));
       setDocumentSections(sectionsOf(doc));
@@ -248,6 +252,7 @@ export const useProductionItemEdit = (
     refreshDocument,
     refresh,
     summaryReportUri,
+    ruleValidationResultUri,
     evaluationStatus,
     reloadToken,
     notice,

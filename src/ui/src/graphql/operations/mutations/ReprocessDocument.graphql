@@ -1,3 +1,24 @@
-mutation ReprocessDocument($objectKeys: [String!]!, $version: String, $revision: Int) {
-  reprocessDocument(objectKeys: $objectKeys, version: $version, revision: $revision)
+mutation ReprocessDocument(
+  $objectKeys: [String!]!
+  $version: String
+  $revision: Int
+  $startStep: String
+  $skipSteps: [String!]
+) {
+  reprocessDocument(
+    objectKeys: $objectKeys
+    version: $version
+    revision: $revision
+    startStep: $startStep
+    skipSteps: $skipSteps
+  ) {
+    queued
+    results {
+      objectKey
+      status
+      startStep
+      reason
+      message
+    }
+  }
 }

@@ -86,7 +86,7 @@ const messages = defineMessages<{
   barReports: {
     id: 'helpPanel.documentDetails.barReports',
     defaultMessage:
-      '<b>Reports</b>: the Summary, Evaluation Report, Rule Validation Summary, Estimated Cost and Processing Flow, each in a dialog.',
+      '<b>Reports</b>: the Summary, Evaluation Report, Policy Rule Validation Summary, Estimated Cost and Processing Flow, each in a dialog.',
     description: 'Help panel bullet about the action bar; the bold text and the report names match the Reports menu.',
   },
   barMoreActions: {

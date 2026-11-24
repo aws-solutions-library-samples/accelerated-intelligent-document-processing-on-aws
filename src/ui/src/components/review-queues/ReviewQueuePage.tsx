@@ -6,7 +6,8 @@
 // unassign or move several at once, or uses ⋮ on a row. An Annotator listed on the
 // queue (Home › Queues) claims items — one, the selected ones, or the next one —
 // which assigns them to the caller in Home › Tasks. Edit opens an item's
-// edit screen without changing its assignment (read-only unless it is yours).
+// edit screen without changing its assignment (read-only unless it is yours). An Admin
+// also sees the routing rules, in every configuration profile, that send documents here.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -34,6 +35,8 @@ import { useFormatters } from '../../i18n/format';
 import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../../utils/date-time';
 import QueueAnnotatorsTable, { queueAnnotatorRows } from './QueueAnnotatorsTable';
 import QueueProgress from './QueueProgress';
+import { QueueReferencesContainer } from './QueueReferences';
+import useQueueReferences from './use-queue-references';
 import useSavedQueueDefinitions from './use-saved-queue-definitions';
 import WorkItemsTable from './WorkItemsTable';
 import useSupervisorActions, { isAssignable, isRemovable, isSupervisorAction, isUnassignable } from './use-supervisor-actions';
@@ -417,9 +420,13 @@ const messages = defineMessages<{
 
 const isClaimable = (item: ReviewItem): boolean => item.state === QueueItemState.OPEN;
 
-/** The Items table: Document, Source, Queue, Priority and State, then the row Actions menu. */
+/** The columns the Documents table offers, in order; the row Actions menu follows them. */
 // Annotator: who each document is assigned to (sortable), so a queue's work can be read by person.
-const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'state', 'owner'] as const;
+const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'age', 'reason', 'state', 'owner'] as const;
+/** The columns shown until the user changes them in the table's settings; the others are offered there. */
+const DEFAULT_VISIBLE_ITEM_COLUMNS = ['document', 'queue', 'reason', 'state', 'owner'] as const;
+/** The browser storage key of the Documents table's settings. */
+const ITEM_PREFERENCES_KEY = 'review-queue-items-preferences';
 
 interface ReviewQueuePageProps {
   /** Told the queue's name whenever it loads or is saved (for the breadcrumbs). */
@@ -456,6 +463,8 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   const [refreshing, setRefreshing] = useState(false);
 
   const savedDefinitions = useSavedQueueDefinitions();
+  // The routing rules that name this queue: an Admin's to read, once per queue and on Refresh.
+  const references = useQueueReferences(isAdmin ? queueId : null);
 
   /** The queue definitions and health are Admin-only; an Annotator reads its own summary of the queue. */
   const loadContext = useCallback(async () => {
@@ -514,6 +523,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
 
   const refreshNow = async () => {
     setRefreshing(true);
+    references.reload();
     try {
       await load();
     } finally {
@@ -807,9 +817,12 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
           )}
         </Container>
         {isAdmin && <QueueAnnotatorsTable rows={annotatorRows} loading={definition == null && health == null && error == null} />}
+        {isAdmin && <QueueReferencesContainer state={references} />}
         <WorkItemsTable
           items={items ?? []}
           columns={ITEM_COLUMNS}
+          defaultVisible={DEFAULT_VISIBLE_ITEM_COLUMNS}
+          preferencesKey={ITEM_PREFERENCES_KEY}
           loading={(items == null && error == null) || (refreshing && (items ?? []).length === 0)}
           title={intl.formatMessage(messages.documentsTitle)}
           onRowAction={handleRowAction}

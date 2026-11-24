@@ -249,9 +249,15 @@ class TestDeploy:
         check sits above the ``try`` that converts everything else into
         ``IDPStackError``.
         """
-        with pytest.raises(ValueError, match="no longer a CloudFormation parameter"):
+        with pytest.raises(
+            ValueError, match="no longer a CloudFormation parameter"
+        ) as refused:
             _client().stack.deploy(enable_hitl=True)
 
+        # The tab and the section as the configuration page labels them.
+        assert "Configuration → Processing Settings → Review Routing" in str(
+            refused.value
+        )
         assert deployer.calls == {}
 
     def test_enable_hitl_false_is_accepted_and_sends_no_parameter(

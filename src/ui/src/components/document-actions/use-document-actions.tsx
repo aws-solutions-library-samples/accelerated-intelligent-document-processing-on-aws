@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The document page's action bar and the dialogs it opens. Left to right: the Details |
-// Source switch; Reports (Summary, Evaluation Report, Rule Validation Summary,
+// Source switch; Reports (Summary, Evaluation Report, Policy Rule Validation Summary,
 // Estimated Cost, Processing Flow); More Actions (the changes; then the downloads, as a group; then
 // Reprocess, Abort and Delete as a group, Delete last); Refresh; Troubleshoot; Start
 // Review, where it applies; and Edit, the primary action. More Actions opens Edit Page Grouping (the edit
@@ -190,8 +190,8 @@ const messages = defineMessages<{
   },
   ruleValidationSummary: {
     id: 'documentActions.reports.ruleValidationSummary',
-    defaultMessage: 'Rule Validation Summary',
-    description: "Item of the document page's Reports menu: opens the document's rule validation summary.",
+    defaultMessage: 'Policy Rule Validation Summary',
+    description: "Item of the document page's Reports menu: opens the document's policy rule validation summary.",
   },
   estimatedCost: {
     id: 'documentActions.reports.estimatedCost',

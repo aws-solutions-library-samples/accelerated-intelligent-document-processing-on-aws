@@ -139,7 +139,7 @@ const messages = defineMessages<{
   inboxRetention: {
     id: 'home.toolsPanels.inboxRetention',
     defaultMessage:
-      'Messages are kept for a limited time and up to a per-user cap (Configuration › Processing Settings › HITL › Inbox messages).',
+      'Messages are kept for a limited time and up to a per-user cap (Configuration › Processing Settings › Review Routing › Inbox messages).',
     description: 'Inbox info panel, "Good to know" item. The parenthesis is the navigation path to the setting.',
   },
   inboxLookingAhead: {

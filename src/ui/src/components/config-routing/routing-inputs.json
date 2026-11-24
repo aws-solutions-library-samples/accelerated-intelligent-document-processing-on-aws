@@ -1,0 +1,167 @@
+{
+  "inputs": [
+    {
+      "name": "document_class",
+      "label": "Document class",
+      "type": "string",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "section_classes",
+      "label": "Section classes",
+      "type": "string",
+      "needs_path": false,
+      "is_list": true,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "class_present",
+      "label": "Class is present",
+      "type": "boolean",
+      "needs_path": true,
+      "is_list": false,
+      "path_kind": "class",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "page_count",
+      "label": "Page count",
+      "type": "number",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "section_count",
+      "label": "Section count",
+      "type": "number",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "confidence_alert_count",
+      "label": "Confidence alert count",
+      "type": "number",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "missing_required_field_count",
+      "label": "Missing required field count",
+      "type": "number",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "extraction_failed_count",
+      "label": "Failed extraction count",
+      "type": "number",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "route_missing_required_fields",
+      "label": "Route missing required fields (setting)",
+      "type": "boolean",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "field_value",
+      "label": "Field value",
+      "type": "field",
+      "needs_path": true,
+      "is_list": true,
+      "path_kind": "field",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "policy_rule_verdict",
+      "label": "Policy rule verdict",
+      "type": "string",
+      "needs_path": true,
+      "is_list": false,
+      "path_kind": "policy_rule",
+      "path_optional": false,
+      "choices": [
+        "pass",
+        "fail",
+        "not_found",
+        "unknown"
+      ]
+    },
+    {
+      "name": "failed_policy_rule_count",
+      "label": "Failed policy rule count",
+      "type": "number",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "policy_type",
+      "path_optional": true,
+      "choices": []
+    },
+    {
+      "name": "reviewed",
+      "label": "Reviewed",
+      "type": "boolean",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": []
+    },
+    {
+      "name": "processing_mode",
+      "label": "Processing mode",
+      "type": "string",
+      "needs_path": false,
+      "is_list": false,
+      "path_kind": "",
+      "path_optional": false,
+      "choices": [
+        "pipeline",
+        "bda"
+      ]
+    }
+  ],
+  "aggregates": [
+    "any",
+    "all",
+    "count"
+  ],
+  "id_pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$",
+  "limits": {
+    "max_rules": 100,
+    "max_conditions": 8,
+    "max_label_bytes": 200,
+    "max_path_bytes": 128,
+    "max_test_bytes": 256,
+    "max_reason_bytes": 500,
+    "max_reason_placeholders": 10
+  }
+}

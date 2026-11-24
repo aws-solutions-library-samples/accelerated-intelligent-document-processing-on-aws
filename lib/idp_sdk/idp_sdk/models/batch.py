@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from .base import RerunStep
-from .document import DocumentDeletionResult, DocumentStatus
+from .document import DocumentDeletionResult, DocumentReprocessResult, DocumentStatus
 
 
 class BatchDeletionResult(BaseModel):
@@ -107,9 +107,17 @@ class BatchReprocessResult(BaseModel):
         description="Number of documents that failed to queue"
     )
     failed_documents: List[Dict[str, str]] = Field(
-        default_factory=list, description="Details of failed documents"
+        default_factory=list,
+        description=(
+            "The documents that were not queued: object_key, error (the "
+            "reason in words), status and reason"
+        ),
     )
-    step: RerunStep = Field(description="Pipeline step being reprocessed")
+    step: RerunStep = Field(description="The step that was asked for")
+    results: List[DocumentReprocessResult] = Field(
+        default_factory=list,
+        description="One result per document: status, start step, reason, message",
+    )
 
 
 # Backward compatibility alias

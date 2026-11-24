@@ -17,10 +17,15 @@ already in flight.
 """
 
 import importlib.util
+import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.unit.lambdas import _review_env
+from tests.unit.notifications._cfn_yaml import REPO_ROOT, load_cfn_yaml
 
 _REPO_ROOT = os.path.join(os.path.dirname(__file__), "../../../../..")
 
@@ -50,6 +55,23 @@ def resolver():
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             return mod
+
+
+@pytest.fixture
+def routing():
+    """The processing mode a regroup in review reads: Pipeline unless a test says BDA.
+
+    Yields the mock of ``bda_routing``, so a test can change the answer and can
+    assert how, and whether, the mode was read.
+    """
+    with (
+        patch("idp_common.config.ConfigurationManager"),
+        patch(
+            "idp_common.config.configuration_manager.bda_routing",
+            return_value=SimpleNamespace(bda=False),
+        ) as read,
+    ):
+        yield read
 
 
 def _section(module, section_id, page_ids, classification, with_extraction=True):
@@ -862,6 +884,7 @@ class TestUnknownGroupRefused:
 
 
 @pytest.mark.unit
+@pytest.mark.usefixtures("routing")
 class TestRegroupInReview:
     """A document in a review queue is regrouped only by the holder of its item.
 
@@ -892,11 +915,11 @@ class TestRegroupInReview:
 
     @staticmethod
     def _store(state, owner_key=None, missing=False):
-        from types import SimpleNamespace
-
         store = MagicMock()
         store.get_item.return_value = (
-            None if missing else SimpleNamespace(state=state, owner_key=owner_key)
+            None
+            if missing
+            else SimpleNamespace(state=state, owner_key=owner_key, cycle_id="cycle-1")
         )
         return store
 
@@ -965,6 +988,367 @@ class TestRegroupInReview:
         store.get_item.assert_not_called()
         service.update_document.assert_not_called()
 
+    # ----- a document processed in BDA mode ------------------------------------
+
+    def test_a_bda_document_in_review_is_refused_with_the_bda_message(
+        self, resolver, routing
+    ):
+        """The run after the review would have to extract the regrouped sections."""
+        routing.return_value = SimpleNamespace(bda=True)
+        document = self._in_review(resolver)
+        document.config_version, document.config_revision = "lending", 4
+        store = self._store("CLAIMED", self.HOLDER)
+        service = MagicMock()
+        service.get_document.return_value = document
+
+        with patch.object(resolver, "create_document_service", return_value=service):
+            with pytest.raises(ValueError) as refused:
+                self._run(resolver, document, self._event(), store)
+
+        assert str(refused.value) == resolver._BDA_MODE_MESSAGE
+        assert str(refused.value).startswith("BDA_MODE: ")
+        # A refusal, which the dispatcher answers with a 400.
+        assert resolver._is_refusal(refused.value)
+        service.update_document.assert_not_called()
+        store.delete_draft.assert_not_called()
+        # The mode of the configuration the document is pinned to, read strictly.
+        (_manager, profile), options = routing.call_args
+        assert profile == "lending"
+        assert options == {"raise_errors": True, "config_revision": 4}
+
+    def test_a_mode_that_cannot_be_read_refuses_the_regroup(self, resolver, routing):
+        routing.side_effect = RuntimeError("configuration table unavailable")
+        service = MagicMock()
+        service.get_document.return_value = self._in_review(resolver)
+
+        with patch.object(resolver, "create_document_service", return_value=service):
+            with pytest.raises(ValueError, match="could not be determined"):
+                self._run(
+                    resolver,
+                    service.get_document.return_value,
+                    self._event(),
+                    self._store("CLAIMED", self.HOLDER),
+                )
+
+        service.update_document.assert_not_called()
+
+    def test_the_holder_is_checked_before_the_mode_is_read(self, resolver, routing):
+        routing.return_value = SimpleNamespace(bda=True)
+
+        result, _ = self._run(
+            resolver,
+            self._in_review(resolver),
+            self._event(),
+            self._store("CLAIMED", "someone@example.com"),
+        )
+
+        assert result["message"].startswith("NOT_LEASE_HOLDER")
+        routing.assert_not_called()
+
+    def test_a_bda_document_that_is_not_in_review_is_regrouped_as_before(
+        self, resolver, routing
+    ):
+        """Only a regroup in a review is followed by a run that extracts again."""
+        routing.return_value = SimpleNamespace(bda=True)
+        document = _document(resolver, [_section(resolver, "1", [1, 2], "Invoice")])
+        store = self._store("CLAIMED", self.HOLDER)
+
+        result, service = self._run(resolver, document, self._event(), store)
+
+        assert result == {
+            "success": True,
+            "message": (
+                "Page grouping saved as 1 section(s). Extracted values were kept "
+                "and may no longer match their pages."
+            ),
+            "processingJobId": None,
+        }
+        service.update_document.assert_called_once()
+        routing.assert_not_called()
+        store.delete_draft.assert_not_called()
+
+    # ----- what a saved regroup answers and discards ---------------------------
+
+    def test_the_answer_says_when_the_new_sections_are_extracted(self, resolver):
+        result, _ = self._run(
+            resolver,
+            self._in_review(resolver),
+            self._event(),
+            self._store("CLAIMED", self.HOLDER),
+        )
+
+        assert result == {
+            "success": True,
+            "message": (
+                "Page grouping saved as 1 section(s). Sections that are new or "
+                "whose pages changed are extracted again when the review is "
+                "completed."
+            ),
+            "processingJobId": None,
+        }
+
+    @staticmethod
+    def _three_sections(module):
+        document = _document(
+            module,
+            [
+                _section(module, "1", [1], "Invoice"),
+                _section(module, "2", [2], "Invoice"),
+                _section(module, "3", [3], "W2"),
+            ],
+            status="HITL_IN_PROGRESS",
+        )
+        document.hitl_status = "in_review"
+        return document
+
+    def _regroup(self, sections, object_key="packet.pdf"):
+        event = _event(object_key=object_key, sections=sections)
+        event["identity"]["claims"]["email"] = self.HOLDER
+        return event
+
+    def test_the_drafts_of_removed_sections_are_deleted(self, resolver):
+        store = self._store("CLAIMED", self.HOLDER)
+        # Sections 2 and 3 are merged into section 1.
+        event = self._regroup([{"sectionId": "1", "pageIds": ["1", "2", "3"]}])
+
+        result, _ = self._run(resolver, self._three_sections(resolver), event, store)
+
+        assert result["success"] is True, result
+        assert sorted(call.args for call in store.delete_draft.call_args_list) == [
+            ("packet.pdf", "cycle-1", "2"),
+            ("packet.pdf", "cycle-1", "3"),
+        ]
+
+    def test_a_regroup_that_removes_no_section_deletes_no_draft(self, resolver):
+        store = self._store("CLAIMED", self.HOLDER)
+        # Page 2 moves to section 3, and a section is added: none is removed.
+        event = self._regroup(
+            [
+                {"sectionId": "1", "pageIds": ["1"]},
+                {"sectionId": "3", "pageIds": ["2"]},
+                {"sectionId": "4", "pageIds": ["3"], "classification": "W2"},
+                {"sectionId": "2", "pageIds": ["4"]},
+            ]
+        )
+        document = self._three_sections(resolver)
+        document.pages["4"] = MagicMock(classification=None)
+
+        result, _ = self._run(resolver, document, event, store)
+
+        assert result["success"] is True, result
+        store.delete_draft.assert_not_called()
+
+    def test_the_row_is_written_before_the_drafts_are_deleted(self, resolver):
+        order = []
+        store = self._store("CLAIMED", self.HOLDER)
+        store.delete_draft.side_effect = lambda *args: order.append("draft")
+        document = self._three_sections(resolver)
+        service = MagicMock()
+        service.get_document.return_value = document
+        service.update_document.side_effect = lambda _doc: order.append("row")
+        event = self._regroup(
+            [
+                {"sectionId": "1", "pageIds": ["1", "2"]},
+                {"sectionId": "3", "pageIds": ["3"]},
+            ]
+        )
+
+        with patch.object(resolver, "_REVIEW_STORE", store):
+            with patch.object(
+                resolver, "create_document_service", return_value=service
+            ):
+                result = resolver.handler(event, None)
+
+        assert result["success"] is True, result
+        assert order == ["row", "draft"]
+
+    def test_a_regroup_that_is_not_saved_deletes_no_draft(self, resolver):
+        store = self._store("CLAIMED", self.HOLDER)
+        document = self._three_sections(resolver)
+        service = MagicMock()
+        service.get_document.return_value = document
+        service.update_document.side_effect = RuntimeError("the write failed")
+        event = self._regroup([{"sectionId": "1", "pageIds": ["1", "2", "3"]}])
+
+        with patch.object(resolver, "_REVIEW_STORE", store):
+            with patch.object(
+                resolver, "create_document_service", return_value=service
+            ):
+                result = resolver.handler(event, None)
+
+        assert result["success"] is False
+        store.delete_draft.assert_not_called()
+
+    def test_a_delete_failure_is_logged_at_warning_and_the_regroup_still_succeeds(
+        self, resolver, caplog
+    ):
+        store = self._store("CLAIMED", self.HOLDER)
+        store.delete_draft.side_effect = [RuntimeError("throttled"), None]
+        event = self._regroup([{"sectionId": "1", "pageIds": ["1", "2", "3"]}])
+
+        with caplog.at_level(logging.WARNING, "idp_common.review_queues.regrouping"):
+            result, service = self._run(
+                resolver, self._three_sections(resolver), event, store
+            )
+
+        assert result["success"] is True, result
+        service.update_document.assert_called_once()
+        # The failure does not stop the next draft from being deleted.
+        assert store.delete_draft.call_count == 2
+        failures = [
+            record
+            for record in caplog.records
+            if record.name == "idp_common.review_queues.regrouping"
+        ]
+        assert [record.levelno for record in failures] == [logging.WARNING]
+        assert "review_draft_discard_failed" in failures[0].getMessage()
+
+    def test_an_item_that_cannot_be_read_again_does_not_fail_the_regroup(
+        self, resolver, caplog
+    ):
+        """The holder check read the item; the read for its cycle then fails."""
+        store = self._store("CLAIMED", self.HOLDER)
+        store.get_item.side_effect = [
+            store.get_item.return_value,
+            RuntimeError("throttled"),
+        ]
+        event = self._regroup([{"sectionId": "1", "pageIds": ["1", "2", "3"]}])
+
+        with caplog.at_level(logging.WARNING, "idp_common.review_queues.regrouping"):
+            result, _ = self._run(
+                resolver, self._three_sections(resolver), event, store
+            )
+
+        assert result["success"] is True, result
+        store.delete_draft.assert_not_called()
+        assert any(
+            record.levelno == logging.WARNING
+            and "review_draft_discard_failed" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_an_item_that_is_gone_when_read_again_has_no_draft_to_delete(
+        self, resolver
+    ):
+        """The holder check read the item; by the read for its cycle it is gone
+        (released and removed in between), so there is no cycle to delete from."""
+        store = self._store("CLAIMED", self.HOLDER)
+        store.get_item.side_effect = [store.get_item.return_value, None]
+        event = self._regroup([{"sectionId": "1", "pageIds": ["1", "2", "3"]}])
+
+        result, _ = self._run(resolver, self._three_sections(resolver), event, store)
+
+        assert result["success"] is True, result
+        assert store.get_item.call_count == 2
+        store.delete_draft.assert_not_called()
+
+    # ----- against the real store ----------------------------------------------
+
+    def _held(self, env):
+        """A claimed item of the holder with a draft for sections 1 and 2."""
+        _review_env.finalizing_item(
+            env,
+            state="CLAIMED",
+            owner_key=self.HOLDER,
+            sections=["1", "2"],
+            disposition=None,
+            disposed_by=None,
+            disposed_at=None,
+            finalize_token=None,
+            finalize_execution_name=None,
+        )
+        _review_env.draft(env, "1")
+        _review_env.draft(env, "2")
+
+    @staticmethod
+    def _drafted(env):
+        drafts = env.store.list_drafts(_review_env.KEY, _review_env.CYCLE)
+        return sorted(draft.section_id for draft in drafts)
+
+    def _two_sections(self, module):
+        document = _document(
+            module,
+            [
+                _section(module, "1", [1], "Invoice"),
+                _section(module, "2", [2], "Invoice"),
+            ],
+            status="HITL_IN_PROGRESS",
+        )
+        document.hitl_status = "in_review"
+        return document
+
+    def test_the_draft_record_of_a_removed_section_is_gone(self, resolver, review_env):
+        self._held(review_env)
+        merge = self._regroup(
+            [{"sectionId": "1", "pageIds": ["1", "2"]}], _review_env.KEY
+        )
+
+        result, _ = self._run(
+            resolver, self._two_sections(resolver), merge, review_env.store
+        )
+
+        assert result["success"] is True, result
+        # Section 1 keeps its draft: its id was kept.
+        assert self._drafted(review_env) == ["1"]
+
+    def test_a_section_id_that_is_reused_has_no_draft(self, resolver, review_env):
+        """A regroup removes section 2; a later one gives its id to a new section."""
+        self._held(review_env)
+        document = self._two_sections(resolver)
+        merge = self._regroup(
+            [{"sectionId": "1", "pageIds": ["1", "2"]}], _review_env.KEY
+        )
+        split = self._regroup(
+            [
+                {"sectionId": "1", "pageIds": ["1"]},
+                {"sectionId": "2", "pageIds": ["2"], "classification": "W2"},
+            ],
+            _review_env.KEY,
+        )
+
+        merged, _ = self._run(resolver, document, merge, review_env.store)
+        again, _ = self._run(resolver, document, split, review_env.store)
+
+        assert (merged["success"], again["success"]) == (True, True)
+        assert [s.section_id for s in document.sections] == ["1", "2"]
+        # The new section 2 has no extraction result and no reviewer corrections.
+        assert document.sections[1].extraction_result_uri is None
+        assert self._drafted(review_env) == ["1"]
+
+
+@pytest.mark.unit
+class TestTheReviewTableGrant:
+    """The role allows what a regroup in review does to the review table.
+
+    ``discard_drafts`` never raises, so a delete the role does not allow would
+    only be a WARNING in the log of a deployed stack.
+    """
+
+    def test_the_role_reads_the_item_and_deletes_drafts_and_nothing_else(self):
+        template = load_cfn_yaml(REPO_ROOT / "nested/api-resolvers/template.yaml")
+        function = template["Resources"]["ProcessChangesResolverFunction"]
+        review_table = "table/${HITLTableName}"
+        granted = [
+            statement
+            for policy in function["Properties"]["Policies"]
+            for branch in policy.get("!If", [])
+            if isinstance(branch, dict)
+            for statement in branch.get("Statement", [])
+            if any(review_table in r.get("!Sub", "") for r in statement["Resource"])
+        ]
+
+        assert [statement["Effect"] for statement in granted] == ["Allow"]
+        # GetItem: the holder check and the item's cycle. DeleteItem: the drafts.
+        assert sorted(granted[0]["Action"]) == [
+            "dynamodb:DeleteItem",
+            "dynamodb:GetItem",
+        ]
+        # The table itself: neither call reads an index.
+        assert [r["!Sub"] for r in granted[0]["Resource"]] == [
+            "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:"
+            + review_table
+        ]
+
 
 # ---------------------------------------------------------------------------
 # A production document in review: the Annotator holding its item may regroup it
@@ -979,11 +1363,16 @@ class _FakeReviewStore:
     def __init__(self, item=None, raises=None):
         self._item = item
         self._raises = raises
+        #: The section ids whose draft was deleted.
+        self.deleted = []
 
     def get_item(self, doc_key):
         if self._raises is not None:
             raise self._raises
         return self._item
+
+    def delete_draft(self, doc_key, cycle_id, section_id):
+        self.deleted.append(section_id)
 
 
 def _review_item(
@@ -997,6 +1386,7 @@ def _review_item(
 
 
 @pytest.mark.unit
+@pytest.mark.usefixtures("routing")
 class TestAnnotatorHoldingAProductionItem:
     @pytest.fixture
     def document(self, resolver):
@@ -1035,14 +1425,14 @@ class TestAnnotatorHoldingAProductionItem:
                 )
 
     def test_the_holder_may_regroup_and_the_grouping_is_saved(self, resolver, document):
+        store = _FakeReviewStore(_review_item())
         result, service = self._call(
-            resolver,
-            document,
-            store=_FakeReviewStore(_review_item()),
-            scope=["profile-a"],
+            resolver, document, store=store, scope=["profile-a"]
         )
         assert result["success"] is True
         service.update_document.assert_called_once()
+        # Section 2 was merged into section 1, so its draft goes with it.
+        assert store.deleted == ["2"]
 
     def test_an_unscoped_holder_may_regroup(self, resolver, document):
         result, service = self._call(

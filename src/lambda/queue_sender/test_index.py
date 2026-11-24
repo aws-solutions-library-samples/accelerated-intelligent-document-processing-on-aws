@@ -30,6 +30,13 @@ from idp_common.models import (  # noqa: E402
     serialize_issue_list,
 )
 
+# The run plan and the one sender of the document queue, kept REAL (imported here,
+# so they stay in ``sys.modules`` when the parent package is stubbed below). The
+# message this Lambda queues is built by ``send_run``; a stub would let every
+# assertion on that message pass whatever the handler sends.
+from idp_common.run_plan import models as real_run_plan_models  # noqa: E402
+from idp_common.run_plan import sender as real_run_plan_sender  # noqa: E402
+
 # idp_common and aws_xray_sdk are heavy/AWS-dependent; mock them before import.
 sys.modules["idp_common"] = MagicMock()
 mock_models_module = MagicMock()
@@ -208,6 +215,45 @@ class TestFolderPseudoObject:
         assert "skipped" not in response
         mock_doc_service.create_document.assert_called_once()
         mock_sqs.send_message.assert_called_once()
+
+    def test_the_message_carries_a_run_plan_for_a_new_upload(self):
+        """Every message on the document queue carries a plan; a new upload's
+        says the run starts at the beginning. The body is the document's JSON,
+        and the other two attributes are what they were before run plans."""
+        import index
+
+        mock_document = MagicMock()
+        mock_document.config_version = "v1"
+        mock_document.id = "doc.pdf"
+        mock_document.input_key = "doc.pdf"
+        mock_document.to_json.return_value = '{"id": "doc.pdf"}'
+
+        with (
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=mock_document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_sqs.send_message.return_value = {"MessageId": "mid"}
+            index.handler(make_event("doc.pdf"), None)
+
+        assert index.send_run is real_run_plan_sender.send_run
+        sent = mock_sqs.send_message.call_args.kwargs
+        assert sent["QueueUrl"] == index.queue_url
+        assert sent["MessageBody"] == '{"id": "doc.pdf"}'
+        attributes = {
+            name: value["StringValue"]
+            for name, value in sent["MessageAttributes"].items()
+        }
+        assert set(attributes) == {"EventType", "ObjectKey", "RunPlan"}
+        assert attributes["EventType"] == "DocumentQueued"
+        assert attributes["ObjectKey"] == "doc.pdf"
+        plan = real_run_plan_models.decode(attributes["RunPlan"])
+        assert plan == real_run_plan_models.RunPlan(
+            kind=real_run_plan_models.RunKind.NEW_UPLOAD, start="beginning"
+        )
+        mock_document.serialize_document.assert_not_called()
 
 
 @pytest.mark.unit

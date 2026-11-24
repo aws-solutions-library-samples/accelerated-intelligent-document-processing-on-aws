@@ -124,20 +124,20 @@ const reportMessages = defineMessages<{
   },
   ruleValidationLoading: {
     id: 'documents.markdownReport.ruleValidation.loading',
-    defaultMessage: 'Loading rule validation summary...',
-    description: "Shown in the Rule Validation Summary dialog while the document's rule validation summary loads.",
+    defaultMessage: 'Loading policy rule validation summary...',
+    description: "Shown in the Policy Rule Validation Summary dialog while the document's policy rule validation summary loads.",
   },
   ruleValidationBinary: {
     id: 'documents.markdownReport.ruleValidation.binary',
-    defaultMessage: 'This file contains binary content that cannot be viewed in the rule validation summary.',
+    defaultMessage: 'This file contains binary content that cannot be viewed in the policy rule validation summary.',
     description:
-      "Shown in the Rule Validation Summary dialog when the document's rule validation summary file holds binary content instead of text.",
+      "Shown in the Policy Rule Validation Summary dialog when the document's policy rule validation summary file holds binary content instead of text.",
   },
   ruleValidationFailed: {
     id: 'documents.markdownReport.ruleValidation.failed',
-    defaultMessage: 'Failed to load rule validation summary. Please try again.',
+    defaultMessage: 'Failed to load policy rule validation summary. Please try again.',
     description:
-      "Shown in the Rule Validation Summary dialog when the document's rule validation summary could not be loaded. A missing permission has a message of its own.",
+      "Shown in the Policy Rule Validation Summary dialog when the document's policy rule validation summary could not be loaded. A missing permission has a message of its own.",
   },
 });
 
@@ -164,7 +164,7 @@ const reportSentences: Record<MarkdownReportKind, Record<'loading' | 'binary' | 
 const printTitles: Record<MarkdownReportKind, string> = {
   summary: 'Document Summary',
   evaluation: 'Evaluation Report',
-  ruleValidation: 'Rule Validation Summary',
+  ruleValidation: 'Policy Rule Validation Summary',
 };
 
 /** Text for an HTML context: the print window's <title> is built as a string. */

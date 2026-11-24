@@ -34,6 +34,7 @@ from .statuses import (
 #: Submodules loaded on first access as ``idp_common.review_queues.<name>``.
 _LAZY = (
     "annotators",
+    "apply_review",
     "keys",
     "models",
     "api_models",
@@ -41,6 +42,9 @@ _LAZY = (
     "directory",
     "reasons",
     "routing",
+    "routing_dmn",
+    "routing_inputs",
+    "routing_step",
     "service",
     "status_object",
     "finalize",

@@ -294,7 +294,7 @@ def test_the_pseudo_locale_prompt_has_no_glossary_and_its_own_rules(
 def test_every_flow_goes_in_with_its_setup_and_steps(tmp_path: Path) -> None:
     text = _prompt("fr-CA", tmp_path)
     loaded = _flows()
-    assert len(loaded) == 8
+    assert len(loaded) == 12
     for flow in loaded:
         assert f"### {flow.id}: {flow.title}" in text
         for step in flow.raw["steps"]:

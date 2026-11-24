@@ -28,7 +28,11 @@ The IDP Common library provides these main modules:
 - **[Agents](agents/README.md)**: Conversational AI agent framework
 - **[Model Finetuning](model_finetuning/README.md)**: Nova fine-tuning utilities
 - **[DynamoDB](dynamodb/README.md)**: Document tracking and HITL state management
-- **[Review queues](review_queues/README.md)**: HITL review queues — routing for both modes, claims and leases, drafts, dispositions, durable finalize, the sweeper and the `review/status.json` status contract
+- **[Review queues](review_queues/README.md)**: HITL review queues — the routing step (routing rules, their inputs, DMN XML), the apply-review step, claims and leases, drafts, dispositions, durable finalize, the sweeper and the `review/status.json` status contract
+- **[Decision tables](decision_tables/README.md)**: A small, deterministic decision-table engine (hit policy `FIRST`, S-FEEL unary tests) and a DMN XML reader and writer. Review routing evaluates its rules with it; it has no AWS dependency
+- **[Run plan](run_plan/README.md)**: Where a run starts and what it skips — the step list, the `RunPlan` a message carries, the one sender (`send_run`), eligibility and clearing for a reprocess, and the reprocess service every surface calls
+- **Field values** (`field_values.py`): which extracted values are absent and which required fields are missing. A light module with no assessment or rule-validation dependency, so the routing step reads the predicates the assessment step applies
+- **Field paths** (`field_paths.py`): reading a value at a field path in an extraction result, and reading a number exactly (`exact_numeric_reading`). Shared by symbolic rule validation and routing tests
 - **[Notifications](notifications/README.md)**: Host Inbox messages — `notify()` to users or Cognito groups, with dedupe, idempotency, muting, retention and a per-user cap
 - **[Image](image/README.md)**: Image resizing and format conversion
 - **[S3](s3/README.md)**: S3 read/write utilities
@@ -221,17 +225,17 @@ class Status(Enum):
     EXTRACTING = "EXTRACTING"  # Information extraction
     ASSESSING = "ASSESSING"  # Confidence assessment
     POSTPROCESSING = "POSTPROCESSING"  # Post-processing
-    HITL_IN_PROGRESS = "HITL_IN_PROGRESS"  # Human review in progress
+    HITL_IN_PROGRESS = "HITL_IN_PROGRESS"  # Held in a review queue
     SUMMARIZING = "SUMMARIZING"  # Document summarization
-    RULE_VALIDATION_POLICY_CLASSIFICATION = "RULE_VALIDATION_POLICY_CLASSIFICATION"  # Policy classification for rule validation
-    RULE_VALIDATION = "RULE_VALIDATION"  # Rule validation
-    RULE_VALIDATION_ORCHESTRATOR = "RULE_VALIDATION_ORCHESTRATOR"  # Rule consolidation
+    RULE_VALIDATION_POLICY_CLASSIFICATION = "RULE_VALIDATION_POLICY_CLASSIFICATION"  # Policy classification
+    RULE_VALIDATION = "RULE_VALIDATION"  # Policy rule validation
+    RULE_VALIDATION_ORCHESTRATOR = "RULE_VALIDATION_ORCHESTRATOR"  # Policy rule consolidation
     EVALUATING = "EVALUATING"  # Evaluation
     COMPLETED = "COMPLETED"  # All processing completed
     FAILED = "FAILED"  # Processing failed
     ABORTED = "ABORTED"  # User cancelled
     REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"  # Original superseded by its redacted copy
-    REJECTED = "REJECTED"  # Human reviewer rejected the document (terminal, not success)
+    REJECTED = "REJECTED"  # A reviewer rejected the document (terminal, not success)
     QUARANTINED = "QUARANTINED"  # Malware found at the ingest gate; never processed
     MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"  # No malware verdict obtainable; refused (fail-closed)
 ```

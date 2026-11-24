@@ -67,6 +67,9 @@ query GetDocument($objectKey: ID!) {
     HITLReviewedBy
     HITLReviewedByEmail
     HITLReviewHistory
+    ReviewQueue
+    ReviewQueueName
+    ReviewRoutedBy
     ConfigVersion
     ConfigRevision
     HITLCompleted

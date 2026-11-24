@@ -267,6 +267,11 @@ def suite(cbd, monkeypatch, tmp_path):
     monkeypatch.setattr(cbd, "SEQUENTIAL_TEST_STEPS", [])
     monkeypatch.setattr(cbd, "ALL_TEST_STEPS", steps)
     monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda started: None)
+    # The steps run with Review Routing off (a new stack turns it on); the upload
+    # that switches it off is covered in test_review_routing_off_config.py.
+    monkeypatch.setattr(
+        cbd, "switch_off_review_routing", lambda stack, region=None: {"success": True}
+    )
     run = cbd.TerraformRun(
         module_url="https://example.test/m.zip",
         directory=str(tmp_path / "run"),
@@ -404,6 +409,28 @@ def test_a_shortfall_without_a_replan_reports_only_the_refusal(cbd, suite, monke
     assert result["step_results"] == {
         cbd.TERRAFORM_STEPS_REFUSED_ROW: {"status": "failed", "error": "no time"}
     }
+
+
+def test_a_converged_run_whose_review_routing_stays_on_still_fails_the_summary(
+    cbd, suite, monkeypatch
+):
+    """The steps are not started when Review Routing could not be switched off,
+    and the refusal is a failed row beside the re-plan's passed one."""
+    deploy, ran = suite
+    monkeypatch.setattr(
+        cbd,
+        "switch_off_review_routing",
+        lambda stack, region=None: {"success": False, "error": "the upload exited 1"},
+    )
+    result = deploy(cbd.judge_terraform_replan(0, None))
+    assert ran == [] and result["success"] is False
+    assert result["iac"] == "terraform"
+    rows = result["step_results"]
+    assert rows[cbd.TERRAFORM_CONVERGENCE_STEP]["status"] == "passed"
+    assert rows[cbd.REVIEW_ROUTING_OFF_ROW]["status"] == "failed"
+    assert "the upload exited 1" in rows[cbd.REVIEW_ROUTING_OFF_ROW]["error"]
+    summary = cbd.build_consolidated_summary("stk", result, [], True, {})
+    assert "OVERALL: FAIL" in summary
 
 
 def test_a_converged_run_refused_for_time_still_fails_the_summary(

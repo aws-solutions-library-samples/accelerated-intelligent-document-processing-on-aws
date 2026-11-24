@@ -696,7 +696,11 @@ class TestRefusals:
             )
         assert result.exit_code == 1, result.output
         assert "no longer a stack parameter" in result.output
-        assert "Human-in-the-Loop (HITL) Review" in result.output
+        # The message names the tab and the section by the labels the Web UI shows.
+        # Whitespace is folded so that where the console wraps the line does not matter.
+        assert "Configuration → Processing Settings → Review Routing" in " ".join(
+            result.output.split()
+        )
         assert api_calls.of("CreateStack") == []
 
     def test_enable_hitl_false_is_still_accepted_and_submits_no_parameter(

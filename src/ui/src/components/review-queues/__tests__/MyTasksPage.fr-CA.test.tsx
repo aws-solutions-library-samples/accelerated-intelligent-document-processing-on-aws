@@ -60,7 +60,18 @@ const waitingItem = (): ReviewItem =>
 /** A Test Studio document assigned to the reader, with two confidence alerts. */
 const TASK: TestSetTask = { testSetId: 'invoices', objectKey: 'sets/invoices/inv-7.pdf', assignedAt: ago(30), alertCount: 2 };
 
+/**
+ * Home › Tasks shows Document, Queue, Age and Reason until the reader changes the table's
+ * settings. These tests read every column it offers, as for a reader who switched them all on.
+ */
+const TASK_PREFERENCES_KEY = 'my-tasks-preferences';
+const EVERY_TASK_COLUMN = ['document', 'source', 'queue', 'priority', 'age', 'reason'].map((id) => ({ id, visible: true }));
+
+/** The browser storage key of the work table rendered by itself. */
+const TABLE_PREFERENCES_KEY = 'test-work-items-preferences';
+
 beforeEach(() => {
+  window.localStorage.setItem(TASK_PREFERENCES_KEY, JSON.stringify({ contentDisplay: EVERY_TASK_COLUMN }));
   state.refresh.mockReset();
   state.reviewWork.current = {
     myItems: [heldItem()],
@@ -125,13 +136,13 @@ const sourceFilter = () => {
 };
 const chosenSource = () => sourceFilter().findTrigger().getElement().textContent;
 
-// Home › Tasks columns: Document, Source, Queue, Priority, Age, Top reason, then the row menu.
+// Home › Tasks columns, all switched on: Document, Source, Queue, Priority, Age, Reason, then the row menu.
 const TASK_SOURCE = 2;
 const TASK_REASON = 6;
 
 /** The reader's two items and a waiting one, in the table with every column. */
 const workRows = () => [fromReviewItem('tasks')(heldItem()), fromTestSetTask(TASK), fromReviewItem('review')(waitingItem())];
-// Every column: Document, Source, Queue, Priority, Age, Top reason, State, Annotator.
+// Every column: Document, Source, Queue, Priority, Age, Reason, State, Annotator.
 const STATE = 7;
 const OWNER = 8;
 
@@ -141,7 +152,7 @@ describe('Home › Tasks under fr-CA', () => {
     // Awaited: the catalog arrives asynchronously, as the chunk does in the browser.
     expect(await screen.findByText('Tâches')).toBeInTheDocument();
     expect(columnHeaders()).toEqual(expect.arrayContaining(['File', 'Priorité', 'Motif principal']));
-    expect(columnHeaders()).not.toContain('Top reason');
+    expect(columnHeaders()).not.toContain('Reason');
     expect([cellText(1, TASK_SOURCE), cellText(2, TASK_SOURCE)]).toEqual(['Production', 'Studio de test']);
     expect(cellText(1, TASK_REASON)).toBe('Confiance faible : Employer name 0,62 < 0,80');
     expect(cellText(2, TASK_REASON)).toBe('2 alertes de confiance');
@@ -173,7 +184,10 @@ describe('Home › Tasks under fr-CA', () => {
 
 describe('the work table under fr-CA', () => {
   it('reads its state labels and Vous for the reader’s items in French', async () => {
-    renderWithIntl(<WorkItemsTable items={workRows()} title="Items" />, { ...FR_CA, wrapper: Router });
+    renderWithIntl(<WorkItemsTable items={workRows()} title="Items" preferencesKey={TABLE_PREFERENCES_KEY} />, {
+      ...FR_CA,
+      wrapper: Router,
+    });
     expect(await screen.findByText('État')).toBeInTheDocument();
     expect(columnHeaders()).toContain('Annotateur');
     expect([1, 2, 3].map((row) => cellText(row, STATE))).toEqual(['Assigné', 'Assigné', 'En attente']);
@@ -181,7 +195,7 @@ describe('the work table under fr-CA', () => {
   });
 
   it('says "No data!" in French when it has no rows and no empty text of its own', async () => {
-    renderWithIntl(<WorkItemsTable items={[]} title="Items" />, { ...FR_CA, wrapper: Router });
+    renderWithIntl(<WorkItemsTable items={[]} title="Items" preferencesKey={TABLE_PREFERENCES_KEY} />, { ...FR_CA, wrapper: Router });
     expect(await screen.findByText('Aucune donnée !')).toBeInTheDocument();
     expect(screen.queryByText('No data!')).toBeNull();
   });
@@ -191,7 +205,7 @@ describe('Home › Tasks under en', () => {
   it('reads the inline English for its heading, the column headers, the source badges and both reasons', async () => {
     renderWithIntl(<MyTasksPage />, { wrapper: Router });
     expect(await screen.findByText('Tasks')).toBeInTheDocument();
-    expect(columnHeaders()).toEqual(expect.arrayContaining(['Queue', 'Priority', 'Top reason']));
+    expect(columnHeaders()).toEqual(expect.arrayContaining(['Queue', 'Priority', 'Reason']));
     expect([cellText(1, TASK_SOURCE), cellText(2, TASK_SOURCE)]).toEqual(['Production', 'Test Studio']);
     expect(cellText(1, TASK_REASON)).toBe('Low confidence: Employer name 0.62 < 0.80');
     expect(cellText(2, TASK_REASON)).toBe('2 confidence alerts');
@@ -207,14 +221,14 @@ describe('Home › Tasks under en', () => {
 
 describe('the work table under en', () => {
   it('reads its state labels and You for the reader’s items in English', () => {
-    renderWithIntl(<WorkItemsTable items={workRows()} title="Items" />, { wrapper: Router });
+    renderWithIntl(<WorkItemsTable items={workRows()} title="Items" preferencesKey={TABLE_PREFERENCES_KEY} />, { wrapper: Router });
     expect(columnHeaders()).toEqual(expect.arrayContaining(['State', 'Annotator']));
     expect([1, 2, 3].map((row) => cellText(row, STATE))).toEqual(['Assigned', 'Assigned', 'Waiting']);
     expect([1, 2, 3].map((row) => cellText(row, OWNER))).toEqual(['You', 'You', '—']);
   });
 
   it('says "No data!" when it has no rows and no empty text of its own', () => {
-    renderWithIntl(<WorkItemsTable items={[]} title="Items" />, { wrapper: Router });
+    renderWithIntl(<WorkItemsTable items={[]} title="Items" preferencesKey={TABLE_PREFERENCES_KEY} />, { wrapper: Router });
     expect(screen.getByText('No data!')).toBeInTheDocument();
   });
 });

@@ -333,7 +333,7 @@ class TestSkipResults:
         service = _service()
         result = service.create_no_policy_classes_result(_document("a.pdf"))
         markdown = service.format_skip_result_as_markdown(result)
-        assert "# Rule Validation Summary: a.pdf" in markdown
+        assert "# Policy Rule Validation Summary: a.pdf" in markdown
         assert "NO_POLICY_CLASSES" in markdown
         assert "No policy classes configured" in markdown
 
@@ -356,9 +356,9 @@ class TestSkipResults:
         markdown = service.format_skip_result_as_markdown(
             service.create_no_match_result(_document("a.pdf"))
         )
-        assert markdown.startswith("# Rule Validation Summary: ")
+        assert markdown.startswith("# Policy Rule Validation Summary: ")
 
     def test_the_markdown_tolerates_a_result_with_nothing_in_it(self):
         markdown = _service().format_skip_result_as_markdown({})
-        assert "Rule Validation Summary: Document" in markdown
+        assert "# Policy Rule Validation Summary: Document" in markdown
         assert "SKIPPED" in markdown

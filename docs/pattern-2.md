@@ -65,8 +65,14 @@ The workflow consists of three main processing steps with an optional assessment
 The Step Functions state machine (`workflow.asl.json`) orchestrates the following flow:
 
 ```
-OCRStep → ClassificationStep → ProcessPageGroups (Map State for Extraction) → ProcessResultsStep
+OCRStep → ClassificationStep → ProcessSections (Map: extraction and assessment per section) → Pipeline_AssembleDocumentStep → shared tail
 ```
+
+The shared tail is the same in both modes: policy rule validation, `RoutingStep`
+(Review Routing), summarization and evaluation. A run does not have to start at
+`OCRStep`: a reprocess can start at classification, extraction, assessment or a step of
+the shared tail, and the workflow's first state, `CheckRunPlan`, sends the run there
+(see [Reprocessing](./document-versions.md#reprocessing)).
 
 Each step includes comprehensive retry logic for handling transient errors:
 - Initial retry after 2 seconds
@@ -195,12 +201,17 @@ Each step includes comprehensive retry logic for handling transient errors:
 
 Human review is built into the solution's Web UI; it does not use Amazon SageMaker
 Augmented AI (A2I). Reviewers validate and correct extracted information when the
-system's confidence falls below a specified threshold.
+system's confidence falls below a specified threshold, or when a
+[routing rule](./review-routing.md) of the configuration sends the document to a
+review queue.
 
-**Configuration:** HITL is enabled through the configuration
-(Web UI **Configuration → Human-in-the-Loop (HITL) Review (Optional)**, or the
-`hitl.enabled` key in the config YAML),
+**Configuration:** Whether documents are held for review is the **Review Routing**
+switch of the configuration (Web UI **Configuration → Processing Settings → Review
+Routing (Optional)**, or the `hitl.enabled` key in the config YAML),
 not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
+A newly created stack turns it on; see
+[The Review Routing switch](./review-routing.md#the-review-routing-switch) for how
+to turn it off for unattended processing.
 
 For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md).
 

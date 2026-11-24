@@ -367,6 +367,8 @@ the CFN-generated Lambda ID):
 | `evaluation` | Per-doc evaluation against baseline |
 | `rule-validation` | Rule-based validation + policy classification |
 | `process-results` | Post-processing / results aggregation |
+| `routing` | Review routing decision after policy rule validation |
+| `apply-review-changes` | Applies a completed review to the section results |
 | `shard-runtime` | Shard runtime (agentic extraction fan-out) |
 | `save-reporting` | `SaveReportingDataFunctionV2` |
 | `workflow-tracker` | Step-Functions workflow state tracker |
@@ -456,6 +458,8 @@ passes a naive test — while matching nothing a real deployment emits.
 | `SummarizationFunction` | `patterns/unified/template.yaml` | `summarization` | Doc arrival |
 | `EvaluationFunction` | `patterns/unified/template.yaml` | `evaluation` | Doc arrival |
 | `ProcessResultsFunction` | `patterns/unified/template.yaml` | `process-results` | Per-doc pipeline result stitching |
+| `RoutingFunction` | `patterns/unified/template.yaml` | `routing` | Per-doc review routing decision |
+| `ApplyReviewChangesFunction` | `patterns/unified/template.yaml` | `apply-review-changes` | Per-doc, the first step of the run that follows a completed review |
 | `PipelineHooksDispatcherFunction` | `patterns/unified/template.yaml` | `pipeline-hooks` | Sync-invoked per doc (PII, etc.) |
 | `ShardRuntimeFunction` | `patterns/unified/template.yaml` | `shard-runtime` | Per-doc/per-shard Bedrock batch runtime |
 | `InvokeBDAFunction` | `patterns/unified/template.yaml` | `bda` | Per-doc BDA invocation (BDA mode) |

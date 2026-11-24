@@ -66,6 +66,11 @@ DATA_PLANE_ALLOWLIST: dict[str, Path] = {
     "EvaluationFunction": UNIFIED_TEMPLATE,
     # Per-doc pipeline result stitching (post-extraction).
     "ProcessResultsFunction": UNIFIED_TEMPLATE,
+    # Per-doc review routing decision, after policy rule validation.
+    "RoutingFunction": UNIFIED_TEMPLATE,
+    # Per-doc application of a completed review (the first step of the run
+    # that follows it).
+    "ApplyReviewChangesFunction": UNIFIED_TEMPLATE,
     # Sync-invoked from the pipeline per doc for pre/post-processing hooks
     # (PII redaction etc.). Timeout up to 900s per doc.
     "PipelineHooksDispatcherFunction": UNIFIED_TEMPLATE,
@@ -95,8 +100,8 @@ DATA_PLANE_ALLOWLIST: dict[str, Path] = {
     "WorkflowTracker": MAIN_TEMPLATE,
     # SQS per-doc status-change events from the Jobs API path.
     "JobTracker": MAIN_TEMPLATE,
-    # Invoked async by EvaluationFunction / RuleValidationOrchestration /
-    # RuleValidationPolicyClassification per doc. Cost scales with doc
+    # Invoked async by EvaluationFunction, RuleValidationOrchestrationFunction
+    # and RuleValidationPolicyClassificationFunction per doc. Cost scales with doc
     # volume, not with dashboard views.
     "SaveReportingDataFunctionV2": MAIN_TEMPLATE,
     # SQS per-doc dispatcher for user-supplied custom post-processor.

@@ -63,12 +63,17 @@ https://github.com/user-attachments/assets/24547356-6d68-4935-b0fd-ddeed9c25ba8
 
 ### State Machine Workflow
 ```
-InvokeDataAutomation (with waitForTaskToken)
+InvokeDataAutomationStep (with waitForTaskToken)
     |
-    ├── Success -> ProcessResultsStep
+    ├── Success -> BDA_AssembleDocumentStep -> shared tail
     |
-    └── Failure -> FailState
+    └── Failure -> WorkflowFailed
 ```
+
+The shared tail is the same in both modes: policy rule validation, `RoutingStep`
+(Review Routing), summarization and evaluation. A reprocess of a BDA-mode document can
+start at the beginning or at a step of the shared tail (see
+[Reprocessing](./document-versions.md#reprocessing)).
 
 ## Deployment
 
@@ -209,12 +214,17 @@ payload = {
 
 Human review is built into the solution's Web UI; it does not use Amazon SageMaker
 Augmented AI (A2I). Reviewers validate and correct extracted information when the
-system's confidence falls below a specified threshold.
+system's confidence falls below a specified threshold, or when a
+[routing rule](./review-routing.md) of the configuration sends the document to a
+review queue.
 
-**Configuration:** HITL is enabled through the configuration
-(Web UI **Configuration → Human-in-the-Loop (HITL) Review (Optional)**, or the
-`hitl.enabled` key in the config YAML),
+**Configuration:** Whether documents are held for review is the **Review Routing**
+switch of the configuration (Web UI **Configuration → Processing Settings → Review
+Routing (Optional)**, or the `hitl.enabled` key in the config YAML),
 not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
+A newly created stack turns it on; see
+[The Review Routing switch](./review-routing.md#the-review-routing-switch) for how
+to turn it off for unattended processing.
 
 For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md). 
 
@@ -234,7 +244,10 @@ section or page change to such a document for every role; see
 - **Modify Predictions**: Update predicted field values and review confidence scores
 - **Edit the evaluation baseline**: With **Show Evaluation** on, edit the baseline values the document is evaluated against. A test set's ground truth is edited in Test Studio
 - **Process the corrections**: The edit page's **Process Changes** saves the edits and
-  re-runs evaluation and summarization on them, without BDA re-invocation
+  processes the document again from policy rule validation, without BDA re-invocation:
+  policy rule validation, Review Routing, summarization and evaluation run on the
+  corrected values. The confirmation lists the steps before the run starts (see
+  [What Process Changes runs](./web-ui.md#what-process-changes-runs))
 - **Regroup pages**: **More Actions › Edit Page Grouping › Save page grouping** on the
   document page saves a new page grouping and keeps the extracted values; nothing is
   reprocessed
@@ -249,13 +262,20 @@ Correct values with **Edit Data** (the edit page) instead.
 
 ### How It Works
 
-When the edit page's **Process Changes** runs on a document with existing pages and
-sections data:
+When the edit page's **Process Changes** runs on a document whose sections all have
+their extracted values:
 
-1. The workflow detects existing document data (pages > 0 and sections present)
-2. BDA invocation step is automatically skipped
-3. Process proceeds directly to evaluation and summarization
-4. Document status updates to COMPLETED when finished
+1. The run starts at policy rule validation, so the BDA branch of the workflow is not
+   entered and Bedrock Data Automation is not invoked
+2. Policy rule validation runs when it is enabled for the profile, then Review
+   Routing, which can hold the document for review when the profile's routing rules
+   say so
+3. Summarization and evaluation run
+4. Document status updates to COMPLETED when finished, unless the document is held
+
+A document that is not ready for that start runs from the beginning instead. When it
+has pages and sections, the workflow detects them, skips the BDA invocation, and goes
+on to the same steps.
 
 This is useful for:
 - Correcting extraction errors on the edit page

@@ -341,7 +341,7 @@ describe('the document page bar under en', () => {
     expect(itemsOf(menuNamed('Reports')).map((i) => i.text)).toEqual([
       'Summary',
       'Evaluation Report',
-      'Rule Validation Summary',
+      'Policy Rule Validation Summary',
       'Estimated Cost',
       'Processing Flow',
     ]);

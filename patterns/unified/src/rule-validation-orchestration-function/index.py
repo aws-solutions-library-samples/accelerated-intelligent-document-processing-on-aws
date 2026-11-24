@@ -151,7 +151,7 @@ def handler(event, context):
         # plausibly rather than visibly wrong: a rule whose verdict changed between
         # runs is reported at the stale value and the compliance decision follows
         # it. The list below is what THIS run wrote, so the cleanup stops being
-        # load-bearing. `RuleValidationOrchestration` is reachable only from the
+        # load-bearing. `PolicyRuleConsolidationStep` is reachable only from the
         # section Map, whose `ResultPath` is `$.RuleValidationResults`, so the list
         # is always available here; an empty one means this run produced no section
         # output, which is a reason to consolidate nothing rather than to fall back
@@ -269,7 +269,7 @@ def handler(event, context):
             )
 
         # #1101: surface a transient cause under the one name
-        # RuleValidationOrchestration retries. This runs AFTER the recorder above,
+        # PolicyRuleConsolidationStep retries. This runs AFTER the recorder above,
         # and the two agree by construction because both ask
         # `idp_common.utils.transient_errors.is_transient_error`: whatever the
         # recorder declined to mark as failed is exactly what this re-raises as

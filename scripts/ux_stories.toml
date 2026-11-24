@@ -199,7 +199,7 @@ id = "draft-setup-from-a-description"
 title = "Get a setup drafted for a new kind of document"
 intent = "Your team will soon process employee paystubs, and nobody has set this application up for them yet. Get the application to draft that setup for you from a plain description of what a paystub contains."
 kind = "commit_point"
-documented_steps = 3
+documented_steps = 4
 as = { platform-admin = "allowed", new-analyst = "not_offered", team-lead = "not_offered" }
 rbac = "Use Quick Start"
 first_visit = true
@@ -450,24 +450,24 @@ rbac = "Work Production queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
-terms = ["review reason", "confidence alerts"]
+terms = ["review reason", "confidence alerts", "reason for the reviewer", "failed policy rules"]
 
 [[stories]]
 id = "finish-a-review"
 title = "Finish a review that needs no corrections"
-intent = "You checked the document you were given, and its values are all correct. Finish your review so the document can complete."
+intent = "You checked the document you were given, and its values are all correct. Finish your review so the document can complete, and find out what will be done with the document once you do."
 kind = "commit_point"
 documented_steps = 3
 as = { queue-annotator = "allowed" }
 needs = ["assigned-review-item"]
 tier = "p1"
-since = "0.6.13"
+since = "0.6.15"
 origin = "smoke"
 rbac = "Work Production queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
-terms = ["process changes", "finalize run"]
+terms = ["process changes", "complete review", "finishes a review"]
 
 [[stories]]
 id = "hand-back-a-review"
@@ -523,18 +523,18 @@ terms = ["test set"]
 [[stories]]
 id = "turn-on-review"
 title = "Have uncertain documents wait for a person"
-intent = "You want documents processed with one particular configuration to wait for a person whenever the system is unsure of their values, before they finish. Set that up."
+intent = "You want documents processed with one particular configuration to wait for a person whenever the system is unsure of their values, before they finish. Find out whether that is already the case, and set up whatever is missing."
 kind = "commit_point"
 documented_steps = 4
 as = { platform-admin = "allowed" }
 tier = "p1"
-since = "0.6.13"
+since = "0.6.15"
 origin = "changelog"
-claims = [{ lead = "HITL review queues, worked by Reviewers and Annotators." }]
+claims = [{ lead = "HITL review queues, worked by Reviewers and Annotators." }, { lead = "New stacks hold documents for review by default." }]
 
 [stories.match]
 docs = ["review-queues.md#turning-review-queues-on"]
-terms = ["review queue", "hitl"]
+terms = ["review queue", "review routing"]
 
 [[stories]]
 id = "assign-review-work"
@@ -633,3 +633,69 @@ rbac = "Work Test Studio queues"
 [stories.match]
 docs = ["rbac.md#annotators-and-review-queues"]
 terms = ["test studio queues"]
+
+[[stories]]
+id = "create-a-review-queue"
+title = "Give one team its own place for review work"
+intent = "Documents that need a second look all wait in one place today. The approvals team should have a place of its own for the documents meant for them. Set that place up, and make sure a person on that team can work there."
+kind = "commit_point"
+documented_steps = 3
+as = { platform-admin = "allowed" }
+tier = "p1"
+since = "0.6.15"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#creating-a-queue"]
+terms = ["create queue", "eligible annotators"]
+
+[[stories]]
+id = "route-documents-by-rule"
+title = "Decide which documents a person checks"
+intent = "For one configuration, documents of one particular kind should always wait for a person before they finish, even when the system is confident about their values, and that person should be told why the document is waiting. Other documents should carry on as they do today. Set that up."
+kind = "commit_point"
+documented_steps = 6
+as = { platform-admin = "allowed" }
+tier = "p1"
+since = "0.6.15"
+origin = "changelog"
+claims = [{ lead = "Routing rules for review queues." }]
+
+[stories.match]
+docs = ["review-routing.md#editing-the-table", "review-routing.md#routing-rules"]
+terms = ["routing table", "review queues", "routing rules", "reason for the reviewer"]
+
+[[stories]]
+id = "send-a-review-back"
+title = "Have a document you are checking processed again"
+intent = "The document you were given was split up wrongly by the system, and correcting it by hand would take longer than having the system do its work again. End your review by having the document processed again, say why, and find out where the system will start over."
+kind = "commit_point"
+documented_steps = 3
+as = { queue-annotator = "allowed" }
+needs = ["assigned-review-item"]
+tier = "p1"
+since = "0.6.15"
+origin = "changelog"
+rbac = "Work Production queues"
+claims = [{ lead = "More review outcomes." }]
+
+[stories.match]
+docs = ["review-queues.md#how-a-review-ends"]
+terms = ["send back", "finish the review", "send-back", "finishes a review"]
+
+[[stories]]
+id = "reprocess-from-a-step"
+title = "Redo the last part of a document's processing"
+intent = "A document finished processing, and you want its summary produced again without the earlier work on the document being repeated. Start that, and find out what was kept."
+kind = "commit_point"
+documented_steps = 4
+as = { new-analyst = "allowed" }
+needs = ["complete-document"]
+tier = "p1"
+since = "0.6.15"
+origin = "changelog"
+claims = [{ lead = "Reprocess from a chosen step, on every surface." }]
+
+[stories.match]
+docs = ["web-ui.md#reprocessing-a-document", "document-versions.md#reprocessing"]
+terms = ["reprocess", "start at"]

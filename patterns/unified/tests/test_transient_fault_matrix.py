@@ -627,7 +627,7 @@ def rule_validation_module():
 
 
 def test_rule_validation(rule_validation_module, rule_config):
-    """RuleValidationStep: the per-rule model calls for one section."""
+    """PolicyRuleValidationStep: the per-rule model calls for one section."""
     module = rule_validation_module
 
     def run(make):
@@ -638,7 +638,7 @@ def test_rule_validation(rule_validation_module, rule_config):
         document = _one_section_document(Status.EXTRACTING, "Payslip")
         # Policy classification ran before this state and matched one policy.
         document.rule_validation_result = RuleValidationResult(
-            request_id="run1", matched_policy_types=["global_periods"]
+            request_id="run1", matched_policy_types=["statement_identity"]
         )
         with (
             patch.dict(os.environ, {"AWS_REGION": "us-east-1"}),
@@ -663,7 +663,7 @@ def orchestration_module():
 
 
 def test_rule_validation_orchestration(orchestration_module, rule_config):
-    """RuleValidationOrchestration: the consolidation model call over two sections'
+    """PolicyRuleConsolidationStep: the consolidation model call over two sections'
     results, which is the only shape that reaches the model (one section is stored
     without one)."""
     module = orchestration_module
@@ -704,8 +704,8 @@ def test_rule_validation_orchestration(orchestration_module, rule_config):
             _offline_storage(
                 json_content={
                     "responses": {
-                        "global_periods": [
-                            {"rule": "minor_surgery_000_010", "recommendation": "Pass"}
+                        "statement_identity": [
+                            {"rule": "institution_named", "recommendation": "Pass"}
                         ]
                     }
                 }

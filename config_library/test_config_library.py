@@ -352,8 +352,9 @@ class TestPolicyClassRegexCoverage:
     def test_rule_validation_preset_matches_its_own_sample(self):
         """The rule-validation preset must evaluate ALL its rules on its sample.
 
-        Guards the specific regression: the preset's regex used `prior_auth` /
-        `pa_packet` with underscores only, and sat on just one of 7 classes.
+        Guards the specific regression: a name pattern that takes one spelling
+        of the separator only, or that sits on some of the policy classes and
+        not on the others.
         """
         config_file = (
             CONFIG_LIBRARY_ROOT / "unified" / "rule-validation" / "config.yaml"
@@ -364,9 +365,10 @@ class TestPolicyClassRegexCoverage:
         # Filenames the preset is expected to recognize, including the shipped
         # sample and the hyphenated form real intake systems produce.
         for doc_name in (
-            "medicare_respiratory_pa_packet.pdf",
-            "Prior-Auth-123789456.pdf",
-            "prior auth packet.pdf",
+            "bank-statement-multipage.pdf",
+            "Bank_Statement_123789456.pdf",
+            "bank statement march.pdf",
+            "BankStatement.pdf",
         ):
             matched = [
                 pc["x-aws-idp-policy-type"]
@@ -379,8 +381,13 @@ class TestPolicyClassRegexCoverage:
                 f"classes' rules would never be evaluated."
             )
 
+        # The shipped sample is one of those names, and it exists.
+        assert (
+            CONFIG_LIBRARY_ROOT.parent / "samples" / "bank-statement-multipage.pdf"
+        ).is_file()
+
         # An unrelated document must still match nothing — the regexes narrow
-        # the preset to policy documents rather than matching everything.
+        # the preset to bank statements rather than matching everything.
         assert not [
             pc["x-aws-idp-policy-type"]
             for pc in policy_classes

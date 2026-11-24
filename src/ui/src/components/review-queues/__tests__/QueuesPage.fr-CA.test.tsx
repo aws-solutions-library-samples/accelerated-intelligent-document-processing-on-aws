@@ -24,6 +24,7 @@ const state = vi.hoisted(() => ({
   fetchQueuesOverview: vi.fn(),
   listTestSetQueues: vi.fn(),
   listAnnotatorEmails: vi.fn(),
+  getReviewQueueReferences: vi.fn(),
   app: { setSuccessMessage: vi.fn(), setErrorMessage: vi.fn() },
 }));
 
@@ -33,6 +34,7 @@ vi.mock('../reviewer-assignment', () => ({
   deleteReviewQueue: vi.fn(),
   listAnnotatorEmails: () => state.listAnnotatorEmails(),
   listTestSetQueues: () => state.listTestSetQueues(),
+  getReviewQueueReferences: (queueId: string) => state.getReviewQueueReferences(queueId),
   createReviewQueue: vi.fn(),
   updateReviewQueue: vi.fn(),
   updateTestSetQueue: vi.fn(),
@@ -72,6 +74,8 @@ beforeEach(() => {
   state.fetchQueuesOverview.mockReset().mockResolvedValue({ queues: [health('default', 0), health('claims', 3, 1)] });
   state.listTestSetQueues.mockReset().mockResolvedValue([]);
   state.listAnnotatorEmails.mockReset().mockResolvedValue([]);
+  // No routing rule names the queue being deleted, so the dialog says nothing more.
+  state.getReviewQueueReferences.mockReset().mockResolvedValue([]);
   state.app.setSuccessMessage.mockReset();
   state.app.setErrorMessage.mockReset();
 });
@@ -178,9 +182,13 @@ describe('Review Management under fr-CA', () => {
     await renderPage('Gestion des révisions', FR_CA);
     chooseMenuItem('Actions pour Claims', 'delete');
     const dialog = await findModal('Supprimer la file');
-    expect(dialog.findContent().getElement().textContent).toBe(
-      'Supprimer la file Claims (claims) ? Cette action est irréversible. 3 éléments seront déplacés vers la file Default.',
+    // Awaited: the dialog first looks up the routing rules that name the queue.
+    await waitFor(() =>
+      expect(dialog.findContent().getElement().textContent).toBe(
+        'Supprimer la file Claims (claims) ? Cette action est irréversible. 3 éléments seront déplacés vers la file Default.',
+      ),
     );
+    expect(state.getReviewQueueReferences).toHaveBeenCalledWith('claims');
   });
 
   it("titles the Default queue's Settings dialog and labels a field in French", async () => {
@@ -225,8 +233,11 @@ describe('Review Management under en', () => {
     await renderPage('Review Management');
     chooseMenuItem('Actions for Claims', 'delete');
     const dialog = await findModal('Delete queue');
-    expect(dialog.findContent().getElement().textContent).toBe(
-      "Delete the queue Claims (claims)? This can't be undone. 3 items will move to the Default queue.",
+    // Awaited: the dialog first looks up the routing rules that name the queue.
+    await waitFor(() =>
+      expect(dialog.findContent().getElement().textContent).toBe(
+        "Delete the queue Claims (claims)? This can't be undone. 3 items will move to the Default queue.",
+      ),
     );
   });
 

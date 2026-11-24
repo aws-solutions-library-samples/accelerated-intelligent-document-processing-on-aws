@@ -56,6 +56,10 @@ ABORTABLE_STATUSES = {
     Status.EXTRACTING,
     Status.ASSESSING,
     Status.POSTPROCESSING,
+    # Policy rule validation runs between the assembly step and review routing.
+    Status.RULE_VALIDATION_POLICY_CLASSIFICATION,
+    Status.RULE_VALIDATION,
+    Status.RULE_VALIDATION_ORCHESTRATOR,
     Status.HITL_IN_PROGRESS,
     Status.SUMMARIZING,
     Status.EVALUATING,

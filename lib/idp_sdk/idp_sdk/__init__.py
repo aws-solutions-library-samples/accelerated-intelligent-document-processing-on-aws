@@ -38,6 +38,7 @@ from .exceptions import (
     IDPStackError,
     IDPTimeoutError,
     IDPValidationError,
+    ReprocessRefusedError,
 )
 from .models import (
     # Assessment models
@@ -120,8 +121,13 @@ from .models import (
     Pattern,
     # Publish models
     PublishResult,
+    ReprocessOption,
+    ReprocessStepOption,
     RerunStep,
     ReviewInfo,
+    ReviewPolicyFailure,
+    ReviewQueueDefinition,
+    ReviewQueuePage,
     # Search models
     SearchCitation,
     SearchDocumentReference,
@@ -176,6 +182,7 @@ __all__ = [
     "IDPValidationError",
     "IDPResourceNotFoundError",
     "IDPTimeoutError",
+    "ReprocessRefusedError",
     # Terraform: the latest-module pointer beside a template URL
     "default_terraform_pointer_url",
     # Enums
@@ -216,11 +223,16 @@ __all__ = [
     # Document models
     "DocumentStatus",
     "ReviewInfo",
+    "ReviewPolicyFailure",
     "ReviewStatus",
+    "ReviewQueueDefinition",
+    "ReviewQueuePage",
     "DocumentUploadResult",
     "DocumentDownloadResult",
     "DocumentRerunResult",
     "DocumentReprocessResult",
+    "ReprocessOption",
+    "ReprocessStepOption",
     "DocumentDeletionResult",
     "DocumentMetadata",
     "DocumentInfo",

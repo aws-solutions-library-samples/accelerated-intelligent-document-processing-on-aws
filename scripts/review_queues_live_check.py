@@ -390,11 +390,24 @@ class ReviewQueuesLiveCheck:
         return body
 
     def _default_queue(self) -> dict:
-        queues = self._admin_api("listReviewQueues", {})
-        for q in queues if isinstance(queues, list) else []:
-            if isinstance(q, dict) and q.get("isDefaultQueue"):
-                return q
-        raise CheckAborted("listReviewQueues returned no Default queue")
+        """The Default queue's definition, as ``listReviewQueues`` returns it.
+
+        The operation is paged (``items`` and ``nextToken``), so every page is read
+        until the Default queue turns up. A stack whose operation is not paged
+        answers a plain list, which is read as the only page.
+        """
+        args: dict = {}
+        while True:
+            page = self._admin_api("listReviewQueues", args)
+            paged = isinstance(page, dict)
+            queues = page.get("items") if paged else page
+            for q in queues if isinstance(queues, list) else []:
+                if isinstance(q, dict) and q.get("isDefaultQueue"):
+                    return q
+            next_token = page.get("nextToken") if paged else None
+            if not next_token:
+                raise CheckAborted("listReviewQueues returned no Default queue")
+            args = {"nextToken": next_token}
 
     def _put_default_queue(self, queue: dict, annotators: list[str]) -> dict:
         update = {k: queue[k] for k in QUEUE_INPUT_FIELDS if queue.get(k) is not None}

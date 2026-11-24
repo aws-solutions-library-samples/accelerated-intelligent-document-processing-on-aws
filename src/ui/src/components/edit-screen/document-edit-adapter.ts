@@ -49,6 +49,8 @@ export interface DirectEditDocument {
   evaluationStatus?: string | null;
   /** The document's summary report (`s3://…`), once summarization has run. */
   summaryReportUri?: string | null;
+  /** The document's policy rule validation report (`s3://…`), when policy rule validation has run. */
+  ruleValidationResultUri?: string | null;
   hitlStatus?: string;
   /** The document's HITL review events (parsed HITLReviewHistory). */
   hitlReviewHistory?: { action?: string; timestamp?: string; user?: string; sectionId?: string; [key: string]: unknown }[];

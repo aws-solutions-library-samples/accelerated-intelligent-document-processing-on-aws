@@ -125,9 +125,15 @@ class TestRequestGenerationGuards:
             sent["url"] = queue_url
             sent["body"] = message
 
+        mgr = Mock()
+        mgr.list_config_versions.return_value = [{"versionName": "v1"}]
         with (
             patch.object(bt, "_generation_queue_url", return_value="https://sqs/q"),
             patch.object(bt, "_enqueue_generation", side_effect=_capture),
+            patch(
+                "idp_common.config.configuration_manager.ConfigurationManager",
+                return_value=mgr,
+            ),
         ):
             out = json.loads(
                 bt.request_document_generation_impl(
@@ -139,6 +145,35 @@ class TestRequestGenerationGuards:
         assert sent["body"]["targetVersion"] == "v1"
         assert sent["body"]["docCount"] == 4
         assert "NetPay" in sent["body"]["allowedFieldNames"]
+
+    @pytest.mark.parametrize(
+        ("version", "listed"),
+        [
+            ("default", []),
+            ("docsplit", [{"versionName": "docsplit", "managed": True}]),
+        ],
+    )
+    def test_a_protected_profile_is_refused_before_anything_is_queued(
+        self, version, listed
+    ):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        mgr = Mock()
+        mgr.list_config_versions.return_value = listed
+        with (
+            patch.object(bt, "_generation_queue_url", return_value="https://sqs/q"),
+            patch.object(bt, "_enqueue_generation") as enqueue,
+            patch(
+                "idp_common.config.configuration_manager.ConfigurationManager",
+                return_value=mgr,
+            ),
+        ):
+            out = json.loads(
+                bt.request_document_generation_impl(json.dumps(SCHEMA), version)
+            )
+        assert out["enqueued"] is False
+        assert out["refused"] is True
+        enqueue.assert_not_called()
 
     def test_queue_url_from_arn(self):
         from idp_common.agents.quick_start.tools import bootstrap_tools as bt
@@ -465,3 +500,72 @@ class TestCreateConfigVersionErrors:
         assert out["refused"] is False
         assert "try again" in out["error"]
         assert "throttled" not in out["error"]
+
+
+class TestSetProcessingOptionsTool:
+    @staticmethod
+    def _call(*args, error=None, applied=None):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        with (
+            patch("idp_common.config.configuration_manager.ConfigurationManager"),
+            patch.object(
+                bootstrap_mod,
+                "set_processing_options",
+                side_effect=error,
+                return_value=applied,
+            ) as setter,
+        ):
+            return json.loads(bt.set_processing_options_impl(*args)), setter
+
+    def test_it_reports_what_it_applied(self):
+        applied = {"summarization.enabled": False, "extraction.mode": "advanced"}
+        out, setter = self._call("v1", "", False, True, applied=applied)
+        assert out == {"config_version": "v1", "applied": applied}
+        assert setter.call_args.kwargs["summaries"] is False
+        assert setter.call_args.kwargs["long_tables"] is True
+
+    def test_a_protected_profile_is_reported_as_refused(self):
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        out, _ = self._call(
+            "docsplit", "one", None, error=bootstrap_mod.ProtectedProfileError("x")
+        )
+        assert out["refused"] is True
+
+    def test_a_bad_request_is_not_a_refusal(self):
+        out, _ = self._call("v1", "two", None, error=ValueError("must be one of"))
+        assert out["refused"] is False
+        assert "must be one of" in out["error"]
+
+    def test_a_profile_that_no_longer_validates_is_not_reported_raw(self):
+        from pydantic import BaseModel
+
+        class _Strict(BaseModel):
+            n: int
+
+        try:
+            _Strict.model_validate({"n": "not a number, stored secret"})
+        except Exception as e:
+            error = e
+        out, _ = self._call("v1", "", None, True, error=error)
+        assert out["refused"] is False
+        assert "does not pass validation" in out["error"]
+        assert "stored secret" not in out["error"]
+
+    def test_a_failed_save_says_to_try_again(self):
+        out, _ = self._call("v1", "one", None, error=RuntimeError("throttled"))
+        assert out["refused"] is False
+        assert "try again" in out["error"]
+        assert "throttled" not in out["error"]
+
+    def test_a_missing_profile_name_has_the_documented_shape(self):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        out = json.loads(bt.set_processing_options_impl("", "one"))
+        assert out == {
+            "config_version": "",
+            "refused": False,
+            "error": "version_name is required",
+        }

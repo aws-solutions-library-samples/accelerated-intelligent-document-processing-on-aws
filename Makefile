@@ -1359,6 +1359,28 @@ ifeq ($(DRY_RUN)$(STACK_NAME)$(ENDPOINT),)
 endif
 	$(RUN_FIRST_PARTY) scripts/sdlc/decision_model_window_check.py $(if $(DRY_RUN),--dry-run,$(if $(ENDPOINT),--endpoint $(ENDPOINT),--stack-name $(STACK_NAME))) $(if $(REGION),--region $(REGION),) $(if $(filter 1 true yes,$(INSTALL)),--install,) $(if $(filter 1 true yes,$(UNINSTALL)),--uninstall,) $(if $(BUCKET_BASENAME),--bucket-basename $(BUCKET_BASENAME),)
 
+# Usage: make stacktest-review-routing STACK_NAME=<stack-name> [REGION=<region>] [STATE_FILE=<path>]
+# Review routing and run plan check against a DEPLOYED stack. Creates the review
+# queues approvals, compliance and specialist and the profile
+# review-routing-showcase when they do not exist, a temporary Annotator, Reviewer,
+# Author and Admin, and uploads the showcase samples. It then reads the execution
+# history of every run it causes: where each sample lands, that a Test Studio
+# document is not routed, where a run starts after a completed, a rejected and a
+# sent-back review and after a reprocess from a later step, who may save routing
+# rules, the fallback to the Default queue, the routing test and the DMN
+# conversion. The cleanup always runs afterwards and removes what the check
+# created; a queue or profile that existed before is kept. Processes the lending
+# package twice, so allow most of an hour. Exit 0 = PASS, 1 = FAIL, 2 = a check
+# errored or was skipped.
+_REVIEW_ROUTING_ARGS = --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) --state-file $(if $(STATE_FILE),$(STATE_FILE),scratch/review-routing-live-$(STACK_NAME).json)
+stacktest-review-routing: ## Review routing live check: where documents are routed and where each run starts, read from the execution histories (STACK_NAME=...; creates and removes temporary queues, a profile, users and documents)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-review-routing STACK_NAME=<stack-name> [REGION=...])
+endif
+	@$(RUN_FIRST_PARTY) scripts/review_routing_live_check.py scenarios $(_REVIEW_ROUTING_ARGS); checked=$$?; \
+	$(RUN_FIRST_PARTY) scripts/review_routing_live_check.py cleanup $(_REVIEW_ROUTING_ARGS); cleaned=$$?; \
+	if [ $$checked -ne 0 ]; then exit $$checked; fi; exit $$cleaned
+
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
 # machines / IAM roles and deletes them again. Not in CI (they create IAM roles).

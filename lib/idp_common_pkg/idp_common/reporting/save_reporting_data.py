@@ -764,6 +764,9 @@ class SaveReportingData:
             "machine_run_id": review.machine_run_id,
             "final_run_id": review.final_run_id,
             "timestamp": now,
+            # The routing rule's reason as written (placeholders unfilled). Last,
+            # so the column is an addition for a table that already has rows.
+            "routing_reason": review.routing_reason,
         }
         schema = pa.schema(
             [
@@ -783,6 +786,7 @@ class SaveReportingData:
                 ("machine_run_id", pa.string()),
                 ("final_run_id", pa.string()),
                 ("timestamp", pa.timestamp("ms")),
+                ("routing_reason", pa.string()),
             ]
         )
         s3_key = f"document_reviews/date={date_partition}/{escaped_doc_id}.parquet"
@@ -1897,6 +1901,11 @@ class SaveReportingData:
                 ("reasoning", pa.string()),
                 ("supporting_pages", pa.string()),
                 ("validation_date", pa.timestamp("ms")),
+                # Added last, so a query written against the earlier columns reads
+                # the same positions. Null for a summary written before rule ids
+                # and normalised verdicts existed.
+                ("rule_id", pa.string()),
+                ("verdict", pa.string()),
             ]
         )
 
@@ -1944,6 +1953,18 @@ class SaveReportingData:
         # Prepare document summary
         overall_stats = rule_validation_data.get("overall_statistics", {})
         recommendation_counts = overall_stats.get("recommendation_counts", {})
+        # The normalised counts when the summary has them: they count "pass" and
+        # "Pass" alike. A summary written before verdicts existed has only the
+        # label counts, which are exact-match.
+        verdict_counts = overall_stats.get("verdict_counts")
+        if isinstance(verdict_counts, dict):
+            pass_count = verdict_counts.get("pass", 0)
+            fail_count = verdict_counts.get("fail", 0)
+            not_found_count = verdict_counts.get("not_found", 0)
+        else:
+            pass_count = recommendation_counts.get("Pass", 0)
+            fail_count = recommendation_counts.get("Fail", 0)
+            not_found_count = recommendation_counts.get("Information Not Found", 0)
 
         document_record = {
             "document_id": document_id,
@@ -1952,11 +1973,9 @@ class SaveReportingData:
             "overall_status": rule_validation_data.get("overall_status", "UNKNOWN"),
             "total_policy_types": rule_validation_data.get("total_policy_types", 0),
             "total_rules": overall_stats.get("total_rules", 0),
-            "pass_count": recommendation_counts.get("Pass", 0),
-            "fail_count": recommendation_counts.get("Fail", 0),
-            "information_not_found_count": recommendation_counts.get(
-                "Information Not Found", 0
-            ),
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+            "information_not_found_count": not_found_count,
         }
 
         # Save document summary
@@ -1989,6 +2008,8 @@ class SaveReportingData:
                             rule_detail.get("supporting_pages", [])
                         ),
                         "validation_date": validation_date,
+                        "rule_id": rule_detail.get("rule_id"),
+                        "verdict": rule_detail.get("verdict"),
                     }
                 )
 

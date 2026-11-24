@@ -10,6 +10,7 @@ both claim counters move, the former assignee is told, and the draft — keyed b
 item and cycle — carries over.
 """
 
+import json
 import time
 from unittest.mock import MagicMock
 
@@ -108,6 +109,27 @@ class TestAdminOnAnOpenItem:
             "draft_saved",
             "completed",
         ]
+
+    def test_a_posted_review_record_is_not_stored(self, service):
+        """A section result's review record is written when a completed review is
+        applied. A draft that posts one cannot mark the section as reviewed."""
+        _seed(service, "r.pdf")
+        service.claim(ADMIN, "r.pdf", CYCLE)
+
+        service.save_draft(
+            ADMIN,
+            "r.pdf",
+            CYCLE,
+            "1",
+            {
+                "inference_result": {"total": 5},
+                "review": {"confirmed": True, "reviewed_by": "someone"},
+            },
+            None,
+        )
+
+        body, _bucket, _key, _content_type = service.s3.write_content.call_args.args
+        assert json.loads(body) == {"inference_result": {"total": 5}}
 
     def test_without_a_claim_a_draft_save_is_refused(self, service):
         # Why the UI claims first: the service only takes drafts from the assignee.

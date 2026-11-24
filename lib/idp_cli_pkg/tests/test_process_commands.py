@@ -1001,6 +1001,9 @@ class TestReprocessReachesTheSharedImplementation:
             step="extraction",
             document_ids=["batch-1/doc.pdf"],
             batch_id=None,
+            skip=[],
+            version=None,
+            revision=None,
         )
         assert "Queued 1 documents for extraction reprocessing" in result.output
 
@@ -1038,6 +1041,9 @@ class TestReprocessReachesTheSharedImplementation:
             step="classification",
             document_ids=["batch-1/a.pdf", "batch-1/b.pdf"],
             batch_id=None,
+            skip=[],
+            version=None,
+            revision=None,
         )
 
     def test_reprocess_reaches_its_own_input_validation(self, runner, api_calls):
@@ -1123,8 +1129,10 @@ class TestRerunSelection:
         assert mock_cls.called is False
         assert api_calls.operations() == []
 
-    def test_an_unknown_step_is_refused_by_the_choice_type(self, runner):
-        """Only `classification` and `extraction` clear different amounts of state."""
+    @pytest.mark.parametrize("step", ["nonsense", "apply_review_changes", "OCR"])
+    def test_an_unknown_step_is_refused_by_the_choice_type(self, runner, step):
+        """The choices are the steps a run can start at; anything else is a usage
+        error, before a client is built."""
         result = runner.invoke(
             cli,
             [
@@ -1132,14 +1140,14 @@ class TestRerunSelection:
                 "--stack-name",
                 "my-stack",
                 "--step",
-                "ocr",
+                step,
                 "--document-ids",
                 "batch-1/doc.pdf",
             ],
         )
 
         assert result.exit_code == 2
-        assert "ocr" in result.output
+        assert step in result.output
 
     def test_a_document_id_list_is_split_and_stripped(self, runner):
         """Whitespace around a comma is ordinary when the list is pasted from a report.
@@ -1174,6 +1182,9 @@ class TestRerunSelection:
             step="extraction",
             document_ids=["batch-1/a.pdf", "batch-1/b.pdf", "batch-1/c.pdf"],
             batch_id=None,
+            skip=[],
+            version=None,
+            revision=None,
         )
         assert client.batch.get_document_ids.called is False
         assert "Processing 3 specified documents" in result.output
@@ -1220,6 +1231,9 @@ class TestRerunSelection:
             step="classification",
             document_ids=["batch-1/a.pdf", "batch-1/b.pdf"],
             batch_id=None,
+            skip=[],
+            version=None,
+            revision=None,
         )
         assert "Found 2 documents in batch" in result.output
 
@@ -1259,7 +1273,12 @@ class TestRerunSelection:
         assert result.exit_code == 0, result.output
         assert "Found 0 documents in batch" in result.output
         client.batch.reprocess.assert_called_once_with(
-            step="extraction", document_ids=[], batch_id=None
+            step="extraction",
+            document_ids=[],
+            batch_id=None,
+            skip=[],
+            version=None,
+            revision=None,
         )
         # Nothing queued, so no "Queued N documents" line and no monitoring.
         assert "Queued" not in result.output
@@ -1418,19 +1437,34 @@ class TestRerunConfirmation:
             (
                 "classification",
                 [
-                    "All page classifications",
-                    "All document sections",
-                    "All extraction results",
+                    "Classification",
+                    "Extraction",
+                    "Assessment",
+                    "Policy Rule Validation",
+                    "Summarization",
+                    "Evaluation",
                 ],
-                ["OCR data (pages, images, text)"],
+                ["OCR"],
             ),
             (
                 "extraction",
-                ["Section extraction results", "Section attributes"],
                 [
-                    "OCR data (pages, images, text)",
-                    "Page classifications",
-                    "Document sections structure",
+                    "Extraction",
+                    "Assessment",
+                    "Policy Rule Validation",
+                    "Summarization",
+                    "Evaluation",
+                ],
+                ["OCR", "Classification"],
+            ),
+            (
+                "summarization",
+                ["Summarization", "Evaluation"],
+                [
+                    "Extraction",
+                    "Assessment",
+                    "Policy Rule Validation",
+                    "Bedrock Data Automation results",
                 ],
             ),
         ],
@@ -1440,10 +1474,11 @@ class TestRerunConfirmation:
     ):
         """This inventory is the only thing a user has to judge the prompt by.
 
-        The two steps clear different amounts of state — classification throws away
-        the extraction results as well — and the lists are printed before the
-        confirmation, so getting them the wrong way round would invite the user to
-        approve far more deletion than they intended.
+        The steps clear different amounts of state — a run from classification
+        throws away the extraction results as well — and the lists are printed
+        before the confirmation, so getting them the wrong way round would invite
+        the user to approve far more deletion than they intended. The lists come
+        from the step list, so each name appears in the section it belongs to.
         """
         patcher = patch("idp_sdk.IDPClient")
         mock_cls = patcher.start()
@@ -1466,8 +1501,131 @@ class TestRerunConfirmation:
             patcher.stop()
 
         assert f"Rerun Step: {step}" in result.output
-        for line in cleared + kept:
-            assert line in result.output
+        pipeline = _inventory(result.output, "Pipeline mode")
+        for name in cleared:
+            assert f"• {name}" in pipeline["cleared"], (name, pipeline)
+        for name in kept:
+            if name == "Bedrock Data Automation results":
+                assert f"• {name}" in _inventory(result.output, "BDA mode")["kept"]
+            else:
+                assert f"• {name}" in pipeline["kept"], (name, pipeline)
+                assert f"• {name}" not in pipeline["cleared"]
+
+    def test_a_run_from_the_beginning_keeps_nothing(self, runner):
+        result = _decline(runner, "beginning")
+
+        pipeline = _inventory(result.output, "Pipeline mode")
+        assert "• OCR" in pipeline["cleared"]
+        assert "Nothing: the run starts at the beginning" in pipeline["kept"]
+
+    def test_ocr_is_the_beginning(self, runner):
+        assert _inventory(
+            _decline(runner, "ocr").output, "Pipeline mode"
+        ) == _inventory(_decline(runner, "beginning").output, "Pipeline mode")
+
+    def test_a_step_that_one_mode_lacks_says_so(self, runner):
+        """Assessment is a Pipeline mode step: a BDA document is refused, and the
+        prompt says so before the user confirms."""
+        result = _decline(runner, "assessment")
+
+        assert "The step 'assessment' does not exist in BDA mode" in result.output
+        assert "• Assessment" in _inventory(result.output, "Pipeline mode")["cleared"]
+
+    def test_each_mode_is_shown_once(self, runner):
+        """Which mode a document is in is the stack's to say, so the prompt shows
+        what the step means in each, once."""
+        result = _decline(runner, "evaluation")
+
+        assert result.output.count("Pipeline mode") == 1
+        assert result.output.count("BDA mode") == 1
+        assert result.output.count("What will be cleared and produced again") == 2
+
+    def test_a_skipped_step_is_listed_as_kept(self, runner):
+        """Skipping does not clear: the step's existing output stays."""
+        result = _decline(runner, "extraction", "--skip", "summarization")
+
+        pipeline = _inventory(result.output, "Pipeline mode")
+        assert "• Summarization (skipped)" in pipeline["kept"]
+        assert "• Summarization" not in pipeline["cleared"]
+        assert "• Evaluation" in pipeline["cleared"]
+
+    def test_the_inventory_is_the_planned_steps_description(self, runner):
+        """Each mode's lists are what ``planned.describe_start`` answers for it:
+        the prompt derives nothing of its own."""
+        from idp_common.run_plan import planned
+
+        asked = []
+
+        def describe_start(start, mode, *, skip=()):
+            asked.append((start, mode, tuple(skip)))
+            return planned.StartDescription(["Made again"], ["Read"], ["Left"])
+
+        with patch.object(planned, "describe_start", describe_start):
+            result = _decline(runner, "extraction", "--skip", "evaluation")
+
+        assert asked == [
+            ("extraction", "pipeline", ("evaluation",)),
+            ("extraction", "bda", ("evaluation",)),
+        ]
+        for mode in ("Pipeline mode", "BDA mode"):
+            inventory = _inventory(result.output, mode)
+            assert "• Made again" in inventory["cleared"]
+            assert "• Read" in inventory["kept"]
+            assert "• Left (skipped)" in inventory["kept"]
+
+    def test_only_the_outputs_a_run_can_start_at_are_listed(self, runner):
+        """Review Routing runs between two of them and produces no output of its
+        own to clear or keep."""
+        result = _decline(runner, "policy_rule_validation")
+
+        assert "Review Routing" not in result.output
+        assert "Apply Review Changes" not in result.output
+        pipeline = _inventory(result.output, "Pipeline mode")
+        assert "• Policy Rule Validation" in pipeline["cleared"]
+
+    def test_resume_says_that_nothing_a_document_has_is_cleared(self, runner):
+        result = _decline(runner, "resume", "--skip", "evaluation")
+
+        assert "first step it has no output for" in result.output
+        assert "Left out of the run: evaluation" in result.output
+        assert "What will be cleared" not in result.output
+
+
+def _decline(runner, step, *extra):
+    """Run `reprocess` to its confirmation prompt and answer no."""
+    patcher = patch("idp_sdk.IDPClient")
+    mock_cls = patcher.start()
+    mock_cls.return_value = MagicMock()
+    try:
+        result = runner.invoke(
+            cli,
+            [
+                "reprocess",
+                "--stack-name",
+                "my-stack",
+                "--step",
+                step,
+                "--document-ids",
+                "a.pdf",
+                *extra,
+            ],
+            input="n\n",
+        )
+    finally:
+        patcher.stop()
+    assert result.exit_code == 0, result.output
+    assert mock_cls.return_value.batch.reprocess.called is False
+    return result
+
+
+def _inventory(output: str, mode: str) -> dict:
+    """The cleared and kept lists the prompt printed under one mode's heading."""
+    text = output[output.index(mode) :]
+    for other in ("Pipeline mode", "BDA mode"):
+        if other != mode and other in text:
+            text = text[: text.index(other)]
+    cleared, _, kept = text.partition("What will be kept:")
+    return {"cleared": cleared, "kept": kept.split("━")[0]}
 
 
 class TestRerunResults:
@@ -1688,3 +1846,276 @@ class TestRerunResults:
             patcher.stop()
 
         mock_cls.assert_called_once_with(stack_name="my-stack", region="us-west-2")
+
+
+def _reprocess(runner, client, *arguments, command="reprocess"):
+    """Run a reprocess command to completion against a stand-in client."""
+    patcher = patch("idp_sdk.IDPClient")
+    mock_cls = patcher.start()
+    mock_cls.return_value = client
+    try:
+        result = runner.invoke(
+            cli,
+            [command, "--stack-name", "my-stack", "--force", *arguments],
+        )
+    finally:
+        patcher.stop()
+    return result, mock_cls
+
+
+class TestReprocessStepsAndProfile:
+    """The step, the steps to skip and the profile reach the SDK as given."""
+
+    @pytest.mark.parametrize("command", REPROCESS_COMMANDS)
+    def test_the_step_choices_are_the_step_list(self, runner, command):
+        from idp_common.run_plan import steps
+
+        result = runner.invoke(cli, [command, "--help"])
+
+        assert result.exit_code == 0
+        flat = " ".join(result.output.split())
+        for value in steps.start_values():
+            assert value in flat, value
+
+    @pytest.mark.parametrize(
+        "step",
+        ["beginning", "ocr", "assessment", "policy_rule_validation", "resume"],
+    )
+    def test_every_kind_of_start_is_accepted(self, runner, step):
+        client = MagicMock()
+        client.batch.reprocess.return_value = reprocess_result(queued=1)
+
+        result, _ = _reprocess(
+            runner, client, "--step", step, "--document-ids", "a.pdf"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert client.batch.reprocess.call_args.kwargs["step"] == step
+
+    @pytest.mark.parametrize("command", REPROCESS_COMMANDS)
+    def test_skip_profile_and_revision_are_passed_on(self, runner, command):
+        client = MagicMock()
+        client.batch.reprocess.return_value = reprocess_result(queued=1)
+
+        result, mock_cls = _reprocess(
+            runner,
+            client,
+            "--step",
+            "extraction",
+            "--skip",
+            "summarization",
+            "--skip",
+            "evaluation",
+            "--profile",
+            "claims",
+            "--revision",
+            "4",
+            "--document-ids",
+            "a.pdf",
+            "--region",
+            "eu-central-1",
+            command=command,
+        )
+
+        assert result.exit_code == 0, result.output
+        client.batch.reprocess.assert_called_once_with(
+            step="extraction",
+            document_ids=["a.pdf"],
+            batch_id=None,
+            skip=["summarization", "evaluation"],
+            version="claims",
+            revision=4,
+        )
+        mock_cls.assert_called_once_with(stack_name="my-stack", region="eu-central-1")
+
+    def test_revision_zero_is_a_revision(self, runner):
+        client = MagicMock()
+        client.batch.reprocess.return_value = reprocess_result(queued=1)
+
+        _reprocess(
+            runner,
+            client,
+            "--step",
+            "extraction",
+            "--profile",
+            "claims",
+            "--revision",
+            "0",
+            "--document-ids",
+            "a.pdf",
+        )
+
+        assert client.batch.reprocess.call_args.kwargs["revision"] == 0
+
+    @pytest.mark.parametrize("revision", ["4", "0"])
+    def test_a_revision_needs_its_profile(self, runner, revision):
+        """Zero is a revision too: it names one, so it needs the profile."""
+        client = MagicMock()
+
+        result, mock_cls = _reprocess(
+            runner,
+            client,
+            "--step",
+            "extraction",
+            "--revision",
+            revision,
+            "--document-ids",
+            "a.pdf",
+        )
+
+        assert result.exit_code == 1
+        assert "--revision needs --profile" in result.output
+        assert mock_cls.called is False
+
+    @pytest.mark.parametrize("skip", ["extraction", "beginning", "nonsense"])
+    def test_a_step_that_cannot_be_skipped_is_a_usage_error(self, runner, skip):
+        client = MagicMock()
+
+        result, mock_cls = _reprocess(
+            runner,
+            client,
+            "--step",
+            "extraction",
+            "--skip",
+            skip,
+            "--document-ids",
+            "a.pdf",
+        )
+
+        assert result.exit_code == 2
+        assert mock_cls.called is False
+
+    def test_the_skip_choices_are_the_optional_steps(self, runner):
+        from idp_common.run_plan import steps
+
+        client = MagicMock()
+        client.batch.reprocess.return_value = reprocess_result(queued=1)
+        arguments = ["--step", "beginning", "--document-ids", "a.pdf"]
+        for step_id in steps.optional_step_ids():
+            arguments += ["--skip", step_id]
+
+        result, _ = _reprocess(runner, client, *arguments)
+
+        assert result.exit_code == 0, result.output
+        assert client.batch.reprocess.call_args.kwargs["skip"] == list(
+            steps.optional_step_ids()
+        )
+
+
+class TestReprocessDocumentResults:
+    """Each document's own result is printed, not only the counts."""
+
+    def _result(self):
+        from idp_sdk.models import DocumentReprocessResult
+
+        results = [
+            DocumentReprocessResult(
+                document_id="batch/a.pdf",
+                step="resume",
+                queued=True,
+                status="QUEUED",
+                start_step="assessment",
+            ),
+            DocumentReprocessResult(
+                document_id="batch/b.pdf",
+                step="resume",
+                queued=False,
+                status="REFUSED",
+                reason="MALWARE_GATE",
+                message="The document was quarantined",
+            ),
+            DocumentReprocessResult(
+                document_id="batch/c.pdf",
+                step="resume",
+                queued=False,
+                status="FAILED",
+                reason="ClientError",
+            ),
+        ]
+        return BatchReprocessResult(
+            documents_queued=1,
+            documents_failed=2,
+            failed_documents=[
+                {
+                    "object_key": "batch/b.pdf",
+                    "error": "The document was quarantined",
+                    "status": "REFUSED",
+                    "reason": "MALWARE_GATE",
+                },
+                {
+                    "object_key": "batch/c.pdf",
+                    "error": "ClientError",
+                    "status": "FAILED",
+                    "reason": "ClientError",
+                },
+            ],
+            step="resume",
+            results=results,
+        )
+
+    def test_a_queued_document_says_where_it_starts(self, runner):
+        client = MagicMock()
+        client.batch.reprocess.return_value = self._result()
+
+        result, _ = _reprocess(
+            runner,
+            client,
+            "--step",
+            "resume",
+            "--document-ids",
+            "batch/a.pdf,batch/b.pdf,batch/c.pdf",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Queued 1 documents for resume reprocessing" in result.output
+        assert "batch/a.pdf: starts at assessment" in result.output
+
+    def test_a_refused_document_says_why_and_carries_the_code(self, runner):
+        client = MagicMock()
+        client.batch.reprocess.return_value = self._result()
+
+        result, _ = _reprocess(
+            runner, client, "--step", "resume", "--document-ids", "batch/b.pdf"
+        )
+
+        assert "Failed to queue 2 documents" in result.output
+        assert (
+            "batch/b.pdf: The document was quarantined (MALWARE_GATE)" in result.output
+        )
+
+    def test_a_reason_that_is_also_the_message_is_not_printed_twice(self, runner):
+        client = MagicMock()
+        client.batch.reprocess.return_value = self._result()
+
+        result, _ = _reprocess(
+            runner, client, "--step", "resume", "--document-ids", "batch/c.pdf"
+        )
+
+        assert "batch/c.pdf: ClientError" in result.output
+        assert "ClientError (ClientError)" not in result.output
+
+    def test_a_document_id_is_not_read_as_markup(self, runner):
+        """An id is data. `[red]` in one must come out as it is."""
+        from idp_sdk.models import DocumentReprocessResult
+
+        client = MagicMock()
+        client.batch.reprocess.return_value = BatchReprocessResult(
+            documents_queued=1,
+            documents_failed=0,
+            step="extraction",
+            results=[
+                DocumentReprocessResult(
+                    document_id="batch/[red]a[/red].pdf",
+                    step="extraction",
+                    queued=True,
+                    status="QUEUED",
+                    start_step="extraction",
+                )
+            ],
+        )
+
+        result, _ = _reprocess(
+            runner, client, "--step", "extraction", "--document-ids", "x.pdf"
+        )
+
+        assert "batch/[red]a[/red].pdf: starts at extraction" in result.output

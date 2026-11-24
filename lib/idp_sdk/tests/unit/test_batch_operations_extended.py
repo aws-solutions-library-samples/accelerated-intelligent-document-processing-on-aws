@@ -18,7 +18,7 @@ list from the test-set bucket, and ``_get_document_metadata``, which mirrors an
 What shaped these tests:
 
 **The exception type is the contract, and where the ``try`` starts decides it.**
-Argument validation happens *before* the ``try`` in ``process``, ``reprocess`` and
+Argument validation happens *before* the ``try`` in ``process`` and
 ``delete_documents``, so an ``IDPConfigurationError`` propagates as itself; anything
 raised inside becomes an ``IDPProcessingError``. The same applies to
 ``resolve_config_profile``, which raises a plain ``ValueError`` from before the
@@ -29,11 +29,13 @@ written against it.
 Every test here runs inside ``moto.mock_aws`` against a real CloudFormation stack,
 real S3 buckets and a real DynamoDB table, so ``BatchProcessor`` is constructed the
 way production constructs it and the operations that only forward arguments are
-checked by what actually lands in S3. ``ProgressMonitor``, ``AssessmentAnalyzer``,
-``RerunProcessor`` and ``WorkflowStopper`` are mocked: all four reach AWS services
-moto cannot usefully fake here (Lambda invoke needs Docker, Step Functions needs a
-running state machine), and for those the assertions are on the arguments they were
-handed and on the model built from what they returned.
+checked by what actually lands in S3. ``ProgressMonitor``, ``AssessmentAnalyzer``
+and ``WorkflowStopper`` are mocked: all three reach AWS services moto cannot
+usefully fake here (Lambda invoke needs Docker, Step Functions needs a running
+state machine), and for those the assertions are on the arguments they were handed
+and on the model built from what they returned. ``reprocess`` and ``rerun`` ask the
+stack's reprocess resolver and are covered in
+``tests/unit/test_reprocess_server_path.py``.
 
 **Configuration pinning is followed all the way to the object.** ``process``
 decides per source method, by inspecting its signature, whether to pass
@@ -69,7 +71,6 @@ from idp_sdk.models import (
     BatchListResult,
     BatchProcessResult,
     DocumentBucket,
-    RerunStep,
 )
 from idp_sdk.operations.batch import _batch_started_at
 
@@ -768,108 +769,6 @@ class TestProcessTestSet:
         assert isinstance(result, BatchProcessResult)
         assert result.batch_id == "run-1"
         assert result.source == "test-set:set-a"
-
-
-@pytest.mark.unit
-@pytest.mark.batch
-class TestReprocess:
-    """Re-running documents from a chosen pipeline step."""
-
-    def test_neither_documents_nor_a_batch_is_a_configuration_error(self, client):
-        with pytest.raises(
-            IDPConfigurationError, match="either document_ids or batch_id"
-        ):
-            client.batch.reprocess(step="extraction")
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_explicit_document_ids_are_forwarded_with_monitoring_off(
-        self, processor_cls, client
-    ):
-        """The SDK call is synchronous and returns counts; monitoring belongs to
-        the caller, so ``monitor=False`` is part of the contract."""
-        processor = Mock()
-        processor.rerun_documents.return_value = {
-            "documents_queued": 2,
-            "documents_failed": 1,
-            "failed_documents": [{"document_id": "c.pdf", "error": "boom"}],
-        }
-        processor_cls.return_value = processor
-
-        result = client.batch.reprocess(
-            step=RerunStep.EXTRACTION, document_ids=["a.pdf", "b.pdf", "c.pdf"]
-        )
-
-        processor.rerun_documents.assert_called_once_with(
-            document_ids=["a.pdf", "b.pdf", "c.pdf"], step="extraction", monitor=False
-        )
-        processor.get_batch_document_ids.assert_not_called()
-        assert result.documents_queued == 2
-        assert result.documents_failed == 1
-        assert result.failed_documents == [{"document_id": "c.pdf", "error": "boom"}]
-        assert result.step is RerunStep.EXTRACTION
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_a_batch_id_is_expanded_into_its_documents(self, processor_cls, client):
-        processor = Mock()
-        processor.get_batch_document_ids.return_value = ["b/a.pdf", "b/b.pdf"]
-        processor.rerun_documents.return_value = {"documents_queued": 2}
-        processor_cls.return_value = processor
-
-        result = client.batch.reprocess(step="classification", batch_id="b")
-
-        processor.get_batch_document_ids.assert_called_once_with("b")
-        processor.rerun_documents.assert_called_once_with(
-            document_ids=["b/a.pdf", "b/b.pdf"], step="classification", monitor=False
-        )
-        assert result.documents_failed == 0
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_explicit_documents_win_over_a_batch_id(self, processor_cls, client):
-        processor = Mock()
-        processor.rerun_documents.return_value = {"documents_queued": 1}
-        processor_cls.return_value = processor
-
-        client.batch.reprocess(
-            step="extraction", document_ids=["only.pdf"], batch_id="b"
-        )
-
-        processor.get_batch_document_ids.assert_not_called()
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_a_step_that_is_not_a_pipeline_step_is_rejected(
-        self, processor_cls, client
-    ):
-        """``RerunStep(step_str)`` is constructed inside the ``try``, so an unknown
-        step surfaces as an ``IDPProcessingError`` even though it is really a bad
-        argument. Pinned so the type is on record."""
-        processor = Mock()
-        processor.rerun_documents.return_value = {"documents_queued": 1}
-        processor_cls.return_value = processor
-
-        with pytest.raises(IDPProcessingError, match="Reprocess failed"):
-            client.batch.reprocess(step="nonsense", document_ids=["a.pdf"])
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_a_processor_failure_becomes_a_processing_error(
-        self, processor_cls, client
-    ):
-        processor_cls.side_effect = RuntimeError("no state machine")
-
-        with pytest.raises(IDPProcessingError, match="no state machine"):
-            client.batch.reprocess(step="extraction", document_ids=["a.pdf"])
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_rerun_is_the_deprecated_spelling_of_reprocess(self, processor_cls, client):
-        processor = Mock()
-        processor.rerun_documents.return_value = {"documents_queued": 1}
-        processor_cls.return_value = processor
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = client.batch.rerun(step="extraction", document_ids=["a.pdf"])
-
-        assert any(item.category is DeprecationWarning for item in caught)
-        assert result.documents_queued == 1
 
 
 @pytest.mark.unit

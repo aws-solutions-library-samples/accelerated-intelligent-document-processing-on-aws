@@ -1527,6 +1527,89 @@ def test_upload_to_a_stack_without_revision_history_prints_no_revision_number():
         assert stack.item("p1") is not None
 
 
+#: A routing rule that tests a policy rule result, in a configuration that holds no
+#: policy: the upload is accepted and the routing rule never matches.
+_ROUTING_RULE_THAT_NEVER_MATCHES = """\
+routing:
+  tables:
+    - rules:
+        - id: by-count
+          conditions:
+            - input: failed_policy_rule_count
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: approvals
+"""
+
+
+@pytest.mark.unit
+def test_upload_prints_each_warning_of_the_save_and_still_succeeds():
+    """
+    Run for real, from the command line down to the record: the warning comes from
+    the save itself, not from a mock, and with ``--no-validate``, so it is not one
+    of the validation warnings. It is printed in the same Warnings block as those.
+    """
+    with config_stack() as stack:
+        stack.seed("lending", class_name="original-class")
+        with write_config(_ROUTING_RULE_THAT_NEVER_MATCHES) as runner:
+            result = runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    STACK,
+                    "--config-file",
+                    "config.yaml",
+                    "--config-profile",
+                    "lending",
+                    "--no-validate",
+                    "--region",
+                    REGION,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        stored = stack.manager.get_configuration("Config", version="lending")
+        assert [rule.id for rule in stored.routing.tables[0].rules] == ["by-count"]
+
+    flat = " ".join(result.output.split())
+    assert "Warnings:" in flat
+    assert (
+        "⚠ Routing table 'review-routing', rule 'by-count': this routing "
+        "rule tests a policy rule result (failed_policy_rule_count), and policy "
+        "rule validation is off for this profile or it has no policies, so the "
+        "routing rule never matches."
+    ) in flat
+    # Once: the SDK hands the save's warnings back in the same list as validation's.
+    assert flat.count("so the routing rule never matches.") == 1
+    # The lines a script reads (the profile and the revision to pin a run to) follow.
+    assert "'lending' updated!" in result.stdout
+    assert "Revision: r2" in result.stdout
+
+
+@pytest.mark.unit
+def test_upload_with_nothing_to_warn_about_writes_nothing_to_stderr():
+    with config_stack():
+        with write_config(VALID_MINIMAL) as runner:
+            result = runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    STACK,
+                    "--config-file",
+                    "config.yaml",
+                    "--config-profile",
+                    "p1",
+                    "--no-validate",
+                    "--region",
+                    REGION,
+                ],
+            )
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+
+
 @pytest.mark.unit
 def test_upload_uses_the_region_it_was_given():
     """

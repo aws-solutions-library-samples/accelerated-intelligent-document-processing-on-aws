@@ -109,9 +109,11 @@ Configuration profiles fall into two categories, indicated by a **Type** badge i
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed profiles cannot be deleted in the UI or via the API
 - **Stays managed when other features write to it** — class discovery, BDA blueprint
-  sync and optimization, the Quick Start bootstrap, a discovery Replace and an update
-  through the API or `idp-cli config-upload` can all save a managed profile, and none
-  of them makes it a custom one. A save never clears the flag, including one whose
+  sync and optimization, a discovery Replace and an update through the API or
+  `idp-cli config-upload` can all save a managed profile, and none of them makes it a
+  custom one. Quick Start, `idp-cli bootstrap` and the Test Set Generator do not write
+  to it at all: they refuse `default` and every managed profile as a target and save
+  into a profile of their own. A save never clears the flag, including one whose
   configuration says `managed: false`, and an update through the editor, API, SDK or
   CLI cannot set it either. The stack's presets set it, and so does restoring a
   revision saved while the profile was managed. A profile created by copying a
@@ -244,6 +246,39 @@ is empty. Two things follow:
 
 **Restore** saves the revision as a pinned read runs it, so the restored profile
 includes the settings filled in from `default`.
+
+### Reprocessing from a later step
+
+**Reprocess** can start a document at any step of its processing mode, not only at
+the beginning (see [Document Versions](./document-versions.md#reprocessing)). The
+configuration a later start may run under is limited, because a run that starts
+later reuses what the earlier steps produced under the document's own
+configuration:
+
+| Reprocess with … | Start steps offered |
+|---|---|
+| The document's profile at the revision it was processed with | Every step whose inputs the document has |
+| Another revision of the document's profile | Every step, unless that revision has an enabled preprocessing hook or a different processing mode; then only the beginning |
+| Another profile | The beginning only |
+
+The Reprocess dialog greys out a step that is not available and says why. The
+runs that follow a review (completing it, removing it, sending the document back)
+always use the revision the document was processed with.
+
+### Routing rules are part of a profile
+
+A profile's review routing table (the **Routing Rules** tab; see
+[Review Routing](./review-routing.md)) is in its `routing` section, so it is saved,
+compared, restored and pinned with the rest of the configuration: a revision's
+diff shows a changed routing rule, restoring a revision restores its routing rules,
+and a document is routed by the table of the revision it runs under. A revision that
+holds no `routing` section, such as one saved before routing tables existed, routes
+with the table the `default` profile holds, as a pinned revision takes every setting
+it lacks from `default`: the built-in routing rules unless an Admin changed
+`default`'s. Only Admins can
+save a change to that section. **Routing rules that use this queue**, on a review
+queue's page, lists the routing rules of each profile's current configuration and of
+its newer revisions that are not yet the one documents run.
 
 ### Revisions from the CLI and SDK
 

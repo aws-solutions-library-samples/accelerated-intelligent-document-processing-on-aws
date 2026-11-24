@@ -93,8 +93,8 @@ class StackOperation:
             raise ValueError(
                 "enable_hitl is no longer a CloudFormation parameter. HITL became "
                 "a configuration setting in v0.4.11: enable it in the Web UI under "
-                "Configuration → Assessment & HITL Configuration, or in the config "
-                "YAML passed as custom_config. Passing it here deployed nothing — "
+                "Configuration → Processing Settings → Review Routing, or in the "
+                "config YAML passed as custom_config. Passing it here deployed nothing — "
                 "CloudFormation rejects a parameter the template does not declare."
             )
 

@@ -20,7 +20,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import mapDocumentsAttributes from '../map-document-attributes';
+import mapDocumentsAttributes, { parseReviewRoutedBy } from '../map-document-attributes';
 
 const sectionWithIssues = {
   Id: '1',
@@ -89,4 +89,83 @@ describe('document-level processing issues (#597)', () => {
   it('is an empty list for a document with none', () => {
     expect(mapOne({ ObjectKey: 'd.pdf' }).documentProcessingIssues).toEqual([]);
   });
+});
+
+describe('the review queue and the routing rule of a document', () => {
+  const ROUTED = {
+    tableId: 'review-routing',
+    ruleId: 'claims-over-1000',
+    ruleLabel: 'Claims over 1000',
+    reason: 'Invoice total 1250.00 is over 1000.',
+    policyFailureCount: 2,
+  };
+
+  it('maps the queue id, the queue name and the routing rule', () => {
+    const mapped = mapOne({
+      ObjectKey: 'a.pdf',
+      ReviewQueue: 'claims',
+      ReviewQueueName: 'Claims team',
+      ReviewRoutedBy: JSON.stringify(ROUTED),
+    });
+
+    expect(mapped.reviewQueue).toBe('claims');
+    expect(mapped.reviewQueueName).toBe('Claims team');
+    expect(mapped.reviewRoutedBy).toEqual(ROUTED);
+  });
+
+  it('reads the routing rule whether the API sends it as text or as an object', () => {
+    expect(mapOne({ ObjectKey: 'a.pdf', ReviewRoutedBy: ROUTED }).reviewRoutedBy).toEqual(ROUTED);
+  });
+
+  it('has none of the three for a document routing did not place', () => {
+    const mapped = mapOne({ ObjectKey: 'a.pdf' });
+
+    expect([mapped.reviewQueue, mapped.reviewQueueName, mapped.reviewRoutedBy]).toEqual([null, null, null]);
+    expect(mapOne({ ObjectKey: 'a.pdf', ReviewQueue: '', ReviewQueueName: '' })).toMatchObject({
+      reviewQueue: null,
+      reviewQueueName: null,
+    });
+  });
+
+  it('keeps an empty rule id, which is how the default outcome reads, and no label as an empty one', () => {
+    expect(parseReviewRoutedBy('{"tableId":"review-routing","ruleId":"","ruleLabel":null}')).toEqual({
+      tableId: 'review-routing',
+      ruleId: '',
+      ruleLabel: '',
+      reason: '',
+      policyFailureCount: 0,
+    });
+  });
+
+  it('keeps the reason and the number of failed policy rules, and not the list of them', () => {
+    const stored = {
+      ...ROUTED,
+      reason: '  Invoice total 1250.00 is over 1000.  ',
+      policyFailures: [{ ruleId: 'prior_auth.coverage', policy: 'prior_auth', name: 'coverage', reason: 'Not met.', pages: [1] }],
+    };
+
+    expect(parseReviewRoutedBy(JSON.stringify(stored))).toEqual(ROUTED);
+  });
+
+  it.each([
+    [{ reason: null, policyFailureCount: null }],
+    [{ reason: 7, policyFailureCount: '2' }],
+    [{ reason: ['text'], policyFailureCount: -1 }],
+    [{}],
+  ])('reads a reason and a count that are not a text and a number as none: %j', (stored) => {
+    expect(parseReviewRoutedBy({ tableId: 'review-routing', ruleId: 'claims', ruleLabel: 'Claims', ...stored })).toEqual({
+      tableId: 'review-routing',
+      ruleId: 'claims',
+      ruleLabel: 'Claims',
+      reason: '',
+      policyFailureCount: 0,
+    });
+  });
+
+  it.each([[null], [undefined], [''], ['not json'], ['[]'], ['"text"'], ['{}'], ['{"ruleId":"x"}'], [{ tableId: 7 }], [42]])(
+    'reads %j as no routing rule',
+    (raw) => {
+      expect(parseReviewRoutedBy(raw)).toBeNull();
+    },
+  );
 });
