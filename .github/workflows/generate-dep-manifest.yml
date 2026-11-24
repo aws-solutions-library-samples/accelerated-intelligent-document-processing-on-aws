@@ -11,8 +11,7 @@ on:
       - "src/lambda/*/requirements.txt"
       - "patterns/**/requirements.txt"
       - "nested/**/requirements.txt"
-      - "src/ui/package-lock.json"
-      - "docs-site/package-lock.json"
+      - "**/package-lock.json"
       - "scripts/generate-dep-manifest.sh"
   push:
     branches: [main]
@@ -21,8 +20,7 @@ on:
       - "src/lambda/*/requirements.txt"
       - "patterns/**/requirements.txt"
       - "nested/**/requirements.txt"
-      - "src/ui/package-lock.json"
-      - "docs-site/package-lock.json"
+      - "**/package-lock.json"
       - "scripts/generate-dep-manifest.sh"
 
 # Least-privilege default for the GITHUB_TOKEN — see the note in
