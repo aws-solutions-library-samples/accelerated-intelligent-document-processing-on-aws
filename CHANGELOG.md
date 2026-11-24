@@ -102,6 +102,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **A document's attributes sidecar is read only from the document's own key plus `.idp-attributes.json`.** Intake used to accept any sidecar in the input bucket whose key ended in that suffix, so a document could name a sidecar written beside a different document. A sidecar anywhere else is now dropped with the `ingest_attributes_dropped` warning, as an unreadable one already was. The SDK, the CLI and the documented upload already write the sidecar at that key, so they are unaffected. See [Document Attributes](docs/document-attributes.md#s3-upload-a-json-sidecar).
+
 - **Test Studio documents are never sent to a review queue.** A Test Studio document reloaded from the tracking table keeps its Test Studio markers. Documents in a policy rule validation status count as in progress and can be aborted. The MCP reprocess tool can queue documents.
 
 - **Validating a configuration warns when `extraction.mode` overrides `extraction.agentic.enabled: true`.** The mode decides the extraction path and `agentic.enabled` is derived from it, so a full configuration, which carries `mode: simple`, ran simple extraction when only `agentic.enabled: true` was added to it, and nothing said so. `idp-cli config-validate`, `idp-cli config-upload` and the SDK's `validate` now report it and name the mode to set. See [Advanced (agentic) extraction](docs/extraction-and-confidence.md#advanced-agentic-extraction).

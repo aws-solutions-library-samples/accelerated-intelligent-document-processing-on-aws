@@ -51,8 +51,9 @@ aws s3 cp statement.pdf s3://<input-bucket>/accounts/statement.pdf \
     --metadata idp-attributes-uri=s3://<input-bucket>/accounts/statement.pdf.idp-attributes.json
 ```
 
-The sidecar must be in the same bucket as the document and its key must end in
-`.idp-attributes.json`; intake never reads any other location. It is read once,
+The sidecar's key must be exactly the document's key plus `.idp-attributes.json`,
+in the same bucket; intake never reads any other location, so a document can carry
+only the sidecar written beside it. It is read once,
 when the document arrives, and the result is stored with the document, so editing
 or deleting the sidecar afterwards changes nothing. An object whose key ends in
 `.idp-attributes.json` is not processed as a document, and a malware-scan verdict
@@ -124,8 +125,8 @@ attribute is **dropped**: the document still processes with the valid ones, and 
 warning (`ingest_attributes_dropped`) is recorded on the document, naming each
 dropped key and the rule it broke but never the value. When the count or total
 size is exceeded, attributes are kept in sorted key order until the limit is
-reached. A sidecar that cannot be used at all (wrong bucket, wrong key suffix,
-unreadable, too large, not a JSON object) is dropped as a whole.
+reached. A sidecar that cannot be used at all (wrong bucket, a key other than the document's
+key plus the suffix, unreadable, too large, not a JSON object) is dropped as a whole.
 
 A whole-valued number read back from the tracking table is returned as an integer,
 so `2.0` is returned as `2` (and `-0.0` as `0`).

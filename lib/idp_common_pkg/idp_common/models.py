@@ -1559,7 +1559,7 @@ class Document:
             # read_object_attributes does not raise for bad input.
             if read_attributes:
                 attribute_intake = document_attributes.read_object_attributes(
-                    metadata, input_bucket, s3_client
+                    metadata, input_bucket, s3_client, document_key=input_key
                 )
         except Exception as e:
             logger.warning(f"Could not read S3 metadata for {input_key}: {e}")
