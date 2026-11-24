@@ -53,7 +53,7 @@ const messages = defineMessages<{
   },
   skipSelected: {
     id: 'reviewBulk.reviewMenu.skipSelected',
-    defaultMessage: 'Skip All Reviews ({count} selected)',
+    defaultMessage: 'Skip All Reviews ({count, plural, one {# selected} other {# selected}})',
     description:
       'Review menu item that skips the pending reviews of the selected documents. {count} is the number of selected documents it applies to.',
   },
@@ -64,7 +64,7 @@ const messages = defineMessages<{
   },
   sendSelected: {
     id: 'reviewBulk.reviewMenu.sendSelected',
-    defaultMessage: 'Send to review ({count} selected)',
+    defaultMessage: 'Send to review ({count, plural, one {# selected} other {# selected}})',
     description:
       'Review menu item that sends the selected finished documents to the Default review queue. {count} is the number of selected documents it applies to.',
   },

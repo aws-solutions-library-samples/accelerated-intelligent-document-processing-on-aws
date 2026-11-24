@@ -28,7 +28,7 @@ const messages = defineMessages<{
   },
   more: {
     id: 'inbox.deleteModal.more',
-    defaultMessage: 'and {count} more',
+    defaultMessage: 'and {count, plural, one {# more} other {# more}}',
     description:
       'Last line of the list of message titles in the delete dialog, when it lists only the first ten. {count} is how many are not listed.',
   },

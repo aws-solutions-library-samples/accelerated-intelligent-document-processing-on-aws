@@ -1403,10 +1403,6 @@
     "message": "{others,plural,one{Page {id}, glisser pour la déplacer et # autre page sélectionnée} other{Page {id}, glisser pour la déplacer et # autres pages sélectionnées}}",
     "sourceHash": "0b29a39292a760d3"
   },
-  "common.pageGrouping.draggingPages": {
-    "message": "{count} pages",
-    "sourceHash": "d46e57d6ac42cf6a"
-  },
   "common.pageGrouping.dropHere": {
     "message": "Déposez une page ici.",
     "sourceHash": "1bf3ba64568195b2"
@@ -3434,10 +3430,6 @@
   "documents.evaluationReport.splitAnalysis.header": {
     "message": "Analyse du fractionnement des sections",
     "sourceHash": "40d7d76692ac3507"
-  },
-  "documents.evaluationReport.splitAnalysis.unexpected": {
-    "message": "{count} inattendu",
-    "sourceHash": "fcf5b5345b74e93a"
   },
   "documents.evaluationReport.splitAnalysis.unmatched": {
     "message": "{unmatched} sur {expected} sans correspondance",
@@ -7939,10 +7931,6 @@
     "message": "{count,plural,one{Supprimer le message} other{Supprimer les messages}}",
     "sourceHash": "b8d8a987f42b3274"
   },
-  "inbox.deleteModal.more": {
-    "message": "et {count} de plus",
-    "sourceHash": "1a2612705dd79784"
-  },
   "inbox.messageModal.close": {
     "message": "Fermer",
     "sourceHash": "7d9eb7acb13e2462"
@@ -8514,10 +8502,6 @@
   "mcp.configuration.loadingCredentials": {
     "message": "Chargement des identifiants MCP",
     "sourceHash": "19b9fbd823f1dbd0"
-  },
-  "mcp.configuration.matches": {
-    "message": "{count} correspondances",
-    "sourceHash": "43682aec4eded886"
   },
   "mcp.configuration.name": {
     "message": "Nom",
@@ -9139,10 +9123,6 @@
     "message": "Ignorer toutes les révisions par profil",
     "sourceHash": "f71ac7ffc6e76950"
   },
-  "reviewBulk.bulkSkipModal.headerSelected": {
-    "message": "Ignorer toutes les révisions ({count} sélectionnés)",
-    "sourceHash": "561f2b699b97488b"
-  },
   "reviewBulk.bulkSkipModal.limitReached": {
     "message": "Plus de 10 000 documents correspondent; seuls les 10 000 premiers sont traités. Réduisez la plage de dates.",
     "sourceHash": "72e9301f707470f0"
@@ -9623,17 +9603,9 @@
     "message": "Sélectionnez des documents dont la révision a été réclamée",
     "sourceHash": "d0f2c1231f46e18b"
   },
-  "reviewBulk.reviewMenu.sendSelected": {
-    "message": "Envoyer en révision ({count} sélectionnés)",
-    "sourceHash": "a373fa6213ef4118"
-  },
   "reviewBulk.reviewMenu.skipProfile": {
     "message": "Ignorer toutes les révisions par profil…",
     "sourceHash": "a53cfb3941dd1a50"
-  },
-  "reviewBulk.reviewMenu.skipSelected": {
-    "message": "Ignorer toutes les révisions ({count} sélectionnés)",
-    "sourceHash": "561f2b699b97488b"
   },
   "reviewBulk.reviewMenu.startReview": {
     "message": "Commencer la révision",

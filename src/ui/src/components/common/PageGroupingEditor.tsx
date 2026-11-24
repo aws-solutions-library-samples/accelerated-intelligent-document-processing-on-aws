@@ -286,7 +286,7 @@ const messages = defineMessages<{
   },
   draggingPages: {
     id: 'common.pageGrouping.draggingPages',
-    defaultMessage: '{count} pages',
+    defaultMessage: '{count, plural, one {# page} other {# pages}}',
     description:
       'Label under the page being dragged on the Edit Page Grouping board when the selected pages move with it. {count} is how many pages move, two or more.',
   },
