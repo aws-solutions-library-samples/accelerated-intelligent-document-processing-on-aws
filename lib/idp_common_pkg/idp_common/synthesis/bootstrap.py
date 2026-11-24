@@ -209,8 +209,9 @@ def set_processing_options(
     the advanced engine cannot call. Only those keys change: the profile is saved
     as a full copy of its configuration, as every profile save is, so a later
     change to 'default' does not reach it. A pre-0.9 flat
-    ``classification.sectionSplitting`` wins over the nested key when the profile is
-    read, so one that is present is given the same value.
+    ``classification.sectionSplitting`` needs no handling here: reading the profile
+    migrates it into ``classification.document_shape``, so the nested key is the
+    only one this sees.
 
     The profile must already exist, and 'default' and stack-managed profiles are
     refused exactly as a class write is. Returns the keys written and their values.
@@ -244,8 +245,6 @@ def set_processing_options(
         splitting = DOCUMENTS_PER_FILE[documents_per_file]
         classification = existing.setdefault("classification", {})
         classification.setdefault("document_shape", {})["sectionSplitting"] = splitting
-        if "sectionSplitting" in classification:
-            classification["sectionSplitting"] = splitting
         applied["classification.document_shape.sectionSplitting"] = splitting
     if summaries is not None:
         existing.setdefault("summarization", {})["enabled"] = bool(summaries)

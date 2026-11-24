@@ -251,14 +251,18 @@ class TestSetProcessingOptions:
             "sectionSplitting": "disabled",
         }
 
-    def test_a_flat_section_splitting_key_is_given_the_same_value(self):
-        """The flat key wins when the profile is read, so leaving it would undo this."""
+    def test_a_flat_section_splitting_key_is_migrated_before_it_is_written(self):
+        """The read path migrates the pre-0.9 flat key, so only the nested one is saved."""
+        from idp_common.config.migrations import migrate_config
+
         cm = self._profile(classification={"sectionSplitting": "llm_determined"})
+        stored = cm.get_raw_configuration
+        cm.get_raw_configuration = lambda *a, **k: migrate_config(stored(*a, **k))
         bootstrap.set_processing_options(
             "invoices", config_manager=cm, documents_per_file="one"
         )
         classification = cm.saved["invoices"]["classification"]
-        assert classification["sectionSplitting"] == "disabled"
+        assert "sectionSplitting" not in classification
         assert classification["document_shape"]["sectionSplitting"] == "disabled"
 
     @pytest.mark.parametrize(
