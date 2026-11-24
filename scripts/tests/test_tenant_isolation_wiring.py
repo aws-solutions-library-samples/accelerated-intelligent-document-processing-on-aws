@@ -430,3 +430,64 @@ def test_the_ui_leaves_the_stream_url_whenever_an_unscoped_caller_is_denied():
     assert set(conditions) == {"DeniesUnscopedCaller"}, conditions
     rule = str(body["Conditions"]["DeniesUnscopedCaller"])
     assert "IsTenantIsolationStrict" in rule and "TenantGrantSource" in rule, rule
+
+
+# ``TenantSelection=UserSelect`` reaches code only as the ``TENANT_SELECTION``
+# variable, read by ``user_scope.tenant_selection_enabled``. The sign-in trigger
+# records the tenants a user may choose from only when it is set, and
+# ``selectActiveTenant`` accepts a choice only when it is set, so a function that
+# reads it and is not told it disagrees with the other one without failing: the
+# trigger stops recording ``eligibleTenants`` while the mutation still offers a
+# choice, or the mutation refuses a choice the trigger has recorded. The consumers
+# are derived from the code that reads it, as the isolation consumers are above.
+
+SELECTION_ENV = "TENANT_SELECTION"
+SELECTION_PARAM = "TenantSelection"
+SELECTION_SIGNALS = re.compile(r"tenant_selection_enabled|\bTENANT_SELECTION\b")
+
+
+def _code_reads_selection(directory: Path) -> bool:
+    for py in _tracked_python(directory):
+        if "tests" in py.relative_to(directory).parts or py.name.startswith(
+            ("test_", "conftest")
+        ):
+            continue
+        if SELECTION_SIGNALS.search(py.read_text(errors="ignore")):
+            return True
+    return False
+
+
+def _selection_consumers():
+    out = []
+    for template in _templates():
+        resources = _load(template).get("Resources") or {}
+        for name, body in resources.items():
+            if not isinstance(body, dict) or body.get("Type") not in FUNCTION_TYPES:
+                continue
+            directory = _code_dir(template, body)
+            if directory is not None and _code_reads_selection(directory):
+                out.append((template, name, body))
+    return out
+
+
+SELECTION_CONSUMERS = _selection_consumers()
+
+
+def test_the_tenant_selection_consumer_set_is_not_vacuous():
+    """Both halves of the feature must be found, or the signal stopped matching."""
+    names = {name for _t, name, _b in SELECTION_CONSUMERS}
+    for expected in ("ExternalIdPGroupMappingFunction", "UserManagementFunction"):
+        assert expected in names, f"{expected} is no longer detected as reading it"
+
+
+@pytest.mark.parametrize(
+    "template,name,body",
+    SELECTION_CONSUMERS,
+    ids=[f"{t.relative_to(REPO_ROOT)}:{n}" for t, n, _b in SELECTION_CONSUMERS],
+)
+def test_every_tenant_selection_consumer_is_told_the_setting(template, name, body):
+    assert _env(body).get(SELECTION_ENV) == {"Fn::Ref": SELECTION_PARAM}, (
+        f"{template.relative_to(REPO_ROOT)}: {name} reads {SELECTION_ENV} and must "
+        f"set {SELECTION_ENV}: !Ref {SELECTION_PARAM}. Without it the function reads "
+        f"TenantSelection as Disabled while the rest of the stack has it on."
+    )
