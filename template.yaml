@@ -137,6 +137,21 @@ Parameters:
       set-user-tenant. Under IdpClaim and Api, Admins cannot edit scopes and a
       non-Admin user with no tenant sees nothing.
 
+  TenantSelection:
+    Type: String
+    Default: "Disabled"
+    AllowedValues:
+      - "Disabled"
+      - "UserSelect"
+    Description: >-
+      Disabled (default): a user the identity provider grants two or more tenants is
+      granted none. UserSelect: such a user chooses which of their granted tenants is
+      active after signing in (a dialog, then a switcher in the navigation bar). The
+      choice is stored on the user's record and applies to every session of that user
+      until their next fresh sign-in. Requires TenantGrantSource=IdpClaim, because the
+      tenants offered are the ones the identity provider's claim grants. Admins are
+      never scoped and never choose.
+
   RefreshTokenValidityHours:
     Type: Number
     Default: 720
@@ -1260,6 +1275,14 @@ Rules:
       - Assert: !Not [ !Equals [ !Ref ExternalIdPGroupAttributeName, "" ] ]
         AssertDescription: "TenantGrantSource=IdpClaim requires ExternalIdPGroupAttributeName (the claim that carries the group or role values)."
 
+  # The tenants a user may choose from are the ones the identity provider's claim
+  # grants, written by the sign-in trigger. Under Manual or Api there is no such list.
+  TenantSelectionNeedsIdpClaim:
+    RuleCondition: !Equals [ !Ref TenantSelection, "UserSelect" ]
+    Assertions:
+      - Assert: !Equals [ !Ref TenantGrantSource, "IdpClaim" ]
+        AssertDescription: "TenantSelection=UserSelect requires TenantGrantSource=IdpClaim (the tenants a user chooses from are the ones the identity provider's claim grants)."
+
   MLflowTrackingURIRequired:
     RuleCondition: !Equals [ !Ref EnableMLflow, "true" ]
     Assertions:
@@ -1597,6 +1620,7 @@ Metadata:
           - AllowedSignUpEmailDomain
           - TenantIsolationMode
           - TenantGrantSource
+          - TenantSelection
           - RefreshTokenValidityHours
       - Label:
           default: "Configuration"
@@ -14848,6 +14872,7 @@ Resources:
           # custom:idp_groups.
           EXTERNAL_IDP_NAME: !Ref ExternalIdPName
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          TENANT_SELECTION: !Ref TenantSelection
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           USERS_TABLE_NAME: !Ref UsersTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
@@ -17194,6 +17219,7 @@ Resources:
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          TENANT_SELECTION: !Ref TenantSelection
           ALLOWED_SIGNUP_EMAIL_DOMAINS: !Ref AllowedSignUpEmailDomain
       LoggingConfig:
         LogGroup: !Ref UserManagementFunctionLogGroup

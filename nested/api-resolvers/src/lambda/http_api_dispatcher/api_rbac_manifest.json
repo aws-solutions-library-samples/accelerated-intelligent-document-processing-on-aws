@@ -636,6 +636,13 @@
       "Annotator",
       "Author"
     ],
+    "selectActiveTenant": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "sendAgentChatMessage": [
       "Admin",
       "Author",

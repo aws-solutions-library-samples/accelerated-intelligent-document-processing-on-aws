@@ -1387,3 +1387,131 @@ class TestClaimGrantIsBoundToTheAccount:
             self._sign_in(sub, claim)
         assert self._resolve("sub-first") == ["acme-*"]
         assert self._resolve("sub-second") == ["globex_*"]
+
+
+@pytest.mark.unit
+class TestTenantSelectionRecordsTheEligibleTenants:
+    """With TenantSelection=UserSelect, a user granted two or more tenants is still
+    granted none at sign-in, and the tenants are recorded for them to choose from.
+
+    The list is what bounds a later selection, and the sign-in is the only place it
+    is written, so these tests read the row the way the selection does.
+    """
+
+    SELECT_ENV = dict(GRANT_ENV, TENANT_SELECTION="UserSelect")
+
+    @pytest.fixture(autouse=True)
+    def _load(self, monkeypatch):
+        from moto import mock_aws
+
+        for key, value in self.SELECT_ENV.items():
+            monkeypatch.setenv(key, value)
+        with mock_aws():
+            self.users = _grant_tables()
+            self.mod = load_standalone_copy(self.SELECT_ENV)
+            self.mock_cognito = MagicMock()
+            self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+            self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+            self.mod.cognito = self.mock_cognito
+            yield
+
+    def _sign_in(self, claim, **kwargs):
+        return self.mod.handler(
+            _make_event(
+                idp_groups=claim,
+                extra_attrs={"email": "testuser@example.com", "sub": "sub-1"},
+                **kwargs,
+            ),
+            None,
+        )
+
+    def _row(self):
+        return self.users.get_item(Key=USER_ROW_KEY)["Item"]
+
+    def test_two_tenants_are_recorded_and_none_is_active(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = self._sign_in('["IdP-Viewers", "tenant.acme", "tenant.globex"]')
+        row = self._row()
+        assert row["allowedConfigVersions"] == ["!no-tenant-granted"]
+        assert row["eligibleTenants"] == ["acme", "globex"]
+        # The role half of the claim is unaffected.
+        assert _override_groups(result) == ["Viewer"]
+        # Choosing is expected here, so it is not the warning it is when selection
+        # is off.
+        assert "granted tenants acme, globex" not in caplog.text
+
+    def test_a_fresh_sign_in_resets_a_previous_choice(self):
+        self.users.update_item(
+            Key=USER_ROW_KEY,
+            UpdateExpression="SET allowedConfigVersions = :a, scopeTenant = :t",
+            ExpressionAttributeValues={":a": ["acme-*"], ":t": "acme"},
+        )
+        self._sign_in('["IdP-Viewers", "tenant.acme", "tenant.globex"]')
+        assert self._row()["allowedConfigVersions"] == ["!no-tenant-granted"]
+
+    def test_one_tenant_is_granted_and_nothing_is_recorded(self):
+        self._sign_in('["IdP-Viewers", "tenant.acme"]')
+        row = self._row()
+        assert row["allowedConfigVersions"] == ["acme-*"]
+        assert "eligibleTenants" not in row
+
+    def test_dropping_to_one_tenant_removes_the_list(self):
+        self._sign_in('["IdP-Viewers", "tenant.acme", "tenant.globex"]')
+        assert self._row()["eligibleTenants"] == ["acme", "globex"]
+        self._sign_in('["IdP-Viewers", "tenant.globex"]')
+        row = self._row()
+        assert "eligibleTenants" not in row
+        assert row["allowedConfigVersions"] == ["globex_*"]
+
+    def test_losing_every_tenant_removes_the_list(self):
+        self._sign_in('["IdP-Viewers", "tenant.acme", "tenant.globex"]')
+        self._sign_in('["IdP-Viewers"]')
+        row = self._row()
+        assert "eligibleTenants" not in row
+        assert row["allowedConfigVersions"] == ["!no-tenant-granted"]
+
+    def test_a_refresh_writes_nothing(self):
+        self._sign_in(
+            '["IdP-Viewers", "tenant.acme", "tenant.globex"]',
+            trigger_source="TokenGeneration_RefreshTokens",
+        )
+        row = self._row()
+        assert "eligibleTenants" not in row
+        assert row["allowedConfigVersions"] == ["globex_*"]
+
+    def test_an_admin_is_offered_no_choice(self):
+        self._sign_in('["IdP-Admins", "tenant.acme", "tenant.globex"]')
+        assert "eligibleTenants" not in self._row()
+
+
+@pytest.mark.unit
+class TestSelectionOffRecordsNothing:
+    """Without TenantSelection=UserSelect the sign-in is exactly as before."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self, monkeypatch):
+        from moto import mock_aws
+
+        for key, value in GRANT_ENV.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.delenv("TENANT_SELECTION", raising=False)
+        with mock_aws():
+            self.users = _grant_tables()
+            self.mod = load_standalone_copy(GRANT_ENV)
+            self.mock_cognito = MagicMock()
+            self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+            self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+            self.mod.cognito = self.mock_cognito
+            yield
+
+    def test_two_tenants_grant_none_and_record_no_list(self):
+        self.mod.handler(
+            _make_event(
+                idp_groups='["IdP-Viewers", "tenant.acme", "tenant.globex"]',
+                extra_attrs={"email": "testuser@example.com", "sub": "sub-1"},
+            ),
+            None,
+        )
+        row = self.users.get_item(Key=USER_ROW_KEY)["Item"]
+        assert row["allowedConfigVersions"] == ["!no-tenant-granted"]
+        assert "eligibleTenants" not in row
