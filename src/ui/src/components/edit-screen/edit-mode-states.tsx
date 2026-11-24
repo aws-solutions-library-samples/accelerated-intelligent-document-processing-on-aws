@@ -14,7 +14,7 @@ import { defineMessages, type IntlShape, type MessageValue, type NoMessageValues
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { DOCUMENTS_PATH, MY_QUEUES_PATH, MY_TASKS_PATH } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
-import { HOME_CRUMB } from '../review-queues/breadcrumbs';
+import { homeCrumb } from '../review-queues/breadcrumbs';
 import { editScreenSharedMessages } from './edit-messages';
 import type { EditFailure, EditLoading, EditModel, EditNavigation } from './edit-model';
 
@@ -69,7 +69,7 @@ const statesMessages = defineMessages<{
   },
 });
 
-const NO_MODE: EditNavigation = { trail: [HOME_CRUMB], activeHref: null };
+const noMode = (intl: IntlShape): EditNavigation => ({ trail: [homeCrumb(intl)], activeHref: null });
 
 /** Where a user goes back to: Documents, or Tasks for an Annotator-only user, who has no Documents. */
 const backLink = (annotatorOnly: boolean, intl: IntlShape): React.ReactNode =>
@@ -80,12 +80,12 @@ const backLink = (annotatorOnly: boolean, intl: IntlShape): React.ReactNode =>
   );
 
 export const loadingDocumentModel = (intl: IntlShape): EditModel & { state: EditLoading } => ({
-  navigation: NO_MODE,
+  navigation: noMode(intl),
   state: { kind: 'loading', text: intl.formatMessage(editScreenSharedMessages.loadingDocument) },
 });
 
 export const documentMissingModel = (annotatorOnly: boolean, intl: IntlShape): EditModel & { state: EditFailure } => ({
-  navigation: NO_MODE,
+  navigation: noMode(intl),
   state: {
     kind: 'failure',
     type: 'warning',
@@ -100,7 +100,7 @@ export const documentFailedModel = (
   annotatorOnly: boolean,
   intl: IntlShape,
 ): EditModel & { state: EditFailure } => ({
-  navigation: NO_MODE,
+  navigation: noMode(intl),
   state: {
     kind: 'failure',
     type: 'error',
@@ -114,7 +114,7 @@ export const documentFailedModel = (
 });
 
 export const itemFailedModel = (error: unknown, retry: () => void, intl: IntlShape): EditModel => ({
-  navigation: NO_MODE,
+  navigation: noMode(intl),
   state: {
     kind: 'failure',
     type: 'error',
@@ -125,7 +125,7 @@ export const itemFailedModel = (error: unknown, retry: () => void, intl: IntlSha
 });
 
 export const notAMemberModel = (intl: IntlShape): EditModel => ({
-  navigation: NO_MODE,
+  navigation: noMode(intl),
   state: {
     kind: 'failure',
     type: 'warning',

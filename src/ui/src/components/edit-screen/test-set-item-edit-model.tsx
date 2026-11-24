@@ -491,15 +491,18 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   // The set is named once its queue has loaded, never by its id first.
   const setName = queue ? (queue.name ?? testSetId) : null;
   const navigation: EditNavigation = {
-    trail: editTrail({
-      origin,
-      objectKey,
-      name,
-      queue: setName
-        ? { crumb: { text: intl.formatMessage(messages.testSetCrumb, { name: setName }), href: `#${queuePath}` }, view: 'test' }
-        : null,
-      testSet: setName ? { text: setName, href: testSetDetailHref(testSetId) } : null,
-    }),
+    trail: editTrail(
+      {
+        origin,
+        objectKey,
+        name,
+        queue: setName
+          ? { crumb: { text: intl.formatMessage(messages.testSetCrumb, { name: setName }), href: `#${queuePath}` }, view: 'test' }
+          : null,
+        testSet: setName ? { text: setName, href: testSetDetailHref(testSetId) } : null,
+      },
+      intl,
+    ),
     activeHref: editActiveHref(origin),
   };
 

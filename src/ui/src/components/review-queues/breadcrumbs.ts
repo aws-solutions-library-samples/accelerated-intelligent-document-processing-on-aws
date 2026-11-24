@@ -84,7 +84,7 @@ const messages = defineMessages<{
   },
 });
 
-/** The label in the UI's language; without `intl` (the edit screen's trails until their own conversion) the English source text. */
+/** The label in the UI's language; without `intl`, the English source text. */
 const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: IntlShape): string =>
   intl ? intl.formatMessage(message) : String(message.defaultMessage);
 
@@ -97,9 +97,6 @@ export const myQueuesCrumb = (intl?: IntlShape): Crumb => ({ text: labelOf(messa
 export const jobsCrumb = (intl?: IntlShape): Crumb => ({ text: labelOf(messages.jobs, intl), href: `#${JOBS_PATH}` });
 const inboxCrumb = (intl?: IntlShape): Crumb => ({ text: labelOf(messages.inbox, intl), href: inboxHref() });
 const testStudioCrumb = (intl?: IntlShape): Crumb => ({ text: labelOf(messages.testStudio, intl), href: TEST_SETS_HREF });
-
-/** The Home crumb in English, for the edit screen's trails that are not converted yet. */
-export const HOME_CRUMB: Crumb = homeCrumb();
 
 /** Review Studio › Review Management, on the table the trail came from. */
 export const reviewManagementTrail = (view?: ReviewManagementView, intl?: IntlShape): Crumb[] => [

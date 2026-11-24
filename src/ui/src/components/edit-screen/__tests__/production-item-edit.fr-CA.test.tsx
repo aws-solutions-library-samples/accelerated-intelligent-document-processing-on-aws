@@ -5,10 +5,11 @@
  * Changes and Edit Page Grouping are unavailable (one whole sentence per finished state, and an
  * Annotator's reason to claim first), the notices of an item being prepared and of one whose
  * corrections failed, a failed Claim's error (the shared error sentence around the action's
- * French phrase) and the notice a save raises when it finds a newer draft read French. The
- * item is read once: not again when the catalog arrives, nor on a switch to English. The
- * section editor's save alert words the refusal a document's save gets once the document is in
- * a review queue. Under `en` the same renders read today's English.
+ * French phrase), the notice a save raises when it finds a newer draft and the breadcrumbs an
+ * Admin and an Annotator come by read French. The item is read once: not again when the
+ * catalog arrives, nor on a switch to English. The section editor's save alert words the
+ * refusal a document's save gets once the document is in a review queue. Under `en` the same
+ * renders read today's English.
  */
 import React from 'react';
 import { act, screen, waitFor } from '@testing-library/react';
@@ -30,6 +31,8 @@ const state = vi.hoisted(() => ({
   role: { isAdmin: false, isAnnotator: true, isReviewer: false, canWrite: false, isQueueWorker: true },
   /** The props the stand-in section editor was last rendered with. */
   editor: null as { onSave: (sectionId: string, data: Record<string, unknown>) => Promise<unknown> } | null,
+  /** The breadcrumbs the page last gave its layout. */
+  trail: null as { text?: string }[] | null,
 }));
 
 vi.mock('virtual:i18n-catalogs', () => import('../../../test-utils/i18nCatalogsMock'));
@@ -45,7 +48,12 @@ vi.mock('../use-edit-exit', () => ({ default: () => state.exit, useLeavePath: ()
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => state.role }));
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
 vi.mock('../../../hooks/use-page-thumbnails', () => ({ default: () => state.thumbnails }));
-vi.mock('../../review-queues/ReviewQueuesLayout', () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
+vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
+  default: ({ children, trail }: { children: React.ReactNode; trail?: { text?: string }[] }) => {
+    state.trail = trail ?? null;
+    return <>{children}</>;
+  },
+}));
 vi.mock('../../review-queues/ReviewTaskContext', () => ({ default: () => null }));
 vi.mock('../../common/PageGroupingEditor', () => ({ default: () => null }));
 vi.mock('../SectionEditor', () => ({
@@ -69,6 +77,10 @@ import { regroupItem } from './regroup-stand-in';
 
 /** The strings the assertions read; the rest fall back to English, as the app's error policy allows. */
 const FR = {
+  'breadcrumbs.reviewStudio.home': 'Accueil',
+  'breadcrumbs.reviewStudio.tasks': 'Tâches',
+  'breadcrumbs.reviewStudio.reviewStudio': 'Studio de révision',
+  'breadcrumbs.reviewStudio.reviewManagement': 'Gestion des révisions',
   'common.apiError.failed': 'Impossible de {action} : {error}',
   'common.labels.processChanges': 'Traiter les modifications',
   'editScreen.bar.claim': 'Réclamer',
@@ -196,6 +208,7 @@ const renderRefusedSave = async (options: IntlOptions = {}) => {
 beforeEach(() => {
   document.body.innerHTML = '';
   state.editor = null;
+  state.trail = null;
   asAnnotator();
   server.detail = detailFor({});
   state.fetchReviewItem.mockReset().mockImplementation(async () => server.detail);
@@ -271,6 +284,15 @@ describe('a review queue item’s edit page under fr-CA', () => {
     await renderRefusedSave(FR_CA);
     expect(await screen.findByText(`Échec de l’enregistrement : ${FR['editScreen.directEdit.inReviewSaveRefused']}`)).toBeInTheDocument();
   });
+
+  it.each([
+    ['an Admin', asAdmin, ['Studio de révision', 'Gestion des révisions', 'Default', 'w2.pdf']],
+    ['an Annotator', asAnnotator, ['Accueil', 'Tâches', 'w2.pdf']],
+  ])('words the breadcrumbs %s comes by', async (_who, as, trail) => {
+    as();
+    renderPage(FR_CA);
+    await waitFor(() => expect(state.trail?.map((c) => c.text)).toEqual(trail));
+  });
 });
 
 describe('a review queue item’s edit page under en', () => {
@@ -325,5 +347,14 @@ describe('a review queue item’s edit page under en', () => {
         "Failed to save: This document is now in a review queue, so it can't be edited here. Reload the page to work on it in its queue.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it.each([
+    ['an Admin', asAdmin, ['Review Studio', 'Review Management', 'Default', 'w2.pdf']],
+    ['an Annotator', asAnnotator, ['Home', 'Tasks', 'w2.pdf']],
+  ])('reads today’s English breadcrumbs %s comes by', async (_who, as, trail) => {
+    as();
+    renderPage();
+    await waitFor(() => expect(state.trail?.map((c) => c.text)).toEqual(trail));
   });
 });
