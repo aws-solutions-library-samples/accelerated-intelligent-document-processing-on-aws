@@ -1268,7 +1268,6 @@ class TestProcessingFlow:
         md = {
             "extraction_method": "traditional",
             "extraction_model": "us.anthropic.claude-sonnet-5",
-            "ocr_analysis": {"tables_detected": 0},
             "assessment_batch_split_stats": {"batch_count": 1, "concurrent_batches": 1},
         }
         flow = svc._build_processing_flow(md, "traditional", False)
@@ -1277,6 +1276,33 @@ class TestProcessingFlow:
         extract = next(s for s in flow["stages"] if s["label"] == "Extract")
         assert "single LLM pass" in extract["detail"]
         assert flow["recovery"] is None
+
+    def test_the_ocr_stage_reports_tables_only_when_they_were_counted(self):
+        """Simple extraction does not scan for tables, so its OCR stage says nothing.
+
+        It used to say "no markdown tables" on every simple run, including documents
+        whose OCR text was full of them.
+        """
+        svc = self._svc()
+        uncounted = svc._build_processing_flow(
+            {"extraction_method": "traditional"}, "traditional", False
+        )
+        empty = svc._build_processing_flow(
+            {"extraction_method": "agentic", "ocr_analysis": {}}, "agentic", False
+        )
+        counted = svc._build_processing_flow(
+            {"extraction_method": "agentic", "ocr_analysis": {"tables_detected": 0}},
+            "agentic",
+            False,
+        )
+        assert uncounted["stages"][0] == {
+            "key": "ocr",
+            "label": "OCR",
+            "detail": "",
+            "status": "ok",
+        }
+        assert empty["stages"][0]["detail"] == ""
+        assert counted["stages"][0]["detail"] == "no markdown tables"
 
     def test_advanced_flow_shards_tabletool_confidence_geometry(self):
         svc = self._svc()
