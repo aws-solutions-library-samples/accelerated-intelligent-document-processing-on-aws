@@ -155,6 +155,3 @@ export const EDIT_GROUND_TRUTH_LABEL = 'Edit ground truth';
 
 /** The control that moves the edit screen to the next low-confidence field. */
 export const NEXT_ALERT_LABEL = 'Next alert';
-
-/** The marker of an unread Inbox message (the table badge and the bell's recent list). */
-export const UNREAD_LABEL = 'Unread';

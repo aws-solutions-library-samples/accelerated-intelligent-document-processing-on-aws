@@ -12,6 +12,7 @@ const messages = defineMessages<{
   noMatchTitle: NoMessageValues;
   noMatchBody: NoMessageValues;
   clearFilter: NoMessageValues;
+  noData: NoMessageValues;
 }>({
   filterCount: {
     id: 'common.table.filterCount',
@@ -33,15 +34,18 @@ const messages = defineMessages<{
     defaultMessage: 'Clear filter',
     description: 'Button under the no-match text of a table that clears its filter.',
   },
+  noData: {
+    id: 'common.table.noData',
+    defaultMessage: 'No data!',
+    description:
+      "Shown in a table that has no rows once loading has finished, where the table has no empty text of its own (a queue's Documents table, Review Management's Test Studio queues).",
+  },
 });
-
-/** The one empty-table text for Human Review and Home › Tasks tables. */
-export const NO_DATA_TEXT = 'No data!';
 
 /** Empty state for a table with no rows (after loading has finished). */
 export const NoDataState = (): React.JSX.Element => (
   <Box textAlign="center" color="inherit" padding="s">
-    {NO_DATA_TEXT}
+    <FormattedMessage {...messages.noData} />
   </Box>
 );
 

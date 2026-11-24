@@ -871,6 +871,18 @@
     "defaultMessage": "Document Processing",
     "description": "First crumb of the breadcrumb trail on the document list and on every page under it: the application home, which opens the document list."
   },
+  "breadcrumbs.inbox.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Inbox page."
+  },
+  "breadcrumbs.inbox.home": {
+    "defaultMessage": "Home",
+    "description": "First crumb of the breadcrumb trail on the Inbox page: the Home page."
+  },
+  "breadcrumbs.inbox.inbox": {
+    "defaultMessage": "Inbox",
+    "description": "Last crumb of the breadcrumb trail on the Inbox page: the Inbox itself."
+  },
   "breadcrumbs.layout.ariaLabel": {
     "defaultMessage": "Breadcrumbs",
     "description": "Screen-reader name of the breadcrumb navigation landmark on the Extensions catalog and the configuration and analysis pages."
@@ -931,6 +943,46 @@
     "defaultMessage": "Document Processing",
     "description": "First crumb of the breadcrumb trail on the Prefix Mappings page: the application home, which opens the document list."
   },
+  "breadcrumbs.reviewQueuesLayout.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Review Studio pages, Home › Tasks, Home › Queues, Home › Jobs and the edit page."
+  },
+  "breadcrumbs.reviewStudio.edit": {
+    "defaultMessage": "Edit",
+    "description": "Last crumb of the breadcrumb trail of a document's edit page opened from the document page."
+  },
+  "breadcrumbs.reviewStudio.home": {
+    "defaultMessage": "Home",
+    "description": "First crumb of the breadcrumb trail on Home › Tasks, Home › Queues, Home › Jobs and the pages under them."
+  },
+  "breadcrumbs.reviewStudio.inbox": {
+    "defaultMessage": "Inbox",
+    "description": "Crumb of Home › Inbox in the breadcrumb trail of an item's edit page opened from an Inbox message."
+  },
+  "breadcrumbs.reviewStudio.jobs": {
+    "defaultMessage": "Jobs",
+    "description": "Crumb of Home › Jobs, the bulk Skip All Reviews jobs, in the breadcrumb trail."
+  },
+  "breadcrumbs.reviewStudio.queues": {
+    "defaultMessage": "Queues",
+    "description": "Crumb of Home › Queues, the review queues the reader works, in the breadcrumb trail."
+  },
+  "breadcrumbs.reviewStudio.reviewManagement": {
+    "defaultMessage": "Review Management",
+    "description": "Crumb of Review Management, where an Admin manages the review queues, in the breadcrumb trail."
+  },
+  "breadcrumbs.reviewStudio.reviewStudio": {
+    "defaultMessage": "Review Studio",
+    "description": "First crumb of the breadcrumb trail on Review Management and the pages under it; it opens Review Management."
+  },
+  "breadcrumbs.reviewStudio.tasks": {
+    "defaultMessage": "Tasks",
+    "description": "Crumb of Home › Tasks, the review items assigned to the reader, in the breadcrumb trail."
+  },
+  "breadcrumbs.reviewStudio.testStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "First crumb of the breadcrumb trail of a Test Studio document's edit page. Test Studio is the name of the screen."
+  },
   "breadcrumbs.uploadDocument.ariaLabel": {
     "defaultMessage": "Breadcrumbs",
     "description": "Screen-reader name of the breadcrumb navigation landmark on the Upload Documents page."
@@ -966,6 +1018,14 @@
   "capacityPlanning.quotaNotRead.header": {
     "defaultMessage": "Some Bedrock quotas could not be read",
     "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
+  },
+  "common.apiError.failed": {
+    "defaultMessage": "Failed to {action}: {error}",
+    "description": "Error shown when a call to the server failed. {action} is an infinitive verb phrase from another message, such as \"load jobs\"; {error} is the text the server sent, shown as it is."
+  },
+  "common.apiError.permissionDenied": {
+    "defaultMessage": "You do not have permission to {action}. If your account is new, ask an administrator to assign it a role.",
+    "description": "Error shown when the server refused a call because the user lacks permission. {action} is an infinitive verb phrase from another message, such as \"load jobs\"."
   },
   "common.circuitBreakerPanel.adminControls": {
     "defaultMessage": "Admin controls",
@@ -1143,6 +1203,10 @@
     "defaultMessage": "Loading revisions…",
     "description": "Shown in place of the Configuration revision selector while the revisions load."
   },
+  "common.copyToBaseline.inProgress": {
+    "defaultMessage": "A copy to the evaluation baseline is in progress",
+    "description": "Why Use As Evaluation Baseline is unavailable: a copy of the document's results to the evaluation baseline is running."
+  },
   "common.createIssueButton.label": {
     "defaultMessage": "Create GitHub issue",
     "description": "Text and screen-reader label of the menu button under an Agent Chat answer that opens a pre-filled GitHub issue form."
@@ -1227,6 +1291,14 @@
     "defaultMessage": "Learn more",
     "description": "Heading of the footer of an info (help) panel, above a list of links into the product documentation."
   },
+  "common.notifications.dismiss": {
+    "defaultMessage": "Dismiss message",
+    "description": "Screen-reader label of the button that closes a message at the top of the page (the welcome banner, an error or a confirmation)."
+  },
+  "common.notifications.welcome": {
+    "defaultMessage": "Welcome to GenAI IDP (GenAIIDP)",
+    "description": "Banner at the top of the app until the user dismisses it. GenAI IDP (GenAIIDP) is the name of the product."
+  },
   "common.pagination.next": {
     "defaultMessage": "Next page",
     "description": "Screen-reader label of the next-page button of a table's pagination."
@@ -1239,9 +1311,117 @@
     "defaultMessage": "Previous page",
     "description": "Screen-reader label of the previous-page button of a table's pagination."
   },
+  "common.reasonModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the dialog that asks why before a review action (such as Skip All Reviews): closes it and does nothing."
+  },
+  "common.reasonModal.note": {
+    "defaultMessage": "Note",
+    "description": "Label, and screen-reader name, of the free-text note in the dialog that asks why before a review action."
+  },
+  "common.reasonModal.noteDescription": {
+    "defaultMessage": "Optional. Kept with the reason in the review history.",
+    "description": "Help text of the Note field: a note is optional and is recorded with the reason in the review history."
+  },
+  "common.reasonModal.noteTooLong": {
+    "defaultMessage": "Keep the note to {max} characters.",
+    "description": "Error under the Note field when the note is too long. {max} is the most characters a note may have."
+  },
+  "common.reasonModal.reason": {
+    "defaultMessage": "Reason",
+    "description": "Label, and screen-reader name, of the list of reasons in the dialog that asks why before a review action."
+  },
+  "common.reasonModal.reasonPlaceholder": {
+    "defaultMessage": "Choose a reason",
+    "description": "Placeholder of the Reason list until a reason is chosen."
+  },
+  "common.reasonModal.reasonRequired": {
+    "defaultMessage": "Choose a reason.",
+    "description": "Error under the Reason list when the review action was confirmed without a reason."
+  },
+  "common.relativeTime.justNow": {
+    "defaultMessage": "just now",
+    "description": "Relative time of something less than 45 seconds old, where older times read \"5 minutes ago\" or \"yesterday\"."
+  },
+  "common.reviewStatus.inReviewQueue.canWork": {
+    "defaultMessage": "This document is in a review queue. Choose Edit to work on it there.",
+    "description": "Why an action of the document page is unavailable while the document waits in a review queue, for a user who works review queues: the page's Edit button opens its queue item."
+  },
+  "common.reviewStatus.inReviewQueue.cannotWork": {
+    "defaultMessage": "This document is in a review queue. An Admin, Annotator or Reviewer reviews it there.",
+    "description": "Why an action of the document page is unavailable while the document waits in a review queue, for a user who does not work review queues."
+  },
+  "common.reviewStatus.reason.downstreamQuery": {
+    "defaultMessage": "Customer or downstream query",
+    "description": "A reason in the Reason list of Send to review: a customer or a downstream system asked about the document."
+  },
+  "common.reviewStatus.reason.duplicateDocument": {
+    "defaultMessage": "Duplicate document",
+    "description": "A reason in the Reason list of Skip All Reviews and bulk skip: the document is a copy of another one."
+  },
+  "common.reviewStatus.reason.otherSeeNote": {
+    "defaultMessage": "Other (see note)",
+    "description": "A reason in the Reason list of Skip All Reviews, bulk skip and Send to review: another reason, written in the Note."
+  },
+  "common.reviewStatus.reason.reviewNotNeeded": {
+    "defaultMessage": "Review not needed for this document",
+    "description": "A reason in the Reason list of Skip All Reviews and bulk skip: the document needs no review."
+  },
+  "common.reviewStatus.reason.spotCheck": {
+    "defaultMessage": "Spot check",
+    "description": "A reason in the Reason list of Send to review: a finished document is checked at random."
+  },
+  "common.reviewStatus.reason.suspectedExtractionError": {
+    "defaultMessage": "Suspected extraction error",
+    "description": "A reason in the Reason list of Send to review: a value extracted from the document looks wrong."
+  },
+  "common.reviewStatus.reason.valuesLookCorrect": {
+    "defaultMessage": "Extracted values look correct",
+    "description": "A reason in the Reason list of Skip All Reviews and bulk skip: the document's extracted values look correct."
+  },
+  "common.reviewStatus.state.claimed": {
+    "defaultMessage": "Claimed",
+    "description": "State of a review queue item an Annotator holds. Shown on the item's edit page; the work tables say Assigned for it instead."
+  },
+  "common.reviewStatus.state.complete": {
+    "defaultMessage": "Complete",
+    "description": "State of a review queue item whose review is done. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.reviewStatus.state.finalizeFailed": {
+    "defaultMessage": "Finalize failed",
+    "description": "State of a review queue item whose review is done but whose result could not be applied to the document yet; it is retried. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.reviewStatus.state.finalizing": {
+    "defaultMessage": "Finalizing",
+    "description": "State of a review queue item whose review is done and whose result is being applied to the document. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.reviewStatus.state.holding": {
+    "defaultMessage": "Preparing",
+    "description": "State of a review queue item that is being prepared and is not yet waiting for review. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.reviewStatus.state.open": {
+    "defaultMessage": "Waiting",
+    "description": "State of a review queue item waiting in its queue for an Annotator to claim it or an Admin to assign it. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.reviewStatus.state.rejected": {
+    "defaultMessage": "Rejected",
+    "description": "State of a review queue item whose document a reviewer rejected. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.reviewStatus.state.unknown": {
+    "defaultMessage": "Unknown",
+    "description": "State label of a review queue item when no state is known for it."
+  },
+  "common.reviewStatus.state.withdrawn": {
+    "defaultMessage": "Withdrawn",
+    "description": "State of a review queue item taken out of review without a result, for example because its document was processed again. Shown in a queue's Documents table and on the item's edit page."
+  },
   "common.table.filterCount": {
     "defaultMessage": "{count, plural, one {# match} other {# matches}}",
     "description": "Count next to a table's text filter. {count} is the number of rows the filter matches."
+  },
+  "common.table.noData": {
+    "defaultMessage": "No data!",
+    "description": "Shown in a table that has no rows once loading has finished, where the table has no empty text of its own (a queue's Documents table, Review Management's Test Studio queues)."
   },
   "common.table.noMatch.body": {
     "defaultMessage": "We can't find a match.",
@@ -1495,9 +1675,413 @@
     "defaultMessage": "For a rider: the rules you choose are removed and this upload's rules are added. A new rule with a superseded rule's name takes its place; the rest are added alongside.",
     "description": "Explanation of the Supersede chosen rules option."
   },
+  "documentActions.bar.details": {
+    "defaultMessage": "Details",
+    "description": "Option of the document page's view switch: shows the document's details, sections and pages."
+  },
+  "documentActions.bar.edit": {
+    "defaultMessage": "Edit",
+    "description": "Primary button of the document page's action bar: opens the document's edit page."
+  },
+  "documentActions.bar.editInQueue": {
+    "defaultMessage": "Edit this document in its review queue",
+    "description": "Screen-reader name of the Edit button while the document is in a review queue, where Edit opens its queue item."
+  },
+  "documentActions.bar.moreActions": {
+    "defaultMessage": "More Actions",
+    "description": "Menu of the document page's action bar with the changes, the downloads, and Reprocess, Abort and Delete."
+  },
+  "documentActions.bar.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button of the document page's action bar that reads the document again."
+  },
+  "documentActions.bar.reports": {
+    "defaultMessage": "Reports",
+    "description": "Menu of the document page's action bar that opens the document's reports."
+  },
+  "documentActions.bar.source": {
+    "defaultMessage": "Source",
+    "description": "Option of the document page's view switch: shows the source document in place of its details."
+  },
+  "documentActions.bar.startReview": {
+    "defaultMessage": "Start Review",
+    "description": "Button of the document page's action bar with which a reviewer takes the document's pending review."
+  },
+  "documentActions.bar.troubleshoot": {
+    "defaultMessage": "Troubleshoot",
+    "description": "Button of the document page's action bar that opens Troubleshoot, where an agent looks into the document's processing."
+  },
+  "documentActions.bar.viewSwitch": {
+    "defaultMessage": "Show the document's details or its source",
+    "description": "Screen-reader name of the Details | Source switch at the start of the document page's action bar."
+  },
+  "documentActions.baseline.available": {
+    "defaultMessage": "Baseline available",
+    "description": "Value of the Evaluation field of Document Details once the document's results are in the evaluation baseline."
+  },
+  "documentActions.baseline.copyFailed": {
+    "defaultMessage": "The copy of {name} to the evaluation baseline failed.",
+    "description": "Error notification when a running copy of the document to the evaluation baseline ended in an error. {name} is the document name."
+  },
+  "documentActions.baseline.copyStarted": {
+    "defaultMessage": "Copying {name} to the evaluation baseline. Its evaluation status shows when the copy is done.",
+    "description": "Success notification after Use As Evaluation Baseline started the copy. {name} is the document name."
+  },
+  "documentActions.baseline.copying": {
+    "defaultMessage": "Baseline copying in progress",
+    "description": "Value of the Evaluation field of Document Details while the document's results are copied to the evaluation baseline."
+  },
+  "documentActions.baseline.failed": {
+    "defaultMessage": "Baseline copy failed",
+    "description": "Value of the Evaluation field of Document Details when the copy of the document's results to the evaluation baseline failed."
+  },
+  "documentActions.baseline.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Value of the Evaluation field of Document Details when the document has no evaluation status."
+  },
+  "documentActions.baseline.useFailed": {
+    "defaultMessage": "Could not use {name} as the evaluation baseline: {error}",
+    "description": "Error notification when Use As Evaluation Baseline could not start the copy. {name} is the document name; {error} is the server's reason."
+  },
+  "documentActions.download.all": {
+    "defaultMessage": "Download All (ZIP)",
+    "description": "Item of the document page's More Actions menu: downloads the document's files as a ZIP, after asking what to include."
+  },
+  "documentActions.download.baselines": {
+    "defaultMessage": "Download Baselines (ZIP)",
+    "description": "Item of the document page's More Actions menu: downloads the document's evaluation baseline as a ZIP."
+  },
+  "documentActions.download.failed": {
+    "defaultMessage": "Download failed: {error}",
+    "description": "Error notification when a download from the document page failed. {error} is the reason as the browser or the server gave it, or \"Unknown error\"."
+  },
+  "documentActions.download.menu": {
+    "defaultMessage": "Download",
+    "description": "Name of the document page's downloads menu, whose items show as a group in the More Actions menu."
+  },
+  "documentActions.download.predictions": {
+    "defaultMessage": "Download Predictions (ZIP)",
+    "description": "Item of the document page's More Actions menu: downloads the document's extraction results as a ZIP."
+  },
+  "documentActions.download.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Stands for the reason in \"Download failed: …\" when the failure gave none."
+  },
+  "documentActions.editPageText.notice": {
+    "defaultMessage": "Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.",
+    "description": "Notice in the document page's page text editor: what Save and Reprocess, the label of its save button, replaces."
+  },
+  "documentActions.editPageText.save": {
+    "defaultMessage": "Save and Reprocess",
+    "description": "Button of the document page's page text editor: saves the page's text, then reprocesses the document."
+  },
+  "documentActions.editPageText.saved": {
+    "defaultMessage": "Saved page {pageId}'s text of {name}. The sections that hold it are being extracted again.",
+    "description": "Success notification after Save and Reprocess saved a page's edited text and reprocessed the document. {pageId} is the page's number; {name} is the document name."
+  },
+  "documentActions.moreActions.abort": {
+    "defaultMessage": "Abort",
+    "description": "Item of the document page's More Actions menu: stops the document's processing."
+  },
+  "documentActions.moreActions.delete": {
+    "defaultMessage": "Delete",
+    "description": "Item of the document page's More Actions menu, the last one: deletes the document."
+  },
+  "documentActions.moreActions.editPageGrouping": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Item of the document page's More Actions menu: opens the board where the document's pages are regrouped into sections."
+  },
+  "documentActions.moreActions.editPageText": {
+    "defaultMessage": "Edit Page Text",
+    "description": "Item of the document page's More Actions menu: opens the dialog that edits a page's text and reprocesses it."
+  },
+  "documentActions.moreActions.reextractSections": {
+    "defaultMessage": "Re-extract Sections",
+    "description": "Item of the document page's More Actions menu: opens the dialog that extracts chosen sections again."
+  },
+  "documentActions.moreActions.reprocess": {
+    "defaultMessage": "Reprocess",
+    "description": "Item of the document page's More Actions menu: processes the document again."
+  },
+  "documentActions.moreActions.resetPageClass": {
+    "defaultMessage": "Reset Page Class",
+    "description": "Item of the document page's More Actions menu: opens the dialog that classifies chosen pages again."
+  },
   "documentActions.moreActions.sendToReview": {
     "defaultMessage": "Send to review",
     "description": "Item of the document page's More Actions menu that sends a finished document to a review queue."
+  },
+  "documentActions.moreActions.skipAllReviews": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "Item of the document page's More Actions menu: asks why, then skips all of the document's pending section reviews."
+  },
+  "documentActions.moreActions.useAsBaseline": {
+    "defaultMessage": "Use As Evaluation Baseline",
+    "description": "Item of the document page's More Actions menu: copies the document's results into the evaluation baseline."
+  },
+  "documentActions.pageGrouping.consequence": {
+    "defaultMessage": "<b>Save page grouping</b> rewrites this document's section grouping and keeps the extracted field values, including any a reviewer corrected; the document is not reprocessed, so they may no longer match their pages. <b>Save and Re-extract</b> saves the grouping, then extracts again the sections whose class or pages changed, replacing their values.",
+    "description": "What the two saves of the Edit Page Grouping board on the document page do. <b>Save page grouping</b> and <b>Save and Re-extract</b> are the labels of its two save buttons, shown in bold."
+  },
+  "documentActions.pageGrouping.reextracting": {
+    "defaultMessage": "Saved the page grouping of {name}, and re-extracting {count, plural, one {section} other {sections}} {ids}.",
+    "description": "Success notification after Save and Re-extract on the Edit Page Grouping board saved the grouping and sent the re-extract. {name} is the document name; {count} is how many sections; {ids} lists their numbers, separated by commas."
+  },
+  "documentActions.reasons.alreadyInReview": {
+    "defaultMessage": "This document is already in review",
+    "description": "Why Send to review on the document page is unavailable: the document is already in a review."
+  },
+  "documentActions.reasons.baselineCopying": {
+    "defaultMessage": "A copy to the evaluation baseline is in progress",
+    "description": "Why Use As Evaluation Baseline on the document page is unavailable while its request to copy the document to the evaluation baseline is on its way."
+  },
+  "documentActions.reasons.bdaReprocess": {
+    "defaultMessage": "Not available in BDA mode: reprocessing would leave the changed sections without extracted data.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable for a document processed with Bedrock Data Automation (BDA)."
+  },
+  "documentActions.reasons.choosePages": {
+    "defaultMessage": "Choose at least one page",
+    "description": "Why the Reset Page Class button of its dialog is unavailable: no page is chosen."
+  },
+  "documentActions.reasons.chooseSections": {
+    "defaultMessage": "Choose at least one section",
+    "description": "Why the Re-extract button of the Re-extract Sections dialog is unavailable: no section is chosen."
+  },
+  "documentActions.reasons.configLoading": {
+    "defaultMessage": "Loading this document's configuration…",
+    "description": "Why an action of the document page that reprocesses the document is unavailable while the document's configuration loads."
+  },
+  "documentActions.reasons.historical": {
+    "defaultMessage": "Not available while you view a past version. Choose Return to current version in Version History.",
+    "description": "Why an action of the document page is unavailable while the page shows a past version of the document. \"Return to current version\" is the label of a button in the Version History panel."
+  },
+  "documentActions.reasons.legacyReviewRegroup": {
+    "defaultMessage": "Available once this document's review is finished",
+    "description": "Why Edit Page Grouping on the document page is unavailable while the document's review (outside the review queues) is in progress."
+  },
+  "documentActions.reasons.noCost": {
+    "defaultMessage": "This document has no cost data yet",
+    "description": "Why Estimated Cost in the document page's Reports menu is unavailable: the document has no usage recorded yet."
+  },
+  "documentActions.reasons.noEvaluationReport": {
+    "defaultMessage": "This document has no evaluation report",
+    "description": "Why Evaluation Report in the document page's Reports menu is unavailable."
+  },
+  "documentActions.reasons.noExecution": {
+    "defaultMessage": "This document has no processing run to show",
+    "description": "Why Processing Flow in the document page's Reports menu is unavailable: the document has no workflow run."
+  },
+  "documentActions.reasons.noPageText": {
+    "defaultMessage": "This document has no page text",
+    "description": "Why Edit Page Text on the document page is unavailable: no page of the document has text."
+  },
+  "documentActions.reasons.noPages": {
+    "defaultMessage": "This document has no pages",
+    "description": "Why Reset Page Class on the document page is unavailable: the document has no pages."
+  },
+  "documentActions.reasons.noPendingReview": {
+    "defaultMessage": "This document has no pending review",
+    "description": "Why Skip All Reviews on the document page is unavailable: no review of the document is waiting."
+  },
+  "documentActions.reasons.noRuleValidation": {
+    "defaultMessage": "This document has no rule validation summary",
+    "description": "Why Rule Validation Summary in the document page's Reports menu is unavailable."
+  },
+  "documentActions.reasons.noSendableSelection": {
+    "defaultMessage": "Select finished documents that are not in review",
+    "description": "Why Send to review in the document list's Review menu is unavailable: no selected document has finished processing and is outside review."
+  },
+  "documentActions.reasons.noSkippableSelection": {
+    "defaultMessage": "Select documents with a pending review",
+    "description": "Why Skip All Reviews for a selection (the document list's Review menu, a review queue's More actions menu) is unavailable: no selected document has a pending review."
+  },
+  "documentActions.reasons.notAbortable": {
+    "defaultMessage": "Only a document that is still processing can be aborted",
+    "description": "Why Abort on the document page is unavailable: the document is no longer processing."
+  },
+  "documentActions.reasons.notFinished": {
+    "defaultMessage": "This document has not finished processing",
+    "description": "Why Send to review on the document page is unavailable: the document is still processing."
+  },
+  "documentActions.reasons.pageNoText": {
+    "defaultMessage": "No text available",
+    "description": "Why a page row's View Page Text or Edit Page Text in the Document Pages table is unavailable: the page has no text."
+  },
+  "documentActions.reasons.reextractNoClass": {
+    "defaultMessage": "Choose a class for {count, plural, one {section} other {sections}} {ids} before re-extracting",
+    "description": "Why Save and Re-extract on the Edit Page Grouping board of the document page is unavailable: changed sections have no class. {count} is how many; {ids} lists their numbers, separated by commas."
+  },
+  "documentActions.reasons.reextractOrderOnly": {
+    "defaultMessage": "Only the page order changed, so nothing needs re-extracting. Choose Save page grouping.",
+    "description": "Why Save and Re-extract on the Edit Page Grouping board of the document page is unavailable when only the order of pages changed. \"Save page grouping\" is the label of the board's other save button."
+  },
+  "documentActions.reasons.reviewOwner": {
+    "defaultMessage": "Needs an Admin, or the reviewer who holds this document's open review.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable to a user who is not an Admin and does not hold the document's open review. Admin is a user role."
+  },
+  "documentActions.reasons.reviewQueueOff": {
+    "defaultMessage": "The Default review queue is off",
+    "description": "Why Send to review is unavailable: the review queue named Default is turned off. Default is the name of a queue."
+  },
+  "documentActions.reasons.reviewerFinished": {
+    "defaultMessage": "This document's review is finished, so a Reviewer can no longer change it.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable to a Reviewer once the document's review is finished. Reviewer is a user role."
+  },
+  "documentActions.reasons.reviewerUnclaimed": {
+    "defaultMessage": "Choose Start Review first: a Reviewer changes a document while holding its review.",
+    "description": "Why an action of the document page that reprocesses the document is unavailable to a Reviewer while nobody holds its review. \"Start Review\" is the label of a button of the page; Reviewer is a user role."
+  },
+  "documentActions.reasons.ruleValidationHistorical": {
+    "defaultMessage": "Rule validation isn't kept for past versions",
+    "description": "Why Rule Validation Summary in the document page's Reports menu is unavailable while the page shows a past version."
+  },
+  "documentActions.reasons.sectionNoClass": {
+    "defaultMessage": "This section has no class",
+    "description": "Why a section can't be chosen in the Re-extract Sections dialog: it has no class."
+  },
+  "documentActions.reasons.sectionNoData": {
+    "defaultMessage": "This section has no data yet",
+    "description": "Why a section row's Edit Data or View Data in the Document Sections table is unavailable: the section has no result yet."
+  },
+  "documentActions.reasons.sectionSkipped": {
+    "defaultMessage": "This section is skipped by its configuration",
+    "description": "Why a section can't be chosen in the Re-extract Sections dialog: the document's configuration skips its class."
+  },
+  "documentActions.reasons.testStudioReviewMenu": {
+    "defaultMessage": "Review actions apply to production documents",
+    "description": "Why the document list's Review menu is unavailable in its Test Studio view. Test Studio is the name of a feature."
+  },
+  "documentActions.reextract.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Re-extract Sections dialog that closes it without sending anything."
+  },
+  "documentActions.reextract.failed": {
+    "defaultMessage": "Could not re-extract the sections: {error}",
+    "description": "Error shown inside the Re-extract Sections dialog when its request failed. {error} is the server's reason."
+  },
+  "documentActions.reextract.fieldDescription": {
+    "defaultMessage": "Each section is extracted again with its current class and pages.",
+    "description": "Help text under the label of the Re-extract Sections dialog's list."
+  },
+  "documentActions.reextract.fieldLabel": {
+    "defaultMessage": "Sections to re-extract",
+    "description": "Label of the Re-extract Sections dialog's list, where the sections to extract again are chosen."
+  },
+  "documentActions.reextract.header": {
+    "defaultMessage": "Re-extract Sections",
+    "description": "Title of the dialog that extracts chosen sections of the document again, opened from the More Actions menu."
+  },
+  "documentActions.reextract.noClass": {
+    "defaultMessage": "No class",
+    "description": "Shown in the Re-extract Sections dialog's list in place of the class of a section that has none."
+  },
+  "documentActions.reextract.placeholder": {
+    "defaultMessage": "Choose sections",
+    "description": "Placeholder of the Re-extract Sections dialog's list before any section is chosen."
+  },
+  "documentActions.reextract.reextract": {
+    "defaultMessage": "Re-extract",
+    "description": "Button of the Re-extract Sections dialog that extracts the chosen sections again."
+  },
+  "documentActions.reextract.reextracting": {
+    "defaultMessage": "Re-extracting {count, plural, one {section} other {sections}} {ids} of {name}.",
+    "description": "Success notification after the Re-extract Sections dialog sent its request. {count} is how many sections; {ids} lists their numbers, separated by commas; {name} is the document name."
+  },
+  "documentActions.reextract.sectionDescription": {
+    "defaultMessage": "{class} · pages {pages}",
+    "description": "Second line of a section in the Re-extract Sections dialog's list. {class} is the section's class (a document type from the configuration, or No class); {pages} lists its page numbers, separated by commas."
+  },
+  "documentActions.reextract.sectionLabel": {
+    "defaultMessage": "Section {id}",
+    "description": "A section of the document, in the Re-extract Sections dialog's list and its warning. {id} is the section's number."
+  },
+  "documentActions.reextract.warning": {
+    "defaultMessage": "These sections are extracted again: {sections}. Their extracted values, including any corrected by hand, are replaced, and their classes are recorded as confirmed. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared. Other sections keep their values; OCR and classification are not repeated.",
+    "description": "Warning in the Re-extract Sections dialog once sections are chosen: what re-extracting replaces. {sections} lists the chosen sections, each worded as \"Section <number>\", separated by commas. OCR (optical character recognition) and classification are processing steps."
+  },
+  "documentActions.reportDialog.evaluationReport": {
+    "defaultMessage": "Evaluation Report",
+    "description": "Title of the dialog that shows the document's evaluation report, opened from the document page's Reports menu."
+  },
+  "documentActions.reportDialog.ruleValidationEmpty": {
+    "defaultMessage": "Rule validation summary not available for this document",
+    "description": "Text of the Rule Validation Summary dialog when the document has no rule validation summary."
+  },
+  "documentActions.reportDialog.ruleValidationSummary": {
+    "defaultMessage": "Rule Validation Summary",
+    "description": "Title of the dialog that shows the document's rule validation summary, opened from the document page's Reports menu."
+  },
+  "documentActions.reports.estimatedCost": {
+    "defaultMessage": "Estimated Cost",
+    "description": "Item of the document page's Reports menu: opens the estimated cost of processing the document."
+  },
+  "documentActions.reports.evaluationReport": {
+    "defaultMessage": "Evaluation Report",
+    "description": "Item of the document page's Reports menu: opens the document's evaluation report."
+  },
+  "documentActions.reports.processingFlow": {
+    "defaultMessage": "Processing Flow",
+    "description": "Item of the document page's Reports menu: opens the diagram of the document's processing workflow."
+  },
+  "documentActions.reports.ruleValidationSummary": {
+    "defaultMessage": "Rule Validation Summary",
+    "description": "Item of the document page's Reports menu: opens the document's rule validation summary."
+  },
+  "documentActions.reports.summary": {
+    "defaultMessage": "Summary",
+    "description": "Item of the document page's Reports menu: opens the document's summary."
+  },
+  "documentActions.resetPageClass.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Reset Page Class dialog that closes it without sending anything."
+  },
+  "documentActions.resetPageClass.confirm": {
+    "defaultMessage": "Reset Page Class",
+    "description": "Button of the Reset Page Class dialog that resets the class of the chosen pages."
+  },
+  "documentActions.resetPageClass.everyPage": {
+    "defaultMessage": "Every page is classified again, so pages can move to other sections and sections can be added or removed.",
+    "description": "Item of the list in the Reset Page Class dialog's warning: what a reset does to the pages."
+  },
+  "documentActions.resetPageClass.everySection": {
+    "defaultMessage": "Every section is rebuilt and extracted again. Values corrected by hand in any section, not only the ones holding these pages, are replaced.",
+    "description": "Item of the list in the Reset Page Class dialog's warning: what a reset does to the sections and their values."
+  },
+  "documentActions.resetPageClass.failed": {
+    "defaultMessage": "Could not reset the page class: {error}",
+    "description": "Error shown inside the Reset Page Class dialog when its request failed. {error} is the server's reason."
+  },
+  "documentActions.resetPageClass.fieldLabel": {
+    "defaultMessage": "Pages to reset",
+    "description": "Label of the Reset Page Class dialog's list, where the pages whose class is reset are chosen."
+  },
+  "documentActions.resetPageClass.header": {
+    "defaultMessage": "Reset Page Class",
+    "description": "Title of the dialog that resets the class of chosen pages and classifies the document again, opened from the More Actions menu."
+  },
+  "documentActions.resetPageClass.intro": {
+    "defaultMessage": "Resetting a page's class classifies the whole document again:",
+    "description": "Opening line of the warning in the Reset Page Class dialog, followed by a list of what a reset does."
+  },
+  "documentActions.resetPageClass.pageLabel": {
+    "defaultMessage": "Page {id}",
+    "description": "A page of the document in the Reset Page Class dialog's list. {id} is the page's number."
+  },
+  "documentActions.resetPageClass.placeholder": {
+    "defaultMessage": "Choose pages",
+    "description": "Placeholder of the Reset Page Class dialog's list before any page is chosen."
+  },
+  "documentActions.resetPageClass.resetting": {
+    "defaultMessage": "Resetting the class of {count, plural, one {page} other {pages}} {ids} of {name}: the document is being classified and extracted again.",
+    "description": "Success notification after the Reset Page Class dialog sent its request. {count} is how many pages; {ids} lists their numbers, separated by commas; {name} is the document name."
+  },
+  "documentActions.resetPageClass.reviewCompleted": {
+    "defaultMessage": "If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared.",
+    "description": "Item of the list in the Reset Page Class dialog's warning: what a reset does to the document's review."
+  },
+  "documentActions.resetPageClass.unclassified": {
+    "defaultMessage": "Unclassified",
+    "description": "Shown in the Reset Page Class dialog's list in place of the class of a page that has none."
   },
   "documentActions.sendToReview.failed": {
     "defaultMessage": "Could not send {name} to review: {outcome}.",
@@ -1507,6 +2091,34 @@
     "defaultMessage": "Sent {name} to review.",
     "description": "Success notification after Send to review. {name} is the document name."
   },
+  "documentActions.skipAllReviews.confirm": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "Confirm button of the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.failed": {
+    "defaultMessage": "Failed to skip all sections: {error}",
+    "description": "Error notification when Skip All Reviews did not skip the reviews. {error} is the server's reason."
+  },
+  "documentActions.skipAllReviews.header": {
+    "defaultMessage": "Skip All Section Reviews",
+    "description": "Title of the dialog that asks why before Skip All Reviews skips all of the document's pending section reviews."
+  },
+  "documentActions.skipAllReviews.intro": {
+    "defaultMessage": "Skipping review will:",
+    "description": "Lead-in of the list of what skipping does, in the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.markSkipped": {
+    "defaultMessage": "Mark all pending sections as review skipped without human verification",
+    "description": "First item of the list of what skipping does, in the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.question": {
+    "defaultMessage": "Are you sure you want to skip all section reviews?",
+    "description": "Question above the reason in the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.recorded": {
+    "defaultMessage": "Record this action, with your reason, in the review history",
+    "description": "Second item of the list of what skipping does, in the Skip All Section Reviews dialog."
+  },
   "documentActions.skipAllReviews.resubmitDescription": {
     "defaultMessage": "Re-runs Summarization and Evaluation on the unedited results and fires the post-processing hook.",
     "description": "Help text under the Resubmit checkbox in the Skip All Section Reviews dialog."
@@ -1514,6 +2126,38 @@
   "documentActions.skipAllReviews.resubmitLabel": {
     "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
     "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
+  },
+  "documentActions.skipAllReviews.skipped": {
+    "defaultMessage": "Skipped the review of {name}.",
+    "description": "Success notification after Skip All Reviews skipped the document's pending section reviews. {name} is the document name."
+  },
+  "documentActions.skipAllReviews.warning": {
+    "defaultMessage": "This action will skip all pending section reviews and continue the document processing workflow.",
+    "description": "Warning at the top of the Skip All Section Reviews dialog."
+  },
+  "documentActions.startReview.claimed": {
+    "defaultMessage": "You now hold the review of {name}. Choose Edit to work on it.",
+    "description": "Success notification after Start Review gave the user the review of the document. {name} is the document name."
+  },
+  "documentActions.startReview.failed": {
+    "defaultMessage": "Failed to start review: {error}",
+    "description": "Error notification when Start Review did not give the user the review. {error} is the server's reason."
+  },
+  "documentActions.unfinishedPageText.notice": {
+    "defaultMessage": "Page {pageId}'s text was saved, but {name} was not reprocessed.",
+    "description": "Error notice on the document page when a page's edited text was saved but reprocessing the document failed. {pageId} is the page's number; {name} is the document name."
+  },
+  "documentActions.unfinishedPageText.reprocessFailed": {
+    "defaultMessage": "Could not reprocess {name}: {error}",
+    "description": "Error notification when Retry reprocess failed again. {name} is the document name; {error} is the server's reason."
+  },
+  "documentActions.unfinishedPageText.retry": {
+    "defaultMessage": "Retry reprocess",
+    "description": "Button of the notice that a saved page text was not reprocessed: reprocesses the document again."
+  },
+  "documentActions.unfinishedPageText.saved": {
+    "defaultMessage": "Saved page {pageId}'s text of {name}. The sections that hold it are being extracted again.",
+    "description": "Success notification after Retry reprocess reprocessed a page whose edited text was saved earlier. {pageId} is the page's number; {name} is the document name."
   },
   "documentPanel.callerAttributes.label": {
     "defaultMessage": "Attributes",
@@ -1558,6 +2202,42 @@
   "documents.abortModal.warningIconAriaLabel": {
     "defaultMessage": "Warning",
     "description": "Screen-reader label of the warning icon in the Abort dialog."
+  },
+  "documents.api.abortFailed": {
+    "defaultMessage": "Failed to abort document(s): {errors}",
+    "description": "Error shown when none of the documents being processed could be stopped. {errors} is the reasons the server sent, separated by commas, or Unknown error."
+  },
+  "documents.api.abortPartial": {
+    "defaultMessage": "Aborted {abortedCount} document(s), but {failedCount} failed",
+    "description": "Error shown when only some of the documents being processed could be stopped. {abortedCount} is how many were stopped, {failedCount} how many could not be."
+  },
+  "documents.api.abortWorkflowFailed": {
+    "defaultMessage": "Failed to abort workflow(s) - please try again later",
+    "description": "Error shown when the request to stop processing documents could not be sent or failed."
+  },
+  "documents.api.deleteDocumentsAction": {
+    "defaultMessage": "delete document(s)",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when documents cannot be deleted."
+  },
+  "documents.api.deleteIncomplete": {
+    "defaultMessage": "Failed to delete document(s) - the server reported the delete did not complete",
+    "description": "Error shown when the server answered a delete of documents without completing it."
+  },
+  "documents.api.listDocumentsAction": {
+    "defaultMessage": "list documents",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the document list cannot be loaded."
+  },
+  "documents.api.loadDocumentAction": {
+    "defaultMessage": "load this document",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a document cannot be loaded."
+  },
+  "documents.api.reprocessFailed": {
+    "defaultMessage": "Failed to reprocess document(s) - please try again later",
+    "description": "Error shown when documents could not be sent for processing again."
+  },
+  "documents.api.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Shown in the error of a stop request that failed when the server sent no reason."
   },
   "documents.chat.accessDenied": {
     "defaultMessage": "Access denied: {error}.",
@@ -3387,6 +4067,26 @@
     "defaultMessage": "Viewing a previous version (read-only). Extraction results and page text shown below reflect this version's output.",
     "description": "Notice shown while the document page shows a previous version."
   },
+  "editScreen.documentStatus.bdaRegroup": {
+    "defaultMessage": "Page grouping cannot be changed for a document processed with Bedrock Data Automation (BDA). Field values can still be edited.",
+    "description": "Why Edit Page Grouping is unavailable for a document processed with Bedrock Data Automation (BDA), the name of an AWS service."
+  },
+  "editScreen.documentStatus.inReviewShort": {
+    "defaultMessage": "This document is in a review queue",
+    "description": "Why a menu item about a document, such as Summary in the Reports menu, is unavailable while the document is in a review queue."
+  },
+  "editScreen.documentStatus.noSections": {
+    "defaultMessage": "This document has no sections",
+    "description": "Why Edit Page Grouping, or Re-extract Sections on the document page, is unavailable: the document has no sections."
+  },
+  "editScreen.documentStatus.noSummary": {
+    "defaultMessage": "This document has no summary",
+    "description": "Why Summary in the Reports menu is unavailable: the document has no summary report."
+  },
+  "editScreen.documentStatus.processing": {
+    "defaultMessage": "Available when processing finishes",
+    "description": "Why an action about a document, or its direct edit, is unavailable while the document is still processing."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
@@ -4099,6 +4799,306 @@
     "defaultMessage": "Language",
     "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
   },
+  "inbox.bell.ariaLabel": {
+    "defaultMessage": "{count, plural, =0 {Inbox, no unread messages} one {Inbox, # unread message} other {Inbox, # unread messages}}",
+    "description": "Screen-reader label of the Inbox bell in the top bar. {count} is the number of unread messages."
+  },
+  "inbox.bell.empty": {
+    "defaultMessage": "No messages yet",
+    "description": "Disabled item of the Inbox bell's menu when the Inbox is empty."
+  },
+  "inbox.bell.loading": {
+    "defaultMessage": "Loading…",
+    "description": "Disabled item of the Inbox bell's menu while the messages load."
+  },
+  "inbox.bell.markAllRead": {
+    "defaultMessage": "Mark all as read",
+    "description": "Item of the Inbox bell's menu that marks every message as read."
+  },
+  "inbox.bell.noUnread": {
+    "defaultMessage": "No unread messages",
+    "description": "Why Mark all as read is disabled in the Inbox bell menu: nothing is unread."
+  },
+  "inbox.bell.recent": {
+    "defaultMessage": "Recent",
+    "description": "Heading of the Inbox bell's menu, above the newest messages."
+  },
+  "inbox.bell.title": {
+    "defaultMessage": "Inbox",
+    "description": "Title of the Inbox bell's menu in the top bar, and the bell's screen-reader label while the unread count is still loading."
+  },
+  "inbox.bell.unread": {
+    "defaultMessage": "Unread",
+    "description": "Marker of an unread message in the Inbox bell's menu, after its severity and its time."
+  },
+  "inbox.bell.viewAll": {
+    "defaultMessage": "View all in Inbox",
+    "description": "Item of the Inbox bell's menu that opens the Inbox page."
+  },
+  "inbox.category.queue": {
+    "defaultMessage": "Queue",
+    "description": "Type column of the Inbox table for a message about a review queue the reader works, such as items waiting in it."
+  },
+  "inbox.category.task": {
+    "defaultMessage": "Task",
+    "description": "Type column of the Inbox table for a message about the reader's own review work: an assignment, a claim released or expiring."
+  },
+  "inbox.deleteModal.body": {
+    "defaultMessage": "Are you sure you want to delete {count, plural, one {this message} other {these # messages}}? This action cannot be undone.",
+    "description": "Question of the dialog that confirms deleting Inbox messages, above their titles. {count} is the number of messages."
+  },
+  "inbox.deleteModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the dialog confirming the deletion of Inbox messages without deleting them."
+  },
+  "inbox.deleteModal.delete": {
+    "defaultMessage": "Delete",
+    "description": "Button that confirms deleting the Inbox messages the dialog lists."
+  },
+  "inbox.deleteModal.header": {
+    "defaultMessage": "{count, plural, one {Delete message} other {Delete messages}}",
+    "description": "Title of the dialog that confirms deleting Inbox messages. {count} is the number of messages to delete."
+  },
+  "inbox.deleteModal.more": {
+    "defaultMessage": "and {count} more",
+    "description": "Last line of the list of message titles in the delete dialog, when it lists only the first ten. {count} is how many are not listed."
+  },
+  "inbox.messageModal.close": {
+    "defaultMessage": "Close",
+    "description": "Button in the footer of the dialog that shows one Inbox message."
+  },
+  "inbox.messageModal.closeAriaLabel": {
+    "defaultMessage": "Close message",
+    "description": "Screen-reader label of the close (X) button of the dialog that shows one Inbox message."
+  },
+  "inbox.messageModal.noDetails": {
+    "defaultMessage": "No details.",
+    "description": "Shown in the dialog of an Inbox message that has a title but no body."
+  },
+  "inbox.messageModal.openRelated": {
+    "defaultMessage": "Open related page",
+    "description": "Button in the footer of an Inbox message dialog that goes to the page the message is about."
+  },
+  "inbox.messageModal.received": {
+    "defaultMessage": "Received",
+    "description": "Label above the date and time an Inbox message arrived, in its dialog."
+  },
+  "inbox.messageModal.severity": {
+    "defaultMessage": "Severity",
+    "description": "Label above an Inbox message's severity (Info, Warning, ...) in its dialog."
+  },
+  "inbox.messageModal.source": {
+    "defaultMessage": "Source",
+    "description": "Label above the platform feature that sent an Inbox message, in its dialog. The value is shown as the platform writes it."
+  },
+  "inbox.messagesTable.allSeverities": {
+    "defaultMessage": "All severities",
+    "description": "First option of the Inbox table's severity filter: no filtering by severity."
+  },
+  "inbox.messagesTable.allTypes": {
+    "defaultMessage": "All types",
+    "description": "First option of the Inbox table's message type filter: no filtering by type."
+  },
+  "inbox.messagesTable.clearRead.body": {
+    "defaultMessage": "Delete every message you have already read? This action cannot be undone.",
+    "description": "Question of the dialog that confirms deleting every read Inbox message."
+  },
+  "inbox.messagesTable.clearRead.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Clear read messages dialog without deleting anything."
+  },
+  "inbox.messagesTable.clearRead.confirm": {
+    "defaultMessage": "Clear read",
+    "description": "Button that confirms deleting every read Inbox message."
+  },
+  "inbox.messagesTable.clearRead.header": {
+    "defaultMessage": "Clear read messages",
+    "description": "Title of the dialog that confirms deleting every read Inbox message."
+  },
+  "inbox.messagesTable.column.action": {
+    "defaultMessage": "Action",
+    "description": "Column header of the Inbox table: each row's menu of actions."
+  },
+  "inbox.messagesTable.column.received": {
+    "defaultMessage": "Received",
+    "description": "Column header of the Inbox table: when each message arrived."
+  },
+  "inbox.messagesTable.column.severity": {
+    "defaultMessage": "Severity",
+    "description": "Column header of the Inbox table: the severity of each message (Info, Warning, ...)."
+  },
+  "inbox.messagesTable.column.title": {
+    "defaultMessage": "Title",
+    "description": "Column header of the Inbox table: the title of each message."
+  },
+  "inbox.messagesTable.column.type": {
+    "defaultMessage": "Type",
+    "description": "Column header of the Inbox table: the kind of message (Task, Queue, or the type name)."
+  },
+  "inbox.messagesTable.deleteSelected": {
+    "defaultMessage": "Delete",
+    "description": "Button in the header of the Inbox table that deletes the selected messages, after a confirmation."
+  },
+  "inbox.messagesTable.deleteSelectedHint": {
+    "defaultMessage": "Delete the selected messages",
+    "description": "Tooltip of the Delete button in the header of the Inbox table, while messages are selected."
+  },
+  "inbox.messagesTable.empty.body": {
+    "defaultMessage": "You'll see messages here when work is assigned to you or something needs your attention.",
+    "description": "Text under the heading the Inbox table shows when the user has no message."
+  },
+  "inbox.messagesTable.empty.title": {
+    "defaultMessage": "No messages",
+    "description": "Heading the Inbox table shows when the user has no message."
+  },
+  "inbox.messagesTable.filterBySeverity": {
+    "defaultMessage": "Filter by severity",
+    "description": "Screen-reader label of the severity filter of the Inbox table."
+  },
+  "inbox.messagesTable.filterByType": {
+    "defaultMessage": "Filter by type",
+    "description": "Screen-reader label of the message type filter of the Inbox table."
+  },
+  "inbox.messagesTable.find": {
+    "defaultMessage": "Find messages",
+    "description": "Placeholder and screen-reader label of the Inbox table's text filter."
+  },
+  "inbox.messagesTable.heading": {
+    "defaultMessage": "Messages",
+    "description": "Heading of the Inbox table, followed by the message count."
+  },
+  "inbox.messagesTable.loadFailed": {
+    "defaultMessage": "Could not load messages",
+    "description": "Title of the error shown above the Inbox table when the messages could not be loaded."
+  },
+  "inbox.messagesTable.loadMessagesAction": {
+    "defaultMessage": "load your messages",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Inbox messages cannot be loaded."
+  },
+  "inbox.messagesTable.loading": {
+    "defaultMessage": "Loading messages",
+    "description": "Shown in the Inbox table while the messages load."
+  },
+  "inbox.messagesTable.markSelectedRead": {
+    "defaultMessage": "Mark as read",
+    "description": "Button in the header of the Inbox table that marks the selected messages as read."
+  },
+  "inbox.messagesTable.markSelectedReadHint": {
+    "defaultMessage": "Mark the selected messages as read",
+    "description": "Tooltip of the Mark as read button in the header of the Inbox table, while messages are selected."
+  },
+  "inbox.messagesTable.markSelectedUnread": {
+    "defaultMessage": "Mark as unread",
+    "description": "Button in the header of the Inbox table that marks the selected messages as unread."
+  },
+  "inbox.messagesTable.markSelectedUnreadHint": {
+    "defaultMessage": "Mark the selected messages as unread",
+    "description": "Tooltip of the Mark as unread button in the header of the Inbox table, while messages are selected."
+  },
+  "inbox.messagesTable.more.button": {
+    "defaultMessage": "More actions",
+    "description": "Menu button in the header of the Inbox table that holds the actions on the whole list."
+  },
+  "inbox.messagesTable.more.clearRead": {
+    "defaultMessage": "Clear read",
+    "description": "Item of the Inbox table's More actions menu that deletes every read message, after a confirmation."
+  },
+  "inbox.messagesTable.more.markAllRead": {
+    "defaultMessage": "Mark all as read",
+    "description": "Item of the Inbox table's More actions menu that marks every message as read."
+  },
+  "inbox.messagesTable.more.noRead": {
+    "defaultMessage": "No read messages",
+    "description": "Why Clear read is disabled in the More actions menu of the Inbox table: no message is read."
+  },
+  "inbox.messagesTable.more.noUnread": {
+    "defaultMessage": "No unread messages",
+    "description": "Why Mark all as read is disabled in the More actions menu of the Inbox table: nothing is unread."
+  },
+  "inbox.messagesTable.more.refresh": {
+    "defaultMessage": "Refresh messages",
+    "description": "Screen-reader label of the refresh (circular arrow) button in the header of the Inbox table."
+  },
+  "inbox.messagesTable.noSelection": {
+    "defaultMessage": "Select one or more messages",
+    "description": "Tooltip of the Inbox table's Mark as read, Mark as unread and Delete buttons while no message is selected."
+  },
+  "inbox.messagesTable.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Inbox table preferences without applying them."
+  },
+  "inbox.messagesTable.preferences.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Button that applies the Inbox table preferences."
+  },
+  "inbox.messagesTable.preferences.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Heading of the page size choices in the Inbox table preferences."
+  },
+  "inbox.messagesTable.preferences.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# message} other {# messages}}",
+    "description": "One page size choice in the Inbox table preferences. {count} is the number of messages per page (10, 20 or 50)."
+  },
+  "inbox.messagesTable.preferences.title": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the Inbox table preferences dialog (page size), opened from the gear button by the pagination."
+  },
+  "inbox.messagesTable.readState.all": {
+    "defaultMessage": "All",
+    "description": "Option of the read-state filter of the Inbox table: every message."
+  },
+  "inbox.messagesTable.readState.label": {
+    "defaultMessage": "Read state",
+    "description": "Screen-reader label of the Inbox table filter that shows all messages or only the unread ones."
+  },
+  "inbox.messagesTable.readState.unread": {
+    "defaultMessage": "Unread",
+    "description": "Option of the read-state filter of the Inbox table: only the unread messages."
+  },
+  "inbox.messagesTable.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button of the notice above the Inbox table that reloads the list."
+  },
+  "inbox.messagesTable.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the load error above the Inbox table that loads the messages again."
+  },
+  "inbox.messagesTable.row.delete": {
+    "defaultMessage": "Delete",
+    "description": "Item of a row's action menu in the Inbox table that deletes the message, after a confirmation."
+  },
+  "inbox.messagesTable.row.markRead": {
+    "defaultMessage": "Mark as read",
+    "description": "Item of an unread message's action menu in the Inbox table."
+  },
+  "inbox.messagesTable.row.markUnread": {
+    "defaultMessage": "Mark as unread",
+    "description": "Item of a read message's action menu in the Inbox table."
+  },
+  "inbox.messagesTable.row.open": {
+    "defaultMessage": "Open",
+    "description": "Item of a row's action menu in the Inbox table that opens the message."
+  },
+  "inbox.messagesTable.rowActions": {
+    "defaultMessage": "Actions for {title}",
+    "description": "Screen-reader label of a row's action menu in the Inbox table. {title} is the message title, as the platform writes it."
+  },
+  "inbox.messagesTable.selection.all": {
+    "defaultMessage": "Select all messages",
+    "description": "Screen-reader label of the checkbox in the header of the Inbox table that selects every message on the page."
+  },
+  "inbox.messagesTable.selection.group": {
+    "defaultMessage": "Message selection",
+    "description": "Screen-reader name of the selection checkboxes of the Inbox table."
+  },
+  "inbox.messagesTable.selection.item": {
+    "defaultMessage": "Select {title}",
+    "description": "Screen-reader label of the checkbox of one Inbox table row. {title} is the message title, as the platform writes it."
+  },
+  "inbox.messagesTable.stale": {
+    "defaultMessage": "New activity since this list was loaded.",
+    "description": "Notice above the Inbox table when messages changed while rows were selected, so the list was not reloaded."
+  },
   "inbox.navLink.text": {
     "defaultMessage": "Inbox",
     "description": "Side-navigation link, first in the Home section of every user, to the Inbox of notifications."
@@ -4106,6 +5106,126 @@
   "inbox.navLink.unread": {
     "defaultMessage": "{count, plural, one {unread} other {unread}}",
     "description": "Read by screen readers after the count badge of the Inbox link, as in \"3 unread\". {count} is the number of unread messages; the badge itself shows the number."
+  },
+  "inbox.page.description": {
+    "defaultMessage": "Messages addressed to you or your groups.",
+    "description": "Line under the heading of the Inbox page."
+  },
+  "inbox.page.settings": {
+    "defaultMessage": "Inbox settings",
+    "description": "Tooltip and screen-reader label of the settings (gear) button in the Inbox heading, which opens the Inbox settings."
+  },
+  "inbox.page.title": {
+    "defaultMessage": "Inbox",
+    "description": "Heading of the Inbox page (Home › Inbox), which lists the messages the platform sends the user."
+  },
+  "inbox.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Inbox settings dialog without saving."
+  },
+  "inbox.preferences.empty": {
+    "defaultMessage": "No message types yet. Types appear here when a platform feature that sends Inbox messages is in use.",
+    "description": "Shown in the Inbox settings dialog when no message type exists yet."
+  },
+  "inbox.preferences.header": {
+    "defaultMessage": "Inbox settings",
+    "description": "Title of the dialog, opened from the Inbox heading, where the user chooses which message types they receive."
+  },
+  "inbox.preferences.intro": {
+    "defaultMessage": "Turn off the message types you don't want. Muted types aren't delivered; turning one back on affects new messages only.",
+    "description": "Introduction at the top of the Inbox settings dialog, above the list of message types."
+  },
+  "inbox.preferences.loadFailed": {
+    "defaultMessage": "Could not load preferences",
+    "description": "Title of the error shown in the Inbox settings dialog when the settings could not be loaded."
+  },
+  "inbox.preferences.loadPreferencesAction": {
+    "defaultMessage": "load Inbox preferences",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Inbox settings cannot be loaded."
+  },
+  "inbox.preferences.loading": {
+    "defaultMessage": "Loading preferences",
+    "description": "Shown in the Inbox settings dialog while the message types and their settings load."
+  },
+  "inbox.preferences.receive": {
+    "defaultMessage": "Receive",
+    "description": "Text of the toggle, under each message type in the Inbox settings dialog, that turns that type on or off."
+  },
+  "inbox.preferences.receiveAriaLabel": {
+    "defaultMessage": "Receive {type}",
+    "description": "Screen-reader label of the toggle that turns one Inbox message type on or off. {type} is the type name, as the platform writes it."
+  },
+  "inbox.preferences.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the load error in the Inbox settings dialog that loads the settings again."
+  },
+  "inbox.preferences.save": {
+    "defaultMessage": "Save",
+    "description": "Button that saves the Inbox settings."
+  },
+  "inbox.preferences.savePreferencesAction": {
+    "defaultMessage": "save Inbox preferences",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Inbox settings cannot be saved."
+  },
+  "inbox.preferences.saved": {
+    "defaultMessage": "Inbox settings saved",
+    "description": "Notice shown at the top of the page after the Inbox settings are saved."
+  },
+  "inbox.provider.clearReadAction": {
+    "defaultMessage": "clear read messages",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when deleting every Inbox message already read fails."
+  },
+  "inbox.provider.clearedRead": {
+    "defaultMessage": "Cleared read messages",
+    "description": "Notice at the top of the page after the user deleted every Inbox message they had read."
+  },
+  "inbox.provider.deleteMessagesAction": {
+    "defaultMessage": "delete messages",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Inbox messages cannot be deleted."
+  },
+  "inbox.provider.deleted": {
+    "defaultMessage": "Deleted {count, plural, one {# message} other {# messages}}",
+    "description": "Notice at the top of the page after the user deleted Inbox messages. {count} is the number of messages deleted."
+  },
+  "inbox.provider.markAllReadAction": {
+    "defaultMessage": "mark all messages as read",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when marking every Inbox message as read fails."
+  },
+  "inbox.provider.markReadAction": {
+    "defaultMessage": "mark messages as read",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Inbox messages cannot be marked as read."
+  },
+  "inbox.provider.markUnreadAction": {
+    "defaultMessage": "mark messages as unread",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Inbox messages cannot be marked as unread."
+  },
+  "inbox.provider.markedAllRead": {
+    "defaultMessage": "Marked all messages as read",
+    "description": "Notice at the top of the page after the user marked every Inbox message as read."
+  },
+  "inbox.provider.markedRead": {
+    "defaultMessage": "Marked {count, plural, one {# message} other {# messages}} as read",
+    "description": "Notice at the top of the page after the user marked Inbox messages as read. {count} is the number of messages marked."
+  },
+  "inbox.provider.markedUnread": {
+    "defaultMessage": "Marked {count, plural, one {# message} other {# messages}} as unread",
+    "description": "Notice at the top of the page after the user marked Inbox messages as unread. {count} is the number of messages marked."
+  },
+  "inbox.severity.error": {
+    "defaultMessage": "Error",
+    "description": "Inbox message severity: something failed. Shown in the Inbox table, its filter, the bell and the message dialog."
+  },
+  "inbox.severity.info": {
+    "defaultMessage": "Info",
+    "description": "Inbox message severity: for information. Shown in the Inbox table, its filter, the bell and the message dialog."
+  },
+  "inbox.severity.success": {
+    "defaultMessage": "Success",
+    "description": "Inbox message severity: something succeeded. Shown in the Inbox table, its filter, the bell and the message dialog."
+  },
+  "inbox.severity.warning": {
+    "defaultMessage": "Warning",
+    "description": "Inbox message severity: something needs attention. Shown in the Inbox table, its filter, the bell and the message dialog."
   },
   "knowledgeBase.query.intro": {
     "defaultMessage": "Ask a question below.",
@@ -5315,6 +6435,106 @@
     "defaultMessage": "Will be skipped",
     "description": "Outcome label in the dry-run preview of bulk Skip All Reviews: the reviews that the run will skip."
   },
+  "reviewBulk.outcomes.detail.finalizeRetryPending": {
+    "defaultMessage": "Finishing run will be retried",
+    "description": "Detail of a skipped review queue item in the bulk results table: the run that finishes its review could not start at once and is retried automatically."
+  },
+  "reviewBulk.outcomes.detail.resubmitFailed": {
+    "defaultMessage": "Resubmit failed",
+    "description": "Detail of a skipped document in the bulk results table: resubmitting it for downstream processing failed."
+  },
+  "reviewBulk.outcomes.detail.resubmitSkipped": {
+    "defaultMessage": "Not resubmitted (by request)",
+    "description": "Detail of a skipped document in the bulk results table: it was not resubmitted for downstream processing, as the requester chose."
+  },
+  "reviewBulk.outcomes.detail.resubmitterNotConfigured": {
+    "defaultMessage": "Resubmit not configured",
+    "description": "Detail of a skipped document in the bulk results table: it was not resubmitted, because resubmitting is not set up."
+  },
+  "reviewBulk.outcomes.jobMode.profile": {
+    "defaultMessage": "By profile",
+    "description": "How a bulk Skip All Reviews job chose its documents: by configuration profile and submitted-date range. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobMode.selected": {
+    "defaultMessage": "Selected documents",
+    "description": "How a bulk Skip All Reviews job chose its documents: the ones the user selected. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.cancelled": {
+    "defaultMessage": "Cancelled",
+    "description": "Status of a bulk Skip All Reviews job stopped at the requester's or an Admin's request. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.failed": {
+    "defaultMessage": "Failed",
+    "description": "Status of a bulk Skip All Reviews job that stopped on an error. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.queued": {
+    "defaultMessage": "Queued",
+    "description": "Status of a bulk Skip All Reviews job that is waiting to start. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.running": {
+    "defaultMessage": "Running",
+    "description": "Status of a bulk Skip All Reviews job that is working. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobStatus.succeeded": {
+    "defaultMessage": "Succeeded",
+    "description": "Status of a bulk Skip All Reviews job that finished. Shown in the Jobs table and on the job's page."
+  },
+  "reviewBulk.outcomes.jobType.skipAllReviews": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "Type of a bulk Skip All Reviews job (the action's name), in the Jobs table and as the heading of the job's page."
+  },
+  "reviewBulk.outcomes.outcome.alreadyFinished": {
+    "defaultMessage": "Already finished",
+    "description": "Outcome of one document in bulk Skip All Reviews: left alone, because its review is already finished."
+  },
+  "reviewBulk.outcomes.outcome.alreadyInReview": {
+    "defaultMessage": "Already in review",
+    "description": "Outcome of one document in Send to review: not sent, because it is already in a review."
+  },
+  "reviewBulk.outcomes.outcome.failed": {
+    "defaultMessage": "Failed",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: an error stopped it, and it can be tried again."
+  },
+  "reviewBulk.outcomes.outcome.heldByOther": {
+    "defaultMessage": "Held by another reviewer",
+    "description": "Outcome of one document in bulk Skip All Reviews: left alone, because another reviewer holds its review."
+  },
+  "reviewBulk.outcomes.outcome.notAttempted": {
+    "defaultMessage": "Not attempted",
+    "description": "Outcome of one document in bulk Skip All Reviews: not tried, because the run reached its time limit first; it can be tried again."
+  },
+  "reviewBulk.outcomes.outcome.notFinishedProcessing": {
+    "defaultMessage": "Not finished processing",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: left alone, because it has not finished processing."
+  },
+  "reviewBulk.outcomes.outcome.notPending": {
+    "defaultMessage": "Not pending",
+    "description": "Outcome of one document in bulk Skip All Reviews: left alone, because it has no pending review."
+  },
+  "reviewBulk.outcomes.outcome.notPermitted": {
+    "defaultMessage": "Not permitted",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: left alone, because it is outside the user's scope or does not exist."
+  },
+  "reviewBulk.outcomes.outcome.resubmitFailed": {
+    "defaultMessage": "Resubmit failed",
+    "description": "Outcome of one document in bulk Skip All Reviews: its review was skipped, but its downstream processing run could not be queued."
+  },
+  "reviewBulk.outcomes.outcome.reviewQueueOff": {
+    "defaultMessage": "Review queue off",
+    "description": "Outcome of one document in Send to review: not sent, because the Default review queue is turned off."
+  },
+  "reviewBulk.outcomes.outcome.sent": {
+    "defaultMessage": "Sent",
+    "description": "Outcome of one document in Send to review: it was sent to the Default review queue."
+  },
+  "reviewBulk.outcomes.outcome.skipped": {
+    "defaultMessage": "Skipped",
+    "description": "Outcome of one document in bulk Skip All Reviews: its review was skipped."
+  },
+  "reviewBulk.outcomes.outcome.testStudioExcluded": {
+    "defaultMessage": "Test Studio excluded",
+    "description": "Outcome of one document in bulk Skip All Reviews or Send to review: left alone, because it is a Test Studio document."
+  },
   "reviewBulk.reviewMenu.releaseReview": {
     "defaultMessage": "Release Review",
     "description": "Review menu item of the Document List (Admin) that releases the claims on the selected documents' reviews."
@@ -5363,9 +6583,317 @@
     "defaultMessage": "Select finished documents that are not in review",
     "description": "Why the Send to review confirm button is disabled: no selected document can be sent."
   },
+  "reviewQueues.annotatorsTable.column.annotator": {
+    "defaultMessage": "Annotator",
+    "description": "Column header of a queue's Annotators table: the Annotator's e-mail address."
+  },
+  "reviewQueues.annotatorsTable.column.assigned": {
+    "defaultMessage": "Assigned documents",
+    "description": "Column header of a queue's Annotators table: how many of the queue's documents are assigned to the Annotator."
+  },
+  "reviewQueues.annotatorsTable.description": {
+    "defaultMessage": "The Annotators who work this queue, and the documents assigned to each.",
+    "description": "Description under the heading of a queue's Annotators table, on the queue's page."
+  },
+  "reviewQueues.annotatorsTable.empty": {
+    "defaultMessage": "No Annotators are listed on this queue. Add them in Settings.",
+    "description": "Shown in a queue's Annotators table when the queue lists no Annotator. Settings names the queue page's Settings button."
+  },
+  "reviewQueues.annotatorsTable.find": {
+    "defaultMessage": "Find Annotators",
+    "description": "Placeholder and screen-reader label of the text filter of a queue's Annotators table."
+  },
+  "reviewQueues.annotatorsTable.loading": {
+    "defaultMessage": "Loading Annotators",
+    "description": "Shown in a queue's Annotators table while it loads. Annotator is a user role."
+  },
+  "reviewQueues.annotatorsTable.notListed": {
+    "defaultMessage": "{email} (not listed)",
+    "description": "An Annotator in a queue's Annotators table who is no longer listed on the queue but still holds some of its items. {email} is the Annotator's e-mail address."
+  },
+  "reviewQueues.annotatorsTable.notListedHint": {
+    "defaultMessage": "No longer listed in this queue's Eligible Annotators; still holds its items",
+    "description": "Tooltip of an Annotator in a queue's Annotators table who was taken off the queue's list but still holds some of its items. \"Eligible Annotators\" names a field of the queue's Settings dialog."
+  },
+  "reviewQueues.annotatorsTable.title": {
+    "defaultMessage": "Annotators",
+    "description": "Heading of a queue's Annotators table, on the queue's page. Annotator is a user role."
+  },
+  "reviewQueues.assignModal.annotator": {
+    "defaultMessage": "Annotator",
+    "description": "Label of the Assign to Annotator dialog's field that chooses the Annotator, by e-mail address. Annotator is a user role."
+  },
+  "reviewQueues.assignModal.assign": {
+    "defaultMessage": "Assign",
+    "description": "Button of the Assign to Annotator dialog that assigns the items to the chosen Annotator."
+  },
+  "reviewQueues.assignModal.bodyCount": {
+    "defaultMessage": "Assign {count, plural, one {# item} other {# items}} to an Annotator. They find it in Home › Tasks and are told in their Inbox.",
+    "description": "Body of the Assign to Annotator dialog for several items. {count} is how many. \"Home › Tasks\" is the page path where the Annotator works them; Inbox is the page of their messages."
+  },
+  "reviewQueues.assignModal.bodyDocument": {
+    "defaultMessage": "Assign {document} to an Annotator. They find it in Home › Tasks and are told in their Inbox.",
+    "description": "Body of the Assign to Annotator dialog for one item. {document} is its file name. \"Home › Tasks\" is the page path where the Annotator works the item; Inbox is the page of their messages."
+  },
+  "reviewQueues.assignModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Assign to Annotator dialog that closes it without assigning."
+  },
+  "reviewQueues.assignModal.empty": {
+    "defaultMessage": "No Annotators are listed on this queue. Add them under Eligible Annotators in the queue's Settings.",
+    "description": "Shown in the Annotator list of the Assign to Annotator dialog when the queue lists no other Annotator. \"Eligible Annotators\" names a field of the queue's Settings dialog."
+  },
+  "reviewQueues.assignModal.loading": {
+    "defaultMessage": "Loading Annotators",
+    "description": "Shown in the Annotator list of the Assign to Annotator dialog while the Annotators are loading."
+  },
+  "reviewQueues.assignModal.placeholder": {
+    "defaultMessage": "Choose an Annotator",
+    "description": "Placeholder of the Annotator field of the Assign to Annotator dialog."
+  },
+  "reviewQueues.assignModal.required": {
+    "defaultMessage": "Choose an Annotator.",
+    "description": "Error under the Annotator field of the Assign to Annotator dialog when the user assigns without choosing one."
+  },
+  "reviewQueues.assignModal.title": {
+    "defaultMessage": "Assign to Annotator",
+    "description": "Title of the dialog that assigns the selected review items to an Annotator. Annotator is a user role."
+  },
+  "reviewQueues.myQueues.column.items": {
+    "defaultMessage": "Items",
+    "description": "Column header of the Home › Queues table: how many items the queue holds."
+  },
+  "reviewQueues.myQueues.column.mine": {
+    "defaultMessage": "Assigned to you",
+    "description": "Column header of the Home › Queues table: how many of its items are assigned to the reader."
+  },
+  "reviewQueues.myQueues.column.oldest": {
+    "defaultMessage": "Oldest waiting",
+    "description": "Column header of the Home › Queues table: how long its oldest waiting item has waited."
+  },
+  "reviewQueues.myQueues.column.pending": {
+    "defaultMessage": "Pending",
+    "description": "Column header of the Home › Queues table: how many of its items no one is assigned to yet."
+  },
+  "reviewQueues.myQueues.column.priority": {
+    "defaultMessage": "Priority",
+    "description": "Column header of the Home › Queues table: the queue's priority, a number."
+  },
+  "reviewQueues.myQueues.column.queue": {
+    "defaultMessage": "Queue",
+    "description": "Column header of the Home › Queues table: the queue's name, as a link to its page."
+  },
+  "reviewQueues.myQueues.column.source": {
+    "defaultMessage": "Source",
+    "description": "Column header of the Home › Queues table: whether the queue is a production review queue or a Test Studio test set."
+  },
+  "reviewQueues.myQueues.description": {
+    "defaultMessage": "The queues you are listed on. Open a queue to see its items; open any item to view it, and claim one to work it in Tasks.",
+    "description": "Description under the Home › Queues heading. Tasks is the name of the Home › Tasks page."
+  },
+  "reviewQueues.myQueues.empty": {
+    "defaultMessage": "No queues list you yet. An Admin adds you to a queue's Eligible Annotators in Review Management; its queue then appears here.",
+    "description": "Shown in the Home › Queues table when no queue lists the reader. Eligible Annotators names a setting of a queue, and Review Management a page of the app."
+  },
+  "reviewQueues.myQueues.find": {
+    "defaultMessage": "Find queues",
+    "description": "Placeholder and screen-reader label of the Home › Queues table's text filter."
+  },
+  "reviewQueues.myQueues.loadError": {
+    "defaultMessage": "Couldn't load your queues",
+    "description": "Header of the error on Home › Queues when the queues could not be loaded at all."
+  },
+  "reviewQueues.myQueues.loadQueuesAction": {
+    "defaultMessage": "load your queues",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the queues on Home › Queues cannot be loaded."
+  },
+  "reviewQueues.myQueues.loadedWarning": {
+    "defaultMessage": "Showing the last loaded queues",
+    "description": "Header of the warning on Home › Queues when refreshing the queues failed but earlier ones are still shown."
+  },
+  "reviewQueues.myQueues.loading": {
+    "defaultMessage": "Loading queues",
+    "description": "Shown in the Home › Queues table while the queues load."
+  },
+  "reviewQueues.myQueues.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button on Home › Queues that reloads the queues."
+  },
+  "reviewQueues.myQueues.refreshAriaLabel": {
+    "defaultMessage": "Refresh queues",
+    "description": "Screen-reader label of the Refresh button on Home › Queues."
+  },
+  "reviewQueues.myQueues.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the Home › Queues load warning that loads the queues again."
+  },
+  "reviewQueues.myQueues.tableTitle": {
+    "defaultMessage": "Your queues",
+    "description": "Title of the table on Home › Queues."
+  },
+  "reviewQueues.myQueues.title": {
+    "defaultMessage": "Queues",
+    "description": "Heading of Home › Queues, the review queues that list the reader as an Annotator."
+  },
+  "reviewQueues.myTasks.description": {
+    "defaultMessage": "Items assigned to you, by an Admin or claimed from your queues. Open an item to annotate it.",
+    "description": "Description under the Home › Tasks heading."
+  },
+  "reviewQueues.myTasks.empty": {
+    "defaultMessage": "Nothing is assigned to you. Claim an item from Home › Queues, or wait for an Admin to assign you one (you're told in your Inbox).",
+    "description": "Shown in the Home › Tasks table when no item is assigned to the reader. Home › Queues and Inbox name pages of the app."
+  },
+  "reviewQueues.myTasks.loadError": {
+    "defaultMessage": "Couldn't load your tasks",
+    "description": "Header of the warning on Home › Tasks when the tasks could not be loaded at all."
+  },
+  "reviewQueues.myTasks.loadTasksAction": {
+    "defaultMessage": "load your tasks",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the tasks on Home › Tasks cannot be loaded."
+  },
+  "reviewQueues.myTasks.loadedWarning": {
+    "defaultMessage": "Showing the last loaded tasks",
+    "description": "Header of the warning on Home › Tasks when refreshing the tasks failed but earlier ones are still shown."
+  },
+  "reviewQueues.myTasks.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button, and its screen-reader label, that reloads the Home › Tasks table."
+  },
+  "reviewQueues.myTasks.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the Home › Tasks load warning that loads the tasks again."
+  },
+  "reviewQueues.myTasks.tableTitle": {
+    "defaultMessage": "Items assigned to you",
+    "description": "Title of the table on Home › Tasks."
+  },
+  "reviewQueues.myTasks.title": {
+    "defaultMessage": "Tasks",
+    "description": "Heading of Home › Tasks, the review items assigned to the reader."
+  },
   "reviewQueues.queuePage.adminDescription": {
     "defaultMessage": "Select items to assign them to an Annotator or unassign them. More actions moves them to another queue, removes them from the queues or skips their reviews. Edit opens an item without changing its assignment.",
     "description": "Description under the Items table header of a review queue, for an Admin. \"More actions\" and \"Edit\" name the table's menu and row action."
+  },
+  "reviewQueues.queuePage.annotatorDescription": {
+    "defaultMessage": "Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.",
+    "description": "Description under the Documents table header of a review queue, for an Annotator. \"Claim\" and \"Next item\" name the buttons above the table; \"Home › Tasks\" is the page path where the Annotator works the items they hold."
+  },
+  "reviewQueues.queuePage.assignTo": {
+    "defaultMessage": "Assign to…",
+    "description": "Button above an Admin's view of a review queue's Documents table that assigns the selected items to an Annotator (opens a dialog). The count of assignable items is appended in parentheses."
+  },
+  "reviewQueues.queuePage.claim": {
+    "defaultMessage": "Claim",
+    "description": "Button above an Annotator's view of a review queue's Documents table, and item of a row's menu, that assigns the items to the Annotator. The count of selected items waiting for review is appended to the button in parentheses."
+  },
+  "reviewQueues.queuePage.claimAssignedTo": {
+    "defaultMessage": "Assigned to {annotator}",
+    "description": "Why the Claim item of a review item's row menu is disabled: another person holds it. {annotator} is that Annotator's e-mail address, or the Documents table's word for the reader (You) when it is theirs but not yet claimed."
+  },
+  "reviewQueues.queuePage.claimAssignedToYou": {
+    "defaultMessage": "This item is assigned to you",
+    "description": "Why the Claim item of a review item's row menu is disabled: the reader already holds the item."
+  },
+  "reviewQueues.queuePage.claimFailed": {
+    "defaultMessage": "Couldn't claim {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Annotator claimed review items on a queue's page and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.queuePage.claimItemAction": {
+    "defaultMessage": "claim it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be claimed on a queue's page; \"it\" is the item."
+  },
+  "reviewQueues.queuePage.claimNext.capReached": {
+    "defaultMessage": "You hold as many items from this queue as you may. Finish or skip one first.",
+    "description": "Error after an Annotator chose Next item on a review queue's page while already holding as many of the queue's items as it allows one person."
+  },
+  "reviewQueues.queuePage.claimNext.contended": {
+    "defaultMessage": "Other Annotators claimed the waiting items first. Try again.",
+    "description": "Error after an Annotator chose Next item on a review queue's page and other Annotators claimed every waiting item first."
+  },
+  "reviewQueues.queuePage.claimNext.empty": {
+    "defaultMessage": "No item in this queue is waiting to be claimed.",
+    "description": "Error after an Annotator chose Next item on a review queue's page and no item of the queue was waiting."
+  },
+  "reviewQueues.queuePage.claimNext.none": {
+    "defaultMessage": "No item was claimed.",
+    "description": "Error after an Annotator chose Next item on a review queue's page and the server claimed nothing, for a reason the page does not know."
+  },
+  "reviewQueues.queuePage.claimNextItemAction": {
+    "defaultMessage": "claim the next item",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Next item, on a queue's page, cannot claim an item."
+  },
+  "reviewQueues.queuePage.claimNotWaiting": {
+    "defaultMessage": "This item is not waiting for review",
+    "description": "Why the Claim item of a review item's row menu is disabled: the item is not waiting in its queue."
+  },
+  "reviewQueues.queuePage.claimed": {
+    "defaultMessage": "Claimed {name}. Work it in Home › Tasks.",
+    "description": "Notice after an Annotator claimed one review item, or the next one, on a queue's page. {name} is its file name. \"Home › Tasks\" is the page path where the Annotator works the items they hold."
+  },
+  "reviewQueues.queuePage.claimedCount": {
+    "defaultMessage": "Claimed {count, plural, one {# item. Work it} other {# items. Work them}} in Home › Tasks.",
+    "description": "Notice after an Annotator claimed several selected review items on a queue's page. {count} is how many of them were claimed. \"Home › Tasks\" is the page path where the Annotator works the items they hold."
+  },
+  "reviewQueues.queuePage.defaultDescription": {
+    "defaultMessage": "Production review queue.",
+    "description": "Description under a production review queue's name on its page, when the queue has no description of its own."
+  },
+  "reviewQueues.queuePage.documentsTitle": {
+    "defaultMessage": "Documents",
+    "description": "Title of a review queue's table of documents, on the queue's page."
+  },
+  "reviewQueues.queuePage.keyMetrics": {
+    "defaultMessage": "Key Metrics",
+    "description": "Heading of the panel of counts on a review queue's page."
+  },
+  "reviewQueues.queuePage.loadError": {
+    "defaultMessage": "Couldn't load this queue",
+    "description": "Header of the error on a review queue's page when the queue could not be loaded at all."
+  },
+  "reviewQueues.queuePage.loadMore": {
+    "defaultMessage": "Load more",
+    "description": "Button under a review queue's Documents table that loads its next page of items."
+  },
+  "reviewQueues.queuePage.loadMoreItemsAction": {
+    "defaultMessage": "load more items",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Load more, under a queue's Documents table, cannot load the next page of items."
+  },
+  "reviewQueues.queuePage.loadQueueAction": {
+    "defaultMessage": "load this queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a review queue's page cannot load the queue."
+  },
+  "reviewQueues.queuePage.loading": {
+    "defaultMessage": "Loading…",
+    "description": "Shown in the Key Metrics of a review queue's page while the queue loads."
+  },
+  "reviewQueues.queuePage.metric.annotators": {
+    "defaultMessage": "Annotators",
+    "description": "Label in the Key Metrics of a review queue's page, for an Admin: how many Annotators the queue lists. Annotator is a user role."
+  },
+  "reviewQueues.queuePage.metric.assigned": {
+    "defaultMessage": "Assigned",
+    "description": "Label in the Key Metrics of a review queue's page: how many of its items are assigned to an Annotator."
+  },
+  "reviewQueues.queuePage.metric.assignedToYou": {
+    "defaultMessage": "Assigned to you",
+    "description": "Label in the Key Metrics of a review queue's page, for an Annotator: how many of its items the reader holds."
+  },
+  "reviewQueues.queuePage.metric.inProgress": {
+    "defaultMessage": "In Progress",
+    "description": "Label in the Key Metrics of a review queue's page, for an Admin: how many of its items an Annotator has started."
+  },
+  "reviewQueues.queuePage.metric.oldestWaiting": {
+    "defaultMessage": "Oldest waiting",
+    "description": "Label in the Key Metrics of a review queue's page, for an Annotator: how long ago the item waiting longest entered the queue."
+  },
+  "reviewQueues.queuePage.metric.pending": {
+    "defaultMessage": "Pending",
+    "description": "Label in the Key Metrics of a review queue's page: how many of its items no one is assigned to yet."
+  },
+  "reviewQueues.queuePage.metric.priority": {
+    "defaultMessage": "Priority",
+    "description": "Label in the Key Metrics of a review queue's page, for an Admin: the queue's priority number."
   },
   "reviewQueues.queuePage.moreActions": {
     "defaultMessage": "More actions",
@@ -5375,17 +6903,49 @@
     "defaultMessage": "Move…",
     "description": "More actions item that moves the selected items to another review queue (opens a dialog). The count of selected items is appended in parentheses."
   },
+  "reviewQueues.queuePage.nextItem": {
+    "defaultMessage": "Next item",
+    "description": "Button above an Annotator's view of a review queue's Documents table that claims the queue's next waiting item."
+  },
   "reviewQueues.queuePage.noOtherQueue": {
     "defaultMessage": "There is no other queue",
     "description": "Why the Move… item is disabled: there is no other review queue to move items to."
+  },
+  "reviewQueues.queuePage.notDefined": {
+    "defaultMessage": "This queue is not defined in Review Management.",
+    "description": "Shown in the Key Metrics of a review queue's page, for an Admin, when the queue has no definition. \"Review Management\" names the Review Studio page that lists the queues."
+  },
+  "reviewQueues.queuePage.notListed": {
+    "defaultMessage": "This queue does not list you as an Annotator.",
+    "description": "Shown in the Key Metrics of a review queue's page when the reader is not one of the queue's Annotators."
+  },
+  "reviewQueues.queuePage.progressDescription": {
+    "defaultMessage": "The share of this queue's documents an Annotator is working on",
+    "description": "Description under the Queue Progress bar of a production review queue's page. Annotator is a user role."
   },
   "reviewQueues.queuePage.queueGroup": {
     "defaultMessage": "Queue",
     "description": "Group heading in the More actions menu of a review queue: moving or removing the selected items."
   },
+  "reviewQueues.queuePage.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button on a review queue's page that reloads the queue, and its screen-reader label."
+  },
   "reviewQueues.queuePage.removeFromQueue": {
     "defaultMessage": "Remove from queue…",
     "description": "More actions item that takes the selected items out of the review queues (opens a dialog). The count of removable items is appended in parentheses."
+  },
+  "reviewQueues.queuePage.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the load warning or error on a review queue's page that loads the queue again."
+  },
+  "reviewQueues.queuePage.saved": {
+    "defaultMessage": "Saved the queue {name}.",
+    "description": "Notice after an Admin saved a review queue's settings from its page. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuePage.selectAssigned": {
+    "defaultMessage": "Select assigned items",
+    "description": "Tooltip of the disabled Unassign button above a review queue's Documents table: select assigned items first."
   },
   "reviewQueues.queuePage.selectToMove": {
     "defaultMessage": "Select items to move",
@@ -5394,6 +6954,14 @@
   "reviewQueues.queuePage.selectToRemove": {
     "defaultMessage": "Select items waiting for review or assigned",
     "description": "Why the Remove from queue… item is disabled: no selected item is waiting for review or assigned."
+  },
+  "reviewQueues.queuePage.selectWaiting": {
+    "defaultMessage": "Select items waiting for review",
+    "description": "Tooltip of the disabled Assign to… or Claim button above a review queue's Documents table: select items first."
+  },
+  "reviewQueues.queuePage.settings": {
+    "defaultMessage": "Settings",
+    "description": "Button on a review queue's page that opens the queue's Settings dialog. Admin only."
   },
   "reviewQueues.queuePage.skipAllReviews": {
     "defaultMessage": "Skip All Reviews",
@@ -5415,13 +6983,753 @@
     "defaultMessage": "Skip All Reviews results",
     "description": "Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline."
   },
+  "reviewQueues.queuePage.stale": {
+    "defaultMessage": "Showing the last loaded queue",
+    "description": "Header of the warning on a review queue's page when reloading the queue failed and the items loaded before are still shown."
+  },
+  "reviewQueues.queuePage.unassign": {
+    "defaultMessage": "Unassign",
+    "description": "Button above an Admin's view of a review queue's Documents table that takes the selected items back from their Annotators (opens a dialog). The count of assigned items is appended in parentheses."
+  },
+  "reviewQueues.queueProgress.completed": {
+    "defaultMessage": "{count} of {total, plural, one {# document} other {# documents}} completed",
+    "description": "Text beside the Queue Progress bar of a Test Studio queue. {count} is how many of the queue's {total} documents are completed."
+  },
+  "reviewQueues.queueProgress.title": {
+    "defaultMessage": "Queue Progress",
+    "description": "Heading of the panel with a bar showing how far a review queue's documents have got, on a queue's page."
+  },
+  "reviewQueues.queueProgress.underway": {
+    "defaultMessage": "{count} of {total, plural, one {# document} other {# documents}} assigned or in progress",
+    "description": "Text beside the Queue Progress bar of a production review queue. {count} is how many of the queue's {total} documents an Annotator holds, started or not."
+  },
+  "reviewQueues.queueSettings.annotators.empty": {
+    "defaultMessage": "No Annotator users. Add one in User Management.",
+    "description": "Shown in the Eligible Annotators list when there is no Annotator user. User Management is the name of a page."
+  },
+  "reviewQueues.queueSettings.annotators.label": {
+    "defaultMessage": "Eligible Annotators",
+    "description": "Label of the Queue Settings dialog's field for the Annotators who work the queue. Annotator is a user role."
+  },
+  "reviewQueues.queueSettings.annotators.loading": {
+    "defaultMessage": "Loading Annotators",
+    "description": "Shown in the Eligible Annotators list while the Annotator users load."
+  },
+  "reviewQueues.queueSettings.annotators.placeholder": {
+    "defaultMessage": "None (Admins and Reviewers only)",
+    "description": "Placeholder of the Eligible Annotators list when no Annotator is chosen. Admin and Reviewer are user roles."
+  },
+  "reviewQueues.queueSettings.annotators.productionDescription": {
+    "defaultMessage": "The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items.",
+    "description": "Description of the Eligible Annotators field for a production queue. Annotator and Reviewer are user roles; Home › Queues is the navigation path to a page."
+  },
+  "reviewQueues.queueSettings.annotators.testSetDescription": {
+    "defaultMessage": "The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. Reviewers work every test set their configuration-profile scope admits without being listed, and claim their own items.",
+    "description": "Description of the Eligible Annotators field for a Test Studio queue. Annotator and Reviewer are user roles; Home › Queues is the navigation path to a page."
+  },
+  "reviewQueues.queueSettings.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Queue Settings dialog that closes it without saving."
+  },
+  "reviewQueues.queueSettings.changed.body": {
+    "defaultMessage": "Another Admin saved this queue after you opened it, so your changes were not saved. Reload the queue to see its current settings, then make your changes again. Reloading replaces what you have entered here.",
+    "description": "Body of the Queue Settings dialog's changed-queue warning. Admin is a user role."
+  },
+  "reviewQueues.queueSettings.changed.reload": {
+    "defaultMessage": "Reload queue",
+    "description": "Button of the Queue Settings dialog's changed-queue warning that fills the form from the queue as stored now."
+  },
+  "reviewQueues.queueSettings.changed.title": {
+    "defaultMessage": "This queue was changed by someone else",
+    "description": "Header of the warning in the Queue Settings dialog when a save was refused because another Admin saved the queue first."
+  },
+  "reviewQueues.queueSettings.create": {
+    "defaultMessage": "Create",
+    "description": "Button of the queue dialog that creates the queue."
+  },
+  "reviewQueues.queueSettings.createQueueAction": {
+    "defaultMessage": "create the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a new production queue cannot be created."
+  },
+  "reviewQueues.queueSettings.createTitle": {
+    "defaultMessage": "Create Queue",
+    "description": "Title of the queue dialog when it creates a production review queue."
+  },
+  "reviewQueues.queueSettings.defaultQueueNote": {
+    "defaultMessage": "Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.",
+    "description": "Note at the top of the Default queue's Settings dialog. HITL (human in the loop) is the name of a configuration setting."
+  },
+  "reviewQueues.queueSettings.description.label": {
+    "defaultMessage": "Description",
+    "description": "Label of the Queue Settings dialog's field for the queue's description."
+  },
+  "reviewQueues.queueSettings.enabled.description": {
+    "defaultMessage": "When off, no documents are added to this queue.",
+    "description": "Description of the Enabled switch. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.enabled.label": {
+    "defaultMessage": "Enabled",
+    "description": "Label of the Queue Settings dialog's switch that turns a production queue on or off."
+  },
+  "reviewQueues.queueSettings.enabled.off": {
+    "defaultMessage": "Disabled",
+    "description": "Text beside the Enabled switch of the Queue Settings dialog when the switch is off."
+  },
+  "reviewQueues.queueSettings.enabled.on": {
+    "defaultMessage": "Enabled",
+    "description": "Text beside the Enabled switch of the Queue Settings dialog when the switch is on."
+  },
+  "reviewQueues.queueSettings.example": {
+    "defaultMessage": "e.g. {example}",
+    "description": "Placeholder of the Queue id and Name fields: an example of what to type. {example} is the example, shown as it is, so the example id stays a valid id."
+  },
+  "reviewQueues.queueSettings.goneQueue": {
+    "defaultMessage": "This queue no longer exists. It may have been deleted. Close this dialog.",
+    "description": "Error in the Queue Settings dialog's changed-queue warning when Reload queue finds the queue gone."
+  },
+  "reviewQueues.queueSettings.id.description": {
+    "defaultMessage": "Used in links. It cannot be changed later.",
+    "description": "Description of the Queue id field. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.id.label": {
+    "defaultMessage": "Queue id",
+    "description": "Label of the Queue Settings dialog's field for the queue's id."
+  },
+  "reviewQueues.queueSettings.idRule": {
+    "defaultMessage": "Lowercase letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit (up to 64 characters).",
+    "description": "Error under the Queue id field when the id breaks the rule. The three quoted characters are the only punctuation an id may hold: keep them as they are."
+  },
+  "reviewQueues.queueSettings.idTaken": {
+    "defaultMessage": "A queue with this id already exists.",
+    "description": "Error under the Queue id field when another queue already has that id."
+  },
+  "reviewQueues.queueSettings.name.description": {
+    "defaultMessage": "Shown to Admins and Annotators.",
+    "description": "Description of the Name field. Admin and Annotator are user roles. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.name.label": {
+    "defaultMessage": "Name",
+    "description": "Label of the Queue Settings dialog's field for the queue's name."
+  },
+  "reviewQueues.queueSettings.nameRequired": {
+    "defaultMessage": "Enter a name.",
+    "description": "Error under the Name field of the Queue Settings dialog when it is empty."
+  },
+  "reviewQueues.queueSettings.priority.constraint": {
+    "defaultMessage": "A whole number. For information: orders the queues and Next item. Kept for when there is more than one queue; with only the Default queue it changes nothing yet.",
+    "description": "Text under the Priority field. Next item is the label of a button; Default is the name of a queue."
+  },
+  "reviewQueues.queueSettings.priority.description": {
+    "defaultMessage": "Higher numbers are worked first.",
+    "description": "Description of the Priority field. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.priority.label": {
+    "defaultMessage": "Priority",
+    "description": "Label of the Queue Settings dialog's field for the queue's priority, a whole number."
+  },
+  "reviewQueues.queueSettings.priorityWhole": {
+    "defaultMessage": "Enter a whole number.",
+    "description": "Error under the Priority field of the Queue Settings dialog when it is not a whole number."
+  },
+  "reviewQueues.queueSettings.reasonRequired": {
+    "defaultMessage": "Enter at least one reason.",
+    "description": "Error under the Skip reasons field of the Queue Settings dialog when an existing queue would have none."
+  },
+  "reviewQueues.queueSettings.reloadQueueAction": {
+    "defaultMessage": "reload the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when Reload queue, in the Queue Settings dialog, cannot read the queue."
+  },
+  "reviewQueues.queueSettings.save": {
+    "defaultMessage": "Save",
+    "description": "Button of the Queue Settings dialog that saves the queue's settings."
+  },
+  "reviewQueues.queueSettings.saveQueueAction": {
+    "defaultMessage": "save the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the settings of a production queue cannot be saved."
+  },
+  "reviewQueues.queueSettings.saveSettingsAction": {
+    "defaultMessage": "save the queue settings",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the settings of a Test Studio queue cannot be saved."
+  },
+  "reviewQueues.queueSettings.settingsTitle": {
+    "defaultMessage": "Queue Settings: {name}",
+    "description": "Title of the Queue Settings dialog. {name} is the queue's or the test set's name, as stored."
+  },
+  "reviewQueues.queueSettings.skipReasons.constraint": {
+    "defaultMessage": "Leave empty to use the default reasons.",
+    "description": "Text under the Skip reasons field when a queue is being created."
+  },
+  "reviewQueues.queueSettings.skipReasons.description": {
+    "defaultMessage": "An Annotator who gives an item back unfinished chooses one; it is kept in the item's review history. One per line.",
+    "description": "Description of the Skip reasons field. Annotator is a user role."
+  },
+  "reviewQueues.queueSettings.skipReasons.label": {
+    "defaultMessage": "Skip reasons",
+    "description": "Label of the Queue Settings dialog's field for the reasons an Annotator can give when handing an item back."
+  },
+  "reviewQueues.queueSettings.testSetNote": {
+    "defaultMessage": "This Test Studio queue is the test set {name}; its documents come from the set.",
+    "description": "Note at the top of a Test Studio queue's Settings dialog. {name} is the test set's name, as stored."
+  },
+  "reviewQueues.queueSettings.timeLimit.constraint": {
+    "defaultMessage": "For information: one reminder is sent, and the item stays assigned (assignments don't expire). 1 to {max}.",
+    "description": "Text under the Time limit field. {max} is the longest time limit allowed, in minutes."
+  },
+  "reviewQueues.queueSettings.timeLimit.description": {
+    "defaultMessage": "When an assigned item's Annotator is reminded.",
+    "description": "Description of the Time limit field. Annotator is a user role. Keep it to one short line."
+  },
+  "reviewQueues.queueSettings.timeLimit.label": {
+    "defaultMessage": "Time limit (minutes)",
+    "description": "Label of the Queue Settings dialog's field for how long an assigned item may wait before its Annotator is reminded."
+  },
+  "reviewQueues.queueSettings.timeLimitRange": {
+    "defaultMessage": "Enter a whole number of minutes from 1 to {max}.",
+    "description": "Error under the Time limit field of the Queue Settings dialog. {max} is the longest time limit allowed, in minutes."
+  },
+  "reviewQueues.queueSettings.tooManyReasons": {
+    "defaultMessage": "Keep it to {max} reasons.",
+    "description": "Error under the Skip reasons field of the Queue Settings dialog. {max} is how many reasons a queue may have."
+  },
+  "reviewQueues.queuesPage.column.actions": {
+    "defaultMessage": "Actions",
+    "description": "Header of the Review Management queue tables' last column, read only by screen readers: each row's menu."
+  },
+  "reviewQueues.queuesPage.column.annotators": {
+    "defaultMessage": "Annotators",
+    "description": "Column header of the Review Management queue tables: how many Annotators the queue lists. Annotator is a user role."
+  },
+  "reviewQueues.queuesPage.column.assigned": {
+    "defaultMessage": "Assigned",
+    "description": "Column header of the Review Management queue tables: how many of its items are assigned, started or not."
+  },
+  "reviewQueues.queuesPage.column.items": {
+    "defaultMessage": "Items",
+    "description": "Column header of the Review Management queue tables: how many items the queue holds."
+  },
+  "reviewQueues.queuesPage.column.pending": {
+    "defaultMessage": "Pending",
+    "description": "Column header of the Review Management queue tables: how many of its items no one is assigned to yet."
+  },
+  "reviewQueues.queuesPage.column.queue": {
+    "defaultMessage": "Queue",
+    "description": "Column header of the Review Management queue tables: the queue's name, as a link to its page."
+  },
+  "reviewQueues.queuesPage.confirmDelete": {
+    "defaultMessage": "Delete the queue {name} ({id})? This can't be undone.",
+    "description": "Body of the Delete queue dialog for a queue that holds no items. {name} is the queue's name and {id} its id, as stored."
+  },
+  "reviewQueues.queuesPage.confirmDeleteMoving": {
+    "defaultMessage": "Delete the queue {name} ({id})? This can't be undone. {count, plural, one {# item} other {# items}} will move to the Default queue.",
+    "description": "Body of the Delete queue dialog for a queue that holds items. {name} is the queue's name and {id} its id, as stored; {count} is how many items it holds. Default is the name of the queue they move to."
+  },
+  "reviewQueues.queuesPage.countedAt": {
+    "defaultMessage": "Counted {time}",
+    "description": "Tooltip of a Test Studio queue's count in Review Management: when it was counted. {time} is a date and time, already formatted."
+  },
+  "reviewQueues.queuesPage.defaultNotDeletable": {
+    "defaultMessage": "The default queue can't be deleted",
+    "description": "Why the Delete item of the Default queue's menu in Review Management is disabled."
+  },
+  "reviewQueues.queuesPage.deleteDialog.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Delete queue dialog that closes it without deleting."
+  },
+  "reviewQueues.queuesPage.deleteDialog.delete": {
+    "defaultMessage": "Delete",
+    "description": "Button of the Delete queue dialog that deletes the queue."
+  },
+  "reviewQueues.queuesPage.deleteDialog.title": {
+    "defaultMessage": "Delete queue",
+    "description": "Title of the dialog that confirms deleting a production queue."
+  },
+  "reviewQueues.queuesPage.deleteQueueAction": {
+    "defaultMessage": "delete the queue",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a queue cannot be deleted in Review Management."
+  },
+  "reviewQueues.queuesPage.deleted": {
+    "defaultMessage": "Deleted the queue {name}.",
+    "description": "Notice after an Admin deleted a queue that held no items. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuesPage.deletedMoved": {
+    "defaultMessage": "Deleted the queue {name}; its items moved to the Default queue.",
+    "description": "Notice after an Admin deleted a queue that held items. {name} is the queue's name, as stored; Default is the name of the queue its items moved to."
+  },
+  "reviewQueues.queuesPage.description": {
+    "defaultMessage": "Set up the Default review queue and list the Annotators who work it.",
+    "description": "Description under the Review Management heading. Default is the name of a queue; Annotator is a user role."
+  },
+  "reviewQueues.queuesPage.empty": {
+    "defaultMessage": "No queues found. The Default queue is created automatically; reload the page.",
+    "description": "Shown in the Production Queues table of Review Management when no queue is listed. Default is the name of a queue."
+  },
+  "reviewQueues.queuesPage.finalizing": {
+    "defaultMessage": "An item in this queue is being completed. Try again in a minute.",
+    "description": "Error in the Delete queue dialog when the server refused the delete because one of the queue's items is being completed."
+  },
+  "reviewQueues.queuesPage.loadQueuesAction": {
+    "defaultMessage": "load the review queues",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the production queues cannot be loaded in Review Management."
+  },
+  "reviewQueues.queuesPage.loadTestSetsAction": {
+    "defaultMessage": "load the test sets",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Test Studio queues cannot be loaded in Review Management."
+  },
+  "reviewQueues.queuesPage.menu.delete": {
+    "defaultMessage": "Delete",
+    "description": "Item of a production queue's menu in Review Management that deletes the queue."
+  },
+  "reviewQueues.queuesPage.menu.settings": {
+    "defaultMessage": "Settings",
+    "description": "Item of a queue's menu in Review Management that opens the queue's Settings dialog."
+  },
+  "reviewQueues.queuesPage.menu.view": {
+    "defaultMessage": "View",
+    "description": "Item of a queue's menu in Review Management that opens the queue's page."
+  },
+  "reviewQueues.queuesPage.noAnnotators": {
+    "defaultMessage": "No Annotators listed",
+    "description": "Tooltip of the Annotators count in a Review Management table when the queue lists no Annotator. Annotator is a user role."
+  },
+  "reviewQueues.queuesPage.notDefined": {
+    "defaultMessage": "This queue is not defined",
+    "description": "Why the Settings or Delete item of a queue's menu in Review Management is disabled: the queue still holds items but has no definition."
+  },
+  "reviewQueues.queuesPage.notDefinedNote": {
+    "defaultMessage": "Not defined — move its items to a defined queue",
+    "description": "Note under a queue's name in the Production Queues table when the queue holds items but has no definition."
+  },
+  "reviewQueues.queuesPage.preparing": {
+    "defaultMessage": "Preparing…",
+    "description": "Shown in a Test Studio queue's count cell in Review Management while the test set's summaries are built."
+  },
+  "reviewQueues.queuesPage.production.description": {
+    "defaultMessage": "System-wide queues for processed documents. When HITL is enabled in a document's configuration and the Default queue is enabled, a document that raised confidence alerts arrives in the Default queue.",
+    "description": "Description of the Production Queues table. HITL (human in the loop) is the name of a configuration setting; Default is the name of a queue."
+  },
+  "reviewQueues.queuesPage.production.find": {
+    "defaultMessage": "Find queues",
+    "description": "Placeholder of the Production Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.production.findAriaLabel": {
+    "defaultMessage": "Find production queues",
+    "description": "Screen-reader label of the Production Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.production.loadError": {
+    "defaultMessage": "Couldn't load the review queues",
+    "description": "Header of the error in Review Management when the production queues could not be loaded at all."
+  },
+  "reviewQueues.queuesPage.production.loading": {
+    "defaultMessage": "Loading queues",
+    "description": "Shown in the Production Queues table while the queues load."
+  },
+  "reviewQueues.queuesPage.production.stale": {
+    "defaultMessage": "Showing the last loaded queues",
+    "description": "Header of the warning in Review Management when refreshing the production queues failed but earlier ones are still shown."
+  },
+  "reviewQueues.queuesPage.production.title": {
+    "defaultMessage": "Production Queues",
+    "description": "Title of the Review Management table of production queues, where processed documents are routed."
+  },
+  "reviewQueues.queuesPage.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button in Review Management that reloads the queue table shown."
+  },
+  "reviewQueues.queuesPage.refreshAriaLabel": {
+    "defaultMessage": "Refresh queues",
+    "description": "Screen-reader label of the Refresh button in Review Management."
+  },
+  "reviewQueues.queuesPage.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of a Review Management load warning or error that loads the queues again."
+  },
+  "reviewQueues.queuesPage.rowActions": {
+    "defaultMessage": "Actions for {name}",
+    "description": "Screen-reader label of a queue's menu button in Review Management. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuesPage.saved": {
+    "defaultMessage": "Saved the queue {name}.",
+    "description": "Notice after an Admin saved a production queue's settings in Review Management. {name} is the queue's name, as stored."
+  },
+  "reviewQueues.queuesPage.savedTestSet": {
+    "defaultMessage": "Saved the queue settings of {name}.",
+    "description": "Notice after an Admin saved a Test Studio queue's settings in Review Management. {name} is the test set's name, as stored."
+  },
+  "reviewQueues.queuesPage.savedTestSetFallback": {
+    "defaultMessage": "Saved the queue settings of the test set.",
+    "description": "Notice after an Admin saved a Test Studio queue's settings in Review Management, when the test set's name is not known."
+  },
+  "reviewQueues.queuesPage.testSets.description": {
+    "defaultMessage": "Each test set is a queue of documents whose ground truth needs confirming. Open one to assign its documents.",
+    "description": "Description of the Test Studio Queues table in Review Management."
+  },
+  "reviewQueues.queuesPage.testSets.find": {
+    "defaultMessage": "Find test sets",
+    "description": "Placeholder of the Test Studio Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.testSets.findAriaLabel": {
+    "defaultMessage": "Find Test Studio queues",
+    "description": "Screen-reader label of the Test Studio Queues table's text filter."
+  },
+  "reviewQueues.queuesPage.testSets.loadError": {
+    "defaultMessage": "Couldn't load the test sets",
+    "description": "Header of the error in Review Management when the Test Studio queues (one per test set) could not be loaded at all."
+  },
+  "reviewQueues.queuesPage.testSets.loading": {
+    "defaultMessage": "Loading Test Studio queues",
+    "description": "Shown in the Test Studio Queues table while the queues load. Test Studio is a product area name."
+  },
+  "reviewQueues.queuesPage.testSets.preparing": {
+    "defaultMessage": "Preparing {count, plural, one {# test set} other {# test sets}}…",
+    "description": "Status beside the Test Studio Queues table's title while test sets' summaries are built. {count} is how many test sets."
+  },
+  "reviewQueues.queuesPage.testSets.stale": {
+    "defaultMessage": "Showing the last loaded test sets",
+    "description": "Header of the warning in Review Management when refreshing the Test Studio queues failed but earlier ones are still shown."
+  },
+  "reviewQueues.queuesPage.testSets.title": {
+    "defaultMessage": "Test Studio Queues",
+    "description": "Title of the Review Management table of Test Studio queues, one per test set. Test Studio is a product area name."
+  },
+  "reviewQueues.queuesPage.title": {
+    "defaultMessage": "Review Management",
+    "description": "Heading of the Review Management page of Review Studio, where Admins set up and watch the review queues."
+  },
+  "reviewQueues.queuesPage.view.label": {
+    "defaultMessage": "Queues to show",
+    "description": "Screen-reader label of the Review Management switch between the Production and the Test Studio queue tables."
+  },
+  "reviewQueues.queuesPage.view.production": {
+    "defaultMessage": "Production",
+    "description": "Option of the Review Management switch that shows the production queues, where processed documents are routed."
+  },
+  "reviewQueues.queuesPage.view.testStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Option of the Review Management switch that shows the Test Studio queues, one per test set. Test Studio is a product area name."
+  },
+  "reviewQueues.reasons.blueprintConfidence": {
+    "defaultMessage": "Blueprint confidence: {score, number, ::.00} < {threshold, number, ::.00}",
+    "description": "Chip text of a review reason for a section whose matched Bedrock Data Automation blueprint has a confidence below the review threshold. Also the Top reason column of a work list. {score} is the blueprint's confidence and {threshold} the threshold, both from 0 to 1 with two decimals."
+  },
+  "reviewQueues.reasons.blueprintConfidenceField": {
+    "defaultMessage": "Blueprint confidence: {field} {score, number, ::.00} < {threshold, number, ::.00}",
+    "description": "Chip text of a review reason for a matched Bedrock Data Automation blueprint whose confidence is below the review threshold, when the reason names a field. Also the Top reason column of a work list. {field} is the field's label or name; {score} is the confidence and {threshold} the threshold, both from 0 to 1 with two decimals."
+  },
   "reviewQueues.reasons.extractionFailed": {
     "defaultMessage": "Extraction failed",
     "description": "Chip text of a review reason for a section whose extraction failed and left it with no extracted data (for example, a content filter withheld the model reply). Also the Reason column of a work list."
   },
+  "reviewQueues.reasons.lowConfidence": {
+    "defaultMessage": "Low confidence: {score, number, ::.00} < {threshold, number, ::.00}",
+    "description": "Chip text of a review reason for an extracted value whose confidence is below its threshold, when the field has no name. Also the Top reason column of a work list. {score} is the confidence and {threshold} the threshold, both from 0 to 1 with two decimals."
+  },
+  "reviewQueues.reasons.lowConfidenceField": {
+    "defaultMessage": "Low confidence: {field} {score, number, ::.00} < {threshold, number, ::.00}",
+    "description": "Chip text of a review reason for an extracted value whose confidence is below its threshold. Also the Top reason column of a work list. {field} is the field's label or name, from the document class schema; {score} is the confidence and {threshold} the threshold, both from 0 to 1 with two decimals."
+  },
+  "reviewQueues.reasons.missingRequired": {
+    "defaultMessage": "Missing required",
+    "description": "Chip text of a review reason for a required field that has no extracted value, when the field has no name. Also the Top reason column of a work list."
+  },
+  "reviewQueues.reasons.missingRequiredField": {
+    "defaultMessage": "Missing required: {name}",
+    "description": "Chip text of a review reason for a required field that has no extracted value. Also the Top reason column of a work list. {name} is the field's label or name, from the document class schema."
+  },
+  "reviewQueues.reviewHistory.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the review item's history dialog."
+  },
+  "reviewQueues.reviewHistory.column.by": {
+    "defaultMessage": "By",
+    "description": "Column header of a review item's history table: who did it (an e-mail address)."
+  },
+  "reviewQueues.reviewHistory.column.event": {
+    "defaultMessage": "Event",
+    "description": "Column header of a review item's history table: what happened, such as Claimed or Skipped."
+  },
+  "reviewQueues.reviewHistory.column.reason": {
+    "defaultMessage": "Reason",
+    "description": "Column header of a review item's history table: the reason and note given with the event, as written."
+  },
+  "reviewQueues.reviewHistory.column.when": {
+    "defaultMessage": "When",
+    "description": "Column header of a review item's history table (History › Review Activity on the edit page): when the event happened."
+  },
+  "reviewQueues.reviewHistory.empty": {
+    "defaultMessage": "Nothing has happened to this item yet.",
+    "description": "Shown in a review item's history table when it has no events."
+  },
+  "reviewQueues.reviewHistory.event.assigned": {
+    "defaultMessage": "Assigned",
+    "description": "Event in a review item's history: an Admin assigned the item to an Annotator."
+  },
+  "reviewQueues.reviewHistory.event.claimed": {
+    "defaultMessage": "Claimed",
+    "description": "Event in a review item's history: an Annotator claimed the item."
+  },
+  "reviewQueues.reviewHistory.event.completed": {
+    "defaultMessage": "Completed",
+    "description": "Event in a review item's history: the review was completed."
+  },
+  "reviewQueues.reviewHistory.event.draftSaved": {
+    "defaultMessage": "Edits saved",
+    "description": "Event in a review item's history: the reviewer saved their edits as a draft."
+  },
+  "reviewQueues.reviewHistory.event.finalizeSendFailed": {
+    "defaultMessage": "Finalize pending retry",
+    "description": "Event in a review item's history: applying the review's result could not start and will be tried again."
+  },
+  "reviewQueues.reviewHistory.event.forceReleased": {
+    "defaultMessage": "Unassigned by an Admin",
+    "description": "Event in a review item's history: an Admin took the item away from its Annotator and put it back in its queue."
+  },
+  "reviewQueues.reviewHistory.event.moved": {
+    "defaultMessage": "Moved",
+    "description": "Event in a review item's history: an Admin moved the item to another queue."
+  },
+  "reviewQueues.reviewHistory.event.reassigned": {
+    "defaultMessage": "Reassigned",
+    "description": "Event in a review item's history: an Admin assigned the item to another Annotator."
+  },
+  "reviewQueues.reviewHistory.event.reclaimedExpired": {
+    "defaultMessage": "Claimed (previous claim expired)",
+    "description": "Event in a review item's history: an Annotator claimed the item after someone else's claim on it expired."
+  },
+  "reviewQueues.reviewHistory.event.rejected": {
+    "defaultMessage": "Rejected",
+    "description": "Event in a review item's history: the reviewer rejected the document."
+  },
+  "reviewQueues.reviewHistory.event.released": {
+    "defaultMessage": "Skipped",
+    "description": "Event in a review item's history: its Annotator gave the item back to its queue unfinished (Skip)."
+  },
+  "reviewQueues.reviewHistory.event.removed": {
+    "defaultMessage": "Removed from review",
+    "description": "Event in a review item's history: an Admin took the item out of review, so the document kept its machine results."
+  },
+  "reviewQueues.reviewHistory.event.sectionReviewed": {
+    "defaultMessage": "Section review completed",
+    "description": "Event in a document's review history: the review of one of its sections was completed."
+  },
+  "reviewQueues.reviewHistory.event.sentToReview": {
+    "defaultMessage": "Sent to review",
+    "description": "Event in a review item's history: someone sent the finished document to a review queue by hand."
+  },
+  "reviewQueues.reviewHistory.event.skippedAll": {
+    "defaultMessage": "Skipped (Skip All Reviews)",
+    "description": "Event in a review item's history: its review was finished without checking, with Skip All Reviews. Skip All Reviews names an action of the app."
+  },
+  "reviewQueues.reviewHistory.event.superseded": {
+    "defaultMessage": "Superseded",
+    "description": "Event in a review item's history: a newer review of the same document replaced this one."
+  },
+  "reviewQueues.reviewHistory.event.takenOver": {
+    "defaultMessage": "Taken over",
+    "description": "Event in a review item's history: an Admin took over the item from the Annotator it was assigned to."
+  },
+  "reviewQueues.reviewHistory.event.withdrawn": {
+    "defaultMessage": "Withdrawn",
+    "description": "Event in a review item's history: the item left review without a result, for example because its document was processed again."
+  },
+  "reviewQueues.reviewHistory.title": {
+    "defaultMessage": "Review history ({count})",
+    "description": "Header of the dialog listing a review item's history. {count} is the number of events."
+  },
+  "reviewQueues.supervisorActions.assign": {
+    "defaultMessage": "Assign…",
+    "description": "Row menu item of a waiting review item that assigns it to an Annotator (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.assignFailed": {
+    "defaultMessage": "Couldn't assign {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin assigned review items and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.assignItemAction": {
+    "defaultMessage": "assign it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be assigned; \"it\" is the item."
+  },
+  "reviewQueues.supervisorActions.assigned": {
+    "defaultMessage": "Assigned {count, plural, one {# item} other {# items}} to {email}.",
+    "description": "Notice after an Admin assigned review items. {count} is how many were assigned and {email} is the Annotator's e-mail address."
+  },
+  "reviewQueues.supervisorActions.group": {
+    "defaultMessage": "Admin",
+    "description": "Group heading in a review item's row menu on a queue's page, holding the actions only an Admin has. Admin is a user role."
+  },
+  "reviewQueues.supervisorActions.loadAnnotatorsAction": {
+    "defaultMessage": "load the Annotators",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the Annotators an Admin can assign items to cannot be loaded. Annotator is a user role."
+  },
+  "reviewQueues.supervisorActions.move": {
+    "defaultMessage": "Move to another queue…",
+    "description": "Row menu item of a review item that moves it to another review queue (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.moveFailed": {
+    "defaultMessage": "Couldn't move {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin moved review items to another queue and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.moveItemAction": {
+    "defaultMessage": "move it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be moved to another queue; \"it\" is the item."
+  },
+  "reviewQueues.supervisorActions.moved": {
+    "defaultMessage": "Moved {count, plural, one {# item} other {# items}} to {queue}.",
+    "description": "Notice after an Admin moved review items to another queue. {count} is how many and {queue} is the queue's name, as stored."
+  },
+  "reviewQueues.supervisorActions.noOtherQueue": {
+    "defaultMessage": "There is no other queue",
+    "description": "Why the Move to another queue… item of a review item's row menu is disabled: there is no other review queue."
+  },
+  "reviewQueues.supervisorActions.notAssigned": {
+    "defaultMessage": "This item is not assigned",
+    "description": "Why the Unassign item of a review item's row menu is disabled."
+  },
+  "reviewQueues.supervisorActions.notWaiting": {
+    "defaultMessage": "This item is not waiting for review",
+    "description": "Why the Assign… or Remove from queue… item of a review item's row menu is disabled: the item is neither waiting nor assigned."
+  },
+  "reviewQueues.supervisorActions.reassign": {
+    "defaultMessage": "Reassign…",
+    "description": "Row menu item of an assigned review item that assigns it to another Annotator (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.remove": {
+    "defaultMessage": "Remove from queue…",
+    "description": "Row menu item of a review item that takes it out of review (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.removeFailed": {
+    "defaultMessage": "Couldn't remove {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin removed review items from review and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.removeItemAction": {
+    "defaultMessage": "remove it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be taken out of review; \"it\" is the item."
+  },
+  "reviewQueues.supervisorActions.removed": {
+    "defaultMessage": "Removed {count, plural, one {# item} other {# items}} from review.",
+    "description": "Notice after an Admin took review items out of review. {count} is how many."
+  },
+  "reviewQueues.supervisorActions.unassign": {
+    "defaultMessage": "Unassign",
+    "description": "Row menu item of an assigned review item that takes it back from its Annotator (opens a dialog)."
+  },
+  "reviewQueues.supervisorActions.unassignFailed": {
+    "defaultMessage": "Couldn't unassign {count, plural, one {# item} other {# items}}: {failures}",
+    "description": "Error after an Admin unassigned review items and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons."
+  },
+  "reviewQueues.supervisorActions.unassignItemAction": {
+    "defaultMessage": "unassign it",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when one review item cannot be taken back from its Annotator; \"it\" is the item."
+  },
+  "reviewQueues.supervisorActions.unassigned": {
+    "defaultMessage": "Unassigned {count, plural, one {# item} other {# items}}.",
+    "description": "Notice after an Admin took review items back from their Annotators. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Unassign, Move to another queue and Remove from queue dialogs that closes the dialog without acting."
+  },
+  "reviewQueues.supervisorModals.chooseQueue": {
+    "defaultMessage": "Choose a queue",
+    "description": "Placeholder of the Target queue field of the Move to another queue dialog."
+  },
+  "reviewQueues.supervisorModals.move": {
+    "defaultMessage": "Move",
+    "description": "Button of the Move to another queue dialog that moves the items to the chosen queue."
+  },
+  "reviewQueues.supervisorModals.moveMany": {
+    "defaultMessage": "Move {count, plural, one {# item} other {# items}} to another queue. An assignment is removed; drafts are kept.",
+    "description": "Body of the Move to another queue dialog for several items. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.moveOne": {
+    "defaultMessage": "Move {document} to another queue. An assignment is removed; drafts are kept.",
+    "description": "Body of the Move to another queue dialog for one item. {document} is its file name."
+  },
+  "reviewQueues.supervisorModals.moveTitle": {
+    "defaultMessage": "Move to another queue",
+    "description": "Title of the dialog that moves review items to another review queue."
+  },
+  "reviewQueues.supervisorModals.noOtherQueue": {
+    "defaultMessage": "There is no other queue to move to.",
+    "description": "Shown in the Target queue list of the Move to another queue dialog when there is no other review queue."
+  },
+  "reviewQueues.supervisorModals.note": {
+    "defaultMessage": "Note",
+    "description": "Label of the Remove from queue dialog's field for an optional note about why the items are removed."
+  },
+  "reviewQueues.supervisorModals.noteDescription": {
+    "defaultMessage": "Optional. Kept in the item's history.",
+    "description": "Description of the Note field of the Remove from queue dialog."
+  },
+  "reviewQueues.supervisorModals.queueRequired": {
+    "defaultMessage": "Choose a queue.",
+    "description": "Error under the Target queue field of the Move to another queue dialog when the user moves without choosing one."
+  },
+  "reviewQueues.supervisorModals.remove": {
+    "defaultMessage": "Remove",
+    "description": "Button of the Remove from queue dialog that takes the items out of review."
+  },
+  "reviewQueues.supervisorModals.removeMany": {
+    "defaultMessage": "Remove {count, plural, one {# item} other {# items}} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.",
+    "description": "Body of the Remove from queue dialog for several items. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.removeOne": {
+    "defaultMessage": "Remove {document} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.",
+    "description": "Body of the Remove from queue dialog for one item. {document} is its file name."
+  },
+  "reviewQueues.supervisorModals.removeTitle": {
+    "defaultMessage": "Remove from queue",
+    "description": "Title of the dialog that takes review items out of review."
+  },
+  "reviewQueues.supervisorModals.targetQueue": {
+    "defaultMessage": "Target queue",
+    "description": "Label of the Move to another queue dialog's field that chooses the review queue to move the items to."
+  },
+  "reviewQueues.supervisorModals.unassign": {
+    "defaultMessage": "Unassign",
+    "description": "Title of the dialog that takes review items back from their Annotators, and its button that does it. The items stay in their queue, assigned to no one."
+  },
+  "reviewQueues.supervisorModals.unassignMany": {
+    "defaultMessage": "Take {count, plural, one {# item} other {# items}} back from their Annotators. They stay in their queue, unassigned; drafts are kept and the Annotators are told.",
+    "description": "Body of the Unassign dialog for several items. {count} is how many."
+  },
+  "reviewQueues.supervisorModals.unassignOne": {
+    "defaultMessage": "Take {document} back from {annotator}. It stays in {queue}, unassigned; the draft is kept and the Annotator is told.",
+    "description": "Body of the Unassign dialog for one item. {document} is its file name, {annotator} the e-mail address of the Annotator it is assigned to, and {queue} the id of its review queue."
+  },
+  "reviewQueues.supervisorModals.unassignOneNoAnnotator": {
+    "defaultMessage": "Take {document} back from its Annotator. It stays in {queue}, unassigned; the draft is kept and the Annotator is told.",
+    "description": "Body of the Unassign dialog for one item whose Annotator is not known. {document} is its file name and {queue} the id of its review queue."
+  },
+  "reviewQueues.taskContext.confidence": {
+    "defaultMessage": "Confidence {score}, threshold {threshold}",
+    "description": "Popover text on a low-confidence review reason. {score} is the extracted value's confidence and {threshold} the threshold it fell below, both already formatted with two decimals."
+  },
+  "reviewQueues.taskContext.escalated": {
+    "defaultMessage": "Escalated",
+    "description": "Header of the info alert on an escalated review item; the alert's text is the escalation note, as written."
+  },
   "reviewQueues.taskContext.extractionFailed": {
     "defaultMessage": "Extraction failed for this section, so it has no extracted data to check.",
     "description": "Popover text on an \"Extraction failed\" review reason: the section was held for review because its extraction did not succeed (for example, a content filter withheld the model reply), not because of a field confidence."
+  },
+  "reviewQueues.taskContext.field": {
+    "defaultMessage": "Field: {field}",
+    "description": "Popover line on a review reason chip: the field it is about. {field} is the field's name or path in the extracted data."
+  },
+  "reviewQueues.taskContext.missingValue": {
+    "defaultMessage": "No extracted value; the class schema requires this field.",
+    "description": "Popover text on a Missing required review reason: extraction left a field empty that the document class schema requires."
+  },
+  "reviewQueues.taskContext.moreAlerts": {
+    "defaultMessage": "+{count, plural, one {# more alert} other {# more alerts}}",
+    "description": "After the first review reason chips: how many more reasons the item has. A button that shows the rest, or a grey badge when the rest are not listed. {count} is at least 1."
+  },
+  "reviewQueues.taskContext.onlyLowest": {
+    "defaultMessage": "Only the {count} lowest-confidence alerts are listed.",
+    "description": "Popover on the grey badge counting the review reasons that are not listed: only the worst ones are kept. {count} is how many are listed."
+  },
+  "reviewQueues.taskContext.section": {
+    "defaultMessage": "Section {sectionId}",
+    "description": "Popover line on a review reason chip: the document section it belongs to. {sectionId} is the section's id, usually a number."
   },
   "reviewQueues.taskContext.sentBy": {
     "defaultMessage": "By {requestedBy}",
@@ -5434,6 +7742,230 @@
   "reviewQueues.taskContext.sentToReview": {
     "defaultMessage": "Sent to review: {reason}",
     "description": "Header of the info alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it."
+  },
+  "reviewQueues.taskContext.showFewer": {
+    "defaultMessage": "Show fewer",
+    "description": "Button that collapses the review reason chips back to the first few."
+  },
+  "reviewQueues.taskContext.showMoreAlerts": {
+    "defaultMessage": "Show {count, plural, one {# more alert} other {# more alerts}}",
+    "description": "Screen-reader label of the button that shows the rest of the review reason chips. {count} is at least 1."
+  },
+  "reviewQueues.taskContext.title": {
+    "defaultMessage": "Review Reason",
+    "description": "Heading of the panel above the editor of a review item that lists why the document is in review, one chip per reason."
+  },
+  "reviewQueues.toolsPanel.annotators": {
+    "defaultMessage": "<b>Annotators</b> (Admin): each listed Annotator, with the documents assigned to them.",
+    "description": "Queue info panel, \"On this page\" item. <b>Annotators</b> is the title of a panel of the page, shown in bold; \"(Admin)\" says only Admins see it."
+  },
+  "reviewQueues.toolsPanel.assignmentExpiry": {
+    "defaultMessage": "An assignment does not expire. After the queue's time limit, the Annotator is reminded once.",
+    "description": "Queue info panel, \"Assignments\" item. Annotator is a user role."
+  },
+  "reviewQueues.toolsPanel.assignmentsHeading": {
+    "defaultMessage": "Assignments",
+    "description": "Sub-heading in the Queue info panel, above the notes on how assignments work."
+  },
+  "reviewQueues.toolsPanel.documentsTable": {
+    "defaultMessage": "The documents table: sort by <b>Annotator</b> to see each person's work. Select documents to assign, unassign, move or claim them; open one to edit it.",
+    "description": "Queue info panel, \"On this page\" item. <b>Annotator</b> is the header of a column of the table, shown in bold."
+  },
+  "reviewQueues.toolsPanel.keyMetrics": {
+    "defaultMessage": "<b>Key Metrics</b>: pending, assigned and in-progress counts, and the queue's Annotators and priority.",
+    "description": "Queue info panel, \"On this page\" item. <b>Key Metrics</b> is the title of a panel of the page, shown in bold."
+  },
+  "reviewQueues.toolsPanel.linkHumanReview": {
+    "defaultMessage": "Human review",
+    "description": "Label of a \"Learn more\" link to the Human review documentation page."
+  },
+  "reviewQueues.toolsPanel.linkReviewQueues": {
+    "defaultMessage": "Review queues",
+    "description": "Label of a \"Learn more\" link to the Review queues documentation page."
+  },
+  "reviewQueues.toolsPanel.linkTestStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Label of a \"Learn more\" link to the Test Studio documentation page. Test Studio is a product area name."
+  },
+  "reviewQueues.toolsPanel.managementIntro": {
+    "defaultMessage": "Every review queue in one place: the Production queues documents are routed to, and one Test Studio queue per test set. The <b>Production | Test Studio</b> switch chooses which table is shown.",
+    "description": "Opening paragraph of the Review Management info panel. <b>Production | Test Studio</b> names the switch above the tables, in bold: its two options."
+  },
+  "reviewQueues.toolsPanel.managementTitle": {
+    "defaultMessage": "Review Management",
+    "description": "Title of the info panel of Review Studio › Review Management (the review queues an Admin sets up)."
+  },
+  "reviewQueues.toolsPanel.onThisPage": {
+    "defaultMessage": "On this page",
+    "description": "Sub-heading in the Queue info panel, above the list of what the page shows and does."
+  },
+  "reviewQueues.toolsPanel.productionHeading": {
+    "defaultMessage": "Production queues",
+    "description": "Sub-heading in the Review Management info panel, above the notes on production queues."
+  },
+  "reviewQueues.toolsPanel.productionOpen": {
+    "defaultMessage": "Open a queue to assign its documents to Annotators, unassign them, move them or remove them from review.",
+    "description": "Review Management info panel, \"Production queues\" item. Annotator is a user role."
+  },
+  "reviewQueues.toolsPanel.productionRouting": {
+    "defaultMessage": "A document whose fields raised confidence alerts goes to the Default queue, when HITL is enabled in its configuration.",
+    "description": "Review Management info panel, \"Production queues\" item. Default is the name of a queue; HITL (human in the loop) is the name of a configuration setting."
+  },
+  "reviewQueues.toolsPanel.productionSettings": {
+    "defaultMessage": "<b>Settings</b> sets a queue's name, priority, time limit, eligible Annotators and Enabled switch. A saved change shows at once.",
+    "description": "Review Management info panel, \"Production queues\" item. <b>Settings</b> is the label of a menu item, shown in bold; Enabled is the label of a switch."
+  },
+  "reviewQueues.toolsPanel.queueIntro": {
+    "defaultMessage": "One queue's documents and the Annotators who work them.",
+    "description": "Opening paragraph of the Queue info panel. Annotator is a user role."
+  },
+  "reviewQueues.toolsPanel.queueProgress": {
+    "defaultMessage": "<b>Queue Progress</b>: on a Production queue, the documents assigned or in progress (a finished document leaves the queue); on a Test Studio queue, the documents completed.",
+    "description": "Queue info panel, \"On this page\" item. <b>Queue Progress</b> is the title of a panel of the page, shown in bold."
+  },
+  "reviewQueues.toolsPanel.queueTitle": {
+    "defaultMessage": "Queue",
+    "description": "Title of the info panel of a review queue's page, Production or Test Studio."
+  },
+  "reviewQueues.toolsPanel.skip": {
+    "defaultMessage": "Skip gives a document back to the queue, unassigned and not finished; its saved work is kept.",
+    "description": "Queue info panel, \"Assignments\" item. Skip is the label of a button."
+  },
+  "reviewQueues.toolsPanel.testStudioAnnotators": {
+    "defaultMessage": "List Annotators in its settings; they claim documents or an Admin assigns them.",
+    "description": "Review Management info panel, \"Test Studio queues\" item. Annotator and Admin are user roles."
+  },
+  "reviewQueues.toolsPanel.testStudioHeading": {
+    "defaultMessage": "Test Studio queues",
+    "description": "Sub-heading in the Review Management info panel, above the notes on Test Studio queues. Test Studio is a product area name."
+  },
+  "reviewQueues.toolsPanel.testStudioSets": {
+    "defaultMessage": "Each test set is a queue: its documents are the labels to check before they become ground truth.",
+    "description": "Review Management info panel, \"Test Studio queues\" item."
+  },
+  "reviewQueues.workItem.alerts": {
+    "defaultMessage": "{count, plural, one {# confidence alert} other {# confidence alerts}}",
+    "description": "Top reason column of Home › Tasks for a Test Studio document. {count} is the number of its fields below their confidence threshold."
+  },
+  "reviewQueues.workItem.draftLabels": {
+    "defaultMessage": "Draft labels to confirm",
+    "description": "Top reason column of Home › Tasks for a Test Studio document that has no confidence alert but has labels for the Annotator to check and confirm."
+  },
+  "reviewQueues.workItem.escalated": {
+    "defaultMessage": "{queue} (escalated)",
+    "description": "Queue column of a review work table for an escalated item. {queue} is the queue id, as an Admin named it."
+  },
+  "reviewQueues.workItem.source.production": {
+    "defaultMessage": "Production",
+    "description": "Source of a review work item or queue: a production review queue (as opposed to Test Studio). Shown as a badge in the Source column of Home › Tasks, Home › Queues and a queue page, and in the source filter."
+  },
+  "reviewQueues.workItem.source.testSet": {
+    "defaultMessage": "Test Studio",
+    "description": "Source of a review work item or queue: a Test Studio test set being annotated. Shown as a badge in the Source column of Home › Tasks, Home › Queues and a queue page, and in the source filter. Test Studio is the name of the screen."
+  },
+  "reviewQueues.workItem.state.assigned": {
+    "defaultMessage": "Assigned",
+    "description": "State column of a review work table for an item an Annotator holds, and for every Test Studio document assigned to the reader."
+  },
+  "reviewQueues.workItem.you": {
+    "defaultMessage": "You",
+    "description": "Annotator column of a review work table, and the end of a queue page's \"Assigned to …\" hint, for an item assigned to the reader."
+  },
+  "reviewQueues.workItemActions.edit": {
+    "defaultMessage": "Edit",
+    "description": "Item of a review work table row's menu: opens the item's edit page, without changing who it is assigned to."
+  },
+  "reviewQueues.workItemsTable.assignment.all": {
+    "defaultMessage": "All items",
+    "description": "Option of a review work table's assignment filter: every item, assigned or not."
+  },
+  "reviewQueues.workItemsTable.assignment.assigned": {
+    "defaultMessage": "Assigned",
+    "description": "Option of a review work table's assignment filter: items assigned to an Annotator."
+  },
+  "reviewQueues.workItemsTable.assignment.filter": {
+    "defaultMessage": "Filter by assignment",
+    "description": "Screen-reader label of a review work table's filter on whether items are assigned."
+  },
+  "reviewQueues.workItemsTable.assignment.unassigned": {
+    "defaultMessage": "Unassigned",
+    "description": "Option of a review work table's assignment filter: items no one is assigned to."
+  },
+  "reviewQueues.workItemsTable.column.actions": {
+    "defaultMessage": "Actions",
+    "description": "Column header of a review work table's row menus."
+  },
+  "reviewQueues.workItemsTable.column.age": {
+    "defaultMessage": "Age",
+    "description": "Column header of a review work table: how long ago the item entered its queue or was assigned."
+  },
+  "reviewQueues.workItemsTable.column.document": {
+    "defaultMessage": "Document",
+    "description": "Column header of a review work table (Home › Tasks, a queue page): the document, as a link to its edit page."
+  },
+  "reviewQueues.workItemsTable.column.owner": {
+    "defaultMessage": "Annotator",
+    "description": "Column header of a review work table: who the item is assigned to. Annotator is the name of a user role."
+  },
+  "reviewQueues.workItemsTable.column.priority": {
+    "defaultMessage": "Priority",
+    "description": "Column header of a review work table: the item's priority, a number."
+  },
+  "reviewQueues.workItemsTable.column.queue": {
+    "defaultMessage": "Queue",
+    "description": "Column header of a review work table: the review queue (or Test Studio test set) the item is in."
+  },
+  "reviewQueues.workItemsTable.column.reason": {
+    "defaultMessage": "Top reason",
+    "description": "Column header of a review work table: the main reason the item needs review, such as a field's low confidence."
+  },
+  "reviewQueues.workItemsTable.column.source": {
+    "defaultMessage": "Source",
+    "description": "Column header of a review work table: whether the item comes from a production review queue or from Test Studio."
+  },
+  "reviewQueues.workItemsTable.column.state": {
+    "defaultMessage": "State",
+    "description": "Column header of a review work table: the item's review state, such as Waiting or Assigned."
+  },
+  "reviewQueues.workItemsTable.find": {
+    "defaultMessage": "Find items",
+    "description": "Placeholder and screen-reader label of a review work table's text filter."
+  },
+  "reviewQueues.workItemsTable.loading": {
+    "defaultMessage": "Loading items",
+    "description": "Shown in a review work table while its items load."
+  },
+  "reviewQueues.workItemsTable.moreReasons": {
+    "defaultMessage": "+{count} more",
+    "description": "After an item's top reason in a review work table: how many more reasons it has. {count} is at least 1."
+  },
+  "reviewQueues.workItemsTable.openDocument": {
+    "defaultMessage": "Open {objectKey}",
+    "description": "Screen-reader label of a review work table's document link, which opens its edit page. {objectKey} is the document's full name."
+  },
+  "reviewQueues.workItemsTable.rowActions": {
+    "defaultMessage": "Actions for {name}",
+    "description": "Screen-reader label of a review work table row's menu button. {name} is the document's file name."
+  },
+  "reviewQueues.workItemsTable.selection.all": {
+    "defaultMessage": "Select all items on this page",
+    "description": "Screen-reader label of a review work table's select-all checkbox."
+  },
+  "reviewQueues.workItemsTable.selection.group": {
+    "defaultMessage": "Item selection",
+    "description": "Screen-reader label of a review work table's selection checkboxes, as a group."
+  },
+  "reviewQueues.workItemsTable.selection.item": {
+    "defaultMessage": "Select {name}",
+    "description": "Screen-reader label of a review work table row's checkbox. {name} is the document's file name."
+  },
+  "reviewQueues.workItemsTable.source.all": {
+    "defaultMessage": "All sources",
+    "description": "Option of a review work table's source filter: items from production queues and from Test Studio."
+  },
+  "reviewQueues.workItemsTable.source.filter": {
+    "defaultMessage": "Filter by source",
+    "description": "Screen-reader label of a review work table's filter on the items' source (production or Test Studio)."
   },
   "routes.auth.signOut": {
     "defaultMessage": "Sign Out",

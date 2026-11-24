@@ -4,11 +4,18 @@
 /** A review action that is recorded in history cannot be confirmed without a reason. */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 
 import ReasonModal from '../ReasonModal';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const renderModal = (onConfirm = vi.fn()) => {
   render(
@@ -22,6 +29,7 @@ const renderModal = (onConfirm = vi.fn()) => {
     >
       What skipping does.
     </ReasonModal>,
+    { wrapper: English },
   );
   const modal = createWrapper(document.body).findModal()!;
   const confirm = () =>

@@ -163,7 +163,7 @@ Every displayed date, time and amount goes through the helpers, and so does near
 number. What remains on `toFixed` or `toLocaleString` is either technical (exports,
 parse-backs, text comparisons, debug timings, chart data) or one of the exceptions named here:
 the test-run comparison's colour-graded cells and its field-metrics string, which are parsed
-back; the sentence builders in `promptCacheModel.ts` and `review-api.ts`, converted with their
+back; the sentence builders in `promptCacheModel.ts`, converted with their
 screens; and the capacity planner's quota strings, a follow-up. The comparison screen's CSV test
 pins an export beside its localized cell.
 
@@ -582,7 +582,7 @@ Admin, configuration and Test Studio screens (the configuration editor, includin
 is a committed follow-up right after `fr-CA` ships; the rest is optional later); Cognito
 invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
-headers and generated report headings; the relative-time literal "just now", the unit suffixes
+headers and generated report headings; the unit suffixes
 on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on integer percents
 built in template strings (`${progressPct}%`), until their screens convert; extension UIs that do
 not translate their own text, and feature `displayName`s; backend error texts until they carry

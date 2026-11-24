@@ -6,8 +6,19 @@
  * Intl.RelativeTimeFormat so "yesterday" and pluralisation come from the platform rather
  * than hand-built strings.
  */
+import { defineMessages, type NoMessageValues } from 'react-intl';
+
 import { formatDateTime as formatAbsoluteDateTime } from '../i18n/format';
 import type { Locale } from '../i18n/locales';
+
+/** The one relative time the platform does not word: each caller formats it and passes it in. */
+export const relativeTimeMessages = defineMessages<{ justNow: NoMessageValues }>({
+  justNow: {
+    id: 'common.relativeTime.justNow',
+    defaultMessage: 'just now',
+    description: 'Relative time of something less than 45 seconds old, where older times read "5 minutes ago" or "yesterday".',
+  },
+});
 
 const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -46,13 +57,20 @@ export const formatDateTime = (value: string | number | Date, locale: Locale): s
 
 /**
  * Relative time such as "just now", "5 minutes ago", "yesterday"; absolute
- * (formatDateTime) at 7 days or older; '' for an invalid value.
+ * (formatDateTime) at 7 days or older; '' for an invalid value. `justNow` is the text for an
+ * age under 45 seconds, `relativeTimeMessages.justNow` formatted by the caller; without it,
+ * the English source text.
  */
-export const formatRelativeTime = (value: string | number | Date, locale: Locale, now: number = Date.now()): string => {
+export const formatRelativeTime = (
+  value: string | number | Date,
+  locale: Locale,
+  now: number = Date.now(),
+  justNow: string = String(relativeTimeMessages.justNow.defaultMessage),
+): string => {
   const time = toTimestamp(value);
   if (Number.isNaN(time)) return '';
   const age = now - time;
-  if (age < JUST_NOW_MS) return 'just now';
+  if (age < JUST_NOW_MS) return justNow;
   if (age >= ABSOLUTE_AFTER_MS) return formatDateTime(time, locale);
   if (age < HOUR_MS) return relativeTimeFormat(locale).format(-Math.max(1, Math.floor(age / MINUTE_MS)), 'minute');
   if (age < DAY_MS) return relativeTimeFormat(locale).format(-Math.floor(age / HOUR_MS), 'hour');
