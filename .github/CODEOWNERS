@@ -33,5 +33,4 @@
 /workshop/                                        @tomron-aws @rstrahan
 
 # Web UI translations: the French (Canada) catalog.
-# Its French (Canada) reviewers are still to be named.
-/src/ui/src/i18n/fr-CA.json                       @rstrahan
+/src/ui/src/i18n/fr-CA.json                       @rabieaws @rstrahan
