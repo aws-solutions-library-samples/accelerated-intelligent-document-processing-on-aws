@@ -26,6 +26,19 @@ own changes before returning them to the user).
 4. If the PR targets a branch **other than `develop`**, call this out as the
    first finding. The expected target for this repo is `develop`.
 5. Keep findings factual and specific — quote the diff where useful.
+6. **A behavioural finding needs a run behind it.** For any claim that the change
+   does the wrong thing, give the command you ran, the output it printed and the
+   output the change's intent requires — a failing test, a repro script, or
+   command output. A behavioural claim you could not run goes under its own
+   **Unverified** heading, not among the 🔴/🟡 findings, because it reads as
+   convincing whether or not it is true. Style, naming, documentation and
+   policy findings (wrong target branch, missing CHANGELOG entry) are checked
+   by reading and are exempt. When a nested or adversarial reviewer reports a
+   finding, rerun its command before passing the finding on, and drop it if the
+   output does not show the failure. The unattended CI review
+   (`pr-review-ci.md`) holds no shell, so there the bar is a cited `file:line`
+   plus the failure walked step by step, and each such finding says it was
+   not run.
 
 ## Step 1 — Detect the URL and fetch PR metadata
 
@@ -137,6 +150,33 @@ documentation, testing, code-review).
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
+
+#### Name the fact the change is safe because of
+
+Listing callers is not the job; `grep` does that in a second. Most changes that
+look risky are safe because of one fact — "this call only drops cache entries that
+are already dead", "every reader of this key tolerates a missing value" — and if
+that fact holds, most of the risks clear at once. Find it, state it, and say how
+far down this ladder you got it:
+
+1. **Asserted.** You said so. Worth nothing on its own.
+2. **Cited.** A real `file:line`, or the line in the library's own source at the
+   version `uv.lock` / `package-lock.json` pins.
+3. **Walked.** You traced the failure case step by step and it does not reach.
+4. **Run.** A script or test that calls the real code and fails loudly if the fact
+   is false. Usually one small file that imports the same `idp_common` the Lambda
+   ships and calls the exact function in question.
+5. **Reproduced.** Observed on a running stack.
+
+Take it as far as is cheap, and write **unproven** when you could not get past
+step 2. Spend the time on that fact rather than on a long list of maybes, and look
+where a symbol search stops: the JSON a resolver returns, a DynamoDB attribute, an
+S3 key layout, a config field read by the UI and by Python, a template parameter
+consumed three stacks away, the other language reading the same bytes. A search
+that finds nothing is still an answer and goes in the review as one.
+
+Keep a repro script outside the working copy (`scratch/` or a temporary
+directory), which leaves the review read-only per the ground rules.
 
 #### Terraform parity
 
@@ -354,10 +394,19 @@ Output the review in this exact structure so the user can paste it or act on it:
 | Well documented? | … | … |
 | **Safe to merge?** | ✅ Approve / ⚠️ Request changes / ❌ Block | … |
 
+### Safe because
+<The one fact the change's safety rests on, and how far it got: asserted / cited /
+walked / run / reproduced — with the command and its output when run. Or
+"unproven".>
+
 ### Findings
 - 🔴 **Blocking** — <file>:<line> — description + suggested fix
 - 🟡 **Should fix** — <file>:<line> — description
 - 🟢 **Nice to have** — <file>:<line> — description
+
+### Unverified
+<Behavioural concerns you could not run, each with what would confirm it. Omit
+the heading when there are none.>
 
 ### Recommendation
 **Approve** / **Request changes** / **Comment**
@@ -408,3 +457,9 @@ Flag these immediately when seen in any diff:
   `scripts/terraform_scan_baseline.json` entry, without a reason and a test
 - Runtime code that walks the stack through CloudFormation APIs or the
   `aws:cloudformation:stack-name` tag without the Terraform resource-directory path
+
+---
+
+The safety-fact ladder and the run-backed finding rule are adapted from the
+`blast-radius` and `interrogate` skills in
+[pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT licence).

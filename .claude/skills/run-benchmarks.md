@@ -339,6 +339,60 @@ without saying so (advanced/large runs are survivorship-sensitive). Costs are
 estimates from `config_library/pricing.yaml` (state the rate date). Any capped or
 skipped cell must appear in `meta.json`, not vanish.
 
+### Before you report or act on a number
+
+Use this for every accuracy, cost, token or latency figure that will go into a
+paper, a PR body or a decision between configurations, and for the live A/Bs in
+[live-eval-and-cost.md](live-eval-and-cost.md). First write down the sentence
+you expect to ship ("advanced extraction is 4 points more accurate on the
+500-row bank statements at 1.8x the cost"); the questions below test that
+sentence. For a quick ballpark the user asked for, one run is enough, but still
+answer "did it error?" and "did the work happen?" and say it is one run. A
+choice between configurations is never a ballpark.
+
+1. **Did the work happen?** Confirm each arm ran the configuration it is named
+   for, from the run's own output rather than the config you uploaded: the
+   model id in the metering keys, `metadata["extraction_method"]` for agentic
+   versus traditional, `use_bda` for the branch taken. `extraction.mode`
+   overwrites `agentic.enabled`, so an arm can carry the agentic setting and run
+   the traditional path. An arm whose stored config was stripped by a stale
+   `idp_common` (see the PYTHONPATH pin in `live-eval-and-cost.md`) measured
+   the default.
+2. **Did it error?** Count failed, throttled and timed-out documents per arm,
+   and check the outputs are correct, not just present: assessment placeholders
+   (a run of `0.5` confidences with null reasons) are output that looks like a
+   result. Then check the null-not-zero keys in the next section. A failure that
+   is fast makes an arm look cheap and quick.
+3. **Were both arms tuned the same way?** Same stack version, same preset
+   apart from the axis under test, same corpus, and the prompt cache equally
+   warm or cold. If one arm runs on defaults, you compared configurations, not
+   the option. Fix it and re-run before naming a winner; narrowing the claim to
+   "as configured today" does not fix it, because the user adopts the option.
+4. **What limits it?** For latency and throughput, name the limiter before
+   explaining the number: Bedrock throttling and the account's tokens-per-minute
+   quota, the stack's concurrency limit, Textract rate limits, a Lambda timeout
+   and retry. If a change did not move the number, the limiter usually says why.
+5. **Does it break a limit?** Do the arithmetic. A saving can be no larger than
+   the share of the run the changed phase took, and a cost below the
+   `pricing.yaml` rate times the tokens metered means something went unpriced.
+   A result past a limit measured a cache, a skipped phase or a bug.
+6. **Does it reproduce?** Model output varies run to run. Run each arm more
+   than once, alternating the arms so drift and cache warm-up favour neither,
+   and report the median and the range. A gap smaller than the run-to-run range
+   is no measurable difference.
+7. **Does it matter?** Put a phase-level result next to the document-level one
+   a user waits on and pays for, and give the phase result as a share of it.
+
+Lead the report with the verdict: better, worse, no measurable difference, or
+**inconclusive**. Inconclusive is the verdict when an arm was untuned, when you
+could not answer questions 1 and 2, or when you claim a latency difference
+without naming the limiter. Give the number with its unit, the run count, the
+range and the limiter; keep one primary number in a PR body and the rest in the
+committed `results/` artefacts.
+
+This checklist is adapted from the `benchmark-checklist` skill in
+[pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT licence).
+
 ### A figure that could not be read — or priced — is null, never zero
 
 The harness may continue past something it could not measure; it may not record it as a
