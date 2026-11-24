@@ -1,7 +1,7 @@
 # Evaluation Golden Fixtures
 
 These fixtures gate every scoring-behavior change against the currently-pinned
-`stickler-eval==1.0.1`. The goldens were regenerated in the Stickler 1.0
+`stickler-eval==1.0.2`. The goldens were regenerated in the Stickler 1.0
 migration from 0.5.0 (Hungarian FD/FN accounting, threshold-reach and
 object-level-threshold changes upstream shift counts on structured-list
 evaluations). Each `.input.json` describes one call to
