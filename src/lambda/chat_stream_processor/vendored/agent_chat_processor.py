@@ -20,6 +20,7 @@ import boto3
 import botocore.exceptions
 from idp_common.agents.analytics import get_analytics_config
 from idp_common.config_scope import unscoped_is_denied
+from idp_common.agents.common.chat_text import visible_chat_text
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
 from idp_common.chat_session_agents import (
@@ -333,13 +334,16 @@ def _persist_chat_turn(
                     "ExpiresAfter": expires_after,
                 }
             )
-        last_message = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        visible = visible_chat_text(prompt)
+        last_message = visible[:100] + "..." if len(visible) > 100 else visible
         # Count only the messages THIS call stored.
         stored_count = (1 if persist_user_message else 0) + (1 if assistant_text else 0)
         existing = sessions_table.get_item(
             Key={"userId": user_id, "sessionId": session_id}
         ).get("Item")
         if existing:
+            if not last_message:
+                last_message = existing.get("lastMessage", "")
             if stored_count:
                 sessions_table.update_item(
                     Key={"userId": user_id, "sessionId": session_id},
@@ -355,7 +359,7 @@ def _persist_chat_turn(
                     },
                 )
         else:
-            title = prompt.strip()
+            title = visible or "Quick Start"
             if len(title) > 50:
                 title = title[:47] + "..."
             sessions_table.put_item(
