@@ -3,15 +3,19 @@
 
 /**
  * A production review item as a work row: it keeps the queue's id (links and moves use
- * it) and carries the queue's name when the API reports one, both marked when the item
- * was escalated. It carries the routing rule that placed it, the reason the routing rule
- * gave and how many policy rules the document failed; a Test Studio row has none of them.
+ * it) and carries the queue's name when the API reports one; the table shows the name,
+ * marked when the item was escalated. It carries the routing rule that placed it, the
+ * reason the routing rule gave and how many policy rules the document failed; a Test
+ * Studio row has none of them. A row holds data: `workItemView` words it for the table.
  */
 
+import { createIntl } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import type { ReviewItem, TestSetTask } from '../../../graphql/generated/operation-types';
-import { fromReviewItem, fromTestSetTask } from '../work-items';
+import { fromReviewItem, fromTestSetTask, workItemView } from '../work-items';
+
+const intl = createIntl({ locale: 'en' });
 
 const item = (over: Partial<ReviewItem> = {}): ReviewItem =>
   ({
@@ -43,11 +47,18 @@ describe('fromReviewItem', () => {
     expect(row.queueName).toBeNull();
   });
 
-  it('marks an escalated item on the id and on the name', () => {
+  it('flags an escalated item, and the table marks the queue it shows: the name, or the id when there is none', () => {
     const row = fromReviewItem('review')(item({ queueName: 'High-value claims', escalated: true }));
 
-    expect(row.queue).toBe('claims (escalated)');
-    expect(row.queueName).toBe('High-value claims (escalated)');
+    // The id and the name stay as stored: links, moves and the filter use them.
+    expect(row).toMatchObject({ queue: 'claims', queueName: 'High-value claims', escalated: true });
+    expect(workItemView(row, intl).queue).toBe('High-value claims (escalated)');
+    expect(workItemView(fromReviewItem('review')(item({ escalated: true })), intl).queue).toBe('claims (escalated)');
+  });
+
+  it('shows the name of the queue, or its id when there is none, for an item that is not escalated', () => {
+    expect(workItemView(fromReviewItem('review')(item({ queueName: 'High-value claims' })), intl).queue).toBe('High-value claims');
+    expect(workItemView(fromReviewItem('review')(item()), intl).queue).toBe('claims');
   });
 });
 
@@ -98,7 +109,9 @@ describe('fromReviewItem: the routing reason and the failed policy rules', () =>
     );
 
     expect(row.routingReason).toBe('Invoice total 1250.00 is over 1000.');
-    expect(row.reason).toBe('Low confidence: Total 0.41 < 0.80');
+    // The first alert is data; the table words it.
+    expect(row.reason).toMatchObject({ kind: 'review', reason: { kind: 'low_confidence', label: 'Total' } });
+    expect(workItemView(row, intl).reason).toBe('Low confidence: Total 0.41 < 0.80');
     expect(row.extraReasons).toBe(2);
   });
 
@@ -129,6 +142,7 @@ describe('fromTestSetTask', () => {
   it('has no routing reason and no failed policy rule', () => {
     const row = fromTestSetTask({ testSetId: 'set-1', objectKey: 'set-1/doc.pdf', alertCount: 2 } as TestSetTask);
 
-    expect(row).toMatchObject({ routingReason: null, policyFailureCount: 0, reason: '2 confidence alerts' });
+    expect(row).toMatchObject({ routingReason: null, policyFailureCount: 0, reason: { kind: 'alerts', count: 2 } });
+    expect(workItemView(row, intl).reason).toBe('2 confidence alerts');
   });
 });

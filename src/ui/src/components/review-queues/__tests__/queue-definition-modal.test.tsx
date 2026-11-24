@@ -12,7 +12,7 @@
  */
 
 import React from 'react';
-import { act, fireEvent, render as renderPlain, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { IntlProvider } from 'react-intl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import type { FormFieldWrapper } from '@cloudscape-design/components/test-utils/dom';
@@ -32,10 +32,6 @@ vi.mock('../reviewer-assignment', () => ({
 import QueueDefinitionModal from '../QueueDefinitionModal';
 import type { ReviewQueueDefinition } from '../../../graphql/generated/operation-types';
 
-/** The dialog reads its messages through react-intl, so every render gets an English provider. */
-const Intl = ({ children }: { children: React.ReactNode }): React.JSX.Element => <IntlProvider locale="en">{children}</IntlProvider>;
-const render = (ui: React.ReactElement) => renderPlain(ui, { wrapper: Intl });
-
 const queue = (over: Partial<ReviewQueueDefinition> = {}): ReviewQueueDefinition => ({
   id: 'claims',
   name: 'Claims',
@@ -51,6 +47,12 @@ const queue = (over: Partial<ReviewQueueDefinition> = {}): ReviewQueueDefinition
   ...over,
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const open = (props: Partial<React.ComponentProps<typeof QueueDefinitionModal>> = {}) => {
   const onSaved = vi.fn();
   render(
@@ -64,6 +66,7 @@ const open = (props: Partial<React.ComponentProps<typeof QueueDefinitionModal>> 
       onSaved={onSaved}
       {...props}
     />,
+    { wrapper: English },
   );
   return onSaved;
 };
@@ -203,7 +206,7 @@ describe("a save over someone else's change (#1727)", () => {
       onDismiss: () => undefined,
       onSaved: vi.fn(),
     };
-    const { rerender } = render(<QueueDefinitionModal {...props} queue={queue({ version: 1 })} />);
+    const { rerender } = render(<QueueDefinitionModal {...props} queue={queue({ version: 1 })} />, { wrapper: English });
     setInput('Priority', '3');
     clickSave();
     await waitFor(() => expect(changedAlert()).toBeTruthy());

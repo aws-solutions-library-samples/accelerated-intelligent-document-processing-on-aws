@@ -9,7 +9,7 @@ import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 const messages = defineMessages<{ skipped: NoMessageValues }>({
   skipped: {
-    id: 'stepFlow.skippedStatus.skipped',
+    id: 'documents.processingFlow.status.skipped',
     defaultMessage: 'Skipped',
     description:
       'Status of a processing step, in the document processing flow viewer, that the run did not do because its run plan skipped it.',

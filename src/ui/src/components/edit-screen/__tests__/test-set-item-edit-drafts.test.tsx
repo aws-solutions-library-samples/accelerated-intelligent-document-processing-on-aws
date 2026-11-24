@@ -55,7 +55,7 @@ import {
   skipTestSetDocument,
 } from '../../../graphql/generated';
 import TestSetItemEdit from '../TestSetItemEdit';
-import { STALE_DRAFT_MESSAGE, useTestSetItemEdit } from '../test-set-item-edit-adapter';
+import { useTestSetItemEdit } from '../test-set-item-edit-adapter';
 
 /** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
 const English = ({ children }: { children: React.ReactNode }) => (
@@ -141,7 +141,10 @@ describe('drafts on a Test Studio item', () => {
       await (editorProps!.onSave as (id: string, d: Record<string, unknown>) => Promise<unknown>)('1', { n: 'mine' });
     });
     expect(callsOf(saveTestSetDocumentSectionDraft)[0]).toMatchObject({ sectionId: '1', baseRevision: 2 });
-    expect(setErrorMessage).toHaveBeenCalledWith(STALE_DRAFT_MESSAGE);
+    // The adapter reports a code; the page words it.
+    expect(setErrorMessage).toHaveBeenCalledWith(
+      'Someone saved newer changes to this section. It has been reloaded; reapply your last change.',
+    );
     expect(callsOf(getAnnotationQueueDocument).length).toBe(reads + 1);
     await waitFor(() => expect(editorProps!.reloadToken).toBe(token + 1));
   });

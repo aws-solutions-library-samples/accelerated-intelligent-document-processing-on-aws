@@ -253,7 +253,7 @@ export const DeleteQueueReferences = ({ state }: { state: QueueReferencesState }
         }
       >
         <SpaceBetween size="xs">
-          <Box>{describeApiError(state.error, intl.formatMessage(messages.checkAction))}</Box>
+          <Box>{describeApiError(state.error, messages.checkAction, intl)}</Box>
           <Box>{intl.formatMessage(messages.deleteErrorNote)}</Box>
         </SpaceBetween>
       </Alert>
@@ -303,7 +303,7 @@ export const QueueReferencesContainer = ({ state }: { state: QueueReferencesStat
           header={intl.formatMessage(messages.containerErrorHeader)}
           action={<Button onClick={state.reload}>{intl.formatMessage(messages.retry)}</Button>}
         >
-          {describeApiError(state.error, intl.formatMessage(messages.checkAction))}
+          {describeApiError(state.error, messages.checkAction, intl)}
         </Alert>
       ) : (
         <QueueReferencesTable

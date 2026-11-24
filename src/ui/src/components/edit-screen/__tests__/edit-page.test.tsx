@@ -18,6 +18,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { act, waitFor } from '@testing-library/react';
 import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
@@ -100,11 +101,18 @@ const ready = (over: Partial<EditReady> = {}): EditModel => ({
   },
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderPage = (model: EditModel) =>
   render(
     <MemoryRouter>
       <EditPage model={model} />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 const button = (text: string) =>

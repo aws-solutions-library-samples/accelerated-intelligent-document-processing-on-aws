@@ -11,6 +11,7 @@
 // by edit-page.no-mode-branching.test.ts).
 import React, { useState } from 'react';
 import { Button } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import LoadState from '../common/LoadState';
@@ -19,10 +20,11 @@ import ReasonModal from '../common/ReasonModal';
 import FileViewer from '../document-viewer/FileViewer';
 import ReviewCompletionModal from '../review-queues/ReviewCompletionModal';
 import ReviewQueuesLayout from '../review-queues/ReviewQueuesLayout';
-import EditScreen, { EditDocumentEmpty } from './EditScreen';
+import EditScreen, { EditDocumentEmpty, skipMessage } from './EditScreen';
 import type { EditAction } from './EditScreen';
 import EditorHistoryModal from './EditorHistoryModal';
 import EditorNotices from './EditorNotices';
+import { editScreenSharedMessages } from './edit-messages';
 import type { EditExit, EditModel, EditReady } from './edit-model';
 import SectionEditor from './SectionEditor';
 import EditScreenToolsPanel from './tools-panel';
@@ -33,6 +35,29 @@ import useEditorSession from './use-editor-session';
 import type { EditorSession } from './use-editor-session';
 import usePageClassBoard from './use-page-class-board';
 
+const pageMessages = defineMessages<{
+  claim: NoMessageValues;
+  refreshDiscardHeader: NoMessageValues;
+  refreshDiscardConfirm: NoMessageValues;
+}>({
+  claim: {
+    id: 'editScreen.page.claim',
+    defaultMessage: 'Claim',
+    description: "Button in the edit page's notice that the fields are read-only, which assigns the item to the user so it can be edited.",
+  },
+  refreshDiscardHeader: {
+    id: 'editScreen.page.refreshDiscard.header',
+    defaultMessage: 'Discard your changes and reload?',
+    description: 'Title of the dialog the edit page shows when Refresh would lose unsaved changes.',
+  },
+  refreshDiscardConfirm: {
+    id: 'editScreen.page.refreshDiscard.confirm',
+    defaultMessage: 'Discard and reload',
+    description:
+      'Confirm button of the dialog that asks before Refresh loses unsaved changes: it discards them and reads the document again.',
+  },
+});
+
 interface EditPageProps {
   model: EditModel;
   /** The mode's editor session; a page that only shows a load or error state has none. */
@@ -40,6 +65,7 @@ interface EditPageProps {
 }
 
 const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element => {
+  const intl = useIntl();
   const ownSession = useEditorSession();
   const session = given ?? ownSession;
   const { setErrorMessage, setSuccessMessage } = useAppContext();
@@ -181,7 +207,11 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
       };
       // Unsaved edits are lost by a reload: ask first.
       if (controller()?.isDirty())
-        discard.ask({ header: 'Discard your changes and reload?', confirmLabel: 'Discard and reload', onConfirm: () => void go() });
+        discard.ask({
+          header: pageMessages.refreshDiscardHeader,
+          confirmLabel: pageMessages.refreshDiscardConfirm,
+          onConfirm: () => void go(),
+        });
       else void go();
       return;
     }
@@ -229,7 +259,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
   const readOnlyAction =
     bar.showClaim && r.claim ? (
       <Button loading={session.busy === 'claim'} disabled={session.busy !== null} onClick={() => void handleAction('claim')}>
-        Claim
+        <FormattedMessage {...pageMessages.claim} />
       </Button>
     ) : (
       editor?.readOnlyAction
@@ -307,7 +337,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
               visible
               header={r.skip.header}
               reasons={r.skip.reasons}
-              confirmLabel="Skip"
+              confirmLabel={intl.formatMessage(skipMessage)}
               loading={session.busy === 'skip'}
               onDismiss={() => setAskSkipReason(false)}
               onConfirm={(reason, note) => void confirmSkip(reason, note)}
@@ -368,7 +398,8 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
             regroup={
               bar.showRegroup
                 ? {
-                    disabledReason: session.busy !== null ? 'Working…' : bar.regroupDisabledReason,
+                    disabledReason:
+                      session.busy !== null ? intl.formatMessage(editScreenSharedMessages.working) : bar.regroupDisabledReason,
                     loading: session.busy === 'regroup',
                     onClick: () => void handleAction('regroup'),
                   }

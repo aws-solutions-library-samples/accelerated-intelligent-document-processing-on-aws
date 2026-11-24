@@ -32,10 +32,10 @@ import useLocalStorage from '../common/local-storage';
 import TruncatedText from '../common/TruncatedText';
 import { NoDataState, TableHeader, TableNoMatchState, filterCounterText } from '../common/table';
 import { useFormatters } from '../../i18n/format';
-import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
+import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../../utils/date-time';
 import { routedByText, shortened } from './RoutedBy';
-import { SOURCE_LABELS } from './work-items';
-import type { WorkItem, WorkSource } from './work-items';
+import { workItemView, workSourceLabel } from './work-items';
+import type { WorkItem, WorkItemView, WorkSource } from './work-items';
 import { workItemActions } from './use-work-item-actions';
 
 const messages = defineMessages<{
@@ -47,136 +47,215 @@ const messages = defineMessages<{
   columnReason: NoMessageValues;
   columnState: NoMessageValues;
   columnOwner: NoMessageValues;
+  columnActions: NoMessageValues;
+  openDocument: { readonly objectKey: string };
   moreReasons: { readonly count: number };
+  rowActions: { readonly name: string };
+  loading: NoMessageValues;
+  selectionGroup: NoMessageValues;
+  selectAll: NoMessageValues;
+  selectItem: { readonly name: string };
+  find: NoMessageValues;
+  assignmentFilter: NoMessageValues;
+  allItems: NoMessageValues;
+  unassigned: NoMessageValues;
+  assigned: NoMessageValues;
+  sourceFilter: NoMessageValues;
+  allSources: NoMessageValues;
   failedPolicyRules: { readonly count: number };
   preferences: NoMessageValues;
-  confirm: NoMessageValues;
+  confirmPreferences: NoMessageValues;
   cancelPreferences: NoMessageValues;
   pageSize: NoMessageValues;
   pageSizeOption: { readonly count: number };
   columnPreferences: NoMessageValues;
 }>({
   columnDocument: {
-    id: 'reviewQueues.workItems.columnDocument',
+    id: 'reviewQueues.workItemsTable.column.document',
     defaultMessage: 'Document',
-    description: 'Column header (and column preference) of the work items table: the document, as a link that opens it.',
+    description:
+      "Column header of a review work table (Home › Tasks, a queue page), and the name of that column in the table's settings: the document, as a link to its edit page.",
   },
   columnSource: {
-    id: 'reviewQueues.workItems.columnSource',
+    id: 'reviewQueues.workItemsTable.column.source',
     defaultMessage: 'Source',
     description:
-      'Column header (and column preference) of the work items table: whether the item is production work or a Test Studio document.',
+      "Column header of a review work table, and the name of that column in the table's settings: whether the item comes from a production review queue or from Test Studio.",
   },
   columnQueue: {
-    id: 'reviewQueues.workItems.columnQueue',
+    id: 'reviewQueues.workItemsTable.column.queue',
     defaultMessage: 'Queue',
-    description: 'Column header (and column preference) of the work items table: the review queue the item is in.',
+    description:
+      "Column header of a review work table, and the name of that column in the table's settings: the review queue (or Test Studio test set) the item is in.",
   },
   columnPriority: {
-    id: 'reviewQueues.workItems.columnPriority',
+    id: 'reviewQueues.workItemsTable.column.priority',
     defaultMessage: 'Priority',
-    description: 'Column header (and column preference) of the work items table: the priority of the item.',
+    description:
+      "Column header of a review work table, and the name of that column in the table's settings: the item's priority, a number.",
   },
   columnAge: {
-    id: 'reviewQueues.workItems.columnAge',
+    id: 'reviewQueues.workItemsTable.column.age',
     defaultMessage: 'Age',
-    description: 'Column header (and column preference) of the work items table: how long the item has been in its queue.',
+    description:
+      "Column header of a review work table, and the name of that column in the table's settings: how long ago the item entered its queue or was assigned.",
   },
   columnReason: {
-    id: 'reviewQueues.workItems.columnReason',
+    id: 'reviewQueues.workItemsTable.column.reason',
     defaultMessage: 'Reason',
     description:
-      'Column header (and column preference) of the work items table: why the item is in review (the reason of its routing rule, or its first alert).',
+      "Column header of a review work table, and the name of that column in the table's settings: why the item is in review (the reason its routing rule gives, or its first alert, such as a field's low confidence).",
   },
   columnState: {
-    id: 'reviewQueues.workItems.columnState',
+    id: 'reviewQueues.workItemsTable.column.state',
     defaultMessage: 'State',
-    description: 'Column header (and column preference) of the work items table: whether the item is waiting, assigned or in progress.',
+    description:
+      "Column header of a review work table, and the name of that column in the table's settings: the item's review state, such as Waiting or Assigned.",
   },
   columnOwner: {
-    id: 'reviewQueues.workItems.columnOwner',
+    id: 'reviewQueues.workItemsTable.column.owner',
     defaultMessage: 'Annotator',
-    description: 'Column header (and column preference) of the work items table: the Annotator the item is assigned to.',
+    description:
+      "Column header of a review work table, and the name of that column in the table's settings: who the item is assigned to. Annotator is the name of a user role.",
+  },
+  columnActions: {
+    id: 'reviewQueues.workItemsTable.column.actions',
+    defaultMessage: 'Actions',
+    description: "Column header of a review work table's row menus.",
+  },
+  openDocument: {
+    id: 'reviewQueues.workItemsTable.openDocument',
+    defaultMessage: 'Open {objectKey}',
+    description:
+      "Screen-reader label of a review work table's document link, which opens its edit page. {objectKey} is the document's full name.",
   },
   moreReasons: {
-    id: 'reviewQueues.workItems.moreReasons',
-    defaultMessage: '+{count, number} more',
-    description: 'After the first alert of a work item, in its reason cell: how many more alerts the item has. {count} is that number.',
+    id: 'reviewQueues.workItemsTable.moreReasons',
+    defaultMessage: '+{count} more',
+    description:
+      "After an item's first alert in the Reason column of a review work table: how many more alerts it has. {count} is at least 1.",
+  },
+  rowActions: {
+    id: 'reviewQueues.workItemsTable.rowActions',
+    defaultMessage: 'Actions for {name}',
+    description: "Screen-reader label of a review work table row's menu button. {name} is the document's file name.",
+  },
+  loading: {
+    id: 'reviewQueues.workItemsTable.loading',
+    defaultMessage: 'Loading items',
+    description: 'Shown in a review work table while its items load.',
+  },
+  selectionGroup: {
+    id: 'reviewQueues.workItemsTable.selection.group',
+    defaultMessage: 'Item selection',
+    description: "Screen-reader label of a review work table's selection checkboxes, as a group.",
+  },
+  selectAll: {
+    id: 'reviewQueues.workItemsTable.selection.all',
+    defaultMessage: 'Select all items on this page',
+    description: "Screen-reader label of a review work table's select-all checkbox.",
+  },
+  selectItem: {
+    id: 'reviewQueues.workItemsTable.selection.item',
+    defaultMessage: 'Select {name}',
+    description: "Screen-reader label of a review work table row's checkbox. {name} is the document's file name.",
+  },
+  find: {
+    id: 'reviewQueues.workItemsTable.find',
+    defaultMessage: 'Find items',
+    description: "Placeholder and screen-reader label of a review work table's text filter.",
+  },
+  assignmentFilter: {
+    id: 'reviewQueues.workItemsTable.assignment.filter',
+    defaultMessage: 'Filter by assignment',
+    description: "Screen-reader label of a review work table's filter on whether items are assigned.",
+  },
+  allItems: {
+    id: 'reviewQueues.workItemsTable.assignment.all',
+    defaultMessage: 'All items',
+    description: "Option of a review work table's assignment filter: every item, assigned or not.",
+  },
+  unassigned: {
+    id: 'reviewQueues.workItemsTable.assignment.unassigned',
+    defaultMessage: 'Unassigned',
+    description: "Option of a review work table's assignment filter: items no one is assigned to.",
+  },
+  assigned: {
+    id: 'reviewQueues.workItemsTable.assignment.assigned',
+    defaultMessage: 'Assigned',
+    description: "Option of a review work table's assignment filter: items assigned to an Annotator.",
+  },
+  sourceFilter: {
+    id: 'reviewQueues.workItemsTable.source.filter',
+    defaultMessage: 'Filter by source',
+    description: "Screen-reader label of a review work table's filter on the items' source (production or Test Studio).",
+  },
+  allSources: {
+    id: 'reviewQueues.workItemsTable.source.all',
+    defaultMessage: 'All sources',
+    description: "Option of a review work table's source filter: items from production queues and from Test Studio.",
   },
   failedPolicyRules: {
-    id: 'reviewQueues.workItems.failedPolicyRules',
+    id: 'reviewQueues.workItemsTable.failedPolicyRules',
     defaultMessage: '{count, plural, one {# failed policy rule} other {# failed policy rules}}',
-    description: 'After the reason of a work item, in its reason cell: how many policy rules its document failed. {count} is that number.',
+    description:
+      "After an item's reason in the Reason column of a review work table: how many policy rules its document failed. {count} is that number, at least 1.",
   },
   preferences: {
-    id: 'reviewQueues.workItems.preferences',
+    id: 'reviewQueues.workItemsTable.preferences.title',
     defaultMessage: 'Preferences',
-    description: 'Title of the settings dialog of the work items table.',
+    description: "Title of a review work table's settings dialog, where the reader picks the page size and the columns shown.",
   },
-  confirm: {
-    id: 'reviewQueues.workItems.confirm',
+  confirmPreferences: {
+    id: 'reviewQueues.workItemsTable.preferences.confirm',
     defaultMessage: 'Confirm',
-    description: 'Confirm button of the settings dialog of the work items table.',
+    description: "Button of a review work table's settings dialog that applies and keeps the choices.",
   },
   cancelPreferences: {
-    id: 'reviewQueues.workItems.cancelPreferences',
+    id: 'reviewQueues.workItemsTable.preferences.cancel',
     defaultMessage: 'Cancel',
-    description: 'Cancel button of the settings dialog of the work items table.',
+    description: "Button of a review work table's settings dialog that closes it and changes nothing.",
   },
   pageSize: {
-    id: 'reviewQueues.workItems.pageSize',
+    id: 'reviewQueues.workItemsTable.preferences.pageSize',
     defaultMessage: 'Page size',
-    description: 'Title of the page size choice in the settings of the work items table.',
+    description: "Title of the page size choice in a review work table's settings dialog.",
   },
   pageSizeOption: {
-    id: 'reviewQueues.workItems.pageSizeOption',
+    id: 'reviewQueues.workItemsTable.preferences.pageSizeOption',
     defaultMessage: '{count, plural, one {# item} other {# items}}',
-    description: 'A page size option in the settings of the work items table. {count} is the number of items per page.',
+    description: "A page size option in a review work table's settings dialog. {count} is the number of items shown per page.",
   },
   columnPreferences: {
-    id: 'reviewQueues.workItems.columnPreferences',
+    id: 'reviewQueues.workItemsTable.preferences.columns',
     defaultMessage: 'Column preferences',
-    description: 'Title of the column choice in the settings of the work items table.',
+    description: "Title of the choice of columns, and their order, in a review work table's settings dialog.",
   },
 });
 
-const ALL_STATES: SelectProps.Option = { value: '', label: 'All items' };
-const STATE_OPTIONS: SelectProps.Option[] = [
-  ALL_STATES,
-  { value: 'unassigned', label: 'Unassigned' },
-  { value: 'assigned', label: 'Assigned' },
-];
-
-const matchesState = (item: WorkItem, state: string): boolean => {
+const matchesState = (view: WorkItemView, state: string): boolean => {
   switch (state) {
     case 'unassigned':
-      return !item.assignedTo;
+      return !view.assignee;
     case 'assigned':
-      return !!item.assignedTo;
+      return !!view.assignee;
     default:
       return true;
   }
 };
 
-const ALL_SOURCES: SelectProps.Option = { value: '', label: 'All sources' };
-const SOURCE_OPTIONS: SelectProps.Option[] = [
-  ALL_SOURCES,
-  { value: 'production', label: SOURCE_LABELS.production },
-  { value: 'test-set', label: SOURCE_LABELS['test-set'] },
-];
-
 /** An item's age in the UI locale; a column's `cell` cannot call a hook, so this is a component. */
 const Age = ({ iso }: { iso: string | null }): React.JSX.Element => {
+  const intl = useIntl();
   const { locale } = useFormatters();
   return iso ? (
-    <span title={formatDateTime(iso, locale)}>{formatRelativeTime(iso, locale)}</span>
+    <span title={formatDateTime(iso, locale)}>
+      {formatRelativeTime(iso, locale, undefined, intl.formatMessage(relativeTimeMessages.justNow))}
+    </span>
   ) : (
     <Box color="text-status-inactive">—</Box>
   );
 };
-
-/** The queue as people know it: its name, or its id when the API reports no name. */
-const queueLabel = (item: WorkItem): string => item.queueName ?? item.queue;
 
 /** Characters of the document name shown before its middle is cut. */
 const DOCUMENT_NAME_CHARS = 40;
@@ -205,11 +284,12 @@ const isAlwaysVisible = (id: string): boolean => WORK_ITEM_COLUMNS.some((column)
  * Why the item is in review, in a few words: the reason of its routing rule when it has
  * one, else its first alert (and how many more there are), else the routing rule that
  * placed it; then how many policy rules its document failed. A text longer than
- * REASON_CELL_CHARS is cut, and the whole of it opens in a popover.
+ * REASON_CELL_CHARS is cut, and the whole of it opens in a popover. `firstAlert` is the
+ * item's first alert in words, from its view.
  */
-const ReasonCell = ({ item }: { item: WorkItem }): React.JSX.Element => {
+const ReasonCell = ({ item, firstAlert }: { item: WorkItem; firstAlert: string | null }): React.JSX.Element => {
   const intl = useIntl();
-  const alert = item.routingReason ? null : item.reason;
+  const alert = item.routingReason ? null : firstAlert;
   const text = item.routingReason || alert || (item.routedBy ? routedByText(intl, item.routedBy) : '');
   if (!text) return <>—</>;
   const short = shortened(text, REASON_CELL_CHARS);
@@ -242,14 +322,21 @@ const ReasonCell = ({ item }: { item: WorkItem }): React.JSX.Element => {
   );
 };
 
-/** The base columns; `displayName` is the row's distinguishing document name. */
-const baseColumns = (intl: IntlShape, displayName: (item: WorkItem) => string): TableProps.ColumnDefinition<WorkItem>[] => [
+type Comparator = (a: WorkItem, b: WorkItem) => number;
+
+/** The base columns; `displayName` is the row's distinguishing document name, `view` its labels. */
+const baseColumns = (
+  intl: IntlShape,
+  displayName: (item: WorkItem) => string,
+  view: (item: WorkItem) => WorkItemView,
+  sortBy: { queue: Comparator; owner: Comparator },
+): TableProps.ColumnDefinition<WorkItem>[] => [
   {
     id: 'document',
     header: intl.formatMessage(messages.columnDocument),
     minWidth: 240,
     cell: (item) => (
-      <Link href={item.href} ariaLabel={`Open ${item.objectKey}`}>
+      <Link href={item.href} ariaLabel={intl.formatMessage(messages.openDocument, { objectKey: item.objectKey })}>
         <TruncatedText maxChars={DOCUMENT_NAME_CHARS} ellipsis="middle" title={item.objectKey}>
           {displayName(item)}
         </TruncatedText>
@@ -262,7 +349,7 @@ const baseColumns = (intl: IntlShape, displayName: (item: WorkItem) => string): 
     id: 'source',
     header: intl.formatMessage(messages.columnSource),
     width: 140,
-    cell: (item) => <Badge color={item.source === 'production' ? 'blue' : 'grey'}>{SOURCE_LABELS[item.source]}</Badge>,
+    cell: (item) => <Badge color={item.source === 'production' ? 'blue' : 'grey'}>{workSourceLabel(item.source, intl)}</Badge>,
     sortingField: 'source',
   },
   {
@@ -270,8 +357,8 @@ const baseColumns = (intl: IntlShape, displayName: (item: WorkItem) => string): 
     header: intl.formatMessage(messages.columnQueue),
     // A width, not a least width: a short queue name leaves its room to the reason.
     width: 200,
-    cell: (item) => <TruncatedText maxChars={32}>{queueLabel(item)}</TruncatedText>,
-    sortingComparator: (a, b) => queueLabel(a).localeCompare(queueLabel(b)),
+    cell: (item) => <TruncatedText maxChars={32}>{view(item).queue}</TruncatedText>,
+    sortingComparator: sortBy.queue,
   },
   {
     id: 'priority',
@@ -287,19 +374,26 @@ const baseColumns = (intl: IntlShape, displayName: (item: WorkItem) => string): 
     cell: (item) => <Age iso={item.enqueuedAt} />,
     sortingField: 'enqueuedAt',
   },
-  { id: 'reason', header: intl.formatMessage(messages.columnReason), cell: (item) => <ReasonCell item={item} /> },
+  {
+    id: 'reason',
+    header: intl.formatMessage(messages.columnReason),
+    cell: (item) => <ReasonCell item={item} firstAlert={view(item).reason} />,
+  },
   {
     id: 'state',
     header: intl.formatMessage(messages.columnState),
     width: 120,
-    cell: (item) => item.state.label,
+    cell: (item) => view(item).state,
   },
   {
     id: 'owner',
     header: intl.formatMessage(messages.columnOwner),
     width: 210,
-    cell: (item) => (item.assignedTo ? <TruncatedText maxChars={24}>{item.assignedTo}</TruncatedText> : '—'),
-    sortingField: 'assignedTo',
+    cell: (item) => {
+      const { assignee } = view(item);
+      return assignee ? <TruncatedText maxChars={24}>{assignee}</TruncatedText> : '—';
+    },
+    sortingComparator: sortBy.owner,
   },
 ];
 
@@ -401,13 +495,34 @@ const WorkItemsTable = ({
 }: WorkItemsTableProps): React.JSX.Element => {
   const intl = useIntl();
   const paginationLabels = usePaginationLabels();
-  const [source, setSource] = useState<SelectProps.Option>(ALL_SOURCES);
-  const [state, setState] = useState<SelectProps.Option>(ALL_STATES);
+  // The filters hold values; their options, and so their labels, are built per render.
+  const [source, setSource] = useState<WorkSource | ''>('');
+  const [state, setState] = useState('');
+  // Each row worded once per language; the cells, the filters and the sorting share it.
+  const view = useMemo(() => {
+    const views = new WeakMap<WorkItem, WorkItemView>();
+    return (item: WorkItem): WorkItemView => {
+      let worded = views.get(item);
+      if (!worded) {
+        worded = workItemView(item, intl);
+        views.set(item, worded);
+      }
+      return worded;
+    };
+  }, [intl]);
+  // Kept across polls, so a table sorted by one of these columns stays sorted by it.
+  const sortBy = useMemo(
+    () => ({
+      queue: (a: WorkItem, b: WorkItem) => view(a).queue.localeCompare(view(b).queue),
+      owner: (a: WorkItem, b: WorkItem) => (view(a).assignee ?? '').localeCompare(view(b).assignee ?? ''),
+    }),
+    [view],
+  );
   const [kept, setKept] = useLocalStorage<Partial<WorkItemsPreferences> | null>(preferencesKey, null);
   const displayNames = useMemo(() => distinguishingNames(items.map((i) => i.objectKey)), [items]);
   const visible = useMemo(
-    () => items.filter((i) => (!source.value || i.source === (source.value as WorkSource)) && matchesState(i, state.value ?? '')),
-    [items, source, state],
+    () => items.filter((i) => (!source || i.source === source) && matchesState(view(i), state)),
+    [items, source, state, view],
   );
   // What the browser kept can be of another shape, or name other columns: it is read defensively.
   const keptPageSize = kept?.pageSize;
@@ -415,6 +530,17 @@ const WorkItemsTable = ({
     pageSize: typeof keptPageSize === 'number' && PAGE_SIZES.includes(keptPageSize) ? keptPageSize : DEFAULT_PAGE_SIZE,
     contentDisplay: columnDisplayOf(kept?.contentDisplay, columns, defaultVisible),
   };
+
+  const stateOptions: SelectProps.Option[] = [
+    { value: '', label: intl.formatMessage(messages.allItems) },
+    { value: 'unassigned', label: intl.formatMessage(messages.unassigned) },
+    { value: 'assigned', label: intl.formatMessage(messages.assigned) },
+  ];
+  const sourceOptions: SelectProps.Option[] = [
+    { value: '', label: intl.formatMessage(messages.allSources) },
+    { value: 'production', label: workSourceLabel('production', intl) },
+    { value: 'test-set', label: workSourceLabel('test-set', intl) },
+  ];
 
   const {
     items: shown,
@@ -436,24 +562,19 @@ const WorkItemsTable = ({
         <TableNoMatchState
           onClearFilter={() => {
             collectionActions.setFiltering('');
-            setSource(ALL_SOURCES);
-            setState(ALL_STATES);
+            setSource('');
+            setState('');
           }}
         />
       ),
       filteringFunction: (item, text) => {
         const t = text.toLowerCase();
-        // A queue is found by the name shown and by its id.
+        const { queue, assignee, reason } = view(item);
         const rule = [item.routedBy?.ruleLabel ?? '', item.routedBy?.ruleId ?? ''];
-        return [
-          item.objectKey,
-          item.queue,
-          queueLabel(item),
-          item.assignedTo ?? '',
-          item.routingReason ?? '',
-          item.reason ?? '',
-          ...rule,
-        ].some((v) => v.toLowerCase().includes(t));
+        // A queue is found by the name shown and by its id; a reason by the routing reason, the first alert or the routing rule.
+        return [item.objectKey, item.queue, queue, assignee ?? '', item.routingReason ?? '', reason ?? '', ...rule].some((v) =>
+          v.toLowerCase().includes(t),
+        );
       },
     },
     pagination: { pageSize: preferences.pageSize },
@@ -461,9 +582,9 @@ const WorkItemsTable = ({
   });
 
   const columnsOffered = useMemo(() => {
-    const all = baseColumns(intl, (item) => displayNames.get(item.objectKey) ?? item.name);
+    const all = baseColumns(intl, (item) => displayNames.get(item.objectKey) ?? item.name, view, sortBy);
     return columns.flatMap((id) => all.filter((c) => c.id === id));
-  }, [intl, displayNames, columns]);
+  }, [intl, displayNames, view, sortBy, columns]);
 
   return (
     <Table
@@ -475,14 +596,14 @@ const WorkItemsTable = ({
           ? [
               {
                 id: ROW_ACTIONS_COLUMN,
-                header: 'Actions',
+                header: intl.formatMessage(messages.columnActions),
                 cell: (item: WorkItem) => (
                   <ButtonDropdown
                     variant="inline-icon"
-                    ariaLabel={`Actions for ${item.name}`}
+                    ariaLabel={intl.formatMessage(messages.rowActions, { name: item.name })}
                     expandToViewport
                     loading={busyRowId === item.id}
-                    items={[...workItemActions(), ...(extraRowActions?.(item) ?? [])]}
+                    items={[...workItemActions(intl), ...(extraRowActions?.(item) ?? [])]}
                     onItemClick={({ detail }) => onRowAction(item, detail.id)}
                   />
                 ),
@@ -498,15 +619,15 @@ const WorkItemsTable = ({
       // past its page. The names in the other columns are cut to one line by themselves.
       wrapLines
       loading={loading}
-      loadingText="Loading items"
+      loadingText={intl.formatMessage(messages.loading)}
       variant="container"
       selectionType={selectionType}
       ariaLabels={
         selectionType
           ? {
-              selectionGroupLabel: 'Item selection',
-              allItemsSelectionLabel: () => 'Select all items on this page',
-              itemSelectionLabel: (_, item) => `Select ${item.name}`,
+              selectionGroupLabel: intl.formatMessage(messages.selectionGroup),
+              allItemsSelectionLabel: () => intl.formatMessage(messages.selectAll),
+              itemSelectionLabel: (_, item) => intl.formatMessage(messages.selectItem, { name: item.name }),
             }
           : undefined
       }
@@ -518,24 +639,24 @@ const WorkItemsTable = ({
         <SpaceBetween direction="horizontal" size="xs" alignItems="center">
           <TextFilter
             {...filterProps}
-            filteringPlaceholder="Find items"
-            filteringAriaLabel="Find items"
+            filteringPlaceholder={intl.formatMessage(messages.find)}
+            filteringAriaLabel={intl.formatMessage(messages.find)}
             countText={filterCounterText(intl, filteredItemsCount ?? 0)}
           />
           {showStatusFilter && (
             <Select
-              selectedOption={state}
-              onChange={({ detail }) => setState(detail.selectedOption)}
-              options={STATE_OPTIONS}
-              ariaLabel="Filter by assignment"
+              selectedOption={stateOptions.find((o) => o.value === state) ?? stateOptions[0]}
+              onChange={({ detail }) => setState(detail.selectedOption.value ?? '')}
+              options={stateOptions}
+              ariaLabel={intl.formatMessage(messages.assignmentFilter)}
             />
           )}
           {showSourceFilter && (
             <Select
-              selectedOption={source}
-              onChange={({ detail }) => setSource(detail.selectedOption)}
-              options={SOURCE_OPTIONS}
-              ariaLabel="Filter by source"
+              selectedOption={sourceOptions.find((o) => o.value === source) ?? sourceOptions[0]}
+              onChange={({ detail }) => setSource((detail.selectedOption.value ?? '') as WorkSource | '')}
+              options={sourceOptions}
+              ariaLabel={intl.formatMessage(messages.sourceFilter)}
             />
           )}
         </SpaceBetween>
@@ -544,7 +665,7 @@ const WorkItemsTable = ({
       preferences={
         <CollectionPreferences
           title={intl.formatMessage(messages.preferences)}
-          confirmLabel={intl.formatMessage(messages.confirm)}
+          confirmLabel={intl.formatMessage(messages.confirmPreferences)}
           cancelLabel={intl.formatMessage(messages.cancelPreferences)}
           preferences={preferences}
           onConfirm={({ detail }) =>

@@ -9,6 +9,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { act, render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,6 +47,12 @@ const loadSection = vi.fn(async (sectionId: string) => {
   return { data, raw: JSON.stringify(data) };
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const editor = (focusRequest: FieldFocusRequest | null) => (
   <SectionEditor
     objectKey="in/doc.pdf"
@@ -73,7 +80,7 @@ describe('SectionEditor focus requests', () => {
   });
 
   it('opens the section, expands the groups above the field, scrolls to it and focuses it', async () => {
-    const { rerender } = render(editor(null));
+    const { rerender } = render(editor(null), { wrapper: English });
     await waitFor(() => expect(fieldProps).not.toBeNull());
     // Collapse the list the field is in, as a reviewer might have.
     act(() => {
@@ -89,7 +96,7 @@ describe('SectionEditor focus requests', () => {
   });
 
   it('repeats the same request when its nonce changes', async () => {
-    const { rerender } = render(editor({ sectionId: '1', fieldPath: 'Total', nonce: 1 }));
+    const { rerender } = render(editor({ sectionId: '1', fieldPath: 'Total', nonce: 1 }), { wrapper: English });
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Total'));
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     (document.activeElement as HTMLElement).blur();

@@ -15,6 +15,7 @@
 
 import { act, render } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 interface ListedVersion {
@@ -92,6 +93,12 @@ const scopedTo = (scope: string[] | null) => {
 
 const editor = (configVersion?: string) => <Slots configVersion={configVersion} />;
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 beforeEach(() => {
   global.fetch = vi.fn(() => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(BASELINE_WITHOUT_STAMP)) })) as never;
   state.graphql.mockReset();
@@ -122,7 +129,7 @@ beforeEach(() => {
 describe('the Test Studio class list — a scoped caller', () => {
   it('asks for no profile while the in-scope list is loading', async () => {
     scopedTo(['tenant-a_*']);
-    render(editor());
+    render(editor(), { wrapper: English });
     await settle();
 
     expect(requestedProfiles()).toEqual([]);
@@ -130,7 +137,7 @@ describe('the Test Studio class list — a scoped caller', () => {
 
   it('does not fall back to a default its scope excludes when the active profile is out of scope', async () => {
     scopedTo(['tenant-a_*']);
-    const { rerender } = render(editor());
+    const { rerender } = render(editor(), { wrapper: English });
     await settle();
     state.list = { versions: [{ versionName: 'tenant-a_dev' }, { versionName: 'tenant-a_prod' }], loaded: true };
     rerender(editor());
@@ -141,7 +148,7 @@ describe('the Test Studio class list — a scoped caller', () => {
 
   it('still reads the profile the test set declares when it is in scope', async () => {
     scopedTo(['tenant-a_*']);
-    render(editor('tenant-a_prod'));
+    render(editor('tenant-a_prod'), { wrapper: English });
     await settle();
 
     expect(requestedProfiles()).toEqual(['tenant-a_prod']);
@@ -150,7 +157,7 @@ describe('the Test Studio class list — a scoped caller', () => {
 
 describe('the Test Studio class list — an unscoped caller', () => {
   it('reads default while the list loads, then the active profile once it answers', async () => {
-    const { rerender } = render(editor());
+    const { rerender } = render(editor(), { wrapper: English });
     await settle();
     expect(requestedProfiles()).toEqual(['default']);
 

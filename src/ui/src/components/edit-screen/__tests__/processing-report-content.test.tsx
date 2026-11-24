@@ -10,6 +10,7 @@
 import React from 'react';
 import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import EditScreen from '../EditScreen';
@@ -23,14 +24,20 @@ const SECTION = {
   processing_report: 'Extracted with the invoice schema',
 };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('ProcessingReportContent', () => {
   it('renders the loaded section report', () => {
-    const { container } = render(<ProcessingReportContent sectionData={SECTION} />);
+    const { container } = render(<ProcessingReportContent sectionData={SECTION} />, { wrapper: English });
     expect(container.textContent).toContain('Extracted with the invoice schema');
   });
 
   it('has an empty state without a section', () => {
-    const { container } = render(<ProcessingReportContent sectionData={null} />);
+    const { container } = render(<ProcessingReportContent sectionData={null} />, { wrapper: English });
     expect(container.textContent).toContain('Open a section to see its processing report.');
   });
 
@@ -44,6 +51,7 @@ describe('ProcessingReportContent', () => {
       >
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Processing Report']);
     chooseMenuItem('Reports', 'Processing Report');
@@ -57,12 +65,13 @@ describe('ProcessingReportContent', () => {
       <EditScreen title="doc.pdf" objectKey="in/doc.pdf" actions={{ busy: null, onAction: () => undefined }}>
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     expect(menuItems('Reports').map((i) => i.text)).not.toContain('Processing Report');
   });
 
   it('is not a tab of History', () => {
-    render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={SECTION} />);
+    render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={SECTION} />, { wrapper: English });
     const tabs = createWrapper(document.body)
       .findTabs()!
       .findTabLinks()

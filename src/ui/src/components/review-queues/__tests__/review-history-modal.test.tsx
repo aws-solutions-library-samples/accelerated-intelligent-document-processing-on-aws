@@ -10,11 +10,10 @@
 
 import React from 'react';
 import { describe, expect, it } from 'vitest';
-import { screen, within } from '@testing-library/react';
-import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
+import { render, screen, within } from '@testing-library/react';
+import { createIntl, IntlProvider } from 'react-intl';
 
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
-import { createIntl } from 'react-intl';
 
 import ReviewHistoryModal, { entryDetailLines, entryDetails, eventLabel, eventText } from '../ReviewHistoryModal';
 
@@ -25,6 +24,12 @@ const entry = (event: string, details: Record<string, unknown> | null) => ({
   actor: null,
   details: details ? JSON.stringify(details) : null,
 });
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const HISTORY = [
   { at: '2026-10-20T09:00:00.000Z', event: 'claimed', actor: 'ann@example.com', details: null },
@@ -38,7 +43,7 @@ const HISTORY = [
 
 describe('ReviewHistoryModal', () => {
   it('shows a skip with its reason and note, newest first', () => {
-    render(<ReviewHistoryModal history={HISTORY} onDismiss={() => undefined} />);
+    render(<ReviewHistoryModal history={HISTORY} onDismiss={() => undefined} />, { wrapper: English });
     expect(screen.getByText('Review history (2)')).toBeInTheDocument();
     const rows = screen.getAllByRole('row').slice(1);
     expect(within(rows[0]).getByText('Skipped')).toBeInTheDocument();
@@ -188,6 +193,7 @@ describe('the routing events', () => {
         ]}
         onDismiss={() => undefined}
       />,
+      { wrapper: English },
     );
     const rows = screen.getAllByRole('row').slice(1);
 
@@ -211,6 +217,7 @@ describe('the routing events', () => {
         history={[entry('routed', { queue: 'claims', rule_id: 'claims', routing_reason: long })]}
         onDismiss={() => undefined}
       />,
+      { wrapper: English },
     );
     const table = createWrapper(document.body).findModal()!.findContent().findTable()!;
 
@@ -256,6 +263,7 @@ describe('a completed review', () => {
         history={[{ ...entry('completed', { restart_step: 'extraction', restart_sections: ['2', '4'] }), actor: 'rev@example.com' }]}
         onDismiss={() => undefined}
       />,
+      { wrapper: English },
     );
     const [row] = screen.getAllByRole('row').slice(1);
 

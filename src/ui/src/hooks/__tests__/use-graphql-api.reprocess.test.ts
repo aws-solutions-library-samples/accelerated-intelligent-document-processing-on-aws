@@ -7,8 +7,10 @@
  * an answer, not an error. A request that fails is reported and returns false.
  */
 
+import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 const { graphql, setErrorMessage } = vi.hoisted(() => ({ graphql: vi.fn(), setErrorMessage: vi.fn() }));
 
@@ -26,13 +28,17 @@ vi.mock('../../graphql/generated', () => ({
 
 import useGraphQlApi from '../use-graphql-api';
 
+// The hook words its error messages through react-intl, which needs a provider.
+const English = ({ children }: { children: React.ReactNode }) =>
+  React.createElement(IntlProvider, { locale: 'en', defaultLocale: 'en' }, children);
+
 const RESULTS = [
   { objectKey: 'a.pdf', status: 'QUEUED', startStep: 'extraction' },
   { objectKey: 'b.pdf', status: 'REFUSED', startStep: 'extraction', reason: 'OUTPUT_MISSING', message: 'no OCR output' },
 ];
 
 const reprocess = async (...args: Parameters<ReturnType<typeof useGraphQlApi>['reprocessDocuments']>) => {
-  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: 1 }));
+  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: 1 }), { wrapper: English });
   let answer: unknown;
   await act(async () => {
     answer = await hook.result.current.reprocessDocuments(...args);

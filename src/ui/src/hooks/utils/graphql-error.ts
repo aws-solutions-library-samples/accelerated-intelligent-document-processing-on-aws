@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { defineMessages, type NoMessageValues } from 'react-intl';
+import { createIntl, defineMessages, type IntlShape, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 /**
  * Extract a human-readable error message from whatever shape Amplify / AppSync
@@ -61,6 +61,7 @@ export function extractGraphQLErrorMessage(err: unknown): string {
     }
   }
 
+  // English on purpose: it stands where the server's own text goes.
   return 'Unknown error';
 }
 
@@ -164,12 +165,47 @@ export const fileAccessMessages = defineMessages<{ denied: NoMessageValues }>({
   },
 });
 
-/** The same message in English, written once: the export manifest records it, and the viewers not yet translated show it. */
+/** The same message in English, written once: the export manifest records it, and tests compare with it. */
 export const FILE_ACCESS_DENIED_MESSAGE = String(fileAccessMessages.denied.defaultMessage);
 
-export function describeApiError(err: unknown, action: string): string {
+/** The two sentences `describeApiError` words, written once for both of its forms. */
+const apiErrorMessages = defineMessages<{
+  permissionDenied: { readonly action: string };
+  failed: { readonly action: string; readonly error: string };
+}>({
+  permissionDenied: {
+    id: 'common.apiError.permissionDenied',
+    defaultMessage: 'You do not have permission to {action}. If your account is new, ask an administrator to assign it a role.',
+    description:
+      'Error shown when the server refused a call because the user lacks permission. {action} is an infinitive verb phrase from another message, such as "load jobs".',
+  },
+  failed: {
+    id: 'common.apiError.failed',
+    defaultMessage: 'Failed to {action}: {error}',
+    description:
+      'Error shown when a call to the server failed. {action} is an infinitive verb phrase from another message, such as "load jobs"; {error} is the text the server sent, shown as it is.',
+  },
+});
+
+/** Words the English form, for the screens not translated yet. */
+const englishIntl = createIntl({ locale: 'en', defaultLocale: 'en' });
+
+/** The sentence in English, for a screen not translated yet: `action` is an English phrase. */
+export function describeApiError(err: unknown, action: string): string;
+/** The sentence in the UI's language: `action` is a phrase message, worded with `intl` like the sentence around it. */
+export function describeApiError(
+  err: unknown,
+  action: TypedMessageDescriptor<NoMessageValues>,
+  intl: Pick<IntlShape, 'formatMessage'>,
+): string;
+export function describeApiError(
+  err: unknown,
+  action: string | TypedMessageDescriptor<NoMessageValues>,
+  intl: Pick<IntlShape, 'formatMessage'> = englishIntl,
+): string {
+  const phrase = typeof action === 'string' ? action : intl.formatMessage(action);
   if (isAuthorizationError(err)) {
-    return `You do not have permission to ${action}. If your account is new, ask an administrator to assign it a role.`;
+    return intl.formatMessage(apiErrorMessages.permissionDenied, { action: phrase });
   }
-  return `Failed to ${action}: ${extractGraphQLErrorMessage(err)}`;
+  return intl.formatMessage(apiErrorMessages.failed, { action: phrase, error: extractGraphQLErrorMessage(err) });
 }

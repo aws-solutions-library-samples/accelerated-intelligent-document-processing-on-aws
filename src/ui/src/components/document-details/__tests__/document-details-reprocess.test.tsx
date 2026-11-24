@@ -12,6 +12,7 @@
 
 import React from 'react';
 import { act, render, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -61,12 +62,15 @@ const RICH = {
 };
 
 const openPage = async () => {
+  // DocumentDetails reads its texts through react-intl, which needs a provider.
   render(
-    <MemoryRouter initialEntries={['/documents/a.pdf']}>
-      <Routes>
-        <Route path="/documents/*" element={<DocumentDetails />} />
-      </Routes>
-    </MemoryRouter>,
+    <IntlProvider locale="en" defaultLocale="en">
+      <MemoryRouter initialEntries={['/documents/a.pdf']}>
+        <Routes>
+          <Route path="/documents/*" element={<DocumentDetails />} />
+        </Routes>
+      </MemoryRouter>
+    </IntlProvider>,
   );
   await waitFor(() => expect(state.panel).not.toBeNull());
 };

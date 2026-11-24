@@ -27,7 +27,7 @@ import { Alert, Badge, Box, Button, Container, Header, Popover, SpaceBetween } f
 import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
-import { NEXT_ALERT_LABEL } from '../common/labels';
+import { sharedLabelMessages } from '../common/labels';
 import { EXTRACTION_FAILED_KIND, MISSING_REQUIRED_KIND, reasonText } from './review-api';
 import { PolicyFailureList, RoutedByReason, policyFailureTotal, routedByFallbackText, routedByText } from './RoutedBy';
 import { useFormatters } from '../../i18n/format';
@@ -40,19 +40,20 @@ const messages = defineMessages<{
   sentBy: { readonly requestedBy: string };
   sentByWithNote: { readonly requestedBy: string; readonly note: string };
   extractionFailed: NoMessageValues;
-  reasonSection: { readonly section: string };
-  reasonField: { readonly field: string };
-  reasonMissingRequired: NoMessageValues;
-  reasonConfidence: { readonly score: string; readonly threshold: string };
+  section: { readonly sectionId: string };
+  field: { readonly field: string };
+  missingValue: NoMessageValues;
+  confidence: { readonly score: string; readonly threshold: string };
   moreAlerts: { readonly count: number };
   showMoreAlerts: { readonly count: number };
-  onlyLowestListed: { readonly count: number };
+  onlyLowest: { readonly count: number };
   showFewer: NoMessageValues;
 }>({
   title: {
     id: 'reviewQueues.taskContext.title',
     defaultMessage: 'Review Reason',
-    description: 'Heading of the panel above the editor that says why a document is in review.',
+    description:
+      'Heading of the panel above the editor of a review item that says why the document is in review: the routing notice first, then one chip per reason.',
   },
   counter: {
     id: 'reviewQueues.taskContext.counter',
@@ -63,7 +64,7 @@ const messages = defineMessages<{
   escalated: {
     id: 'reviewQueues.taskContext.escalated',
     defaultMessage: 'Escalated',
-    description: 'Header of the info alert on a review task that was escalated; its body is the note left when escalating.',
+    description: "Header of the info alert on an escalated review item; the alert's text is the escalation note, as written.",
   },
   extractionFailed: {
     id: 'reviewQueues.taskContext.extractionFailed',
@@ -88,49 +89,49 @@ const messages = defineMessages<{
     description:
       'Body of the Sent to review alert when the sender left a note. {requestedBy} is the user (e-mail) who sent it; {note} is their free-text note.',
   },
-  reasonSection: {
-    id: 'reviewQueues.taskContext.reasonSection',
-    defaultMessage: 'Section {section}',
-    description: 'In the popover of a review reason: the section of the document the reason is about. {section} is the id of the section.',
+  section: {
+    id: 'reviewQueues.taskContext.section',
+    defaultMessage: 'Section {sectionId}',
+    description:
+      "Popover line on a review reason chip: the document section it belongs to. {sectionId} is the section's id, usually a number.",
   },
-  reasonField: {
-    id: 'reviewQueues.taskContext.reasonField',
+  field: {
+    id: 'reviewQueues.taskContext.field',
     defaultMessage: 'Field: {field}',
-    description: 'In the popover of a review reason: the field the reason is about. {field} is the name of the field.',
+    description: "Popover line on a review reason chip: the field it is about. {field} is the field's name or path in the extracted data.",
   },
-  reasonMissingRequired: {
-    id: 'reviewQueues.taskContext.reasonMissingRequired',
+  missingValue: {
+    id: 'reviewQueues.taskContext.missingValue',
     defaultMessage: 'No extracted value; the class schema requires this field.',
-    description: 'In the popover of a review reason for a required field that extraction left empty.',
+    description: 'Popover text on a Missing required review reason: extraction left a field empty that the document class schema requires.',
   },
-  reasonConfidence: {
-    id: 'reviewQueues.taskContext.reasonConfidence',
+  confidence: {
+    id: 'reviewQueues.taskContext.confidence',
     defaultMessage: 'Confidence {score}, threshold {threshold}',
     description:
-      'In the popover of a review reason for a field below the confidence threshold. {score} is the confidence of the field and {threshold} the threshold, both as numbers with two decimals.',
+      "Popover text on a low-confidence review reason. {score} is the extracted value's confidence and {threshold} the threshold it fell below, both already formatted with two decimals.",
   },
   moreAlerts: {
     id: 'reviewQueues.taskContext.moreAlerts',
-    defaultMessage: '{count, plural, one {+# more alert} other {+# more alerts}}',
-    description: 'After the review reasons shown: how many more alerts the document has. {count} is that number.',
+    defaultMessage: '+{count, plural, one {# more alert} other {# more alerts}}',
+    description:
+      'After the first review reason chips: how many more reasons the item has. A button that shows the rest, or a grey badge when the rest are not listed. {count} is at least 1.',
   },
   showMoreAlerts: {
     id: 'reviewQueues.taskContext.showMoreAlerts',
-    defaultMessage: '{count, plural, one {Show # more alert} other {Show # more alerts}}',
-    description:
-      'Screen-reader label of the button that shows the review reasons not yet shown. {count} is how many more alerts there are.',
+    defaultMessage: 'Show {count, plural, one {# more alert} other {# more alerts}}',
+    description: 'Screen-reader label of the button that shows the rest of the review reason chips. {count} is at least 1.',
   },
-  onlyLowestListed: {
-    id: 'reviewQueues.taskContext.onlyLowestListed',
-    defaultMessage:
-      '{count, plural, one {Only the lowest-confidence alert is listed.} other {Only the # lowest-confidence alerts are listed.}}',
+  onlyLowest: {
+    id: 'reviewQueues.taskContext.onlyLowest',
+    defaultMessage: 'Only the {count} lowest-confidence alerts are listed.',
     description:
-      'Popover of the count of alerts that are not listed, because only the lowest-confidence ones are kept with the review. {count} is how many are listed.',
+      'Popover on the grey badge counting the review reasons that are not listed: only the worst ones are kept. {count} is how many are listed.',
   },
   showFewer: {
     id: 'reviewQueues.taskContext.showFewer',
     defaultMessage: 'Show fewer',
-    description: 'Button that goes back to showing only the first review reasons.',
+    description: 'Button that collapses the review reason chips back to the first few.',
   },
 });
 
@@ -171,7 +172,13 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
         <Header
           variant="h2"
           counter={intl.formatMessage(messages.counter, { count: listed })}
-          actions={onReasonClick && item.reasons.length > 0 ? <Button onClick={handleNextAlert}>{NEXT_ALERT_LABEL}</Button> : undefined}
+          actions={
+            onReasonClick && item.reasons.length > 0 ? (
+              <Button onClick={handleNextAlert}>
+                <FormattedMessage {...sharedLabelMessages.nextAlert} />
+              </Button>
+            ) : undefined
+          }
         >
           <FormattedMessage {...messages.title} />
         </Header>
@@ -214,11 +221,11 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
               content={
                 <SpaceBetween size="xxs">
                   <Box>
-                    <FormattedMessage {...messages.reasonSection} values={{ section: reason.sectionId }} />
+                    <FormattedMessage {...messages.section} values={{ sectionId: reason.sectionId }} />
                   </Box>
                   {reason.field && (
                     <Box>
-                      <FormattedMessage {...messages.reasonField} values={{ field: reason.field }} />
+                      <FormattedMessage {...messages.field} values={{ field: reason.field }} />
                     </Box>
                   )}
                   {reason.kind === EXTRACTION_FAILED_KIND ? (
@@ -228,16 +235,16 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
                       </Box>
                       {reason.label && <Box>{reason.label}</Box>}
                     </>
+                  ) : reason.kind === MISSING_REQUIRED_KIND ? (
+                    <Box>
+                      <FormattedMessage {...messages.missingValue} />
+                    </Box>
                   ) : (
                     <Box>
-                      {reason.kind === MISSING_REQUIRED_KIND ? (
-                        <FormattedMessage {...messages.reasonMissingRequired} />
-                      ) : (
-                        <FormattedMessage
-                          {...messages.reasonConfidence}
-                          values={{ score: formatFixed(reason.score, 2), threshold: formatFixed(reason.threshold, 2) }}
-                        />
-                      )}
+                      <FormattedMessage
+                        {...messages.confidence}
+                        values={{ score: formatFixed(reason.score, 2), threshold: formatFixed(reason.threshold, 2) }}
+                      />
                     </Box>
                   )}
                 </SpaceBetween>
@@ -262,7 +269,7 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
               triggerType="custom"
               dismissButton={false}
               size="small"
-              content={intl.formatMessage(messages.onlyLowestListed, { count: item.reasons.length })}
+              content={intl.formatMessage(messages.onlyLowest, { count: item.reasons.length })}
             >
               {/* A button, so the popover opens from the keyboard too. */}
               <Button variant="inline-link">

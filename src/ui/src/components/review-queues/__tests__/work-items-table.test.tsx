@@ -20,7 +20,7 @@ import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import WorkItemsTable, { REASON_CELL_CHARS, WORK_ITEM_COLUMNS, columnDisplayOf } from '../WorkItemsTable';
-import type { WorkItem } from '../work-items';
+import type { WorkItem, WorkItemReason } from '../work-items';
 
 const KEY = 'test-work-items-preferences';
 
@@ -42,18 +42,26 @@ const row = (objectKey: string, over: Partial<WorkItem> = {}): WorkItem => ({
   objectKey,
   name: objectKey.split('/').pop() ?? objectKey,
   queue: 'default',
+  escalated: false,
   priority: null,
   enqueuedAt: null,
   reason: null,
   extraReasons: 0,
   routingReason: null,
   policyFailureCount: 0,
-  state: { label: 'Waiting', type: 'pending' },
+  state: 'OPEN',
   assignedTo: null,
+  assignedToYou: false,
   assignedToMe: false,
   href: '#/edit',
   ...over,
 });
+
+/** A row's first alert, as data: the table words it "Low confidence: Total 0.41 < 0.80". */
+const LOW_CONFIDENCE: WorkItemReason = {
+  kind: 'review',
+  reason: { kind: 'low_confidence', sectionId: '1', field: 'total', label: 'Total', score: 0.41, threshold: 0.8 },
+};
 
 const documentCells = (keys: string[]): HTMLElement[] => {
   const { container } = render(
@@ -129,7 +137,7 @@ describe('WorkItemsTable reason', () => {
     'Invoice total 1250.00 is over 1000. Check the total against the line items, and the vendor against the approved vendor list.';
   const ITEMS = [
     row('alert.pdf', {
-      reason: 'Low confidence: Total 0.41 < 0.80',
+      reason: LOW_CONFIDENCE,
       extraReasons: 2,
       routedBy: { ruleId: 'builtin-confidence-alerts', ruleLabel: 'Confidence alerts', fallbackReason: '' },
     }),
@@ -167,7 +175,7 @@ describe('WorkItemsTable reason', () => {
     const table = renderReasons([
       row('routed.pdf', {
         routingReason: 'Invoice total 1250.00 is over 1000.',
-        reason: 'Low confidence: Total 0.41 < 0.80',
+        reason: LOW_CONFIDENCE,
         extraReasons: 2,
         routedBy: { ruleId: 'claims-over-1000', ruleLabel: 'Claims over 1000', fallbackReason: '' },
       }),

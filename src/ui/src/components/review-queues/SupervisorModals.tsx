@@ -6,9 +6,138 @@
 import React, { useEffect, useState } from 'react';
 import type { SelectProps } from '@cloudscape-design/components';
 import { Box, Button, FormField, Modal, Select, SpaceBetween, Textarea } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import type { ReviewItem } from '../../graphql/generated/operation-types';
 import { documentName } from './review-api';
+
+type Count = { readonly count: number };
+type OneDocument = { readonly document: string };
+
+const messages = defineMessages<{
+  cancel: NoMessageValues;
+  unassign: NoMessageValues;
+  unassignOne: { readonly document: string; readonly annotator: string; readonly queue: string };
+  unassignOneNoAnnotator: { readonly document: string; readonly queue: string };
+  unassignMany: Count;
+  moveTitle: NoMessageValues;
+  move: NoMessageValues;
+  moveOne: OneDocument;
+  moveMany: Count;
+  targetQueue: NoMessageValues;
+  queueRequired: NoMessageValues;
+  noOtherQueue: NoMessageValues;
+  chooseQueue: NoMessageValues;
+  removeTitle: NoMessageValues;
+  remove: NoMessageValues;
+  removeOne: OneDocument;
+  removeMany: Count;
+  note: NoMessageValues;
+  noteDescription: NoMessageValues;
+}>({
+  cancel: {
+    id: 'reviewQueues.supervisorModals.cancel',
+    defaultMessage: 'Cancel',
+    description: 'Button of the Unassign, Move to another queue and Remove from queue dialogs that closes the dialog without acting.',
+  },
+  unassign: {
+    id: 'reviewQueues.supervisorModals.unassign',
+    defaultMessage: 'Unassign',
+    description:
+      'Title of the dialog that takes review items back from their Annotators, and its button that does it. The items stay in their queue, assigned to no one.',
+  },
+  unassignOne: {
+    id: 'reviewQueues.supervisorModals.unassignOne',
+    defaultMessage: 'Take {document} back from {annotator}. It stays in {queue}, unassigned; the draft is kept and the Annotator is told.',
+    description:
+      'Body of the Unassign dialog for one item. {document} is its file name, {annotator} the e-mail address of the Annotator it is assigned to, and {queue} the id of its review queue.',
+  },
+  unassignOneNoAnnotator: {
+    id: 'reviewQueues.supervisorModals.unassignOneNoAnnotator',
+    defaultMessage:
+      'Take {document} back from its Annotator. It stays in {queue}, unassigned; the draft is kept and the Annotator is told.',
+    description:
+      'Body of the Unassign dialog for one item whose Annotator is not known. {document} is its file name and {queue} the id of its review queue.',
+  },
+  unassignMany: {
+    id: 'reviewQueues.supervisorModals.unassignMany',
+    defaultMessage:
+      'Take {count, plural, one {# item} other {# items}} back from their Annotators. They stay in their queue, unassigned; drafts are kept and the Annotators are told.',
+    description: 'Body of the Unassign dialog for several items. {count} is how many.',
+  },
+  moveTitle: {
+    id: 'reviewQueues.supervisorModals.moveTitle',
+    defaultMessage: 'Move to another queue',
+    description: 'Title of the dialog that moves review items to another review queue.',
+  },
+  move: {
+    id: 'reviewQueues.supervisorModals.move',
+    defaultMessage: 'Move',
+    description: 'Button of the Move to another queue dialog that moves the items to the chosen queue.',
+  },
+  moveOne: {
+    id: 'reviewQueues.supervisorModals.moveOne',
+    defaultMessage: 'Move {document} to another queue. An assignment is removed; drafts are kept.',
+    description: 'Body of the Move to another queue dialog for one item. {document} is its file name.',
+  },
+  moveMany: {
+    id: 'reviewQueues.supervisorModals.moveMany',
+    defaultMessage: 'Move {count, plural, one {# item} other {# items}} to another queue. An assignment is removed; drafts are kept.',
+    description: 'Body of the Move to another queue dialog for several items. {count} is how many.',
+  },
+  targetQueue: {
+    id: 'reviewQueues.supervisorModals.targetQueue',
+    defaultMessage: 'Target queue',
+    description: "Label of the Move to another queue dialog's field that chooses the review queue to move the items to.",
+  },
+  queueRequired: {
+    id: 'reviewQueues.supervisorModals.queueRequired',
+    defaultMessage: 'Choose a queue.',
+    description: 'Error under the Target queue field of the Move to another queue dialog when the user moves without choosing one.',
+  },
+  noOtherQueue: {
+    id: 'reviewQueues.supervisorModals.noOtherQueue',
+    defaultMessage: 'There is no other queue to move to.',
+    description: 'Shown in the Target queue list of the Move to another queue dialog when there is no other review queue.',
+  },
+  chooseQueue: {
+    id: 'reviewQueues.supervisorModals.chooseQueue',
+    defaultMessage: 'Choose a queue',
+    description: 'Placeholder of the Target queue field of the Move to another queue dialog.',
+  },
+  removeTitle: {
+    id: 'reviewQueues.supervisorModals.removeTitle',
+    defaultMessage: 'Remove from queue',
+    description: 'Title of the dialog that takes review items out of review.',
+  },
+  remove: {
+    id: 'reviewQueues.supervisorModals.remove',
+    defaultMessage: 'Remove',
+    description: 'Button of the Remove from queue dialog that takes the items out of review.',
+  },
+  removeOne: {
+    id: 'reviewQueues.supervisorModals.removeOne',
+    defaultMessage:
+      'Remove {document} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.',
+    description: 'Body of the Remove from queue dialog for one item. {document} is its file name.',
+  },
+  removeMany: {
+    id: 'reviewQueues.supervisorModals.removeMany',
+    defaultMessage:
+      'Remove {count, plural, one {# item} other {# items}} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.',
+    description: 'Body of the Remove from queue dialog for several items. {count} is how many.',
+  },
+  note: {
+    id: 'reviewQueues.supervisorModals.note',
+    defaultMessage: 'Note',
+    description: "Label of the Remove from queue dialog's field for an optional note about why the items are removed.",
+  },
+  noteDescription: {
+    id: 'reviewQueues.supervisorModals.noteDescription',
+    defaultMessage: "Optional. Kept in the item's history.",
+    description: 'Description of the Note field of the Remove from queue dialog.',
+  },
+});
 
 interface BaseProps {
   /** The items the action applies to; the modal is open while non-empty. */
@@ -16,9 +145,6 @@ interface BaseProps {
   loading: boolean;
   onDismiss: () => void;
 }
-
-/** "invoice.pdf", or "3 items". */
-const what = (items: readonly ReviewItem[]): string => (items.length === 1 ? documentName(items[0].objectKey) : `${items.length} items`);
 
 const Footer = ({
   onDismiss,
@@ -34,7 +160,7 @@ const Footer = ({
   <Box float="right">
     <SpaceBetween direction="horizontal" size="xs">
       <Button variant="link" onClick={onDismiss}>
-        Cancel
+        <FormattedMessage {...messages.cancel} />
       </Button>
       <Button variant="primary" loading={loading} onClick={onConfirm}>
         {label}
@@ -44,18 +170,26 @@ const Footer = ({
 );
 
 export const UnassignModal = ({ items, loading, onDismiss, onConfirm }: BaseProps & { onConfirm: () => void }): React.JSX.Element => {
+  const intl = useIntl();
   const single = items.length === 1 ? items[0] : null;
+  const unassign = intl.formatMessage(messages.unassign);
   return (
     <Modal
       visible={items.length > 0}
       onDismiss={onDismiss}
-      header="Unassign"
-      footer={<Footer onDismiss={onDismiss} onConfirm={onConfirm} label="Unassign" loading={loading} />}
+      header={unassign}
+      footer={<Footer onDismiss={onDismiss} onConfirm={onConfirm} label={unassign} loading={loading} />}
     >
       <Box>
         {single
-          ? `Take ${documentName(single.objectKey)} back from ${single.ownerEmail ?? 'its Annotator'}. It stays in ${single.queue}, unassigned; the draft is kept and the Annotator is told.`
-          : `Take ${what(items)} back from their Annotators. They stay in their queue, unassigned; drafts are kept and the Annotators are told.`}
+          ? single.ownerEmail != null
+            ? intl.formatMessage(messages.unassignOne, {
+                document: documentName(single.objectKey),
+                annotator: single.ownerEmail,
+                queue: single.queue,
+              })
+            : intl.formatMessage(messages.unassignOneNoAnnotator, { document: documentName(single.objectKey), queue: single.queue })
+          : intl.formatMessage(messages.unassignMany, { count: items.length })}
       </Box>
     </Modal>
   );
@@ -73,6 +207,7 @@ interface MoveItemModalProps extends BaseProps {
 }
 
 export const MoveItemModal = ({ items, loading, onDismiss, onConfirm, queues }: MoveItemModalProps): React.JSX.Element => {
+  const intl = useIntl();
   const [choice, setChoice] = useState<SelectProps.Option | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const visible = items.length > 0;
@@ -93,19 +228,26 @@ export const MoveItemModal = ({ items, loading, onDismiss, onConfirm, queues }: 
     <Modal
       visible={visible}
       onDismiss={onDismiss}
-      header="Move to another queue"
-      footer={<Footer onDismiss={onDismiss} onConfirm={submit} label="Move" loading={loading} />}
+      header={intl.formatMessage(messages.moveTitle)}
+      footer={<Footer onDismiss={onDismiss} onConfirm={submit} label={intl.formatMessage(messages.move)} loading={loading} />}
     >
       <SpaceBetween size="m">
-        <Box>{`Move ${what(items)} to another queue. An assignment is removed; drafts are kept.`}</Box>
-        <FormField label="Target queue" errorText={submitted && !choice ? 'Choose a queue.' : undefined}>
+        <Box>
+          {items.length === 1
+            ? intl.formatMessage(messages.moveOne, { document: documentName(items[0].objectKey) })
+            : intl.formatMessage(messages.moveMany, { count: items.length })}
+        </Box>
+        <FormField
+          label={intl.formatMessage(messages.targetQueue)}
+          errorText={submitted && !choice ? intl.formatMessage(messages.queueRequired) : undefined}
+        >
           <Select
             selectedOption={choice}
             onChange={({ detail }) => setChoice(detail.selectedOption)}
             options={options}
             filteringType="auto"
-            empty="There is no other queue to move to."
-            placeholder="Choose a queue"
+            empty={intl.formatMessage(messages.noOtherQueue)}
+            placeholder={intl.formatMessage(messages.chooseQueue)}
           />
         </FormField>
       </SpaceBetween>
@@ -118,6 +260,7 @@ interface RemoveItemModalProps extends BaseProps {
 }
 
 export const RemoveItemModal = ({ items, loading, onDismiss, onConfirm }: RemoveItemModalProps): React.JSX.Element => {
+  const intl = useIntl();
   const [note, setNote] = useState('');
   const visible = items.length > 0;
   useEffect(() => {
@@ -127,14 +270,23 @@ export const RemoveItemModal = ({ items, loading, onDismiss, onConfirm }: Remove
     <Modal
       visible={visible}
       onDismiss={onDismiss}
-      header="Remove from queue"
-      footer={<Footer onDismiss={onDismiss} onConfirm={() => onConfirm(note.trim())} label="Remove" loading={loading} />}
+      header={intl.formatMessage(messages.removeTitle)}
+      footer={
+        <Footer
+          onDismiss={onDismiss}
+          onConfirm={() => onConfirm(note.trim())}
+          label={intl.formatMessage(messages.remove)}
+          loading={loading}
+        />
+      }
     >
       <SpaceBetween size="m">
         <Box>
-          {`Remove ${what(items)} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.`}
+          {items.length === 1
+            ? intl.formatMessage(messages.removeOne, { document: documentName(items[0].objectKey) })
+            : intl.formatMessage(messages.removeMany, { count: items.length })}
         </Box>
-        <FormField label="Note" description="Optional. Kept in the item's history." stretch>
+        <FormField label={intl.formatMessage(messages.note)} description={intl.formatMessage(messages.noteDescription)} stretch>
           <Textarea value={note} rows={2} onChange={({ detail }) => setNote(detail.value)} />
         </FormField>
       </SpaceBetween>

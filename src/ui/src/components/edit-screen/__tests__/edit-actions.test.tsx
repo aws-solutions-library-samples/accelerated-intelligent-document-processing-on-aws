@@ -15,8 +15,8 @@
  */
 
 import React from 'react';
-import { fireEvent } from '@testing-library/react';
-import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
+import { IntlProvider } from 'react-intl';
+import { fireEvent, render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,14 +24,20 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The report dialog's content reads the report from the server; here it shows what it was given.
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
-  MarkdownReport: ({ reportUri, documentId, title }: { reportUri: string; documentId: string; title: string }) => (
-    <div data-testid="markdown-report">{[title, documentId, reportUri].join('|')}</div>
+  MarkdownReport: ({ reportUri, documentId, report }: { reportUri: string; documentId: string; report: string }) => (
+    <div data-testid="markdown-report">{[report, documentId, reportUri].join('|')}</div>
   ),
 }));
 
 import EditScreen, { CANCEL_ACCESSIBLE_NAME } from '../EditScreen';
 import type { EditActionsProps } from '../EditScreen';
 import { barButtonLabels, barButtons, buttonLabel, chooseMenuItem, findMenu, menuItems, menuNames } from './edit-bar';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const renderScreen = (actions: Partial<EditActionsProps> = {}, status: string | undefined = undefined) => {
   const onAction = vi.fn();
@@ -40,6 +46,7 @@ const renderScreen = (actions: Partial<EditActionsProps> = {}, status: string | 
     <EditScreen title="doc.pdf" status={status} objectKey="in/doc.pdf" actions={{ busy: null, onAction, onShowHistory, ...actions }}>
       <div />
     </EditScreen>,
+    { wrapper: English },
   );
   return { onAction, onShowHistory };
 };
@@ -103,6 +110,7 @@ describe('the edit screen action bar', () => {
       >
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     expect(menuItems('More Actions').find((i) => i.text === 'Use As Evaluation Baseline')).toMatchObject({
       disabled: true,
@@ -243,6 +251,7 @@ describe('the Policy Rule Validation Summary in Reports', () => {
       >
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
   const item = () => menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary');
   const reportModal = () =>
@@ -272,9 +281,10 @@ describe('the Policy Rule Validation Summary in Reports', () => {
 
     chooseMenuItem('Reports', 'Policy Rule Validation Summary');
 
+    // The dialog is titled as the menu item is; its content is the document's policy rule validation report.
     const modal = reportModal()!;
     expect(modal.findContent().getElement().querySelector('[data-testid="markdown-report"]')!.textContent).toBe(
-      `Policy Rule Validation Summary|in/doc.pdf|${POLICY_REPORT}`,
+      `ruleValidation|in/doc.pdf|${POLICY_REPORT}`,
     );
     modal.findDismissButton().click();
     expect(reportModal()).toBeUndefined();

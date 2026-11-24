@@ -16,8 +16,8 @@
  */
 
 import React from 'react';
-import { act, waitFor } from '@testing-library/react';
-import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
+import { IntlProvider } from 'react-intl';
+import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,6 +28,12 @@ vi.mock('../../run-plan/run-plan-api', () => ({
 
 import type { PlannedRun } from '../../../graphql/generated/operation-types';
 import ProcessChangesConfirmModal from '../ProcessChangesConfirmModal';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 type Props = React.ComponentProps<typeof ProcessChangesConfirmModal>;
 
@@ -88,7 +94,7 @@ const alerts = () =>
 /** Render the dialog. It reads the plan as soon as it is open; `settled` waits for the answer. */
 const open = (props: Partial<Props> = {}) => {
   const handlers = { onConfirm: vi.fn(), onCancel: vi.fn() };
-  render(<ProcessChangesConfirmModal visible objectKey="in/w2.pdf" {...handlers} {...props} />);
+  render(<ProcessChangesConfirmModal visible objectKey="in/w2.pdf" {...handlers} {...props} />, { wrapper: English });
   return handlers;
 };
 const settled = () => waitFor(() => expect(content().findStatusIndicator('[class*="status-loading"]')).toBeNull());
@@ -115,12 +121,13 @@ describe('ProcessChangesConfirmModal for Save and Re-extract', () => {
         onConfirm={vi.fn()}
         onCancel={vi.fn()}
       />,
+      { wrapper: English },
     );
     expect(modal().findHeader().getElement().textContent).toBe('Confirm Reprocessing');
     const items = [...content().getElement().querySelectorAll('li')].map((li) => li.textContent);
     expect(items).toEqual([
       'Section 1: FieldTicket, pages 1, 2, 3',
-      'Section 3: Invoice, pages 5',
+      'Section 3: Invoice, page 5',
       'Replace their extracted values, including any corrected by hand',
       'Record their classes as confirmed (class confidence 1.0)',
       "Mark this document's pending review as completed, if it has one",

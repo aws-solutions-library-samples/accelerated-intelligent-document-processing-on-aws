@@ -14,6 +14,7 @@
 
 import { render, screen } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import { formatDateTime } from '../../../i18n/format';
@@ -32,9 +33,15 @@ const PROPS = {
 /** The value cell under a key label: the label's next sibling. */
 const cellAfter = (label: string): string => screen.getByText(label).nextElementSibling?.textContent ?? '';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('StepDetails dates', () => {
   it('shows the runtime default under en, as the bare toLocaleString() did', () => {
-    render(<StepDetails {...PROPS} />);
+    render(<StepDetails {...PROPS} />, { wrapper: English });
     expect(cellAfter('Started')).toBe(new Date(STARTED).toLocaleString());
     expect(cellAfter('Completed')).toBe(new Date(COMPLETED).toLocaleString());
   });

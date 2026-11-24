@@ -5,17 +5,28 @@
 // Studio documents. Review Management and Home › Tasks list both; each row opens
 // the edit screen for its item. An Admin assigns work, or an Annotator listed
 // on the queue claims it.
-import type { ReviewItem, TestSetTask } from '../../graphql/generated/operation-types';
+//
+// Rows are built while data loads (a queue page's load, the ReviewWork provider's
+// poll), so they hold data only: codes, flags and the reason as given. The table
+// words them where it shows them, through `workItemView`.
+import { defineMessages, type IntlShape, type NoMessageValues } from 'react-intl';
+
+import type { ReviewItem, ReviewReason, TestSetTask } from '../../graphql/generated/operation-types';
 import { documentEditHref, testSetAnnotateHref } from '../../routes/constants';
 import type { EditOrigin } from '../../routes/constants';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
-import type { StateView } from '../common/review-status';
 import { documentName, reasonText } from './review-api';
 import { productionWorkItemId, testSetWorkItemId } from './work-item-ids';
 import { policyFailureTotal } from './RoutedBy';
 import type { RoutedByLike } from './RoutedBy';
 
 export type WorkSource = 'production' | 'test-set';
+
+/** Why a row needs work, as data: a review reason, a Test Studio document's alerts, or its draft labels. */
+export type WorkItemReason = { kind: 'review'; reason: ReviewReason } | { kind: 'alerts'; count: number } | { kind: 'draftLabels' };
+
+/** The state a work list shows for an item its Annotator holds (CLAIMED) and for every Test Studio task. */
+export const ASSIGNED_STATE = 'ASSIGNED';
 
 export interface WorkItem {
   /** Unique across sources. */
@@ -27,11 +38,13 @@ export interface WorkItem {
   queue: string;
   /** Production: the queue's name, when the API reports one. Shown instead of the id. */
   queueName?: string | null;
+  /** The item is escalated (production only). */
+  escalated: boolean;
   priority: number | null;
   /** Production: when the item entered its queue. Test set: when it was assigned. */
   enqueuedAt: string | null;
-  /** The first alert of the item, in words; `extraReasons` counts the others. */
-  reason: string | null;
+  /** The first alert of the item, as data; `extraReasons` counts the others. */
+  reason: WorkItemReason | null;
   extraReasons: number;
   /** Production: the routing rule that placed the item. It is the reason shown when the item has no other. */
   routedBy?: RoutedByLike | null;
@@ -39,9 +52,12 @@ export interface WorkItem {
   routingReason: string | null;
   /** Production: how many policy rules the document failed. */
   policyFailureCount: number;
-  state: StateView;
-  /** The Annotator the item is assigned to ("You" for the caller), or null. */
+  /** The queue item state (`QueueItemState`), or `ASSIGNED_STATE`. */
+  state: string;
+  /** The e-mail of the Annotator the item is assigned to, or null. */
   assignedTo: string | null;
+  /** The item is the caller's, so it shows as "You" (every Test Studio task is). */
+  assignedToYou: boolean;
   assignedToMe: boolean;
   href: string;
   /** The production item, when there is one (Admin actions such as Assign need it). */
@@ -51,42 +67,126 @@ export interface WorkItem {
   reviewObjectKey?: string | null;
 }
 
-export const SOURCE_LABELS: Record<WorkSource, string> = {
-  production: 'Production',
-  'test-set': 'Test Studio',
+const messages = defineMessages<{
+  sourceProduction: NoMessageValues;
+  sourceTestSet: NoMessageValues;
+  assigned: NoMessageValues;
+  escalated: { readonly queue: string };
+  you: NoMessageValues;
+  alerts: { readonly count: number };
+  draftLabels: NoMessageValues;
+}>({
+  sourceProduction: {
+    id: 'reviewQueues.workItem.source.production',
+    defaultMessage: 'Production',
+    description:
+      'Source of a review work item or queue: a production review queue (as opposed to Test Studio). Shown as a badge in the Source column of Home › Tasks, Home › Queues and a queue page, and in the source filter.',
+  },
+  sourceTestSet: {
+    id: 'reviewQueues.workItem.source.testSet',
+    defaultMessage: 'Test Studio',
+    description:
+      'Source of a review work item or queue: a Test Studio test set being annotated. Shown as a badge in the Source column of Home › Tasks, Home › Queues and a queue page, and in the source filter. Test Studio is the name of the screen.',
+  },
+  assigned: {
+    id: 'reviewQueues.workItem.state.assigned',
+    defaultMessage: 'Assigned',
+    description:
+      'State column of a review work table for an item an Annotator holds, and for every Test Studio document assigned to the reader.',
+  },
+  escalated: {
+    id: 'reviewQueues.workItem.escalated',
+    defaultMessage: '{queue} (escalated)',
+    description:
+      'Queue column of a review work table for an escalated item. {queue} is the name of the queue, or its id when it has no name, as an Admin named it.',
+  },
+  you: {
+    id: 'reviewQueues.workItem.you',
+    defaultMessage: 'You',
+    description:
+      'Annotator column of a review work table, and the end of a queue page\'s "Assigned to …" hint, for an item assigned to the reader.',
+  },
+  alerts: {
+    id: 'reviewQueues.workItem.alerts',
+    defaultMessage: '{count, plural, one {# confidence alert} other {# confidence alerts}}',
+    description:
+      'Reason column of Home › Tasks for a Test Studio document. {count} is the number of its fields below their confidence threshold.',
+  },
+  draftLabels: {
+    id: 'reviewQueues.workItem.draftLabels',
+    defaultMessage: 'Draft labels to confirm',
+    description:
+      'Reason column of Home › Tasks for a Test Studio document that has no confidence alert but has labels for the Annotator to check and confirm.',
+  },
+});
+
+/** A work source's label (the Source badge and filter option), in the UI's language. */
+export const workSourceLabel = (source: WorkSource, intl: IntlShape): string =>
+  intl.formatMessage(source === 'production' ? messages.sourceProduction : messages.sourceTestSet);
+
+/** A work row as a table shows it: each label in the UI's language. */
+export interface WorkItemView {
+  /** The queue's name, or its id when the API reports no name, with "(escalated)" when the item is escalated. */
+  queue: string;
+  state: string;
+  /** "You" for the caller's item, else the Annotator's e-mail; null when no one is assigned. */
+  assignee: string | null;
+  /** The first alert of the item, in words; null when it has none. */
+  reason: string | null;
+}
+
+const reasonLabel = (reason: WorkItemReason | null, intl: IntlShape): string | null => {
+  if (!reason) return null;
+  switch (reason.kind) {
+    case 'review':
+      return reasonText(reason.reason, intl);
+    case 'alerts':
+      return intl.formatMessage(messages.alerts, { count: reason.count });
+    case 'draftLabels':
+      return intl.formatMessage(messages.draftLabels);
+  }
 };
 
-const ASSIGNED: StateView = { label: 'Assigned', type: 'in-progress' };
+/** Words a row for its table: the cells, the text and assignment filters and the sorting all read this. */
+export const workItemView = (item: WorkItem, intl: IntlShape): WorkItemView => {
+  // The queue as people know it: its name, or its id when the API reports no name.
+  const queue = item.queueName ?? item.queue;
+  return {
+    queue: item.escalated ? intl.formatMessage(messages.escalated, { queue }) : queue,
+    state: item.state === ASSIGNED_STATE ? intl.formatMessage(messages.assigned) : reviewItemStateView(item.state, intl).label,
+    assignee: item.assignedToYou ? intl.formatMessage(messages.you) : item.assignedTo,
+    reason: reasonLabel(item.reason, intl),
+  };
+};
 
 /** One production review item, as a row whose link opens the edit page with its origin. */
 export const fromReviewItem =
   (from: EditOrigin) =>
-  (item: ReviewItem): WorkItem => {
-    const escalated = item.escalated ? ' (escalated)' : '';
-    return {
-      id: productionWorkItemId(item.objectKey),
-      source: 'production',
-      objectKey: item.objectKey,
-      name: documentName(item.objectKey),
-      queue: `${item.queue}${escalated}`,
-      queueName: item.queueName ? `${item.queueName}${escalated}` : null,
-      priority: item.priority,
-      enqueuedAt: item.enqueuedAt,
-      reason: item.reasons[0] ? reasonText(item.reasons[0]) : null,
-      extraReasons: Math.max(item.reasonCount - 1, 0),
-      routedBy: item.routedBy
-        ? { ruleId: item.routedBy.ruleId, ruleLabel: item.routedBy.ruleLabel, fallbackReason: item.routedBy.fallbackReason }
-        : null,
-      routingReason: item.routedBy?.reason?.trim() || null,
-      policyFailureCount: policyFailureTotal(item.routedBy),
-      // The backend state for an item held by its Annotator is CLAIMED; the UI says Assigned.
-      state: item.state === QueueItemState.CLAIMED ? ASSIGNED : reviewItemStateView(item.state),
-      assignedTo: item.isMine ? 'You' : (item.ownerEmail ?? null),
-      assignedToMe: item.isMine && item.state === QueueItemState.CLAIMED,
-      href: documentEditHref(item.objectKey, { from }),
-      reviewItem: item,
-    };
-  };
+  (item: ReviewItem): WorkItem => ({
+    id: productionWorkItemId(item.objectKey),
+    source: 'production',
+    objectKey: item.objectKey,
+    name: documentName(item.objectKey),
+    queue: item.queue,
+    queueName: item.queueName || null,
+    escalated: item.escalated,
+    priority: item.priority,
+    enqueuedAt: item.enqueuedAt,
+    reason: item.reasons[0] ? { kind: 'review', reason: item.reasons[0] } : null,
+    extraReasons: Math.max(item.reasonCount - 1, 0),
+    routedBy: item.routedBy
+      ? { ruleId: item.routedBy.ruleId, ruleLabel: item.routedBy.ruleLabel, fallbackReason: item.routedBy.fallbackReason }
+      : null,
+    routingReason: item.routedBy?.reason?.trim() || null,
+    policyFailureCount: policyFailureTotal(item.routedBy),
+    // The backend state for an item held by its Annotator is CLAIMED; the UI says Assigned.
+    state: item.state === QueueItemState.CLAIMED ? ASSIGNED_STATE : item.state,
+    assignedTo: item.ownerEmail ?? null,
+    assignedToYou: item.isMine,
+    assignedToMe: item.isMine && item.state === QueueItemState.CLAIMED,
+    href: documentEditHref(item.objectKey, { from }),
+    reviewItem: item,
+  });
 
 /** One of the caller's assigned Test Studio documents (listMyTestSetTasks). */
 export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
@@ -95,18 +195,16 @@ export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
   objectKey: task.objectKey,
   name: documentName(task.objectKey),
   queue: task.testSetId,
+  escalated: false,
   priority: null,
   enqueuedAt: task.assignedAt ?? null,
-  reason: task.alertCount
-    ? `${task.alertCount} confidence alert${task.alertCount === 1 ? '' : 's'}`
-    : task.labelSource
-      ? 'Draft labels to confirm'
-      : null,
+  reason: task.alertCount ? { kind: 'alerts', count: task.alertCount } : task.labelSource ? { kind: 'draftLabels' } : null,
   extraReasons: 0,
   routingReason: null,
   policyFailureCount: 0,
-  state: ASSIGNED,
-  assignedTo: 'You',
+  state: ASSIGNED_STATE,
+  assignedTo: task.assignedTo ?? null,
+  assignedToYou: true,
   assignedToMe: true,
   href: testSetAnnotateHref(task.testSetId, task.objectKey, 'tasks'),
   testSetId: task.testSetId,

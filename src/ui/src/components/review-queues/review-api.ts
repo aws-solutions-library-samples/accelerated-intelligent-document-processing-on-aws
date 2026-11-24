@@ -191,20 +191,63 @@ export const MISSING_REQUIRED_KIND = 'missing_required';
  */
 export const EXTRACTION_FAILED_KIND = 'extraction_failed';
 
-const messages = defineMessages<{ extractionFailed: NoMessageValues }>({
+const messages = defineMessages<{
+  extractionFailed: NoMessageValues;
+  missingRequired: NoMessageValues;
+  missingRequiredField: { readonly name: string };
+  lowConfidence: { readonly score: number; readonly threshold: number };
+  lowConfidenceField: { readonly field: string; readonly score: number; readonly threshold: number };
+  blueprintConfidence: { readonly score: number; readonly threshold: number };
+  blueprintConfidenceField: { readonly field: string; readonly score: number; readonly threshold: number };
+}>({
   extractionFailed: {
     id: 'reviewQueues.reasons.extractionFailed',
     defaultMessage: 'Extraction failed',
     description:
       'Chip text of a review reason for a section whose extraction failed and left it with no extracted data (for example, a content filter withheld the model reply). Also the Reason column of a work list.',
   },
+  missingRequired: {
+    id: 'reviewQueues.reasons.missingRequired',
+    defaultMessage: 'Missing required',
+    description:
+      'Chip text of a review reason for a required field that has no extracted value, when the field has no name. Also the Top reason column of a work list.',
+  },
+  missingRequiredField: {
+    id: 'reviewQueues.reasons.missingRequiredField',
+    defaultMessage: 'Missing required: {name}',
+    description:
+      "Chip text of a review reason for a required field that has no extracted value. Also the Top reason column of a work list. {name} is the field's label or name, from the document class schema.",
+  },
+  lowConfidence: {
+    id: 'reviewQueues.reasons.lowConfidence',
+    defaultMessage: 'Low confidence: {score, number, ::.00} < {threshold, number, ::.00}',
+    description:
+      'Chip text of a review reason for an extracted value whose confidence is below its threshold, when the field has no name. Also the Top reason column of a work list. {score} is the confidence and {threshold} the threshold, both from 0 to 1 with two decimals.',
+  },
+  lowConfidenceField: {
+    id: 'reviewQueues.reasons.lowConfidenceField',
+    defaultMessage: 'Low confidence: {field} {score, number, ::.00} < {threshold, number, ::.00}',
+    description:
+      "Chip text of a review reason for an extracted value whose confidence is below its threshold. Also the Top reason column of a work list. {field} is the field's label or name, from the document class schema; {score} is the confidence and {threshold} the threshold, both from 0 to 1 with two decimals.",
+  },
+  blueprintConfidence: {
+    id: 'reviewQueues.reasons.blueprintConfidence',
+    defaultMessage: 'Blueprint confidence: {score, number, ::.00} < {threshold, number, ::.00}',
+    description:
+      "Chip text of a review reason for a section whose matched Bedrock Data Automation blueprint has a confidence below the review threshold. Also the Top reason column of a work list. {score} is the blueprint's confidence and {threshold} the threshold, both from 0 to 1 with two decimals.",
+  },
+  blueprintConfidenceField: {
+    id: 'reviewQueues.reasons.blueprintConfidenceField',
+    defaultMessage: 'Blueprint confidence: {field} {score, number, ::.00} < {threshold, number, ::.00}',
+    description:
+      "Chip text of a review reason for a matched Bedrock Data Automation blueprint whose confidence is below the review threshold, when the reason names a field. Also the Top reason column of a work list. {field} is the field's label or name; {score} is the confidence and {threshold} the threshold, both from 0 to 1 with two decimals.",
+  },
 });
 
 /**
- * One reason's chip text: "Low confidence: Employer name 0.62 < 0.80",
+ * One reason's chip text, in the UI's language: "Low confidence: Employer name 0.62 < 0.80",
  * "Missing required: Employer name" for a required field with no value, or
- * "Extraction failed" for a section with no extracted data. The last is a declared
- * message, formatted with `intl` when the caller has one and its English otherwise.
+ * "Extraction failed" for a section with no extracted data.
  */
 export const reasonText = (
   reason: {
@@ -214,15 +257,23 @@ export const reasonText = (
     score: number;
     threshold: number;
   },
-  intl?: Pick<IntlShape, 'formatMessage'>,
+  intl: Pick<IntlShape, 'formatMessage'>,
 ): string => {
   const name = reason.label || reason.field;
-  if (reason.kind === EXTRACTION_FAILED_KIND) {
-    return intl ? intl.formatMessage(messages.extractionFailed) : String(messages.extractionFailed.defaultMessage);
+  if (reason.kind === EXTRACTION_FAILED_KIND) return intl.formatMessage(messages.extractionFailed);
+  if (reason.kind === MISSING_REQUIRED_KIND) {
+    return name ? intl.formatMessage(messages.missingRequiredField, { name }) : intl.formatMessage(messages.missingRequired);
   }
-  if (reason.kind === MISSING_REQUIRED_KIND) return `Missing required${name ? `: ${name}` : ''}`;
-  const what = reason.kind === 'blueprint_confidence' ? 'Blueprint confidence' : 'Low confidence';
-  return `${what}: ${name ? `${name} ` : ''}${reason.score.toFixed(2)} < ${reason.threshold.toFixed(2)}`;
+  // Pre-rounded with toFixed(2) to keep today's digits: Intl alone rounds 0.615 to 0.62, toFixed to 0.61.
+  const scores = { score: Number(reason.score.toFixed(2)), threshold: Number(reason.threshold.toFixed(2)) };
+  if (reason.kind === 'blueprint_confidence') {
+    return name
+      ? intl.formatMessage(messages.blueprintConfidenceField, { field: name, ...scores })
+      : intl.formatMessage(messages.blueprintConfidence, scores);
+  }
+  return name
+    ? intl.formatMessage(messages.lowConfidenceField, { field: name, ...scores })
+    : intl.formatMessage(messages.lowConfidence, scores);
 };
 
 /** The file name part of an object key, for compact display. */

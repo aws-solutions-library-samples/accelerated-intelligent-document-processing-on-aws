@@ -15,18 +15,25 @@ import { MarkdownReport } from '../document-viewer/MarkdownViewer';
 export type DocumentReport = 'summary' | 'evaluation' | 'rule-validation';
 
 const messages = defineMessages<{
-  policyRuleValidationSummary: NoMessageValues;
-  policyRuleValidationEmpty: NoMessageValues;
+  evaluationReport: NoMessageValues;
+  ruleValidationSummary: NoMessageValues;
+  ruleValidationEmpty: NoMessageValues;
 }>({
-  policyRuleValidationSummary: {
-    id: 'documentActions.reportDialog.policyRuleValidationSummary',
-    defaultMessage: 'Policy Rule Validation Summary',
-    description: "Header and title of the dialog that shows a document's policy rule validation summary report.",
+  evaluationReport: {
+    id: 'documentActions.reportDialog.evaluationReport',
+    defaultMessage: 'Evaluation Report',
+    description: "Title of the dialog that shows the document's evaluation report, opened from the document page's Reports menu.",
   },
-  policyRuleValidationEmpty: {
-    id: 'documentActions.reportDialog.policyRuleValidationEmpty',
+  ruleValidationSummary: {
+    id: 'documentActions.reportDialog.ruleValidationSummary',
+    defaultMessage: 'Policy Rule Validation Summary',
+    description:
+      "Title of the dialog that shows the document's policy rule validation summary, opened from the document page's Reports menu.",
+  },
+  ruleValidationEmpty: {
+    id: 'documentActions.reportDialog.ruleValidationEmpty',
     defaultMessage: 'Policy rule validation summary not available for this document',
-    description: 'Shown in the Policy Rule Validation Summary dialog when the document has no such report.',
+    description: 'Text of the Policy Rule Validation Summary dialog when the document has no policy rule validation summary.',
   },
 });
 
@@ -48,7 +55,7 @@ const DocumentReportDialog = ({ report, displayed, onDismiss }: DocumentReportDi
     return <SummaryReportModal reportUri={displayed.summaryReportUri ?? ''} objectKey={objectKey} onDismiss={onDismiss} />;
   if (report === 'evaluation') {
     return (
-      <ReportModal header="Evaluation Report" size="max" onDismiss={onDismiss}>
+      <ReportModal header={intl.formatMessage(messages.evaluationReport)} size="max" onDismiss={onDismiss}>
         {/* Reads the JSON results and renders a real component, falling back to the
             markdown artifact when they cannot be read. */}
         <EvaluationReport reportUri={displayed.evaluationReportUri ?? ''} documentId={objectKey} />
@@ -56,12 +63,12 @@ const DocumentReportDialog = ({ report, displayed, onDismiss }: DocumentReportDi
     );
   }
   return (
-    <ReportModal header={intl.formatMessage(messages.policyRuleValidationSummary)} onDismiss={onDismiss}>
+    <ReportModal header={intl.formatMessage(messages.ruleValidationSummary)} onDismiss={onDismiss}>
       <MarkdownReport
         reportUri={displayed.ruleValidationResultUri ?? ''}
         documentId={objectKey}
-        title={intl.formatMessage(messages.policyRuleValidationSummary)}
-        emptyMessage={intl.formatMessage(messages.policyRuleValidationEmpty)}
+        report="ruleValidation"
+        emptyMessage={intl.formatMessage(messages.ruleValidationEmpty)}
       />
     </ReportModal>
   );

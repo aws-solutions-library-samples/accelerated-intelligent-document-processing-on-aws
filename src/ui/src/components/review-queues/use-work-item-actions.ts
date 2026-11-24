@@ -6,15 +6,26 @@
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { defineMessages, type IntlShape, type NoMessageValues } from 'react-intl';
 
 import type { WorkItem } from './work-items';
 
 export type WorkItemAction = 'annotate';
 
+const messages = defineMessages<{ edit: NoMessageValues }>({
+  edit: {
+    id: 'reviewQueues.workItemActions.edit',
+    defaultMessage: 'Edit',
+    description: "Item of a review work table row's menu: opens the item's edit page, without changing who it is assigned to.",
+  },
+});
+
 const hrefPath = (href: string): string => href.replace(/^#/, '');
 
-/** The row menu entries every HITL work table offers. */
-export const workItemActions = (): ButtonDropdownProps.Item[] => [{ id: 'annotate', text: 'Edit' }];
+/** The row menu entries every HITL work table offers, in the UI's language. */
+export const workItemActions = (intl: IntlShape): ButtonDropdownProps.Item[] => [
+  { id: 'annotate', text: intl.formatMessage(messages.edit) },
+];
 
 /** Runs a common row action; returns false for an id it doesn't handle. */
 const useWorkItemActions = () => {

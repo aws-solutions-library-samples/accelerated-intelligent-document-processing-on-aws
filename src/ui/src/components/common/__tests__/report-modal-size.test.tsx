@@ -9,8 +9,8 @@
  */
 
 import React from 'react';
-import { cleanup, screen } from '@testing-library/react';
-import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
+import { IntlProvider } from 'react-intl';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@cloudscape-design/components', async (importOriginal) => {
@@ -36,6 +36,12 @@ import DocumentReportDialog from '../../document-actions/DocumentReportDialog';
 const modalSize = () => screen.getByTestId('modal').getAttribute('data-size');
 const noop = () => undefined;
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('Reports dialog width', () => {
   afterEach(cleanup);
 
@@ -56,7 +62,7 @@ describe('Reports dialog width', () => {
     ['Estimated Cost', () => <EstimatedCostModal meteringData={{}} pageCount={1} onDismiss={noop} />],
     ['History', () => <EditorHistoryModal visible onDismiss={noop} sectionData={{ inference_result: {} }} />],
   ])('%s uses the shared size', (header, dialog) => {
-    render(dialog());
+    render(dialog(), { wrapper: English });
     expect(screen.getByRole('heading', { level: 2 }).textContent).toContain(header);
     expect(modalSize()).toBe(REPORT_MODAL_SIZE);
   });
@@ -68,6 +74,7 @@ describe('Reports dialog width', () => {
         displayed={{ objectKey: 'doc.pdf', evaluationReportUri: 's3://b/e.json' }}
         onDismiss={noop}
       />,
+      { wrapper: English },
     );
     expect(modalSize()).toBe('max');
   });

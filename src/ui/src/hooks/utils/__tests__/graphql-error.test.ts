@@ -13,8 +13,10 @@
  * again", which for a 403 is advice that can never work.
  */
 
+import { createIntl, defineMessages, type NoMessageValues } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
+import { onIntlError } from '../../../i18n/LocaleProvider';
 import { describeApiError, FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../graphql-error';
 
 /** What the dispatcher's 403 body looks like once rest-client.ts has thrown it. */
@@ -90,6 +92,53 @@ describe('describeApiError', () => {
 
   it('never renders [object Object]', () => {
     expect(describeApiError({ unexpected: true }, 'list documents')).not.toContain('[object Object]');
+  });
+});
+
+/** An action phrase as a translated screen declares it. */
+const phrases = defineMessages<{ listDocuments: NoMessageValues }>({
+  listDocuments: { id: 'test.apiError.listDocumentsAction', defaultMessage: 'list documents', description: 'A test phrase.' },
+});
+
+/** The two sentences and the phrase in a fixture fr-CA catalog. */
+const FR = {
+  'common.apiError.permissionDenied':
+    'Vous n’avez pas l’autorisation de {action}. Si votre compte est nouveau, demandez à un administrateur de lui attribuer un rôle.',
+  'common.apiError.failed': 'Échec de l’opération « {action} » : {error}',
+  'test.apiError.listDocumentsAction': 'lister les documents',
+};
+const english = createIntl({ locale: 'en', defaultLocale: 'en', onError: onIntlError });
+const french = createIntl({ locale: 'fr-CA', defaultLocale: 'en', messages: FR, onError: onIntlError });
+
+describe('describeApiError with the action as a message', () => {
+  const throttled = { errors: [{ message: 'DynamoDB throttled' }] };
+
+  it('gives the same English as the string form under en', () => {
+    const denial = dispatcherDenial('listDocuments');
+    expect(describeApiError(denial, phrases.listDocuments, english)).toBe(describeApiError(denial, 'list documents'));
+    expect(describeApiError(denial, phrases.listDocuments, english)).toBe(
+      'You do not have permission to list documents. If your account is new, ask an administrator to assign it a role.',
+    );
+    expect(describeApiError(throttled, phrases.listDocuments, english)).toBe(describeApiError(throttled, 'list documents'));
+    expect(describeApiError(throttled, phrases.listDocuments, english)).toBe('Failed to list documents: DynamoDB throttled');
+  });
+
+  it('words the sentence and the phrase in French under fr-CA', () => {
+    expect(describeApiError(dispatcherDenial('listDocuments'), phrases.listDocuments, french)).toBe(
+      'Vous n’avez pas l’autorisation de lister les documents. Si votre compte est nouveau, demandez à un administrateur de lui attribuer un rôle.',
+    );
+    expect(describeApiError(throttled, phrases.listDocuments, french)).toBe(
+      'Échec de l’opération « lister les documents » : DynamoDB throttled',
+    );
+  });
+
+  it("prints the server's text as it is, braces and apostrophes included", () => {
+    const server = { errors: [{ message: "Can't parse {field} near '{'" }] };
+    expect(describeApiError(server, phrases.listDocuments, french)).toBe(
+      "Échec de l’opération « lister les documents » : Can't parse {field} near '{'",
+    );
+    expect(describeApiError(server, phrases.listDocuments, english)).toBe("Failed to list documents: Can't parse {field} near '{'");
+    expect(describeApiError(server, 'list documents')).toBe("Failed to list documents: Can't parse {field} near '{'");
   });
 });
 

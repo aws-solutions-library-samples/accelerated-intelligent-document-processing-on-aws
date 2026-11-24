@@ -63,9 +63,9 @@ vi.mock('../../document-panel/DocumentVersionsPanel', () => ({ default: () => nu
 vi.mock('../../document-panel/DocumentDownloadModals', () => ({ DownloadOptionsModal: () => null, DownloadProgressModal: () => null }));
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
-  MarkdownReport: ({ title, emptyMessage, reportUri }: { title: string; emptyMessage: string; reportUri: string }) => (
+  MarkdownReport: ({ report, emptyMessage, reportUri }: { report: string; emptyMessage: string; reportUri: string }) => (
     <div data-testid="markdown-report">
-      {title}|{emptyMessage}|{reportUri}
+      {report}|{emptyMessage}|{reportUri}
     </div>
   ),
 }));
@@ -243,11 +243,11 @@ describe('Reports', () => {
   });
 
   it.each([
-    ['Summary', 'Document Summary', 'Document Summary|Summary report not available for this document|s3://o/in/a.pdf/summary.md'],
+    ['Summary', 'Document Summary', 'summary|Summary report not available for this document|s3://o/in/a.pdf/summary.md'],
     [
       'Policy Rule Validation Summary',
       'Policy Rule Validation Summary',
-      'Policy Rule Validation Summary|Policy rule validation summary not available for this document|s3://o/in/a.pdf/rules.md',
+      'ruleValidation|Policy rule validation summary not available for this document|s3://o/in/a.pdf/rules.md',
     ],
   ])('%s opens its dialog', async (item, title, content) => {
     renderPanel();

@@ -11,9 +11,16 @@
 
 import React from 'react';
 import { render } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import ProcessingReportTab from '../ProcessingReportTab';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const STAGES = [
   { key: 'ocr', label: 'OCR', status: 'ok' },
@@ -23,7 +30,9 @@ const STAGES = [
 ];
 
 const renderFlow = () => {
-  render(<ProcessingReportTab metadata={{ processing_flow: { stages: STAGES } }} processingReport={undefined} inferenceResult={{}} />);
+  render(<ProcessingReportTab metadata={{ processing_flow: { stages: STAGES } }} processingReport={undefined} inferenceResult={{}} />, {
+    wrapper: English,
+  });
   const flow = document.querySelector('[data-testid="process-flow"]') as HTMLElement;
   expect(flow).not.toBeNull();
   return flow;

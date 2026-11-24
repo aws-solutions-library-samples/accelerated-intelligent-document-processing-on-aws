@@ -6,8 +6,32 @@
 import React from 'react';
 import { Box, Button, Modal } from '@cloudscape-design/components';
 import type { ModalProps } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import { MarkdownReport } from '../document-viewer/MarkdownViewer';
+
+/** The label of the report dialogs' Close button. */
+export const reportModalMessages = defineMessages<{ close: NoMessageValues }>({
+  close: {
+    id: 'common.reportModal.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes a report dialog opened from the Reports menu of the document page or the edit page.',
+  },
+});
+
+const summaryMessages = defineMessages<{ title: NoMessageValues; empty: NoMessageValues }>({
+  title: {
+    id: 'common.summaryReport.title',
+    defaultMessage: 'Document Summary',
+    description:
+      "Title of the dialog that shows the document's summary, opened from Reports › Summary on the document page or the edit page.",
+  },
+  empty: {
+    id: 'common.summaryReport.empty',
+    defaultMessage: 'Summary report not available for this document',
+    description: 'Text of the Document Summary dialog when the document has no summary report.',
+  },
+});
 
 interface ReportModalProps {
   header: string;
@@ -33,7 +57,7 @@ export const ReportModal = ({ header, onDismiss, children, size = REPORT_MODAL_S
     footer={
       <Box float="right">
         <Button variant="primary" onClick={onDismiss}>
-          Close
+          <FormattedMessage {...reportModalMessages.close} />
         </Button>
       </Box>
     }
@@ -51,15 +75,18 @@ export const SummaryReportModal = ({
   reportUri: string;
   objectKey: string;
   onDismiss: () => void;
-}): React.JSX.Element => (
-  <ReportModal header="Document Summary" onDismiss={onDismiss}>
-    <MarkdownReport
-      reportUri={reportUri}
-      documentId={objectKey}
-      title="Document Summary"
-      emptyMessage="Summary report not available for this document"
-    />
-  </ReportModal>
-);
+}): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <ReportModal header={intl.formatMessage(summaryMessages.title)} onDismiss={onDismiss}>
+      <MarkdownReport
+        reportUri={reportUri}
+        documentId={objectKey}
+        report="summary"
+        emptyMessage={intl.formatMessage(summaryMessages.empty)}
+      />
+    </ReportModal>
+  );
+};
 
 export default ReportModal;
