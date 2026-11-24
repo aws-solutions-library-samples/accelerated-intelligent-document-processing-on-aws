@@ -1771,6 +1771,9 @@ ocr:
     - name: TABLES
     - name: LAYOUT
     - name: SIGNATURES
+  # Textract only. Follow text Textract read as handwriting with "(HANDWRITING)"
+  # in the page text. Default false. See "Marking handwriting in the page text".
+  mark_handwriting: false
 
   # For BDA backend (optional): use a specific standard-output SYNC project
   # instead of the per-stack <stackname>_OCR_StdOutput project the stack
@@ -1911,6 +1914,83 @@ Two supporting measures, if you have them:
 with a detection (including false positives on stray ink) add a few prompt tokens
 and an extra signal the model may over-read, for no benefit when nothing asks about
 signatures. Removing it costs nothing, since the feature was free to begin with.
+
+### Marking handwriting in the page text
+
+Textract reads handwriting less accurately than print ("Smith" can come back as
+"Smlth"), and it reports which is which for every word (`TextType`). The page text
+that classification, extraction and summarization read (`pages/N/result.json`)
+does not carry that, so a document with a printed form and a handwritten note on
+the same page gives the model no way to prefer the printed value, short of the
+page image.
+
+`ocr.mark_handwriting: true` adds the missing signal. Every run of words Textract
+typed as handwriting is followed by `(HANDWRITING)`, and a short note at the end of the
+page explains the marker and tells the model not to copy it into a value:
+
+```text
+Account holder: Jane Smith
+Jane Smlth (HANDWRITING)
+
+--- OCR handwriting markers ---
+Text followed by (HANDWRITING) was read from handwriting by the OCR engine. ...
+```
+
+Then say what to do with it in a field description or the extraction prompt:
+
+```yaml
+disputant_name:
+  type: string
+  description: >
+    Full name of the account holder. Use the name as printed on the document.
+    Text marked (HANDWRITING) is more likely to be misread, so prefer a printed
+    name over a handwritten one. If the name appears only in handwriting, use
+    it, and do not include the (HANDWRITING) marker in the value.
+```
+
+This works without `{DOCUMENT_IMAGE}`, so it suits a profile that deliberately
+never sends page images to a model.
+
+**Scope and limits**
+
+- **Textract only.** Other backends do not report handwriting; the setting is
+  ignored and a warning is logged when the service starts.
+- **Per run of words.** Textract types each word, so the marker follows the last
+  word of each run of handwritten words. On a line that mixes a printed label with
+  a handwritten value (`Name: Smlth`), only the value is marked. Handwriting inside
+  a table cell or form value is marked as well.
+- **Markers can land mid-sentence.** The page text is reflowed by the layout
+  analysis, so a marker follows the run it belongs to, not the end of a sentence.
+  When layout analysis splits one handwritten line across two table cells, only
+  the cell holding the end of the run carries the marker.
+- **Every step that reads page text sees it,** including classification and
+  summarization, and the Markdown text on the Document Details page. This is
+  deliberate: one marked copy of the text, rather than a second extraction-only
+  copy. Evaluation compares extracted values, not page text, so baselines are
+  unaffected unless a model copies the marker into a value; the note on the
+  page asks it not to.
+- **The OCR Lines pane shows no marker.** The page viewer's OCR Lines pane reads
+  `pageData.json`, which is built from the unmarked blocks. Its per-line
+  `textType` comes from the LINE block, which Textract leaves without one, so it
+  is empty for Textract pages as well.
+- **Token cost.** Each marker adds a few tokens, and the note adds about 60
+  tokens to each page that has handwriting. Pages without handwriting are
+  unchanged.
+- **Table parsing.** A handwritten table cell reads `329.00 (HANDWRITING)`
+  rather than a bare number, which the agentic `parse_table` tool may not treat
+  as numeric. This has not been measured.
+- **Unchanged files.** `rawText.json` is the unmodified Textract response, and
+  `textConfidence.json` and `pageData.json` are not changed by this setting.
+- **Takes effect when OCR runs.** Documents already processed keep their page
+  text until reprocessed from the OCR step.
+- **Not a guarantee.** The setting only makes handwriting visible. Whether a model
+  then prefers the printed value depends on the prompt; check it on your own
+  documents.
+- **The marker is plain text.** A document can itself contain the text
+  `(HANDWRITING)` or a copy of the note, and the model cannot tell those apart
+  from the ones OCR added. A document could therefore make printed text look
+  handwritten, or the other way round. Do not rely on the marker as a security
+  control; the signature-detection note has the same property.
 
 ### Bedrock OCR Benefits
 

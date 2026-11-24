@@ -234,6 +234,9 @@ ocr:
   features:
     - name: "TABLES"
     - name: "FORMS"
+  # Textract only: follow text Textract read as handwriting with "(HANDWRITING)"
+  # in the page text, so a prompt can prefer printed values (default: false).
+  mark_handwriting: false
   image:
     dpi: 300  # DPI for PDF page extraction (default: 300)
     # Out-of-memory ceiling, not a cost control (defaults: 2600x3600).

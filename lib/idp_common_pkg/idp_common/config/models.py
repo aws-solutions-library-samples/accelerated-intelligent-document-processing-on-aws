@@ -3684,6 +3684,18 @@ class OCRConfig(BaseModel):
     features: List[OCRFeature] = Field(
         default_factory=list, description="Textract features to enable"
     )
+    mark_handwriting: bool = Field(
+        default=False,
+        description=(
+            "Textract only. When true, text that Textract classified as "
+            "handwriting is followed by '(HANDWRITING)' in the page text "
+            "(pages/N/result.json), which is what classification, extraction "
+            "and summarization read, and a short note explaining the marker is "
+            "added to the page. Lets a prompt or field description tell "
+            "handwriting, which Textract misreads more often, from printed text "
+            "without sending page images to the model. Off by default."
+        ),
+    )
     max_workers: int = Field(default=20, gt=0, description="Max concurrent workers")
     image: ImageConfig = Field(default_factory=ImageConfig)
 

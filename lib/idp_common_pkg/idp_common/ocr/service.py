@@ -55,6 +55,22 @@ DEFAULT_DPI = 300
 DEFAULT_TARGET_WIDTH = 2600
 DEFAULT_TARGET_HEIGHT = 3600
 
+# ocr.mark_handwriting: appended to the last word of each run of words Textract
+# typed as handwriting (WORD-level TextType). The wording matches the suffix
+# _generate_text_confidence_data writes into textConfidence.json, but that
+# function reads TextType from LINE blocks, which Textract does not set, so for
+# Textract pages textConfidence.json does not carry the marker.
+HANDWRITING_MARKER = "(HANDWRITING)"
+# Added to a page's text when at least one marker was inserted, so the model is
+# told what the marker means and not to copy it into a value. Follows the pattern
+# of the signature-detection note appended to page text.
+HANDWRITING_LEGEND = (
+    "--- OCR handwriting markers ---\n"
+    f"Text followed by {HANDWRITING_MARKER} was read from handwriting by the OCR "
+    "engine. Handwriting is more likely than printed text to contain misread "
+    "characters. The marker is not part of the text: never copy it into a value."
+)
+
 
 class OcrService:
     """Service for OCR processing of documents using AWS Textract or Amazon Bedrock."""
@@ -114,6 +130,8 @@ class OcrService:
             self.bedrock_config = bedrock_config
             self.preprocessing_config = preprocessing_config
             self.enhanced_features = enhanced_features
+            # The deprecated parameter pattern has no equivalent; off.
+            self.mark_handwriting = False
         else:
             # Convert dict to IDPConfig if needed
             if config is not None and isinstance(config, dict):
@@ -132,6 +150,8 @@ class OcrService:
 
             # Extract max_workers (automatic int conversion)
             self.max_workers = max_workers or self.config.ocr.max_workers
+            # Mark Textract handwriting in the page text (ocr.mark_handwriting)
+            self.mark_handwriting = bool(self.config.ocr.mark_handwriting)
 
             # Extract DPI from image configuration (Pydantic handles type conversion!)
             self.dpi = self.config.ocr.image.dpi
@@ -222,6 +242,14 @@ class OcrService:
         if self.backend not in ["textract", "bedrock", "bda", "none"]:
             raise ValueError(
                 f"Invalid backend: {backend}. Must be 'textract', 'bedrock', 'bda', or 'none'"
+            )
+
+        if self.mark_handwriting and self.backend != "textract":
+            logger.warning(
+                "ocr.mark_handwriting is enabled but the OCR backend is '%s'. "
+                "Only Textract reports which text is handwriting, so the setting "
+                "has no effect.",
+                self.backend,
             )
 
         # Initialize clients based on backend
@@ -2185,6 +2213,67 @@ class OcrService:
         )
         return f"s3://{output_bucket}/{page_data_key}"
 
+    @staticmethod
+    def _mark_handwriting_blocks(
+        response: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], int]:
+        """
+        Return a copy of a Textract response in which handwriting is marked.
+
+        Textract sets ``TextType`` (``PRINTED`` or ``HANDWRITING``) only on WORD
+        blocks. Within each LINE, the last word of every run of handwritten words
+        gets ``HANDWRITING_MARKER`` appended, so a line mixing a printed label and
+        a handwritten value ("Name: Smlth") marks only the value. textractor
+        builds its markdown from the WORD blocks; the LINE ``Text`` is rebuilt
+        too so the basic block-based fallback shows the same markers.
+
+        The input is not modified: it is also what ``rawText.json`` and
+        ``textConfidence.json`` are built from. A LINE without an ``Id`` is left
+        unmarked.
+
+        Returns:
+            Tuple of (response to parse, number of lines with marked handwriting)
+        """
+        blocks = response.get("Blocks") or []
+        by_id = {b.get("Id"): b for b in blocks if isinstance(b, dict)}
+        new_text: Dict[str, str] = {}
+        marked_lines = 0
+        for line in blocks:
+            if not isinstance(line, dict) or line.get("BlockType") != "LINE":
+                continue
+            if not line.get("Id"):
+                # Its rebuilt Text could not be attached to it.
+                continue
+            words = [
+                by_id[child_id]
+                for rel in line.get("Relationships") or []
+                if rel.get("Type") == "CHILD"
+                for child_id in rel.get("Ids") or []
+                if by_id.get(child_id, {}).get("BlockType") == "WORD"
+            ]
+            handwritten = [w.get("TextType") == "HANDWRITING" for w in words]
+            if not any(handwritten):
+                continue
+            texts = []
+            for i, word in enumerate(words):
+                text = word.get("Text") or ""
+                if handwritten[i] and (i + 1 == len(words) or not handwritten[i + 1]):
+                    text = f"{text} {HANDWRITING_MARKER}"
+                    new_text[word["Id"]] = text
+                texts.append(text)
+            new_text[line["Id"]] = " ".join(t for t in texts if t)
+            marked_lines += 1
+
+        if not marked_lines:
+            return response, 0
+        marked_blocks = [
+            dict(b, Text=new_text[b["Id"]])
+            if isinstance(b, dict) and b.get("Id") in new_text
+            else b
+            for b in blocks
+        ]
+        return {**response, "Blocks": marked_blocks}, marked_lines
+
     def _parse_textract_response(
         self, response: Dict[str, Any], page_id: int = None
     ) -> Dict[str, str]:
@@ -2206,10 +2295,20 @@ class OcrService:
         # Log enhanced features at debug level
         logger.debug(f"Enhanced features{page_info}: {self.enhanced_features}")
 
+        # ocr.mark_handwriting: parse a copy in which handwriting is marked.
+        # `response` itself stays untouched; the signature detections below are
+        # read from it.
+        parse_input = response
+        marked_lines = 0
+        if self.mark_handwriting:
+            parse_input, marked_lines = self._mark_handwriting_blocks(response)
+            if marked_lines:
+                logger.info(f"Marked {marked_lines} handwriting line(s){page_info}")
+
         try:
             # Parse the response with textractor - debug level
             logger.debug(f"Parsing Textract response{page_info} with textractor")
-            parsed_response = response_parser.parse(response)
+            parsed_response = response_parser.parse(parse_input)
 
             try:
                 # First try to convert to markdown
@@ -2243,7 +2342,7 @@ class OcrService:
             logger.warning(
                 f"Falling back to basic text extraction from blocks{page_info}"
             )
-            blocks = response.get("Blocks", [])
+            blocks = parse_input.get("Blocks", [])
 
             text_lines = []
             for block in blocks:
@@ -2256,6 +2355,11 @@ class OcrService:
                 logger.error(f"No text content found in document{page_info}")
             else:
                 logger.info(f"Successfully extracted basic text{page_info}")
+
+        # Explain the handwriting marker, so the model knows what it means and
+        # does not copy it into a value.
+        if marked_lines:
+            text = f"{text}\n\n{HANDWRITING_LEGEND}"
 
         # Append the signature detections. The linearizer renders each one as a
         # bare inline "[SIGNATURE]" token — placed by reading order, with no

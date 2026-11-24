@@ -657,6 +657,16 @@ Resources:
                       type: string
                       description: "Feature - select one of the supported OCR feature types"
                       enum: ["TABLES", "FORMS", "SIGNATURES", "LAYOUT"]
+              mark_handwriting:
+                type: boolean
+                default: false
+                title: Mark handwriting in page text
+                description: >-
+                  Adds "(HANDWRITING)" after text Textract read as handwriting,
+                  so prompts can prefer printed values without page images.
+                  Only used if backend is 'textract'.
+                order: 7
+                dependsOn: { field: "backend", values: ["textract"] }
               system_prompt:
                 type: string
                 title: System prompt
