@@ -42,7 +42,9 @@ model_id = idp_config.extraction.model
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
 IDs, max-token limits, required prompt placeholders, schema-field warnings, a
 warning when `classification.fallback_class` is neither `unclassified` nor a
-configured class, and
+configured class, a warning when `extraction.agentic.enabled: true` is overridden
+by a simple `extraction.mode` (`_validate_agentic_flag_against_mode`, which reads the
+flag with the migration's `_coerce_bool`), and
 model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
 covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
 the active strategy makes, the per-class model overrides, and the `model` a field

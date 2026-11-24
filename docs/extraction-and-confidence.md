@@ -167,7 +167,9 @@ extraction:
 > configuration migration pins `mode` from it before merging onto the defaults. A
 > **full** configuration is different: it already carries `mode: simple`, so
 > editing only `agentic.enabled` to `true` in it leaves the document on the Simple
-> path, with no error. Set `mode: advanced` to choose Advanced extraction.
+> path. It is not an error, but `idp-cli config-validate`, `idp-cli config-upload`
+> and the SDK's `validate` warn about a true flag that the mode overrides. Set
+> `mode: advanced` to choose Advanced extraction.
 
 #### Supported models for agentic extraction
 
