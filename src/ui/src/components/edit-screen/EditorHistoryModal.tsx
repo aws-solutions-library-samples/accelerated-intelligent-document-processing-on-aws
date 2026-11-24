@@ -6,11 +6,26 @@
 // assigned, skipped or completed it, and why). Processing Report is its own button.
 import React from 'react';
 import { Box, Button, Modal, Tabs } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { ReviewHistoryTable } from '../review-queues/ReviewHistoryModal';
-import { REPORT_MODAL_SIZE } from '../common/ReportModal';
+import { REPORT_MODAL_SIZE, reportModalMessages } from '../common/ReportModal';
+import { editScreenSharedMessages } from './edit-messages';
 import FieldEditsTable from './FieldEditsTable';
+
+const messages = defineMessages<{ tabFieldEdits: NoMessageValues; tabReviewActivity: NoMessageValues }>({
+  tabFieldEdits: {
+    id: 'editScreen.history.tab.fieldEdits',
+    defaultMessage: 'Field Edits',
+    description: "Tab of the edit page's History dialog that lists every saved change to the open section's fields.",
+  },
+  tabReviewActivity: {
+    id: 'editScreen.history.tab.reviewActivity',
+    defaultMessage: 'Review Activity',
+    description: "Tab of the edit page's History dialog that lists who claimed, was assigned, skipped or completed the item, and why.",
+  },
+});
 
 /** Every tab shares one height, so switching tabs doesn't resize the dialog. */
 const TAB_HEIGHT = '420px';
@@ -32,32 +47,39 @@ const EditorHistoryModal = ({
   sectionData,
   baselineData,
   reviewHistory,
-}: EditorHistoryModalProps): React.JSX.Element => (
-  <Modal
-    visible={visible}
-    size={REPORT_MODAL_SIZE}
-    onDismiss={onDismiss}
-    header="History"
-    footer={
-      <Box float="right">
-        <Button variant="primary" onClick={onDismiss}>
-          Close
-        </Button>
-      </Box>
-    }
-  >
-    <Tabs
-      tabs={[
-        {
-          id: 'fields',
-          label: 'Field Edits',
-          // The same table as Review Activity: one row per changed field, newest first.
-          content: tabBody(<FieldEditsTable sectionData={sectionData} baselineData={baselineData} />),
-        },
-        { id: 'review', label: 'Review Activity', content: tabBody(<ReviewHistoryTable history={reviewHistory ?? []} />) },
-      ]}
-    />
-  </Modal>
-);
+}: EditorHistoryModalProps): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Modal
+      visible={visible}
+      size={REPORT_MODAL_SIZE}
+      onDismiss={onDismiss}
+      header={intl.formatMessage(editScreenSharedMessages.history)}
+      footer={
+        <Box float="right">
+          <Button variant="primary" onClick={onDismiss}>
+            <FormattedMessage {...reportModalMessages.close} />
+          </Button>
+        </Box>
+      }
+    >
+      <Tabs
+        tabs={[
+          {
+            id: 'fields',
+            label: intl.formatMessage(messages.tabFieldEdits),
+            // The same table as Review Activity: one row per changed field, newest first.
+            content: tabBody(<FieldEditsTable sectionData={sectionData} baselineData={baselineData} />),
+          },
+          {
+            id: 'review',
+            label: intl.formatMessage(messages.tabReviewActivity),
+            content: tabBody(<ReviewHistoryTable history={reviewHistory ?? []} />),
+          },
+        ]}
+      />
+    </Modal>
+  );
+};
 
 export default EditorHistoryModal;

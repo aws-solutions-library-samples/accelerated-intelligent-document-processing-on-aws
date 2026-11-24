@@ -1287,9 +1287,69 @@
     "defaultMessage": "You do not have permission to view this file. If your account is new, ask an administrator to assign it a role.",
     "description": "Shown where a file or page image could not be loaded because the user lacks permission to read it."
   },
+  "common.geometry.highlight": {
+    "defaultMessage": "Highlight {field} on the page image",
+    "description": "Screen-reader label of the button beside a field of the edit page's section editor that highlights the field on the page image. {field} is the field's name, as the document holds it."
+  },
+  "common.geometry.noData": {
+    "defaultMessage": "No bounding box recorded — the assessment step skipped this field.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: nothing was recorded about the field."
+  },
+  "common.geometry.noValue": {
+    "defaultMessage": "No value extracted, so no bounding box.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: the model returned no value for it."
+  },
+  "common.geometry.noneProduced": {
+    "defaultMessage": "No field in this section has a bounding box.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: no field of the open section has one."
+  },
+  "common.geometry.unmatched": {
+    "defaultMessage": "Value not found in the page text, so no bounding box.",
+    "description": "Why a field of the edit page's section editor has no bounding box on the page image, in the popover beside the field: its value was not found in the page's text."
+  },
+  "common.geometry.why": {
+    "defaultMessage": "Why {field} has no bounding box",
+    "description": "Screen-reader label of the button beside a field of the edit page's section editor that shows why the field has no bounding box on the page image. {field} is the field's name, as the document holds it."
+  },
+  "common.infoLink.info": {
+    "defaultMessage": "Info",
+    "description": "Link beside the Documents table's title that opens the help panel."
+  },
+  "common.labels.nextAlert": {
+    "defaultMessage": "Next alert",
+    "description": "Button that moves to the next field with a confidence alert."
+  },
+  "common.labels.processChanges": {
+    "defaultMessage": "Process Changes",
+    "description": "Name of the edit page's action that saves the changes and processes them."
+  },
+  "common.labels.valueSource.groundTruth": {
+    "defaultMessage": "Ground truth:",
+    "description": "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is a test set's ground truth."
+  },
+  "common.labels.valueSource.groundTruthPanel": {
+    "defaultMessage": "Ground truth",
+    "description": "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are a test set's ground truth."
+  },
+  "common.labels.valueSource.predicted": {
+    "defaultMessage": "Predicted:",
+    "description": "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is the model's prediction."
+  },
+  "common.labels.valueSource.predictedPanel": {
+    "defaultMessage": "Predicted Results",
+    "description": "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are the model's predictions."
+  },
+  "common.labels.valueSource.yourValue": {
+    "defaultMessage": "Your value:",
+    "description": "Label before a field's value in the Visual Editor tab of the edit page's section editor, once the user has changed the value."
+  },
   "common.learnMoreLinks.heading": {
     "defaultMessage": "Learn more",
     "description": "Heading of the footer of an info (help) panel, above a list of links into the product documentation."
+  },
+  "common.loadState.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the error the edit page or the document page shows when its document, or the review item, could not be read: it tries the read again."
   },
   "common.notifications.dismiss": {
     "defaultMessage": "Dismiss message",
@@ -1298,6 +1358,130 @@
   "common.notifications.welcome": {
     "defaultMessage": "Welcome to GenAI IDP (GenAIIDP)",
     "description": "Banner at the top of the app until the user dismisses it. GenAI IDP (GenAIIDP) is the name of the product."
+  },
+  "common.pageGrouping.addSection": {
+    "defaultMessage": "Add section",
+    "description": "Button above the Edit Page Grouping board that adds an empty section."
+  },
+  "common.pageGrouping.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the Edit Page Grouping board that closes it without saving."
+  },
+  "common.pageGrouping.chooseClass": {
+    "defaultMessage": "Choose a document class",
+    "description": "Placeholder of the class picker on a section's column of the Edit Page Grouping board."
+  },
+  "common.pageGrouping.clearSelection": {
+    "defaultMessage": "Clear selection",
+    "description": "Link button above the Edit Page Grouping board that unselects every selected page."
+  },
+  "common.pageGrouping.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes a page's full-size view, opened from the Edit Page Grouping board."
+  },
+  "common.pageGrouping.customOrder": {
+    "defaultMessage": "Custom page order",
+    "description": "Badge on a section's column of the Edit Page Grouping board when the section's pages are not in document order."
+  },
+  "common.pageGrouping.defaultSave": {
+    "defaultMessage": "Save grouping",
+    "description": "The Edit Page Grouping board's save button, when the screen that shows the board gives the button no label of its own."
+  },
+  "common.pageGrouping.defaultTitle": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Title of the Edit Page Grouping board's dialog, when the screen that opens it gives no title of its own."
+  },
+  "common.pageGrouping.deleteSection": {
+    "defaultMessage": "Delete section {id}",
+    "description": "Label, for screen readers, of the button that deletes an empty section from the Edit Page Grouping board. {id} is the section's number."
+  },
+  "common.pageGrouping.drag": {
+    "defaultMessage": "Page {id}, drag to reorder it or move it to another section",
+    "description": "Label, for screen readers, of a page's thumbnail on the Edit Page Grouping board, which is dragged to move the page. {id} is the page's number."
+  },
+  "common.pageGrouping.dragWithSelection": {
+    "defaultMessage": "{others, plural, one {Page {id}, drag to move it and # other selected page} other {Page {id}, drag to move it and # other selected pages}}",
+    "description": "Label, for screen readers, of a page's thumbnail on the Edit Page Grouping board when the page is selected with others, which move with it. {id} is the page's number; {others} is how many other pages are selected."
+  },
+  "common.pageGrouping.draggingPages": {
+    "defaultMessage": "{count} pages",
+    "description": "Label under the page being dragged on the Edit Page Grouping board when the selected pages move with it. {count} is how many pages move, two or more."
+  },
+  "common.pageGrouping.dropHere": {
+    "defaultMessage": "Drop a page here.",
+    "description": "Shown in a section's column of the Edit Page Grouping board while the section has no pages."
+  },
+  "common.pageGrouping.expand": {
+    "defaultMessage": "Expand",
+    "description": "Button above the Edit Page Grouping board, when the board is shown in place on its screen, that opens it in a dialog."
+  },
+  "common.pageGrouping.invalidHeader": {
+    "defaultMessage": "This grouping is not valid yet",
+    "description": "Heading of the alert above the Edit Page Grouping board that lists the problems with the grouping as a whole."
+  },
+  "common.pageGrouping.moveEarlier": {
+    "defaultMessage": "Move earlier",
+    "description": "Item of a page's menu on the Edit Page Grouping board: moves the page one place earlier in its section."
+  },
+  "common.pageGrouping.moveLater": {
+    "defaultMessage": "Move later",
+    "description": "Item of a page's menu on the Edit Page Grouping board: moves the page one place later in its section."
+  },
+  "common.pageGrouping.movePage": {
+    "defaultMessage": "Move page {id}",
+    "description": "Label, for screen readers, of the menu button on a page of the Edit Page Grouping board. {id} is the page's number."
+  },
+  "common.pageGrouping.movePageWithSelection": {
+    "defaultMessage": "{others, plural, one {Move page {id} and # other selected page} other {Move page {id} and # other selected pages}}",
+    "description": "Label, for screen readers, of the menu button on a page of the Edit Page Grouping board when the page is selected with others, which move with it. {id} is the page's number; {others} is how many other pages are selected."
+  },
+  "common.pageGrouping.moveToSection": {
+    "defaultMessage": "Move to section",
+    "description": "Item of a page's menu on the Edit Page Grouping board that lists the other sections the page can move to."
+  },
+  "common.pageGrouping.notRendered": {
+    "defaultMessage": "This page has not finished rendering.",
+    "description": "Shown beside a spinner in a page's full-size view, opened from the Edit Page Grouping board, while the page's image is not ready."
+  },
+  "common.pageGrouping.orderWithin": {
+    "defaultMessage": "Order within this section",
+    "description": "Item of a page's menu on the Edit Page Grouping board that holds Move earlier and Move later, which move the page within its section."
+  },
+  "common.pageGrouping.pageLabel": {
+    "defaultMessage": "Page {id}",
+    "description": "A page on the Edit Page Grouping board: its thumbnail's alternative text, the label under it while it is dragged alone, and the title and image text of its full-size view. {id} is the page's number."
+  },
+  "common.pageGrouping.sectionHeader": {
+    "defaultMessage": "Section {id}",
+    "description": "Heading of a section's column on the Edit Page Grouping board. {id} is the section's number."
+  },
+  "common.pageGrouping.sectionOption": {
+    "defaultMessage": "Section {id}",
+    "description": "A section with no class, in the Move to section list of a page's menu on the Edit Page Grouping board. {id} is the section's number."
+  },
+  "common.pageGrouping.sectionOptionWithClass": {
+    "defaultMessage": "Section {id} ({class})",
+    "description": "A section in the Move to section list of a page's menu on the Edit Page Grouping board. {id} is the section's number; {class} is its document class, shown as is."
+  },
+  "common.pageGrouping.selectPage": {
+    "defaultMessage": "Select page {id}",
+    "description": "Label, for screen readers, of the checkbox that selects a page on the Edit Page Grouping board. {id} is the page's number."
+  },
+  "common.pageGrouping.selected": {
+    "defaultMessage": "{count, plural, one {# page selected — moving any one moves all of them} other {# pages selected — moving any one moves all of them}}",
+    "description": "Shown above the Edit Page Grouping board while pages are selected. {count} is the number of selected pages."
+  },
+  "common.pageGrouping.sortSection": {
+    "defaultMessage": "Sort section {id} pages in document order",
+    "description": "Label, for screen readers, of the button on a section's column of the Edit Page Grouping board that puts the section's pages back in document order. {id} is the section's number."
+  },
+  "common.pageGrouping.summary": {
+    "defaultMessage": "{pages, plural, one {# page} other {# pages}} · {sections, plural, one {# section} other {# sections}}",
+    "description": "Badge above the Edit Page Grouping board. {pages} is the number of the document's pages; {sections} is the number of sections on the board."
+  },
+  "common.pageGrouping.viewFullPage": {
+    "defaultMessage": "View full page",
+    "description": "Item of a page's menu on the Edit Page Grouping board: shows the page at full size."
   },
   "common.pagination.next": {
     "defaultMessage": "Next page",
@@ -1310,6 +1494,82 @@
   "common.pagination.previous": {
     "defaultMessage": "Previous page",
     "description": "Screen-reader label of the previous-page button of a table's pagination."
+  },
+  "common.processChangesModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the confirmation before Process Changes or Save and Re-extract: closes it and does nothing."
+  },
+  "common.processChangesModal.confirm": {
+    "defaultMessage": "Confirm & Process",
+    "description": "Button of the Confirm Reprocessing dialog, shown before the edit page's Process Changes on a document and before Save and Re-extract in the document page's Edit Page Grouping: runs it."
+  },
+  "common.processChangesModal.effect.classes": {
+    "defaultMessage": "Record their classes as confirmed (class confidence 1.0)",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the sections it re-extracts, in the Confirm Reprocessing dialog's list. 1.0 is the confidence recorded for their classes."
+  },
+  "common.processChangesModal.effect.others": {
+    "defaultMessage": "Leave the other sections' values as they are; OCR and classification are not repeated",
+    "description": "What Save and Re-extract in Edit Page Grouping leaves alone, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.effect.review": {
+    "defaultMessage": "Mark this document's pending review as completed, if it has one",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the document's review, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.effect.rules": {
+    "defaultMessage": "Clear the document's rule validation results",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the document's rule validation results, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.effect.values": {
+    "defaultMessage": "Replace their extracted values, including any corrected by hand",
+    "description": "What Save and Re-extract in Edit Page Grouping does to the sections it re-extracts, in the Confirm Reprocessing dialog's list."
+  },
+  "common.processChangesModal.noStructure": {
+    "defaultMessage": "No section structure changes detected. This will trigger <strong>evaluation and summarization</strong> reprocessing.",
+    "description": "Text of the Confirm Reprocessing dialog before the edit page's Process Changes on a document. The <strong> tags mark the words shown in bold."
+  },
+  "common.processChangesModal.regroupIntro": {
+    "defaultMessage": "You are about to save the new page grouping, then extract these sections again:",
+    "description": "Text of the Confirm Reprocessing dialog before Save and Re-extract in Edit Page Grouping, above the list of the sections it re-extracts."
+  },
+  "common.processChangesModal.reprocessHeader": {
+    "defaultMessage": "Confirm Reprocessing",
+    "description": "Title of the dialog shown before the edit page's Process Changes on a document and before Save and Re-extract in the document page's Edit Page Grouping, which says what reprocessing will do."
+  },
+  "common.processChangesModal.sectionLine": {
+    "defaultMessage": "{count, plural, one {Section {id}: {class}, page {pages}} other {Section {id}: {class}, pages {pages}}}",
+    "description": "A section in the list of the Confirm Reprocessing dialog before Save and Re-extract in Edit Page Grouping. {id} is the section's number; {class} is its document class, shown as is (empty for a section with no class); {count} is how many pages it has; {pages} lists their numbers, separated by commas."
+  },
+  "common.processChangesModal.skipBda": {
+    "defaultMessage": "BDA (Bedrock Data Automation) processing will be automatically skipped since existing data is preserved.",
+    "description": "Note in the Confirm Reprocessing dialog before the edit page's Process Changes on a document processed with BDA (Bedrock Data Automation)."
+  },
+  "common.processChangesModal.skipPipeline": {
+    "defaultMessage": "OCR, Classification, Extraction, and Assessment steps will be automatically skipped since existing data is preserved.",
+    "description": "Note in the Confirm Reprocessing dialog before the edit page's Process Changes on a document not processed with BDA (Bedrock Data Automation)."
+  },
+  "common.processChangesModal.useEvaluate": {
+    "defaultMessage": "Re-run evaluation to compare predictions against baseline",
+    "description": "A reason to use Process Changes, in the list of the Confirm Reprocessing dialog before the edit page's Process Changes on a document."
+  },
+  "common.processChangesModal.useSummary": {
+    "defaultMessage": "Update the document summary report",
+    "description": "A reason to use Process Changes, in the list of the Confirm Reprocessing dialog before the edit page's Process Changes on a document."
+  },
+  "common.processChangesModal.useWhen": {
+    "defaultMessage": "Use this when you have edited extraction data (predictions or baseline) and want to:",
+    "description": "Text of the Confirm Reprocessing dialog before the edit page's Process Changes on a document, above a list of two reasons."
+  },
+  "common.processChangesModal.versionBody": {
+    "defaultMessage": "{processChanges} opens the next version of this test set (the current version stays as it is) and writes your labels as reviewed ground truth.",
+    "description": "Text of the dialog shown before Process Changes on a test-set item's edit page while the test set has no draft version open. {processChanges} is the name of the Process Changes button."
+  },
+  "common.processChangesModal.versionHeader": {
+    "defaultMessage": "Open a new version and save ground truth",
+    "description": "Title of the dialog shown before Process Changes on a test-set item's edit page while the test set has no draft version open."
+  },
+  "common.processChangesModal.willDo": {
+    "defaultMessage": "This will:",
+    "description": "Text of the Confirm Reprocessing dialog before Save and Re-extract in Edit Page Grouping, above the list of what it does."
   },
   "common.promptCache.counts": {
     "defaultMessage": "{read, number} read · {written, number} written · {uncached, number} uncached input tokens",
@@ -1494,6 +1754,30 @@
   "common.reviewStatus.state.withdrawn": {
     "defaultMessage": "Withdrawn",
     "description": "State of a review queue item taken out of review without a result, for example because its document was processed again. Shown in a queue's Documents table and on the item's edit page."
+  },
+  "common.sectionGrouping.duplicateId": {
+    "defaultMessage": "Section id ''{id}'' is used by more than one section.",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board. {id} is the section id that more than one section uses."
+  },
+  "common.sectionGrouping.noId": {
+    "defaultMessage": "A section has no id.",
+    "description": "A problem with the grouping, listed in the alert above the Edit Page Grouping board."
+  },
+  "common.sectionGrouping.noPages": {
+    "defaultMessage": "This section has no pages. Move a page into it, or delete the section.",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board while the section has no pages."
+  },
+  "common.sectionGrouping.notInDocument": {
+    "defaultMessage": "{count, plural, one {Page {pageIds} not in this document.} other {Pages {pageIds} not in this document.}}",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board when the section holds pages the document does not have. {count} is how many; {pageIds} lists their numbers, separated by commas."
+  },
+  "common.sectionGrouping.pageClaimed": {
+    "defaultMessage": "Page {pageId} is already in section {sectionId}.",
+    "description": "A problem shown on a section's column of the Edit Page Grouping board when another section already holds one of its pages. {pageId} is the page's number; {sectionId} is the number of the section that holds it."
+  },
+  "common.sectionGrouping.pagesNotInSection": {
+    "defaultMessage": "{count, plural, one {Page {pageIds} is not in any section. Every page has to belong to one.} other {Pages {pageIds} are not in any section. Every page has to belong to one.}}",
+    "description": "A problem with the grouping, listed in the alert above the Edit Page Grouping board, when pages of the document are in no section. {count} is how many; {pageIds} lists their numbers, separated by commas."
   },
   "common.summaryReport.empty": {
     "defaultMessage": "Summary report not available for this document",
@@ -3302,6 +3586,186 @@
   "documents.fileViewer.previewAlt": {
     "defaultMessage": "Document preview",
     "description": "Alternative text of an image document in the source view."
+  },
+  "documents.formField.baselineEdited": {
+    "defaultMessage": "✏️ Baseline Edited",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor, once the user has changed the field's evaluation baseline value."
+  },
+  "documents.formField.confidence": {
+    "defaultMessage": "Confidence: {confidence}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor: the model's confidence in the value. {confidence} is a percentage, already formatted."
+  },
+  "documents.formField.confidenceWithThreshold": {
+    "defaultMessage": "Confidence: {confidence} / Threshold: {threshold}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor: the model's confidence in the value, and the confidence the field needs. {confidence} and {threshold} are percentages, already formatted."
+  },
+  "documents.formField.copyBaselineToPredicted": {
+    "defaultMessage": "Copy baseline value to predicted",
+    "description": "Screen-reader label of the button beside a field's evaluation baseline value in the Visual Editor tab of the edit page's section editor that copies it into the field's value."
+  },
+  "documents.formField.copyPredictedToBaseline": {
+    "defaultMessage": "Copy predicted value to baseline",
+    "description": "Screen-reader label of the button beside a field's value in the Visual Editor tab of the edit page's section editor that copies the value into the evaluation baseline."
+  },
+  "documents.formField.coverage": {
+    "defaultMessage": "{located} of {total, plural, one {# field} other {# fields}} have a bounding box",
+    "description": "Under the heading of the open section's fields in the Visual Editor tab of the edit page's section editor: how many of the section's fields have a bounding box on the page image. {located} and {total} are numbers of fields."
+  },
+  "documents.formField.coverageInSection": {
+    "defaultMessage": "{located} of {total, plural, one {# field} other {# fields}} have a bounding box in this section",
+    "description": "Under the heading of the open section's fields in the Visual Editor tab of the edit page's section editor, while the Show fields menu leaves some fields out: how many of the whole section's fields have a bounding box on the page image. {located} and {total} are numbers of fields."
+  },
+  "documents.formField.edited": {
+    "defaultMessage": "✏️ Edited",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor, once the user has changed the field's value."
+  },
+  "documents.formField.editedNoConfidence": {
+    "defaultMessage": "Edited — the model's confidence no longer applies",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor, in place of the model's confidence, once the user has changed the value."
+  },
+  "documents.formField.evalScore": {
+    "defaultMessage": "Eval Score: {score}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's evaluation score. {score} is a percentage, already formatted."
+  },
+  "documents.formField.evalScoreWithReason": {
+    "defaultMessage": "Eval Score: {score} - {reason}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is."
+  },
+  "documents.formField.expectedBaseline": {
+    "defaultMessage": "Expected (baseline):",
+    "description": "Label before a field's evaluation baseline value in the Visual Editor tab of the edit page's section editor while Show Evaluation is on."
+  },
+  "documents.formField.groupScore": {
+    "defaultMessage": "Group Score: {score}",
+    "description": "Under a group's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the group's evaluation score. {score} is a percentage, already formatted."
+  },
+  "documents.formField.groupScoreWithReason": {
+    "defaultMessage": "Group Score: {score} - {reason}",
+    "description": "Under a group's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the group's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is."
+  },
+  "documents.formField.itemCount": {
+    "defaultMessage": "{label} ({count, plural, one {# item} other {# items}})",
+    "description": "Heading of a list in the Visual Editor tab of the edit page's section editor: its name and how many items it holds. {label} is the list field's name, as the document holds it (followed by its confidence in parentheses when the results give one)."
+  },
+  "documents.formField.listScore": {
+    "defaultMessage": "List Score: {score}",
+    "description": "Under a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the list's evaluation score. {score} is a percentage, already formatted."
+  },
+  "documents.formField.listScoreWithReason": {
+    "defaultMessage": "List Score: {score} - {reason}",
+    "description": "Under a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the list's evaluation score and the evaluator's reason. {score} is a percentage, already formatted; {reason} is the evaluator's text, shown as is."
+  },
+  "documents.formField.match": {
+    "defaultMessage": "✓ Match",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on, when the field's value agrees with the evaluation baseline."
+  },
+  "documents.formField.method": {
+    "defaultMessage": "Method: {method}",
+    "description": "Under a field's name or a list's heading in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the evaluation method. {method} is the method's name, shown as is."
+  },
+  "documents.formField.mismatch": {
+    "defaultMessage": "⚠ Mismatch",
+    "description": "Badge beside a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on, when the field's value differs from the evaluation baseline."
+  },
+  "documents.formField.nullPlaceholder": {
+    "defaultMessage": "null (enter value to change)",
+    "description": "Placeholder of the input of a field whose value is null, in the Visual Editor tab of the edit page's section editor. null is the JSON value, kept as is."
+  },
+  "documents.formField.rootHeading": {
+    "defaultMessage": "Document Data",
+    "description": "Heading of the open section's fields in the Visual Editor tab of the edit page's section editor."
+  },
+  "documents.formField.weight": {
+    "defaultMessage": "Weight: {weight}",
+    "description": "Under a field's name in the Visual Editor tab of the edit page's section editor while Show Evaluation is on: the field's weight in the evaluation. {weight} is a number, already formatted."
+  },
+  "documents.jsonEditor.cannotFormat": {
+    "defaultMessage": "Cannot format: {detail}",
+    "description": "Error in a panel of the JSON Editor tab of the edit page's section editor when Format cannot read the panel's text as JSON. {detail} is the JSON parser's own message, shown as is."
+  },
+  "documents.jsonEditor.copied": {
+    "defaultMessage": "✓ Copied",
+    "description": "Shown beside a panel's title in the JSON Editor tab of the edit page's section editor for two seconds after its JSON was copied."
+  },
+  "documents.jsonEditor.copyBaseline": {
+    "defaultMessage": "Copy baseline JSON",
+    "description": "Screen-reader label of the button that copies the evaluation baseline panel's JSON, in the JSON Editor tab of the edit page's section editor."
+  },
+  "documents.jsonEditor.copyPrediction": {
+    "defaultMessage": "Copy prediction JSON",
+    "description": "Screen-reader label of the button that copies the values panel's JSON, in the JSON Editor tab of the edit page's section editor."
+  },
+  "documents.jsonEditor.expectedBaseline": {
+    "defaultMessage": "Expected (Baseline)",
+    "description": "Title of the evaluation baseline panel in the JSON Editor tab of the edit page's section editor."
+  },
+  "documents.jsonEditor.format": {
+    "defaultMessage": "Format",
+    "description": "Button above a panel of the JSON Editor tab of the edit page's section editor that lays out the panel's JSON with indentation."
+  },
+  "documents.jsonEditor.invalidJson": {
+    "defaultMessage": "Invalid JSON: {detail}",
+    "description": "Error in a panel of the JSON Editor tab of the edit page's section editor when the panel's text is not valid JSON. {detail} is the JSON parser's own message, shown as is."
+  },
+  "documents.jsonEditor.lines": {
+    "defaultMessage": "{count, plural, one {# line} other {# lines}}",
+    "description": "Badge in the header of a panel of the JSON Editor tab of the edit page's section editor. {count} is the number of lines of the panel's text."
+  },
+  "documents.jsonEditor.noBaseline": {
+    "defaultMessage": "No baseline data available",
+    "description": "Placeholder of the evaluation baseline panel's text area in the JSON Editor tab of the edit page's section editor, when it is empty."
+  },
+  "documents.jsonEditor.noBaselineBody": {
+    "defaultMessage": "Baseline data is not available for this section. Use \"Use as Evaluation Baseline\" to create baseline data from current predictions.",
+    "description": "Text under No Baseline Data in the JSON Editor tab of the edit page's section editor. The quoted name is the More Actions item that copies the document's results into its evaluation baseline."
+  },
+  "documents.jsonEditor.noBaselineTitle": {
+    "defaultMessage": "No Baseline Data",
+    "description": "Heading in the evaluation baseline panel of the JSON Editor tab of the edit page's section editor when the panel is on and the open section has no baseline."
+  },
+  "documents.jsonEditor.noPrediction": {
+    "defaultMessage": "No prediction data available",
+    "description": "Placeholder of the values panel's text area in the JSON Editor tab of the edit page's section editor, when it is empty."
+  },
+  "documents.jsonEditor.section.documentClass": {
+    "defaultMessage": "Classification result",
+    "description": "Description of the document_class option of the section picker in the JSON Editor tab of the edit page's section editor (document_class is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.editHistory": {
+    "defaultMessage": "Edit history",
+    "description": "Description of the _editHistory option of the section picker in the JSON Editor tab of the edit page's section editor (_editHistory is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.explainabilityInfo": {
+    "defaultMessage": "Confidence & bounding boxes",
+    "description": "Description of the explainability_info option of the section picker in the JSON Editor tab of the edit page's section editor (explainability_info is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.inferenceResult": {
+    "defaultMessage": "Extracted data",
+    "description": "Description of the inference_result option of the section picker in the JSON Editor tab of the edit page's section editor (inference_result is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.metadata": {
+    "defaultMessage": "Document metadata",
+    "description": "Description of the metadata option of the section picker in the JSON Editor tab of the edit page's section editor (metadata is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.section.splitDocument": {
+    "defaultMessage": "Splitting info",
+    "description": "Description of the split_document option of the section picker in the JSON Editor tab of the edit page's section editor (split_document is the JSON key, shown as is)."
+  },
+  "documents.jsonEditor.selectSections": {
+    "defaultMessage": "Select JSON sections",
+    "description": "Placeholder of the picker, in the JSON Editor tab of the edit page's section editor, that chooses which parts of the JSON to show."
+  },
+  "documents.jsonEditor.showEvaluation": {
+    "defaultMessage": "Show Evaluation",
+    "description": "Toggle in the JSON Editor tab of the edit page's section editor; when on, the evaluation baseline's JSON shows beside the values."
+  },
+  "documents.jsonEditor.titleEditor": {
+    "defaultMessage": "<strong>JSON Editor</strong> - View and edit the raw JSON data.",
+    "description": "Line at the top of the JSON Editor tab of the edit page's section editor when the section can be edited. The <strong> tags mark the bold name."
+  },
+  "documents.jsonEditor.titleViewer": {
+    "defaultMessage": "<strong>JSON Viewer</strong> - View the raw JSON data.",
+    "description": "Line at the top of the JSON Editor tab of the edit page's section editor when the section is read-only. The <strong> tags mark the bold name."
   },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
@@ -5787,6 +6251,174 @@
     "defaultMessage": "Viewing a previous version (read-only). Extraction results and page text shown below reflect this version's output.",
     "description": "Notice shown while the document page shows a previous version."
   },
+  "editScreen.bar.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the edit page's action bar that discards the unsaved changes and leaves the page."
+  },
+  "editScreen.bar.cancelAriaLabel": {
+    "defaultMessage": "Cancel and discard changes",
+    "description": "Screen-reader name of the edit page's Cancel button, which says what Cancel does to unsaved changes."
+  },
+  "editScreen.bar.cancelHint": {
+    "defaultMessage": "Discard your unsaved changes and leave",
+    "description": "Hover text of Cancel while it is available."
+  },
+  "editScreen.bar.claim": {
+    "defaultMessage": "Claim",
+    "description": "Button of the edit page's action bar that assigns the item to the user, for an Annotator viewing an unassigned item."
+  },
+  "editScreen.bar.claimHint": {
+    "defaultMessage": "Assign this item to you, then work it here or from Home › Tasks",
+    "description": "Hover text of Claim. \"Home › Tasks\", the page of the review items assigned to the user, is named by its breadcrumb trail."
+  },
+  "editScreen.bar.moreActions": {
+    "defaultMessage": "More Actions",
+    "description": "Menu of the edit page's action bar that holds Use As Evaluation Baseline."
+  },
+  "editScreen.bar.processingReport": {
+    "defaultMessage": "Processing Report",
+    "description": "Item of the edit page's Reports menu, and the title of the dialog it opens, which shows how the open section was extracted."
+  },
+  "editScreen.bar.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button of the edit page's action bar that reads the document again."
+  },
+  "editScreen.bar.reports": {
+    "defaultMessage": "Reports",
+    "description": "Menu of the edit page's action bar that holds History, Summary and Processing Report."
+  },
+  "editScreen.bar.save": {
+    "defaultMessage": "Save",
+    "description": "Button of the edit page's action bar that saves the changes without finishing."
+  },
+  "editScreen.bar.skip": {
+    "defaultMessage": "Skip",
+    "description": "Button of the edit page's action bar that gives the item back to its queue, and the confirm button of the dialog that asks why."
+  },
+  "editScreen.bar.skipHint": {
+    "defaultMessage": "Give this item back to its queue, unassigned and not finished.",
+    "description": "Hover text of Skip while it is available."
+  },
+  "editScreen.bar.summary": {
+    "defaultMessage": "Summary",
+    "description": "Item of the edit page's Reports menu that opens the document's summary report."
+  },
+  "editScreen.bar.useAsBaseline": {
+    "defaultMessage": "Use As Evaluation Baseline",
+    "description": "Item of the edit page's More Actions menu that copies the finished document's results into its evaluation baseline."
+  },
+  "editScreen.bar.viewEdit": {
+    "defaultMessage": "Edit",
+    "description": "Option of the edit page's Edit | View switch that shows the Document Editor."
+  },
+  "editScreen.bar.viewSource": {
+    "defaultMessage": "View",
+    "description": "Option of the edit page's Edit | View switch that shows the source document."
+  },
+  "editScreen.bar.viewSwitch": {
+    "defaultMessage": "Edit the document or view its source",
+    "description": "Screen-reader name of the Edit | View switch, first in the edit page's action bar."
+  },
+  "editScreen.directEdit.baselineCopying": {
+    "defaultMessage": "Copying {name} to the evaluation baseline. Its evaluation status shows when the copy is done.",
+    "description": "Notice after Use As Evaluation Baseline on a document's edit page started copying the document to the evaluation baseline. {name} is the document's file name."
+  },
+  "editScreen.directEdit.editRoleReason": {
+    "defaultMessage": "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.",
+    "description": "Why a document's edit page is read-only, as the reason its actions are unavailable and in its read-only notice: the user is not an Admin or an Author, nor a Reviewer who holds the document's review."
+  },
+  "editScreen.directEdit.failedBaseline": {
+    "defaultMessage": "Could not use {name} as the evaluation baseline: {error}",
+    "description": "Error on a document's edit page when Use As Evaluation Baseline failed. {name} is the document's file name; {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.directEdit.failedProcess": {
+    "defaultMessage": "Could not process the changes: {error}",
+    "description": "Error on a document's edit page when Process Changes failed. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.directEdit.failedReload": {
+    "defaultMessage": "Could not reload {name}: {error}",
+    "description": "Error on a document's edit page when Refresh could not read the document again. {name} is the document's file name; {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.directEdit.inReviewNotice": {
+    "defaultMessage": "This document is in a review queue. Edits are made in the queue.",
+    "description": "Read-only notice at the top of a document's edit page while the document is in a review queue."
+  },
+  "editScreen.directEdit.inReviewSaveRefused": {
+    "defaultMessage": "This document is now in a review queue, so it can't be edited here. Reload the page to work on it in its queue.",
+    "description": "Why the section editor of a document's edit page could not save, shown after \"Failed to save:\": the server refused the save because the document went into a review queue after the page opened."
+  },
+  "editScreen.directEdit.mirrorLagNotice": {
+    "defaultMessage": "View only. This document is marked as in a review queue, but its review item is missing or has finished. Reload in a moment.",
+    "description": "Read-only notice at the top of a document's edit page in the case the sentence describes."
+  },
+  "editScreen.directEdit.mirrorLagReason": {
+    "defaultMessage": "This document's review is being updated. Reload in a moment.",
+    "description": "Why the actions of a document's edit page are unavailable while the document is marked as in a review queue but its review item is missing or has finished."
+  },
+  "editScreen.directEdit.noResultToEdit": {
+    "defaultMessage": "This section has no result to edit",
+    "description": "Why the section editor of a document's edit page could not open a section, shown after \"Failed to load ground truth:\": the section has no extraction result."
+  },
+  "editScreen.directEdit.noResultToSave": {
+    "defaultMessage": "This section has no result to save",
+    "description": "Why the section editor of a document's edit page could not save a section, shown after \"Failed to save:\": the section has no extraction result to write the changes to."
+  },
+  "editScreen.directEdit.noSectionsToEdit": {
+    "defaultMessage": "This document has no sections to edit.",
+    "description": "Shown in the section editor's place on a document's edit page when the document has no sections."
+  },
+  "editScreen.directEdit.primaryHint": {
+    "defaultMessage": "Save your changes and process them: evaluation and summarization re-run; OCR, classification and extraction are not repeated.",
+    "description": "Hint of Process Changes in the action bar of a document's edit page: what it does."
+  },
+  "editScreen.directEdit.processOwnerReason": {
+    "defaultMessage": "{processChanges} needs an Admin, or the reviewer who holds this document's open review. Start the review first.",
+    "description": "Why Process Changes is unavailable on a document's edit page for a Reviewer who does not hold the document's open review. {processChanges} is the action's name, Process Changes."
+  },
+  "editScreen.directEdit.processRoleReason": {
+    "defaultMessage": "{processChanges} needs the Admin or Reviewer role.",
+    "description": "Why Process Changes is unavailable on a document's edit page: the user has neither the Admin nor the Reviewer role. {processChanges} is the action's name, Process Changes."
+  },
+  "editScreen.directEdit.processing": {
+    "defaultMessage": "Processing the changes to {name}: evaluation and summarization are re-running.",
+    "description": "Notice shown as a document's edit page closes after Process Changes was confirmed. {name} is the document's file name."
+  },
+  "editScreen.directEdit.processingNotice": {
+    "defaultMessage": "View only. This document is still processing; its results can be edited once processing finishes.",
+    "description": "Read-only notice at the top of a document's edit page while the document is still processing."
+  },
+  "editScreen.directEdit.regroupConsequence": {
+    "defaultMessage": "Moving pages rewrites this document's <b>section grouping</b>. The extracted field values are <b>kept</b> and the document is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document page's <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen's <b>{processChanges}</b> re-runs evaluation and summarization only.",
+    "description": "What saving a new page grouping does, in Edit Page Grouping opened from a document's edit page. <b>…</b> marks bold text. More Actions › Edit Page Grouping is a menu item and Save and Re-extract a button, both on the document's own page; {processChanges} is the edit page's action, Process Changes."
+  },
+  "editScreen.directEdit.regroupRoleReason": {
+    "defaultMessage": "Edit Page Grouping needs the Admin or Reviewer role.",
+    "description": "Why Edit Page Grouping is unavailable on a document's edit page: the user has neither the Admin nor the Reviewer role."
+  },
+  "editScreen.directEdit.saved": {
+    "defaultMessage": "Saved your changes to {name}.",
+    "description": "Notice after Save on a document's edit page saved the open section's changes. {name} is the document's file name."
+  },
+  "editScreen.directEdit.viewOnly": {
+    "defaultMessage": "View only. {reason}",
+    "description": "Read-only notice at the top of a document's edit page when the user's roles may not edit it. {reason} is a whole sentence saying which roles may."
+  },
+  "editScreen.discard.body": {
+    "defaultMessage": "The changes you made since the last save are lost. Anything already saved is kept.",
+    "description": "Text of the dialog the edit page shows before an action, such as Cancel or Refresh, loses unsaved changes."
+  },
+  "editScreen.discard.cancel.confirm": {
+    "defaultMessage": "Discard and leave",
+    "description": "Confirm button of the dialog that asks before Cancel loses unsaved changes: it discards them and leaves the edit page."
+  },
+  "editScreen.discard.cancel.header": {
+    "defaultMessage": "Discard your unsaved changes?",
+    "description": "Title of the dialog the edit page shows when Cancel would lose unsaved changes."
+  },
+  "editScreen.discard.keepEditing": {
+    "defaultMessage": "Keep editing",
+    "description": "Button of the dialog that asks before unsaved changes are lost: it closes the dialog and keeps the changes."
+  },
   "editScreen.documentStatus.bdaRegroup": {
     "defaultMessage": "Page grouping cannot be changed for a document processed with Bedrock Data Automation (BDA). Field values can still be edited.",
     "description": "Why Edit Page Grouping is unavailable for a document processed with Bedrock Data Automation (BDA), the name of an AWS service."
@@ -5807,6 +6439,306 @@
     "defaultMessage": "Available when processing finishes",
     "description": "Why an action about a document, or its direct edit, is unavailable while the document is still processing."
   },
+  "editScreen.fieldEdits.appliesTo.baseline": {
+    "defaultMessage": "Baseline",
+    "description": "Applies to cell of History › Field Edits on the edit page: the edit changed the section's evaluation baseline."
+  },
+  "editScreen.fieldEdits.appliesTo.prediction": {
+    "defaultMessage": "Prediction",
+    "description": "Applies to cell of History › Field Edits on the edit page: the edit changed the section's extracted values."
+  },
+  "editScreen.fieldEdits.column.appliesTo": {
+    "defaultMessage": "Applies to",
+    "description": "Column header of History › Field Edits on the edit page, shown when an edit changed the evaluation baseline: which values the edit changed."
+  },
+  "editScreen.fieldEdits.column.by": {
+    "defaultMessage": "By",
+    "description": "Column header of History › Field Edits on the edit page: who saved the edit."
+  },
+  "editScreen.fieldEdits.column.field": {
+    "defaultMessage": "Field",
+    "description": "Column header of History › Field Edits on the edit page: the path of the field that was changed."
+  },
+  "editScreen.fieldEdits.column.from": {
+    "defaultMessage": "From",
+    "description": "Column header of History › Field Edits on the edit page: the field's value before the edit."
+  },
+  "editScreen.fieldEdits.column.to": {
+    "defaultMessage": "To",
+    "description": "Column header of History › Field Edits on the edit page: the field's value after the edit."
+  },
+  "editScreen.fieldEdits.column.when": {
+    "defaultMessage": "When",
+    "description": "Column header of History › Field Edits on the edit page: when the edit was saved."
+  },
+  "editScreen.fieldEdits.empty.noEdits": {
+    "defaultMessage": "No field has been edited in this section yet.",
+    "description": "Shown in History › Field Edits on the edit page when no field of the open section has been edited."
+  },
+  "editScreen.fieldEdits.empty.noSection": {
+    "defaultMessage": "Open a section to see its field edits.",
+    "description": "Shown in History › Field Edits on the edit page while no section is open."
+  },
+  "editScreen.fieldEdits.emptyValue": {
+    "defaultMessage": "(empty)",
+    "description": "From or To cell of History › Field Edits on the edit page when the field had no value."
+  },
+  "editScreen.fieldEdits.unknownEditor": {
+    "defaultMessage": "Unknown",
+    "description": "By cell of History › Field Edits on the edit page when the saved edit names nobody."
+  },
+  "editScreen.history.tab.fieldEdits": {
+    "defaultMessage": "Field Edits",
+    "description": "Tab of the edit page's History dialog that lists every saved change to the open section's fields."
+  },
+  "editScreen.history.tab.reviewActivity": {
+    "defaultMessage": "Review Activity",
+    "description": "Tab of the edit page's History dialog that lists who claimed, was assigned, skipped or completed the item, and why."
+  },
+  "editScreen.page.claim": {
+    "defaultMessage": "Claim",
+    "description": "Button in the edit page's notice that the fields are read-only, which assigns the item to the user so it can be edited."
+  },
+  "editScreen.page.refreshDiscard.confirm": {
+    "defaultMessage": "Discard and reload",
+    "description": "Confirm button of the dialog that asks before Refresh loses unsaved changes: it discards them and reads the document again."
+  },
+  "editScreen.page.refreshDiscard.header": {
+    "defaultMessage": "Discard your changes and reload?",
+    "description": "Title of the dialog the edit page shows when Refresh would lose unsaved changes."
+  },
+  "editScreen.pageGrouping.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping."
+  },
+  "editScreen.pageGrouping.partialFailed": {
+    "defaultMessage": "The page grouping was saved, but the sections were not re-extracted: {message}",
+    "description": "Error in the dialog shown when Save and Re-extract saved the grouping but the re-extract failed, above the list of those sections. {message} is why, as the request reported it, shown as is."
+  },
+  "editScreen.pageGrouping.reextractAgain": {
+    "defaultMessage": "Re-extract again",
+    "description": "Button of the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping: tries the re-extract again."
+  },
+  "editScreen.pageGrouping.save": {
+    "defaultMessage": "Save page grouping",
+    "description": "Button of the Edit Page Grouping dialog that saves the grouping."
+  },
+  "editScreen.pageGrouping.saveAndReextract": {
+    "defaultMessage": "Save and Re-extract",
+    "description": "Button of the Edit Page Grouping dialog on the document page: saves the grouping, then extracts again the sections whose class or pages changed, after a confirmation."
+  },
+  "editScreen.pageGrouping.sectionLine": {
+    "defaultMessage": "{count, plural, one {Section {id}: {class}, page {pages}} other {Section {id}: {class}, pages {pages}}}",
+    "description": "A section in the list of the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping. {id} is the section's number; {class} is its document class, shown as is (empty for a section with no class); {count} is how many pages it has; {pages} lists their numbers, separated by commas."
+  },
+  "editScreen.pageGrouping.thumbnailsUnavailable": {
+    "defaultMessage": "Page thumbnails unavailable",
+    "description": "Heading of the alert in the Edit Page Grouping dialog shown when the page thumbnails could not be loaded."
+  },
+  "editScreen.pageGrouping.title": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Title of the Edit Page Grouping dialog, on the edit page and the document page, where the document's pages are regrouped into sections; also the title of the dialog that reports a re-extract that failed after the grouping was saved."
+  },
+  "editScreen.productionItem.action.baseline": {
+    "defaultMessage": "use this document as the evaluation baseline",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Use As Evaluation Baseline failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.cancel": {
+    "defaultMessage": "leave the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Cancel failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.claim": {
+    "defaultMessage": "claim the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Claim failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.process": {
+    "defaultMessage": "process the changes",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Process Changes failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.refresh": {
+    "defaultMessage": "reload the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Refresh failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.regroup": {
+    "defaultMessage": "start editing the page grouping",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Edit Page Grouping could not open on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.save": {
+    "defaultMessage": "save your draft",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when a draft of a review queue item's section could not be saved."
+  },
+  "editScreen.productionItem.action.saveGrouping": {
+    "defaultMessage": "save the page grouping",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Edit Page Grouping could not save the page grouping of a review queue item's document."
+  },
+  "editScreen.productionItem.action.skip": {
+    "defaultMessage": "skip the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Skip failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.action.takeOver": {
+    "defaultMessage": "take over the item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Take over failed on a review queue item's edit page."
+  },
+  "editScreen.productionItem.assignedElsewhere": {
+    "defaultMessage": "This item was just assigned to someone else",
+    "description": "Why the section editor of a review queue item's edit page could not save an Admin's edit, shown after \"Failed to save:\": another user was assigned the item first."
+  },
+  "editScreen.productionItem.assignedJustNow": {
+    "defaultMessage": "Assigned to {assignee} just now. Take over to edit it and process its changes.",
+    "description": "Read-only notice at the top of a review queue item's edit page for an Admin whose first edit found the item just assigned to another user. {assignee} is that user's e-mail address; Take over is the button beside the notice."
+  },
+  "editScreen.productionItem.assignedJustNowNoAssignee": {
+    "defaultMessage": "Assigned to another reviewer just now. Take over to edit it and process its changes.",
+    "description": "Read-only notice at the top of a review queue item's edit page for an Admin whose first edit found the item just assigned to another user, when that user is not known. Take over is the button beside the notice."
+  },
+  "editScreen.productionItem.assignedTakeOver": {
+    "defaultMessage": "Assigned to {assignee}. Take over to edit it and process its changes.",
+    "description": "Read-only notice at the top of a review queue item's edit page for an Admin when the item is assigned to another user. {assignee} is that user's e-mail address; Take over is the button beside the notice."
+  },
+  "editScreen.productionItem.baselineCopying": {
+    "defaultMessage": "Copying {name} to the evaluation baseline.",
+    "description": "Notice after Use As Evaluation Baseline on a review queue item's edit page started copying the document to the evaluation baseline. {name} is the file name of the item's document."
+  },
+  "editScreen.productionItem.claimToRegroup": {
+    "defaultMessage": "Claim this item first to change its page grouping",
+    "description": "Why Edit Page Grouping is unavailable to an Annotator on an unassigned review queue item's edit page: only the item's holder may change its page grouping."
+  },
+  "editScreen.productionItem.finalizeFailedNotice": {
+    "defaultMessage": "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Review Management.",
+    "description": "Read-only notice at the top of a review queue item's edit page when applying the review's corrections failed. Review Management is a page of the app."
+  },
+  "editScreen.productionItem.finished.complete": {
+    "defaultMessage": "This review is finished: the item is complete and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page once the item's review is complete."
+  },
+  "editScreen.productionItem.finished.finalizing": {
+    "defaultMessage": "This review is finished: it was submitted and its corrections are being applied.",
+    "description": "Read-only notice at the top of a review queue item's edit page while the submitted review's corrections are applied."
+  },
+  "editScreen.productionItem.finished.other": {
+    "defaultMessage": "This review is finished: the item is {state} and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page, for a finished state the page does not know. {state} is that state as stored, in lower case."
+  },
+  "editScreen.productionItem.finished.rejected": {
+    "defaultMessage": "This review is finished: the item is rejected and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page once the item was rejected."
+  },
+  "editScreen.productionItem.finished.withdrawn": {
+    "defaultMessage": "This review is finished: the item is withdrawn and can no longer be edited.",
+    "description": "Read-only notice at the top of a review queue item's edit page once the item was withdrawn from review."
+  },
+  "editScreen.productionItem.holdingNotice": {
+    "defaultMessage": "This item is being prepared for review. It can be edited once it reaches its queue.",
+    "description": "Read-only notice at the top of a review queue item's edit page while the item is being prepared for review."
+  },
+  "editScreen.productionItem.latestEditsNotSaved": {
+    "defaultMessage": "Your latest edits could not be saved",
+    "description": "Why Process Changes failed on a review queue item's edit page, shown as the error inside the shared error sentence: the open section's latest edits could not be saved first."
+  },
+  "editScreen.productionItem.loading": {
+    "defaultMessage": "Loading the review item…",
+    "description": "Shown beside a spinner while the edit page reads a review queue item."
+  },
+  "editScreen.productionItem.locked.complete": {
+    "defaultMessage": "This item is complete",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item's review is complete."
+  },
+  "editScreen.productionItem.locked.finalizeFailed": {
+    "defaultMessage": "This item is finalize failed",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: applying the review's corrections failed. The English uses the state's name, Finalize failed."
+  },
+  "editScreen.productionItem.locked.finalizing": {
+    "defaultMessage": "This item is finalizing",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the review was submitted and its corrections are being applied."
+  },
+  "editScreen.productionItem.locked.holding": {
+    "defaultMessage": "This item is preparing",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item is being prepared for review."
+  },
+  "editScreen.productionItem.locked.other": {
+    "defaultMessage": "This item is {state}",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page, for a state the page does not know. {state} is that state as stored, in lower case."
+  },
+  "editScreen.productionItem.locked.rejected": {
+    "defaultMessage": "This item is rejected",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item was rejected."
+  },
+  "editScreen.productionItem.locked.withdrawn": {
+    "defaultMessage": "This item is withdrawn",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item was withdrawn from review."
+  },
+  "editScreen.productionItem.noResultToReview": {
+    "defaultMessage": "This section has no result to review",
+    "description": "Why the section editor of a review queue item's edit page could not open a section, shown after \"Failed to load ground truth:\": the section has neither a draft nor an extraction result."
+  },
+  "editScreen.productionItem.noSectionsToReview": {
+    "defaultMessage": "This item has no sections to review.",
+    "description": "Shown in the section editor's place on a review queue item's edit page when the item has no sections under review."
+  },
+  "editScreen.productionItem.notAssignedToYou": {
+    "defaultMessage": "This item is not assigned to you",
+    "description": "Why Process Changes and Edit Page Grouping are unavailable on a review queue item's edit page: the item is not assigned to the user."
+  },
+  "editScreen.productionItem.notAssignedYet": {
+    "defaultMessage": "Not assigned yet. Editing it, or choosing {processChanges}, assigns it to you.",
+    "description": "Notice at the top of an unassigned review queue item's edit page for an Admin. {processChanges} is the name of the page's action, Process Changes."
+  },
+  "editScreen.productionItem.primaryHint": {
+    "defaultMessage": "Apply your corrections and finish the review: evaluation and summarization re-run; OCR, classification and extraction are not repeated.",
+    "description": "Hint of Process Changes in the action bar of a review queue item's edit page: what it does."
+  },
+  "editScreen.productionItem.processing": {
+    "defaultMessage": "Processing the changes to {name}: your corrections are being applied.",
+    "description": "Notice shown as a review queue item's edit page closes after Process Changes finished the review. {name} is the file name of the item's document."
+  },
+  "editScreen.productionItem.regroupConsequence": {
+    "defaultMessage": "Moving pages rewrites this document's <b>section grouping</b>. The extracted values and your draft edits are <b>kept</b> with their sections, and the document finishes with this grouping when you choose <b>{processChanges}</b>. A section you remove takes its draft edits with it.",
+    "description": "What saving a new page grouping does, in Edit Page Grouping opened from a review queue item's edit page. <b>…</b> marks bold text; {processChanges} is the edit page's action, Process Changes."
+  },
+  "editScreen.productionItem.reviewNotComplete": {
+    "defaultMessage": "Available once the review is complete",
+    "description": "Why Summary and Use As Evaluation Baseline are unavailable on a review queue item's edit page: they are about the reviewed document."
+  },
+  "editScreen.productionItem.savingLatest": {
+    "defaultMessage": "Saving your latest edits…",
+    "description": "Why an action of a review queue item's edit page, such as Save, Skip or Process Changes, is unavailable while the latest edits are being saved."
+  },
+  "editScreen.productionItem.skipBody": {
+    "defaultMessage": "It goes back to its queue, unassigned and not finished. Your saved edits are kept for whoever picks it up next.",
+    "description": "Text of the dialog that Skip opens on a review queue item's edit page: what skipping the item does."
+  },
+  "editScreen.productionItem.skipHeader": {
+    "defaultMessage": "Skip this item",
+    "description": "Title of the dialog that Skip opens on a review queue item's edit page, which asks why the item is skipped."
+  },
+  "editScreen.productionItem.staleDraft": {
+    "defaultMessage": "Someone saved a newer draft of this section. It has been reloaded; reapply your last change.",
+    "description": "Error on a review queue item's edit page when a save found a newer draft of the open section, which the page then reloaded."
+  },
+  "editScreen.productionItem.takeOver": {
+    "defaultMessage": "Take over",
+    "description": "Button beside the read-only notice of a review queue item's edit page, for an Admin: it assigns the item, which another user holds, to the Admin."
+  },
+  "editScreen.productionItem.takenOver": {
+    "defaultMessage": "{name} is assigned to you. {assignee} was told.",
+    "description": "Notice after Take over on a review queue item's edit page assigned the item to the Admin. {name} is the file name of the item's document; {assignee} is the former assignee's e-mail address."
+  },
+  "editScreen.productionItem.takenOverNoAssignee": {
+    "defaultMessage": "{name} is assigned to you. The former assignee was told.",
+    "description": "Notice after Take over on a review queue item's edit page assigned the item to the Admin, when the former assignee is not known. {name} is the file name of the item's document."
+  },
+  "editScreen.productionItem.viewOnly": {
+    "defaultMessage": "View only.",
+    "description": "Read-only notice at the top of a review queue item's edit page when the user may not edit the item."
+  },
+  "editScreen.productionItem.viewOnlyAssigned": {
+    "defaultMessage": "View only. This item is assigned to {assignee}.",
+    "description": "Read-only notice at the top of a review queue item's edit page when the item is assigned to another user. {assignee} is that user's e-mail address."
+  },
+  "editScreen.productionItem.viewOnlyClaim": {
+    "defaultMessage": "View only. Claim this item to work on it; it is then assigned to you and shows in Home › Tasks.",
+    "description": "Read-only notice at the top of an unassigned review queue item's edit page, beside its Claim button. Home › Tasks is the page that lists the user's work, named by its breadcrumb trail."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
@@ -5818,6 +6750,462 @@
   "editScreen.reviewActivity.section": {
     "defaultMessage": "Section {sectionId}",
     "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
+  },
+  "editScreen.sectionEditor.baselineHint": {
+    "defaultMessage": "This document has an evaluation baseline. Turn on <b>Show Evaluation</b> to compare every field against it, not just the class.",
+    "description": "Hint in the Visual Editor tab of the edit page's section editor while Show Evaluation is off and the document has an evaluation baseline. <b>Show Evaluation</b> names the toggle in the editor's header."
+  },
+  "editScreen.sectionEditor.comparison.body": {
+    "defaultMessage": "Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores and reasons.",
+    "description": "Text of the note in the Visual Editor tab of the edit page's section editor while Show Evaluation is on."
+  },
+  "editScreen.sectionEditor.comparison.header": {
+    "defaultMessage": "Evaluation Comparison Mode",
+    "description": "Heading of the note in the Visual Editor tab of the edit page's section editor while Show Evaluation is on."
+  },
+  "editScreen.sectionEditor.editPageGrouping": {
+    "defaultMessage": "Edit Page Grouping",
+    "description": "Button in the header of the edit page's section editor that opens the Edit Page Grouping dialog, which groups the document's pages into sections."
+  },
+  "editScreen.sectionEditor.fieldLink.copied": {
+    "defaultMessage": "Field link copied",
+    "description": "Shown after Copy link to field, in the edit page's section editor, copied the link."
+  },
+  "editScreen.sectionEditor.fieldLink.copy": {
+    "defaultMessage": "Copy link to field",
+    "description": "Button in the Visual Editor tab of the edit page's section editor that copies a link to the selected field."
+  },
+  "editScreen.sectionEditor.fieldLink.copyFailed": {
+    "defaultMessage": "Could not copy the field link",
+    "description": "Shown after Copy link to field, in the edit page's section editor, could not copy the link."
+  },
+  "editScreen.sectionEditor.fieldLink.description": {
+    "defaultMessage": "Copies a link that opens this document with <b>{path}</b> selected. Share it when you need a second opinion on a value.",
+    "description": "Text under Ask someone about this field in the Visual Editor tab of the edit page's section editor. {path} is the selected field's path in the document's results (such as LineItems[0].Rate), shown as is."
+  },
+  "editScreen.sectionEditor.fieldLink.label": {
+    "defaultMessage": "Ask someone about this field",
+    "description": "Label above the button in the Visual Editor tab of the edit page's section editor that copies a link to the selected field."
+  },
+  "editScreen.sectionEditor.filter.alerts": {
+    "defaultMessage": "Confidence alerts only",
+    "description": "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: the fields whose confidence is below their threshold."
+  },
+  "editScreen.sectionEditor.filter.all": {
+    "defaultMessage": "All fields",
+    "description": "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: every field."
+  },
+  "editScreen.sectionEditor.filter.evalMismatches": {
+    "defaultMessage": "Evaluation mismatches only",
+    "description": "Choice of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows: the fields that differ from the evaluation baseline."
+  },
+  "editScreen.sectionEditor.filterAriaLabel": {
+    "defaultMessage": "Show fields: {filter}",
+    "description": "Screen-reader name of the menu in the header of the edit page's section editor that chooses which fields the Visual Editor tab shows. {filter} is the current choice, as the menu shows it."
+  },
+  "editScreen.sectionEditor.filterNeedsEvaluation": {
+    "defaultMessage": "Turn on Show Evaluation first",
+    "description": "Why the Evaluation mismatches only choice of the edit page's section editor is unavailable. Show Evaluation is the toggle beside the menu."
+  },
+  "editScreen.sectionEditor.loadFailed": {
+    "defaultMessage": "Failed to load ground truth: {error}",
+    "description": "Error in the edit page's section editor when the open section's results could not be read. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.sectionEditor.loadingSection": {
+    "defaultMessage": "Loading the section…",
+    "description": "Shown beside a spinner in the edit page's section editor while the open section's results are read."
+  },
+  "editScreen.sectionEditor.noGeometry": {
+    "defaultMessage": "No field geometry available for this baseline — bounding-box highlighting is disabled.",
+    "description": "Note under the page images of the edit page's section editor when the open section's results hold no explainability_info, so no field can be highlighted on the page images."
+  },
+  "editScreen.sectionEditor.noValues.empty": {
+    "defaultMessage": "This section has an empty result: extraction ran but produced no fields.",
+    "description": "Text of the note in the edit page's section editor when the open section's results hold an empty inference_result."
+  },
+  "editScreen.sectionEditor.noValues.header": {
+    "defaultMessage": "No field values for this section",
+    "description": "Heading of the note in the Visual Editor tab of the edit page's section editor when the open section's results hold no field."
+  },
+  "editScreen.sectionEditor.noValues.missing": {
+    "defaultMessage": "This section has no inference_result at all.",
+    "description": "Text of the note in the edit page's section editor when the open section's results hold no inference_result. inference_result is the results' JSON key, kept as is."
+  },
+  "editScreen.sectionEditor.renderingPages": {
+    "defaultMessage": "Rendering document pages…",
+    "description": "Shown beside a spinner in the edit page's section editor while the document's page images load."
+  },
+  "editScreen.sectionEditor.saveFailed": {
+    "defaultMessage": "Failed to save: {error}",
+    "description": "Error in the edit page's section editor when the open section could not be saved. {error} is why: the server's error text, shown as is, or, for an error the edit page raises itself, that error's own message in the user's language."
+  },
+  "editScreen.sectionEditor.sectionAriaLabel": {
+    "defaultMessage": "Section: {section}",
+    "description": "Screen-reader name of the Section menu in the header of the edit page's section editor. {section} is the open section's name, as the menu shows it."
+  },
+  "editScreen.sectionEditor.sectionFallback": {
+    "defaultMessage": "Section",
+    "description": "Text of the Section menu's button in the header of the edit page's section editor when the document lists no section."
+  },
+  "editScreen.sectionEditor.sectionTab": {
+    "defaultMessage": "Section {sectionId} ({documentClass})",
+    "description": "A section's name in the Section menu of the edit page's section editor, and on the menu's button. {sectionId} is the section's id and {documentClass} its document class, as the document holds them."
+  },
+  "editScreen.sectionEditor.sectionTabNoClass": {
+    "defaultMessage": "Section {sectionId} (no class)",
+    "description": "A section's name in the Section menu of the edit page's section editor, and on the menu's button, for a section with no document class. {sectionId} is the section's id."
+  },
+  "editScreen.sectionEditor.showEvaluation": {
+    "defaultMessage": "Show Evaluation",
+    "description": "Toggle in the header of the edit page's section editor that compares every field with the document's evaluation baseline."
+  },
+  "editScreen.sectionEditor.switchDiscardConfirm": {
+    "defaultMessage": "You have unsaved ground truth changes. Discard them and switch sections?",
+    "description": "Confirmation the browser shows when the user picks another section in the Section menu of the edit page's section editor with unsaved edits."
+  },
+  "editScreen.sectionEditor.tab.json": {
+    "defaultMessage": "JSON Editor",
+    "description": "Tab of the edit page's section editor that shows the open section's results as raw JSON."
+  },
+  "editScreen.sectionEditor.tab.visual": {
+    "defaultMessage": "Visual Editor",
+    "description": "Tab of the edit page's section editor that shows the open section's fields as a form."
+  },
+  "editScreen.sectionEditor.unsavedChanges": {
+    "defaultMessage": "You have unsaved changes. Leave this document and discard them?",
+    "description": "Confirmation the browser shows when the user follows a link in the app away from the edit page with unsaved edits in its section editor."
+  },
+  "editScreen.shared.assignedTo": {
+    "defaultMessage": "Assigned to {assignee}",
+    "description": "Why an action of the edit page, such as Process Changes or Edit Page Grouping, is unavailable: the item is assigned to another user. {assignee} is that user's e-mail address."
+  },
+  "editScreen.shared.backToDocuments": {
+    "defaultMessage": "Back to Documents",
+    "description": "Link after the edit page's or the document page's message about a missing or unreadable document, back to the Documents list."
+  },
+  "editScreen.shared.backToTasks": {
+    "defaultMessage": "Back to Tasks",
+    "description": "Link after the edit page's message about a missing or unreadable document, back to Home › Tasks, for a user whose only role is Annotator."
+  },
+  "editScreen.shared.claimed": {
+    "defaultMessage": "Claimed {name}. It is in Home › Tasks.",
+    "description": "Notice after Claim on the edit page assigned the item to the user. {name} is the file name of the item's document; Home › Tasks is the page that lists the user's work, named by its breadcrumb trail."
+  },
+  "editScreen.shared.couldNotOpenDocument": {
+    "defaultMessage": "Couldn't open this document",
+    "description": "Heading of the error the edit page or the document page shows when its document could not be read."
+  },
+  "editScreen.shared.documentCouldNotLoad": {
+    "defaultMessage": "The document could not be loaded.",
+    "description": "Fallback text of the error the edit page or the document page shows when its document could not be read: used when the server gave no reason."
+  },
+  "editScreen.shared.documentEditor": {
+    "defaultMessage": "Document Editor",
+    "description": "Title of the edit page's Document Editor panel."
+  },
+  "editScreen.shared.documentNotFound": {
+    "defaultMessage": "Document not found",
+    "description": "Heading of the warning the edit page or the document page shows when its document no longer exists."
+  },
+  "editScreen.shared.history": {
+    "defaultMessage": "History",
+    "description": "Item of the edit page's Reports menu, and the title of the dialog it opens, which lists the open section's field edits and the item's review activity."
+  },
+  "editScreen.shared.loadingDocument": {
+    "defaultMessage": "Loading document…",
+    "description": "Shown beside a spinner while the edit page or the document page reads its document."
+  },
+  "editScreen.shared.noChangesToSave": {
+    "defaultMessage": "No changes to save",
+    "description": "Why Save, in the edit page's action bar, is unavailable: the open section has no unsaved changes."
+  },
+  "editScreen.shared.returnedToQueue": {
+    "defaultMessage": "{name} returned to the queue.",
+    "description": "Notice shown as the edit page closes after Skip gave the item back to its queue. {name} is the file name of the item's document."
+  },
+  "editScreen.shared.savingChanges": {
+    "defaultMessage": "Saving your changes…",
+    "description": "Why an action of the edit page's action bar, such as Save, Cancel, Refresh or Process Changes, is unavailable while the open section's changes are being saved."
+  },
+  "editScreen.shared.working": {
+    "defaultMessage": "Working…",
+    "description": "Why the edit page's buttons, in its action bar and Edit Page Grouping, are unavailable while an action runs."
+  },
+  "editScreen.states.documentFailed.body": {
+    "defaultMessage": "{error} {backLink}",
+    "description": "Text of the error the edit page or the document page shows when its document could not be read. {error} is the reason the server gave, as it sent it, or a sentence saying the document could not be loaded; {backLink} is a link back to the Documents list or to Home › Tasks."
+  },
+  "editScreen.states.documentMissing.body": {
+    "defaultMessage": "This document no longer exists. {backLink}",
+    "description": "Text of the warning the edit page or the document page shows when its document no longer exists. {backLink} is a link back to the Documents list or to Home › Tasks."
+  },
+  "editScreen.states.itemFailed.action": {
+    "defaultMessage": "load the review item",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when the edit page could not read the review queue item of its document."
+  },
+  "editScreen.states.itemFailed.header": {
+    "defaultMessage": "Couldn't open this review item",
+    "description": "Heading of the error the edit page shows when the review queue item of its document could not be read."
+  },
+  "editScreen.states.notAMember.body": {
+    "defaultMessage": "Only the Annotators listed on this item's queue can open it. The queues that list you are in {queuesLink}.",
+    "description": "Text of the warning the edit page shows to an Annotator who is not listed on the review queue of the item. {queuesLink} is a link to Home › Queues, the page of the queues that list the user."
+  },
+  "editScreen.states.notAMember.header": {
+    "defaultMessage": "You can't open this review item",
+    "description": "Heading of the warning the edit page shows to an Annotator who is not listed on the review queue of the item."
+  },
+  "editScreen.states.notAMember.queuesLink": {
+    "defaultMessage": "Home › Queues",
+    "description": "Text of the link to the page of the queues that list the user, named by its breadcrumb trail, inside the warning to an Annotator who cannot open a review item."
+  },
+  "editScreen.testSetSlots.classCorrectedDocument": {
+    "defaultMessage": "Class corrected to {documentClass}. This document has authored ground truth, so its field values were kept rather than re-extracted; if they need to change, edit them here or in the JSON Editor tab.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract on a document with one section, when its labels are authored ground truth: its class changed and its field values stayed. {documentClass} is the document class, shown as is. JSON Editor is a tab of the section editor."
+  },
+  "editScreen.testSetSlots.classCorrectedSection": {
+    "defaultMessage": "Class corrected to {documentClass} on section {sectionId}. This section has authored ground truth, so its field values were kept rather than re-extracted; if they need to change, edit them here or in the JSON Editor tab.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract on one section of a document with several sections, when the section's labels are authored ground truth: its class changed and its field values stayed. {documentClass} is the section's document class and {sectionId} its number, both shown as is. JSON Editor is a tab of the section editor."
+  },
+  "editScreen.testSetSlots.documentTailAuthored": {
+    "defaultMessage": "The class is corrected, but this document has authored ground truth, so its field values are kept.",
+    "description": "Last sentence of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page: the document's labels are authored ground truth, which Re-extract does not replace."
+  },
+  "editScreen.testSetSlots.documentTailDraft": {
+    "defaultMessage": "The current draft labels for this document are replaced.",
+    "description": "Last sentence of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page: the document's labels are draft labels."
+  },
+  "editScreen.testSetSlots.documentTailReviewed": {
+    "defaultMessage": "This document was already marked reviewed; re-extracting discards those confirmed values.",
+    "description": "Last sentence of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page: the document's labels are marked reviewed."
+  },
+  "editScreen.testSetSlots.emptyEmptyResult": {
+    "defaultMessage": "This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.",
+    "description": "Text of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section's extraction result is empty."
+  },
+  "editScreen.testSetSlots.emptyHeader": {
+    "defaultMessage": "No field values for this section",
+    "description": "Heading of the notice in the section editor of a test-set item's edit page when the open section has no field values."
+  },
+  "editScreen.testSetSlots.emptyHintMerge": {
+    "defaultMessage": "If the pages belong with another section instead, <b>Edit Page Grouping</b> can merge them rather than classifying this one separately.",
+    "description": "Last sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has no document class. <b>…</b> marks bold text; Edit Page Grouping is a button in the section editor's header."
+  },
+  "editScreen.testSetSlots.emptyHintPerSection": {
+    "defaultMessage": "To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, which re-extracts this section only and leaves the others as they are, or use the <b>JSON Editor</b> tab to enter values by hand.",
+    "description": "Last sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has a class, on a document with several sections. <b>…</b> marks bold text: Edit Page Grouping is a button in the section editor's header, Re-extract a button of the notice the editor then shows and JSON Editor a tab of the section editor."
+  },
+  "editScreen.testSetSlots.emptyHintSingle": {
+    "defaultMessage": "To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, or use the <b>JSON Editor</b> tab to enter values by hand.",
+    "description": "Last sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has a class, on a document with one section. <b>…</b> marks bold text: Edit Page Grouping is a button in the section editor's header, Re-extract a button of the notice the editor then shows and JSON Editor a tab of the section editor."
+  },
+  "editScreen.testSetSlots.emptyNoClass": {
+    "defaultMessage": "This section has no document class, so there is no schema to extract against — that is why it has no fields. Set its class in Edit Page Grouping first; re-extracting before that will not produce anything.",
+    "description": "Text of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section has no document class. Edit Page Grouping is a button in the section editor's header."
+  },
+  "editScreen.testSetSlots.emptyNoInference": {
+    "defaultMessage": "This section has no inference_result at all.",
+    "description": "Text of the notice that the open section has no field values, in the section editor of a test-set item's edit page, when the section's file has no extraction result. inference_result is the name of that field in the file, shown as is."
+  },
+  "editScreen.testSetSlots.emptyOtherSections": {
+    "defaultMessage": "Other sections of this document may still have values — choose one from the Section list above.",
+    "description": "Sentence of the notice that the open section has no field values, in the section editor of a test-set item's edit page, on a document with several sections. The Section list is the section editor's section selector."
+  },
+  "editScreen.testSetSlots.mergeWarning": {
+    "defaultMessage": "Changing the class for the whole document would merge all {count} sections into one and discard their ground truth, so Re-extract here works on this section only.",
+    "description": "Last sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page. {count} is how many sections the document has, two or more. Re-extract is the notice's button."
+  },
+  "editScreen.testSetSlots.pagesInSection": {
+    "defaultMessage": "Pages in this section",
+    "description": "Label of the field, in the section editor of a test-set item's edit page, that lists the page numbers the open section covers."
+  },
+  "editScreen.testSetSlots.pagesInSectionHelp": {
+    "defaultMessage": "Which pages of the document this section covers, in reading order. Use Edit Page Grouping at the top to move or reorder pages, or change a section's class.",
+    "description": "Help text of the field that lists the open section's page numbers, in the section editor of a test-set item's edit page. Edit Page Grouping is a button in the section editor's header."
+  },
+  "editScreen.testSetSlots.pagesMovedBody": {
+    "defaultMessage": "The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so their values may no longer match. Check them, and change the section's class and use <b>Re-extract</b> if you would rather the model redo it.",
+    "description": "Text of the warning, in the section editor of a test-set item's edit page, that a saved grouping changed the pages of some sections, on a document with one section. <b>…</b> marks bold text; Re-extract is a button of the section editor."
+  },
+  "editScreen.testSetSlots.pagesMovedBodyPerSection": {
+    "defaultMessage": "The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so their values may no longer match. Check them, and change the section's class and use <b>Re-extract</b> if you would rather the model redo it (on this document it re-extracts that one section).",
+    "description": "Text of the warning, in the section editor of a test-set item's edit page, that a saved grouping changed the pages of some sections, on a document with several sections, where Re-extract works on one section. <b>…</b> marks bold text; Re-extract is a button of the section editor."
+  },
+  "editScreen.testSetSlots.pagesMovedHeader": {
+    "defaultMessage": "{count, plural, one {Pages moved in section {ids}} other {Pages moved in sections {ids}}}",
+    "description": "Heading of the warning in the section editor of a test-set item's edit page after Edit Page Grouping saved a grouping that changed the pages of some sections. {count} is how many sections; {ids} lists their numbers, separated by commas."
+  },
+  "editScreen.testSetSlots.previousClassDocument": {
+    "defaultMessage": "These fields were extracted as <b>{previousClass}</b>. Re-extract to replace them with ones the <b>{documentClass}</b> schema produces. This re-runs the document through the pipeline and usually takes under a minute; you can leave this page and come back.",
+    "description": "Text of the notice that the fields still reflect the previous class, on a document with one section, in the section editor of a test-set item's edit page. <b>…</b> marks bold text. {previousClass} is the class the fields were extracted under and {documentClass} the document's class now, both shown as is. Re-extract is the notice's button."
+  },
+  "editScreen.testSetSlots.previousClassHeader": {
+    "defaultMessage": "Fields still reflect the previous class",
+    "description": "Heading of the notice in the section editor of a test-set item's edit page when Edit Page Grouping changed the open section's class: its fields were extracted under the class it had before."
+  },
+  "editScreen.testSetSlots.previousClassSection": {
+    "defaultMessage": "These fields were extracted as <b>{previousClass}</b>. Re-extract replaces this section's fields with ones the <b>{documentClass}</b> schema produces; the other {others, plural, one {# section keeps its} other {# sections keep their}} pages, class and fields.",
+    "description": "Text of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page. <b>…</b> marks bold text. {previousClass} is the class the fields were extracted under and {documentClass} the section's class now, both shown as is; {others} is how many other sections the document has. Re-extract is the notice's button."
+  },
+  "editScreen.testSetSlots.reextract": {
+    "defaultMessage": "Re-extract",
+    "description": "Button of the notice that the open section's fields still reflect its previous class, in the section editor of a test-set item's edit page: extracts the fields again under the section's class (the whole document's when it has one section)."
+  },
+  "editScreen.testSetSlots.reextractFailedDocument": {
+    "defaultMessage": "Could not re-extract this document: {error}",
+    "description": "Error in the section editor of a test-set item's edit page when Re-extract failed on a document with one section. {error} is why, as the request reported it, shown as is."
+  },
+  "editScreen.testSetSlots.reextractFailedSection": {
+    "defaultMessage": "Could not re-extract this section: {error}",
+    "description": "Error in the section editor of a test-set item's edit page when Re-extract failed on one section of a document with several sections. {error} is why, as the request reported it, shown as is."
+  },
+  "editScreen.testSetSlots.reextractSectionAria": {
+    "defaultMessage": "Re-extract section {sectionId}",
+    "description": "Accessible name of Re-extract, in the section editor of a test-set item's edit page, on a document with several sections. {sectionId} is the number of the section it extracts again."
+  },
+  "editScreen.testSetSlots.reextractTimeout": {
+    "defaultMessage": "Re-extraction is taking longer than expected. It is still running — reopen this document shortly to see the new fields.",
+    "description": "Notice in the section editor of a test-set item's edit page when a re-extract started with Re-extract has not finished after five minutes and is still running."
+  },
+  "editScreen.testSetSlots.reextractedDocument": {
+    "defaultMessage": "Re-extracted as {documentClass}.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract replaced the fields of a document with one section. {documentClass} is the document class it was extracted as, shown as is."
+  },
+  "editScreen.testSetSlots.reextractedSection": {
+    "defaultMessage": "Re-extracted section {sectionId} as {documentClass}. The other sections were not changed.",
+    "description": "Notice in the section editor of a test-set item's edit page after Re-extract replaced the fields of one section of a document with several sections. {sectionId} is the section's number; {documentClass} is the document class it was extracted as, shown as is."
+  },
+  "editScreen.testSetSlots.reextracting": {
+    "defaultMessage": "Re-extracting…",
+    "description": "Text of Re-extract, in the section editor of a test-set item's edit page, while the re-extract runs."
+  },
+  "editScreen.testSetSlots.regroupConsequence": {
+    "defaultMessage": "Moving pages rewrites this document's <b>section grouping</b> — the ground truth for how the packet splits. Your extracted field values, their <b>Reviewed</b> provenance and the edit history are all kept. Sections are renumbered so their ids follow page order.",
+    "description": "What saving a new page grouping does, in Edit Page Grouping opened from a test-set item's edit page. <b>…</b> marks bold text; Reviewed is the label source of labels marked reviewed."
+  },
+  "editScreen.testSetSlots.regroupPending": {
+    "defaultMessage": "Loading the saved grouping…",
+    "description": "Why Re-extract, in the section editor of a test-set item's edit page, is unavailable: a page grouping was just saved and the page is still re-reading the saved sections."
+  },
+  "editScreen.testSetSlots.saveGroupingFailed": {
+    "defaultMessage": "Could not save the page grouping: {error}",
+    "description": "Error in the Edit Page Grouping dialog of a test-set item's edit page when the page grouping could not be saved. {error} is why, as the request reported it, shown as is."
+  },
+  "editScreen.testSetSlots.sectionTailAuthored": {
+    "defaultMessage": "The class is corrected, but this section has authored ground truth, so its field values are kept.",
+    "description": "Sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page: the section's labels are authored ground truth, which Re-extract does not replace."
+  },
+  "editScreen.testSetSlots.sectionTailDraft": {
+    "defaultMessage": "This section's draft labels are replaced.",
+    "description": "Sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page: the section's labels are draft labels."
+  },
+  "editScreen.testSetSlots.sectionTailReviewed": {
+    "defaultMessage": "This section was already marked reviewed; re-extracting discards its confirmed values.",
+    "description": "Sentence of the notice that the open section's fields still reflect its previous class, on a document with several sections, in the section editor of a test-set item's edit page: the section's labels are marked reviewed."
+  },
+  "editScreen.testSetSlots.tiffPreview": {
+    "defaultMessage": "Preview is not available for TIFF documents — use View Source Document to download. Ground truth editing still works.",
+    "description": "Notice above the page images of a test-set item's edit page when its document is a TIFF file, whose pages the page does not show."
+  },
+  "editScreen.toolsPanel.button.cancel": {
+    "defaultMessage": "<b>Cancel</b> leaves without finishing, asking first when there are unsaved edits.",
+    "description": "Help panel note on the edit page's action bar. <b>Cancel</b> is the label of a button on the bar, in bold."
+  },
+  "editScreen.toolsPanel.button.editView": {
+    "defaultMessage": "<b>Edit | View</b> switches between the Document Editor and the original file. Unsaved edits are kept while the file is shown.",
+    "description": "Help panel note on the edit page's action bar. <b>Edit | View</b> names the switch first in the bar by its two options, in bold. Document Editor is the title of the edit page's section editor."
+  },
+  "editScreen.toolsPanel.button.processChanges": {
+    "defaultMessage": "<b>{processChanges}</b> saves, then processes the changes: evaluation and summarization re-run, and OCR, classification and extraction are not repeated. It finishes a queue item. On a Test Studio document it also writes the labels as reviewed ground truth; when no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.",
+    "description": "Help panel note on the edit page's action bar. {processChanges} is the label of the bar's Process Changes button, in bold. A queue item is a review queue item; a Test Studio document is a test-set item, and the set is its test set."
+  },
+  "editScreen.toolsPanel.button.refresh": {
+    "defaultMessage": "<b>Refresh</b> reloads the document; with unsaved edits it asks first.",
+    "description": "Help panel note on the edit page's action bar. <b>Refresh</b> is the label of a button on the bar, in bold."
+  },
+  "editScreen.toolsPanel.button.save": {
+    "defaultMessage": "<b>Save</b> saves the open section without finishing. On a Test Studio document it keeps a draft, which opens no version.",
+    "description": "Help panel note on the edit page's action bar. <b>Save</b> is the label of a button on the bar, in bold. A Test Studio document is a test-set item; a version is a version of its test set."
+  },
+  "editScreen.toolsPanel.button.skip": {
+    "defaultMessage": "<b>Skip</b> (queue items) gives the item back to its queue with a reason. It is not finished, and saved work is kept.",
+    "description": "Help panel note on the edit page's action bar. <b>Skip</b> is the label of a button on the bar, in bold."
+  },
+  "editScreen.toolsPanel.editor.buttons": {
+    "defaultMessage": "Its buttons, right of its title: <b>Show Evaluation</b> (where the document has an evaluation baseline), <b>Section</b>, <b>Show Fields</b> and <b>Edit Page Grouping</b>, which moves pages between sections and changes a section's class.",
+    "description": "Help panel note on the Document Editor, the edit page's section editor (\"its\" is the Document Editor's). Each bold text names a control in its header: the Show Evaluation toggle, the Section menu, the menu that chooses which fields show, and the Edit Page Grouping button."
+  },
+  "editScreen.toolsPanel.editor.field": {
+    "defaultMessage": "Click a field to highlight it on the page. Show Fields narrows the list to confidence alerts or evaluation mismatches.",
+    "description": "Help panel note on the Document Editor, the edit page's section editor. Show Fields names the menu in its header that chooses which fields show."
+  },
+  "editScreen.toolsPanel.editor.readOnly": {
+    "defaultMessage": "When you cannot edit, a notice at the top says why, with Claim or Take over where you may take the document.",
+    "description": "Help panel note on the notice at the top of the edit page when its fields are read-only. Claim and Take over are the labels of buttons that come with that notice."
+  },
+  "editScreen.toolsPanel.editor.reviewReason": {
+    "defaultMessage": "A queue item's Review Reason lists why it is in review, worst first. Choose a reason, or <b>{nextAlert}</b>, to move to its field.",
+    "description": "Help panel note on the Review Reason of a review queue item, the panel above the editor that lists why the item is in review. {nextAlert}, in bold, is the label of that panel's Next alert button, which moves to the next field with a confidence alert."
+  },
+  "editScreen.toolsPanel.editor.section": {
+    "defaultMessage": "Choose a section from the Section list. The page image stays in view while you scroll the fields.",
+    "description": "Help panel note on the Document Editor, the edit page's section editor. The Section list is the menu in its header that opens a section."
+  },
+  "editScreen.toolsPanel.heading.buttons": {
+    "defaultMessage": "Buttons",
+    "description": "Sub-heading in the edit page's help panel, above the notes on the controls of the page's action bar."
+  },
+  "editScreen.toolsPanel.heading.documentEditor": {
+    "defaultMessage": "Document Editor",
+    "description": "Sub-heading in the edit page's help panel, above the notes on the section editor. Document Editor is the section editor's title."
+  },
+  "editScreen.toolsPanel.heading.moreActions": {
+    "defaultMessage": "More Actions",
+    "description": "Sub-heading in the edit page's help panel, above the notes on the More Actions menu of the action bar."
+  },
+  "editScreen.toolsPanel.heading.reports": {
+    "defaultMessage": "Reports",
+    "description": "Sub-heading in the edit page's help panel, above the notes on the Reports menu of the action bar."
+  },
+  "editScreen.toolsPanel.intro": {
+    "defaultMessage": "Correct a document's extracted values, page by page and section by section. The same screen opens from the document page, a queue item and a Test Studio document; it shows only the actions that apply.",
+    "description": "Opening paragraph of the edit page's help panel. The edit page opens from the document page, from a queue item (a review queue item) and from a Test Studio document (a test-set item)."
+  },
+  "editScreen.toolsPanel.link.humanReview": {
+    "defaultMessage": "Human review",
+    "description": "Label of a \"Learn more\" link in the edit page's help panel, to the Human review documentation page."
+  },
+  "editScreen.toolsPanel.link.reviewQueues": {
+    "defaultMessage": "Review queues",
+    "description": "Label of a \"Learn more\" link in the edit page's help panel, to the Review queues documentation page."
+  },
+  "editScreen.toolsPanel.link.testStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Label of a \"Learn more\" link in the edit page's help panel, to the Test Studio documentation page. Test Studio is a product area name."
+  },
+  "editScreen.toolsPanel.menuNote": {
+    "defaultMessage": "A menu item that does not apply yet stays in its menu, disabled; hover it to see why.",
+    "description": "Paragraph of the edit page's help panel, below the notes on the Reports and More Actions menus: why a menu item can be disabled."
+  },
+  "editScreen.toolsPanel.moreActions.baseline": {
+    "defaultMessage": "<b>Use As Evaluation Baseline</b> (Admin and Author): copy a finished document's results into the evaluation baseline.",
+    "description": "Help panel note on the More Actions menu of the edit page's action bar. <b>Use As Evaluation Baseline</b> is the label of a menu item, in bold; Admin and Author are user roles."
+  },
+  "editScreen.toolsPanel.report.history": {
+    "defaultMessage": "<b>History</b>: every saved field edit, and who worked the item.",
+    "description": "Help panel note on the Reports menu of the edit page's action bar. <b>History</b> is the label of a menu item, in bold."
+  },
+  "editScreen.toolsPanel.report.processing": {
+    "defaultMessage": "<b>Processing Report</b>: how the open section was extracted.",
+    "description": "Help panel note on the Reports menu of the edit page's action bar. <b>Processing Report</b> is the label of a menu item, in bold."
+  },
+  "editScreen.toolsPanel.report.summary": {
+    "defaultMessage": "<b>Summary</b>: the document's summary, once it is finished.",
+    "description": "Help panel note on the Reports menu of the edit page's action bar. <b>Summary</b> is the label of a menu item, in bold."
+  },
+  "editScreen.toolsPanel.title": {
+    "defaultMessage": "Edit Document",
+    "description": "Title of the edit page's help panel."
   },
   "guidedTour.i18n.closeAnnotation": {
     "defaultMessage": "Close annotation",
@@ -9827,6 +11215,134 @@
     "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or open Quick Start from the side navigation to describe them in your own words.",
     "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is offered Quick Start. <link> wraps a link to the Discovery page."
   },
+  "testStudio.itemEdit.action.baseline": {
+    "defaultMessage": "use this document as the evaluation baseline",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Use As Evaluation Baseline failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.cancel": {
+    "defaultMessage": "leave this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Cancel failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.claim": {
+    "defaultMessage": "claim this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Claim failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.loadDocument": {
+    "defaultMessage": "load the document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\") when a test-set item's edit page could not read its document."
+  },
+  "testStudio.itemEdit.action.process": {
+    "defaultMessage": "process the changes to this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Process Changes failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.refresh": {
+    "defaultMessage": "reload this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Refresh failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.regroup": {
+    "defaultMessage": "edit the page grouping",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Edit Page Grouping failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.save": {
+    "defaultMessage": "save this section",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Save failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.action.skip": {
+    "defaultMessage": "skip this document",
+    "description": "Infinitive verb phrase placed inside the shared error sentence (\"Failed to {action}: {error}\", or the permission sentence) when Skip failed on a test-set item's edit page."
+  },
+  "testStudio.itemEdit.alertCount": {
+    "defaultMessage": "{count, plural, one {# field is below the confidence threshold.} other {# fields are below the confidence threshold.}}",
+    "description": "Notice at the top of a test-set item's edit page, beside its Next alert button. {count} is the number of the document's fields below the confidence threshold, 1 or more."
+  },
+  "testStudio.itemEdit.alreadyReviewed": {
+    "defaultMessage": "This document is already reviewed",
+    "description": "Why Skip and Process Changes are unavailable on a test-set item's edit page: the document is already reviewed."
+  },
+  "testStudio.itemEdit.alreadySkipped": {
+    "defaultMessage": "This document was already skipped",
+    "description": "Why Skip and Process Changes are unavailable on a test-set item's edit page: the document was already skipped."
+  },
+  "testStudio.itemEdit.authoredGroundTruth": {
+    "defaultMessage": "Authored ground truth: check its labels, correct them if needed, then choose {processChanges}.",
+    "description": "First sentence of the notice at the top of a test-set item's edit page when the document's labels are authored ground truth, with no review copy. {processChanges} is the name of the page's action, Process Changes."
+  },
+  "testStudio.itemEdit.bucketMissing": {
+    "defaultMessage": "TestSetBucket is not configured in settings.",
+    "description": "Error at the top of a test-set item's edit page when the app's settings name no test-set bucket. TestSetBucket is the setting's name."
+  },
+  "testStudio.itemEdit.cannotOpenBody": {
+    "defaultMessage": "Only the Annotators listed on this test set's queue can open its documents. The queues that list you are in <link>Home › Queues</link>.",
+    "description": "Text of the warning a test-set item's edit page shows when the server refused to read the document for this user. <link>…</link> marks the link to Home › Queues, the page of the queues that list the user, named by its breadcrumb trail."
+  },
+  "testStudio.itemEdit.cannotOpenHeader": {
+    "defaultMessage": "You can't open this document",
+    "description": "Heading of the warning a test-set item's edit page shows when the server refused to read the document for this user."
+  },
+  "testStudio.itemEdit.claimFirstToRegroup": {
+    "defaultMessage": "Claim this document first to change its page grouping",
+    "description": "Why Edit Page Grouping is unavailable on an unassigned test-set item's edit page: only the document's holder may change its page grouping."
+  },
+  "testStudio.itemEdit.completeReviewed": {
+    "defaultMessage": "{name} is complete. Its labels are marked reviewed.",
+    "description": "Notice shown as a test-set item's edit page closes after Process Changes, for authored ground truth. {name} is the file name of the item's document."
+  },
+  "testStudio.itemEdit.documentGone": {
+    "defaultMessage": "This document isn't in the test set any more. <link>Back to the test set</link>",
+    "description": "Text of the error a test-set item's edit page shows when its document is no longer in the test set. <link>…</link> marks the link back to the test set's queue page."
+  },
+  "testStudio.itemEdit.loading": {
+    "defaultMessage": "Loading the document…",
+    "description": "Shown beside a spinner while a test-set item's edit page reads its document."
+  },
+  "testStudio.itemEdit.loadingShort": {
+    "defaultMessage": "Loading…",
+    "description": "Why Skip, Refresh or Process Changes is unavailable on a test-set item's edit page while the document is being read."
+  },
+  "testStudio.itemEdit.noLabelsSkipCompletes": {
+    "defaultMessage": "This document has no labels yet; Skip completes it",
+    "description": "Why Process Changes is unavailable on a test-set item's edit page: the document has no labels yet. Skip is the button on the same bar."
+  },
+  "testStudio.itemEdit.noSections": {
+    "defaultMessage": "No ground truth (baseline) sections found for {objectKey}.",
+    "description": "Shown in the section editor's place on a test-set item's edit page when the document has no sections. {objectKey} is the document's key in the test set."
+  },
+  "testStudio.itemEdit.noSectionsSkipCompletes": {
+    "defaultMessage": "This document has no sections; Skip completes it",
+    "description": "Why Process Changes is unavailable on a test-set item's edit page: the document has no sections. Skip is the button on the same bar."
+  },
+  "testStudio.itemEdit.notAssignedToYou": {
+    "defaultMessage": "This document is not assigned to you",
+    "description": "Why Skip and Process Changes are unavailable on an unassigned test-set item's edit page."
+  },
+  "testStudio.itemEdit.notAvailableBody": {
+    "defaultMessage": "Editing ground truth requires an Annotator, Author or Admin role.",
+    "description": "Text of the error a test-set item's edit page shows to a user whose roles cannot edit ground truth."
+  },
+  "testStudio.itemEdit.notAvailableHeader": {
+    "defaultMessage": "Not available for your account",
+    "description": "Heading of the error a test-set item's edit page shows to a user whose roles cannot edit ground truth."
+  },
+  "testStudio.itemEdit.notReady": {
+    "defaultMessage": "Not ready to edit: this document has no labels yet. Generate draft labels for the set first.",
+    "description": "Warning at the top of a test-set item's edit page when the document has neither a review copy nor labels."
+  },
+  "testStudio.itemEdit.notReviewed": {
+    "defaultMessage": "Not every section of {name} is marked reviewed yet. Check its sections and choose {processChanges} again.",
+    "description": "Error after Process Changes on a test-set item's edit page applied every section, but the server does not count the document reviewed yet, so the page stays open. {name} is the file name of the item's document; {processChanges} is the name of the page's action, Process Changes."
+  },
+  "testStudio.itemEdit.primaryHintAuthored": {
+    "defaultMessage": "Apply your saved changes and mark the labels reviewed (the rest as correct). Authored ground truth has no review copy, so nothing is reprocessed.",
+    "description": "Hint of Process Changes in the action bar of a test-set item's edit page, for authored ground truth, which has no review copy: what it does."
+  },
+  "testStudio.itemEdit.primaryHintReprocess": {
+    "defaultMessage": "Apply your saved changes and mark the labels reviewed (the rest as correct): evaluation and summarization re-run; OCR, classification and extraction are not repeated.",
+    "description": "Hint of Process Changes in the action bar of a test-set item's edit page, for a document with a review copy: what it does."
+  },
+  "testStudio.itemEdit.processingReviewed": {
+    "defaultMessage": "Processing the changes to {name}. Its labels are marked reviewed.",
+    "description": "Notice shown as a test-set item's edit page closes after Process Changes, for a document with a review copy. {name} is the file name of the item's document."
+  },
   "testStudio.itemEdit.regroupPending": {
     "defaultMessage": "Loading the saved grouping…",
     "description": "Why Edit Page Grouping is unavailable: a page grouping was just saved and the document editor is still re-reading the saved sections."
@@ -9834,6 +11350,74 @@
   "testStudio.itemEdit.regroupRereadFailed": {
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
+  },
+  "testStudio.itemEdit.reviewActivity.assigned": {
+    "defaultMessage": "Assigned to {assignee}",
+    "description": "Note of the assignment row in the Review Activity tab of a test-set item's History, on its edit page. {assignee} is the e-mail address of the user the document is assigned to."
+  },
+  "testStudio.itemEdit.roleCannotRegroup": {
+    "defaultMessage": "Your role cannot change this document’s page grouping",
+    "description": "Why Edit Page Grouping is unavailable on a test-set item's edit page: the user's role may not change the page grouping."
+  },
+  "testStudio.itemEdit.roleCannotSave": {
+    "defaultMessage": "Your role cannot save these labels",
+    "description": "Why Process Changes is unavailable on a test-set item's edit page: the user's role may not save the document's labels."
+  },
+  "testStudio.itemEdit.saveFirst": {
+    "defaultMessage": "Save your changes first",
+    "description": "Why Skip is unavailable on a test-set item's edit page: the open section has unsaved changes."
+  },
+  "testStudio.itemEdit.savedDraft": {
+    "defaultMessage": "Saved your changes to {name} as a draft. {processChanges} writes them as reviewed ground truth.",
+    "description": "Notice after Save on a test-set item's edit page kept the open section's changes as a draft. {name} is the file name of the item's document; {processChanges} is the name of the page's action, Process Changes."
+  },
+  "testStudio.itemEdit.skipBody": {
+    "defaultMessage": "It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.",
+    "description": "Text of the dialog that Skip opens on a test-set item's edit page: what skipping the document does."
+  },
+  "testStudio.itemEdit.skipHeader": {
+    "defaultMessage": "Skip this document",
+    "description": "Title of the dialog that Skip opens on a test-set item's edit page, which asks why the document is skipped."
+  },
+  "testStudio.itemEdit.staleDraft": {
+    "defaultMessage": "Someone saved newer changes to this section. It has been reloaded; reapply your last change.",
+    "description": "Error on a test-set item's edit page when a save found a newer draft of the open section, which the page then reloaded."
+  },
+  "testStudio.itemEdit.status.reviewed": {
+    "defaultMessage": "Reviewed",
+    "description": "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document is reviewed."
+  },
+  "testStudio.itemEdit.status.skipped": {
+    "defaultMessage": "Skipped",
+    "description": "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document was skipped."
+  },
+  "testStudio.itemEdit.status.toReview": {
+    "defaultMessage": "To review",
+    "description": "Status in parentheses after the document's name in the heading of a test-set item's edit page: the document is neither reviewed nor skipped."
+  },
+  "testStudio.itemEdit.testSetCrumb": {
+    "defaultMessage": "Test set: {name}",
+    "description": "Breadcrumb of the test set's queue page in the trail of a test-set item's edit page, after Review Management or Home › Queues. {name} is the test set's name."
+  },
+  "testStudio.itemEdit.unsavedChanges": {
+    "defaultMessage": "You have unsaved ground truth changes. Leave this document and discard them?",
+    "description": "Question a test-set item's edit page asks before the user leaves it with unsaved changes in the open section."
+  },
+  "testStudio.itemEdit.viewOnlyAssigned": {
+    "defaultMessage": "View only. This document is assigned to {assignee}.",
+    "description": "Read-only notice at the top of a test-set item's edit page when the document is assigned to another user. {assignee} is that user's e-mail address."
+  },
+  "testStudio.itemEdit.viewOnlyClaim": {
+    "defaultMessage": "View only. Claim this document to work on it; it is then assigned to you and shows in Home › Tasks.",
+    "description": "Read-only notice at the top of an unassigned test-set item's edit page, beside its Claim button. Home › Tasks is the page that lists the user's work, named by its breadcrumb trail."
+  },
+  "testStudio.itemEdit.viewOnlyRole": {
+    "defaultMessage": "View only. Your role cannot edit these labels.",
+    "description": "Read-only notice at the top of a test-set item's edit page when the user's role may not edit the document's labels."
+  },
+  "testStudio.itemEdit.viewOnlyUnassigned": {
+    "defaultMessage": "View only. It is not assigned to you.",
+    "description": "Read-only notice at the top of an unassigned test-set item's edit page when the user may not claim the document."
   },
   "testStudio.modifiedAfter.customTimeIsUtc": {
     "defaultMessage": "Date and time are in UTC.",

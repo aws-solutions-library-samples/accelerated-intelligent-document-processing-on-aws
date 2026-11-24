@@ -13,7 +13,7 @@
 // dialog reports the failure, with Re-extract again.
 import React, { useMemo, useState } from 'react';
 import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
-import { FormattedMessage } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
@@ -24,8 +24,71 @@ import { changedSections } from '../common/section-grouping';
 import type { GroupedSection } from '../common/section-grouping';
 import type { EditBoard } from './edit-model';
 
-/** A section's line in the re-extract lists. */
-const sectionLine = (s: GroupedSection): string => `Section ${s.sectionId}: ${s.documentClass ?? ''}, pages ${s.pageIds.join(', ')}`;
+const messages = defineMessages<{
+  title: NoMessageValues;
+  thumbnailsUnavailable: NoMessageValues;
+  save: NoMessageValues;
+  saveAndReextract: NoMessageValues;
+  close: NoMessageValues;
+  reextractAgain: NoMessageValues;
+  partialFailed: { readonly message: string };
+  sectionLine: { readonly count: number; readonly id: string; readonly class: string; readonly pages: string };
+}>({
+  title: {
+    id: 'editScreen.pageGrouping.title',
+    defaultMessage: 'Edit Page Grouping',
+    description:
+      "Title of the Edit Page Grouping dialog, on the edit page and the document page, where the document's pages are regrouped into sections; also the title of the dialog that reports a re-extract that failed after the grouping was saved.",
+  },
+  thumbnailsUnavailable: {
+    id: 'editScreen.pageGrouping.thumbnailsUnavailable',
+    defaultMessage: 'Page thumbnails unavailable',
+    description: 'Heading of the alert in the Edit Page Grouping dialog shown when the page thumbnails could not be loaded.',
+  },
+  save: {
+    id: 'editScreen.pageGrouping.save',
+    defaultMessage: 'Save page grouping',
+    description: 'Button of the Edit Page Grouping dialog that saves the grouping.',
+  },
+  saveAndReextract: {
+    id: 'editScreen.pageGrouping.saveAndReextract',
+    defaultMessage: 'Save and Re-extract',
+    description:
+      'Button of the Edit Page Grouping dialog on the document page: saves the grouping, then extracts again the sections whose class or pages changed, after a confirmation.',
+  },
+  close: {
+    id: 'editScreen.pageGrouping.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping.',
+  },
+  reextractAgain: {
+    id: 'editScreen.pageGrouping.reextractAgain',
+    defaultMessage: 'Re-extract again',
+    description:
+      'Button of the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping: tries the re-extract again.',
+  },
+  partialFailed: {
+    id: 'editScreen.pageGrouping.partialFailed',
+    defaultMessage: 'The page grouping was saved, but the sections were not re-extracted: {message}',
+    description:
+      'Error in the dialog shown when Save and Re-extract saved the grouping but the re-extract failed, above the list of those sections. {message} is why, as the request reported it, shown as is.',
+  },
+  sectionLine: {
+    id: 'editScreen.pageGrouping.sectionLine',
+    defaultMessage: '{count, plural, one {Section {id}: {class}, page {pages}} other {Section {id}: {class}, pages {pages}}}',
+    description:
+      "A section in the list of the dialog reporting a re-extract that failed after Save and Re-extract saved the grouping. {id} is the section's number; {class} is its document class, shown as is (empty for a section with no class); {count} is how many pages it has; {pages} lists their numbers, separated by commas.",
+  },
+});
+
+/** A section's line in the list of sections a failed re-extract left. */
+const sectionLine = (s: GroupedSection, intl: IntlShape): string =>
+  intl.formatMessage(messages.sectionLine, {
+    count: s.pageIds.length,
+    id: s.sectionId,
+    class: s.documentClass ?? '',
+    pages: s.pageIds.join(', '),
+  });
 
 export interface PageClassBoard {
   open: () => void;
@@ -38,6 +101,7 @@ const usePageClassBoard = (
   openSectionId: string | null,
   openData: Record<string, unknown> | null,
 ): PageClassBoard => {
+  const intl = useIntl();
   const { setSuccessMessage } = useAppContext();
   const [isOpen, setIsOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -122,7 +186,7 @@ const usePageClassBoard = (
   const boardDialog = board && isOpen && (
     <PageGroupingEditor
       presentation="modal"
-      title="Edit Page Grouping"
+      title={intl.formatMessage(messages.title)}
       pages={boardPages}
       sections={board.sections(openSectionId, openData)}
       classOptions={board.classOptions}
@@ -131,17 +195,20 @@ const usePageClassBoard = (
         <>
           {error && <Alert type="error">{error}</Alert>}
           {thumbnailFailure && (
-            <Alert type={thumbnailFailure === 'access-denied' ? 'warning' : 'error'} header="Page thumbnails unavailable">
+            <Alert
+              type={thumbnailFailure === 'access-denied' ? 'warning' : 'error'}
+              header={intl.formatMessage(messages.thumbnailsUnavailable)}
+            >
               <FormattedMessage {...THUMBNAIL_FAILURE_MESSAGES[thumbnailFailure]} />
             </Alert>
           )}
           {board.consequence}
         </>
       }
-      saveLabel="Save page grouping"
+      saveLabel={intl.formatMessage(messages.save)}
       secondarySave={
         reextractBoard && {
-          label: 'Save and Re-extract',
+          label: intl.formatMessage(messages.saveAndReextract),
           disabledReason: (draft) => reextractBoard.disabledReason(changedSections(original, draft)),
           onSave: (next) => setConfirm({ next, changed: changedSections(original, next) }),
         }
@@ -167,24 +234,28 @@ const usePageClassBoard = (
       {partial && (
         <Modal
           visible
-          header="Edit Page Grouping"
+          header={intl.formatMessage(messages.title)}
           onDismiss={() => setPartial(null)}
           footer={
             <Box float="right">
               <SpaceBetween direction="horizontal" size="xs">
-                <Button onClick={() => setPartial(null)}>Close</Button>
+                <Button onClick={() => setPartial(null)}>
+                  <FormattedMessage {...messages.close} />
+                </Button>
                 <Button variant="primary" loading={isRetrying} onClick={() => void retry()}>
-                  Re-extract again
+                  <FormattedMessage {...messages.reextractAgain} />
                 </Button>
               </SpaceBetween>
             </Box>
           }
         >
           <SpaceBetween size="s">
-            <Alert type="error">The page grouping was saved, but the sections were not re-extracted: {partial.message}</Alert>
+            <Alert type="error">
+              <FormattedMessage {...messages.partialFailed} values={{ message: partial.message }} />
+            </Alert>
             <ul>
               {partial.changed.map((s) => (
-                <li key={s.sectionId}>{sectionLine(s)}</li>
+                <li key={s.sectionId}>{sectionLine(s, intl)}</li>
               ))}
             </ul>
           </SpaceBetween>

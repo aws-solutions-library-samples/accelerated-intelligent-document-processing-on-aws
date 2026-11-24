@@ -16,7 +16,7 @@ import { Alert, Badge, Box, Button, Container, Header, Popover, SpaceBetween } f
 import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
-import { NEXT_ALERT_LABEL } from '../common/labels';
+import { sharedLabelMessages } from '../common/labels';
 import { EXTRACTION_FAILED_KIND, MISSING_REQUIRED_KIND, reasonText } from './review-api';
 import { useFormatters } from '../../i18n/format';
 
@@ -149,7 +149,13 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
         <Header
           variant="h2"
           counter={`(${item.reasonCount})`}
-          actions={onReasonClick && item.reasons.length > 0 ? <Button onClick={handleNextAlert}>{NEXT_ALERT_LABEL}</Button> : undefined}
+          actions={
+            onReasonClick && item.reasons.length > 0 ? (
+              <Button onClick={handleNextAlert}>
+                <FormattedMessage {...sharedLabelMessages.nextAlert} />
+              </Button>
+            ) : undefined
+          }
         >
           <FormattedMessage {...messages.title} />
         </Header>

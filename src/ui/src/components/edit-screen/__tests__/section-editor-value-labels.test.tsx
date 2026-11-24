@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +34,12 @@ import type { ReviewSectionRef } from '../types';
 
 const SECTIONS: ReviewSectionRef[] = [{ sectionId: '1', documentClass: 'Letter', resultUri: 's3://b/1', pageIds: [] }];
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderEditor = async (data: Record<string, unknown>) => {
   const loadSection = vi.fn(async () => ({ data, raw: JSON.stringify(data) }));
   render(
@@ -44,6 +51,7 @@ const renderEditor = async (data: Record<string, unknown>) => {
       loadSection={loadSection}
       onSave={async () => undefined}
     />,
+    { wrapper: English },
   );
   await waitFor(() => expect(fieldProps).toHaveBeenCalled());
   act(() => createWrapper(document.body).findTabs()!.findTabLinkById('json')!.click());
