@@ -36,7 +36,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 
 ## 2. Complete Threat ID Reference
 
-### PM — Pipeline Mode (9 threats)
+### PM — Pipeline Mode (10 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -189,7 +189,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | RPT.T07 | Ground-truth tampering via the Test Set visual editor | Tampering, Repudiation | 6 (High) |
 | RPT.T08 | Extended data retention via document version history | ID | 3 (Medium) |
 
-### FEAT — Feature Platform (5 threats)
+### FEAT — Feature Platform (6 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -236,7 +236,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SELL.T09 | Customer roster disclosure | ID | 4 (Medium) |
 | SELL.T10 | Allow-list bypass left enabled in production | EoP | 4 (Medium) |
 
-### HITL — Review Queues (5 threats)
+### HITL — Review Queues (6 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
