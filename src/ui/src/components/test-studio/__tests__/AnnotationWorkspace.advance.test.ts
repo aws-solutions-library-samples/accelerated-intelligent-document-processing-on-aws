@@ -33,6 +33,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { editScreenSharedMessages } from '../../edit-screen/edit-messages';
+
 const SOURCE = readFileSync(join(__dirname, '..', 'AnnotationWorkspace.tsx'), 'utf-8');
 // The per-document screen this page opens (its Test Studio model). Saving, completing and skipping happen
 // there, not in an in-page rail, so that is where the #1321 behaviour lives now.
@@ -74,13 +76,18 @@ describe('leaving a document does not wait for the queue reload', () => {
     // column once contradicted.
     const verdictAt = processChanges.indexOf('if (!reviewed) throw new NotReviewedYet(notReviewedMessage(name));');
     expect(verdictAt).toBeGreaterThan(-1);
-    expect(processChanges.indexOf('labels are marked reviewed')).toBeGreaterThan(verdictAt);
-    expect(SCREEN).toContain('Check its sections and choose ${PROCESS_CHANGES_LABEL} again.');
+    // Both notices that say so are messages, chosen after the verdict.
+    expect(processChanges.indexOf('messages.processingReviewed')).toBeGreaterThan(verdictAt);
+    expect(processChanges.indexOf('messages.completeReviewed')).toBeGreaterThan(verdictAt);
+    expect(SCREEN).toContain("'Processing the changes to {name}. Its labels are marked reviewed.'");
+    expect(SCREEN).toContain("'{name} is complete. Its labels are marked reviewed.'");
+    expect(SCREEN).toContain('Check its sections and choose {processChanges} again.');
   });
 
   it('does not report a skipped document as reviewed', () => {
     // A skip is not a verdict: it gives the document back to its queue.
-    expect(handleAction).toContain('returned to the queue.');
+    expect(handleAction).toContain('editScreenSharedMessages.returnedToQueue');
+    expect(editScreenSharedMessages.returnedToQueue.defaultMessage).toBe('{name} returned to the queue.');
     expect(handleAction).not.toContain('is complete (skipped).');
   });
 });

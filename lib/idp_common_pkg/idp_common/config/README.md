@@ -42,7 +42,9 @@ model_id = idp_config.extraction.model
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
 IDs, max-token limits, required prompt placeholders, schema-field warnings, a
 warning when `classification.fallback_class` is neither `unclassified` nor a
-configured class, and
+configured class, a warning when `extraction.agentic.enabled: true` is overridden
+by a simple `extraction.mode` (`_validate_agentic_flag_against_mode`, which reads the
+flag with the migration's `_coerce_bool`), and
 model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
 covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
 the active strategy makes, the per-class model overrides, and the `model` a field
@@ -621,9 +623,28 @@ Four decisions worth knowing before changing this code:
   revision history and the revision picker.
 
 `_record_revisions()` skips the cut entirely when the saved configuration equals
-what was already stored. Every deployment re-saves `default` and each managed
+the published revision's. Every deployment re-saves `default` and each managed
 profile, so without that check a few no-op upgrades would evict a user's real
 history from the retention window.
+
+The baseline is the published revision's stored body validated on its own
+(`_published_configuration()`), not the head the save replaces, and
+`save_configuration()` uses the same comparison to decide whether a save must
+record a revision or raise `RevisionNotRecordedError`. The head is the baseline
+only when that body cannot be read: history is disabled, the body has expired (the
+head then stands in for it only if it is that revision anyway), or the read failed.
+The two can differ because a release can change what a stored head reads as. The
+head leaves out an empty value while empty is its default
+(`_omit_rollback_hostile_defaults`) and a revision body holds it as `null`, so after
+a release makes the default a value the head reads that value and the revision
+documents run reads empty. Compared with the head, the deployment's re-save of such
+a profile would change nothing, rewrite the head, record no revision and leave
+`head_matches_published()` False; `record_resolution_against_default()` for a custom
+profile would do the same, and every later deployment would then decline to record
+it. Compared with the revision, each records one. A setting a release adds reads as
+its default on both sides, so it records nothing. Nor does a number in a class that
+the head stores and reads back as a string, which with the head as the baseline
+would make some shipped presets record an identical revision on every deployment.
 
 Retention keeps the last `CONFIG_REVISION_CAP` (default 20) revisions per profile,
 plus the published revision and anything labeled or pinned by a test run. A

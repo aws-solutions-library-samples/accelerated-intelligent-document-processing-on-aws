@@ -5197,19 +5197,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         stages: list[dict[str, Any]] = []
 
         # 1) OCR
-        ocr_info = metadata.get("ocr_analysis") or {}
-        tables_seen = ocr_info.get("tables_detected", 0)
+        ocr_detail = ""
+        if metadata.get("ocr_analysis"):
+            tables_seen = metadata["ocr_analysis"].get("tables_detected", 0)
+            ocr_detail = (
+                f"{tables_seen} markdown table(s) in text"
+                if tables_seen
+                else "no markdown tables"
+            )
         stages.append(
-            {
-                "key": "ocr",
-                "label": "OCR",
-                "detail": (
-                    f"{tables_seen} markdown table(s) in text"
-                    if tables_seen
-                    else "no markdown tables"
-                ),
-                "status": "ok",
-            }
+            {"key": "ocr", "label": "OCR", "detail": ocr_detail, "status": "ok"}
         )
         # 2) Classify
         stages.append(

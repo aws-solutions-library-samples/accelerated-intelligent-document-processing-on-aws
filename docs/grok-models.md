@@ -82,7 +82,7 @@ the two, so prefer it unless you need US data-residency routing.
 | **Flex / Priority service tiers** | The model card advertises both, but Converse returns *"The provided service tier is not supported for this model"* on both prefixes in `us-west-2` and `us-east-1`. No tier-suffixed Grok IDs are offered. |
 | **Explicit prompt caching** (`<<CACHEPOINT>>`) | `cachePoint` blocks raise `AccessDeniedException`. The accelerator strips `<<CACHEPOINT>>` markers from the prompt text for Grok, so prompts still work — they simply are not cached. |
 | **`temperature` / `topP` / `top_k`** | Rejected with a 400 naming the field. The accelerator omits the whole sampling group for Grok, so your configured values are silently ignored rather than causing a failure. |
-| **Structured outputs / hard grammar** | Not available on `bedrock-runtime` for any model. A forced `toolChoice` is the strongest schema enforcement (same as Claude). |
+| **Structured outputs / hard grammar** | Not used. The accelerator does not use Bedrock structured outputs for any model (see [Extraction](extraction-and-confidence.md#forced-tool-use-extractionforced_tool--experimental-off-by-default)); a forced `toolChoice` is the strongest schema enforcement it applies. |
 | **GovCloud** | Unverified. The model card claims geo CRIS in `us-gov-east-1`/`us-gov-west-1`, but the accelerator has a live finding that `us.`/`global.` prefixes are rejected in GovCloud regions. Treat as unsupported until verified. |
 | **Count tokens** | Not supported by the model. |
 

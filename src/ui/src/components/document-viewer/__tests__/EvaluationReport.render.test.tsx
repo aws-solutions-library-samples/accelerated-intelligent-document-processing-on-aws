@@ -13,6 +13,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 // Hoisted with the mocks: vi.mock factories run before module-level constants exist.
@@ -175,9 +176,15 @@ vi.mock('../MarkdownViewer', () => ({ MarkdownReport: () => <div>markdown fallba
 
 import EvaluationReport from '../EvaluationReport';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('EvaluationReport mounted against a packet payload', () => {
   it('renders every section the markdown has', async () => {
-    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />);
+    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('Split accuracy')).toBeInTheDocument());
     expect(screen.getByText('1 of 2 pages')).toBeInTheDocument();
@@ -192,7 +199,7 @@ describe('EvaluationReport mounted against a packet payload', () => {
   });
 
   it('sorts the attribute table when a sortable header is clicked', async () => {
-    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />);
+    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />, { wrapper: English });
     await waitFor(() => expect(screen.getByText('Boxes')).toBeInTheDocument());
     const table = screen.getByText('Boxes').closest('table')!;
     const names = () => [...table.querySelectorAll('tbody tr')].map((tr) => tr.querySelectorAll('td')[1]?.textContent?.trim());
@@ -203,7 +210,7 @@ describe('EvaluationReport mounted against a packet payload', () => {
   });
 
   it('puts the section score and the not-scored state in the section headers', async () => {
-    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />);
+    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('Section 1 — W2')).toBeInTheDocument());
     // Header counters render in their own node; match on content, not exact text.
@@ -217,7 +224,7 @@ describe('EvaluationReport mounted against a packet payload', () => {
   });
 
   it('shows a list as a count and opens its nested comparisons on demand', async () => {
-    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />);
+    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('Boxes')).toBeInTheDocument());
     // Two cells (expected and extracted), each summarised, none flattened to JSON.
@@ -232,7 +239,7 @@ describe('EvaluationReport mounted against a packet payload', () => {
   });
 
   it('opens the split analysis by default when a section went wrong, with the unmatched prediction', async () => {
-    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />);
+    render(<EvaluationReport reportUri="s3://b/packet.pdf/evaluation/report.md" documentId="packet.pdf" />, { wrapper: English });
 
     // Expected sections only; the stray prediction is reported separately.
     await waitFor(() => expect(screen.getByText(/1 of 2 unmatched · 1 unexpected/)).toBeInTheDocument());

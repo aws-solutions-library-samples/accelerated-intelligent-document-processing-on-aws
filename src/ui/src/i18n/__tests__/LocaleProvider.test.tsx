@@ -52,7 +52,7 @@ describe('LocaleProvider', () => {
   });
 
   it('resolves en by default and sets <html lang>', () => {
-    setBrowserLanguages(['fr-FR']);
+    setBrowserLanguages(['de-DE']);
     render(
       <LocaleProvider>
         <Probe />

@@ -13,8 +13,10 @@
  * filter-after-limit trap the ItemType partitioning was introduced to avoid.
  */
 
+import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 // Hoisted: the hook builds its GraphQL client at module scope, before ordinary
 // top-level consts in this file are initialized.
@@ -36,6 +38,9 @@ vi.mock('../../graphql/generated', () => ({
 
 import useGraphQlApi from '../use-graphql-api';
 import { DOCUMENT_LIST_SHARDS_PER_DAY, LATEST_PERIODS } from '../../components/document-list/documents-table-config';
+
+const English = ({ children }: { children: React.ReactNode }) =>
+  React.createElement(IntlProvider, { locale: 'en', defaultLocale: 'en' }, children);
 
 /** A page of `count` documents with unique keys, plus an optional continuation. */
 const page = (count: number, offset: number, nextToken: string | null) => ({
@@ -64,7 +69,7 @@ const endlessPages = (count: number) => {
 const variablesOf = (call: number) => graphql.mock.calls[call][0].variables;
 
 const load = async (periods: number) => {
-  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: periods }));
+  const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: periods }), { wrapper: English });
   await act(async () => {
     hook.result.current.setIsDocumentsListLoading(true);
   });
@@ -162,7 +167,7 @@ describe('default scope', () => {
   it('is Latest when the caller passes no period, matching the storage default', async () => {
     // The two used to disagree — 2 days here against 2 hours in GenAIIDPLayout.
     graphql.mockResolvedValue(page(5, 0, null));
-    const hook = renderHook(() => useGraphQlApi());
+    const hook = renderHook(() => useGraphQlApi(), { wrapper: English });
 
     await act(async () => {
       hook.result.current.setIsDocumentsListLoading(true);
@@ -179,7 +184,7 @@ describe('view switching', () => {
     // The hook is mounted on every page under the documents layout, not just the
     // list, so it must stay quiet until the list asks for data.
     graphql.mockResolvedValue(page(2, 0, null));
-    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }), { wrapper: English });
 
     await act(async () => {
       hook.result.current.setDocumentView('TEST');

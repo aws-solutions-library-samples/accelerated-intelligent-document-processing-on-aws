@@ -11,10 +11,17 @@
 
 import { render } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 import FlowDiagram from '../FlowDiagram';
 import { withWordBreaks } from '../word-breaks';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const html = (name: string): string => render(<span>{withWordBreaks(name)}</span>).container.firstElementChild?.innerHTML ?? '';
 
@@ -42,6 +49,7 @@ describe('FlowDiagram step node', () => {
         onStepClick={vi.fn()}
         getStepIcon={() => null}
       />,
+      { wrapper: English },
     );
 
     expect(container.querySelectorAll('.step-name wbr')).toHaveLength(3);

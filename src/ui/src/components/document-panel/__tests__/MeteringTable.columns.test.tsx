@@ -12,6 +12,7 @@
 
 import { render, screen, within } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 // One object for every render: the table re-derives its price lookup whenever
@@ -21,9 +22,17 @@ vi.mock('../../../hooks/use-pricing', () => ({ default: () => PRICING }));
 
 import MeteringTable from '../MeteringTable';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('Estimated Cost table columns', () => {
   it.each(['Context', 'Unit', 'Value', 'Unit Cost', 'Estimated Cost'])('gives the %s column a minimum width', (header) => {
-    render(<MeteringTable meteringData={{ 'Classification/bedrock/us.amazon.nova-2-lite-v1:0': { inputTokens: 4055 } }} />);
+    render(<MeteringTable meteringData={{ 'Classification/bedrock/us.amazon.nova-2-lite-v1:0': { inputTokens: 4055 } }} />, {
+      wrapper: English,
+    });
 
     const table = screen.getByRole('table');
     const th = within(table)

@@ -70,9 +70,9 @@ vi.mock('../../document-panel/DocumentDownloadModals', () => ({ DownloadOptionsM
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
   default: () => <div data-testid="markdown" />,
-  MarkdownReport: ({ title, emptyMessage, reportUri }: { title: string; emptyMessage: string; reportUri: string }) => (
+  MarkdownReport: ({ report, emptyMessage, reportUri }: { report: string; emptyMessage: string; reportUri: string }) => (
     <div data-testid="markdown-report">
-      {title}|{emptyMessage}|{reportUri}
+      {report}|{emptyMessage}|{reportUri}
     </div>
   ),
 }));
