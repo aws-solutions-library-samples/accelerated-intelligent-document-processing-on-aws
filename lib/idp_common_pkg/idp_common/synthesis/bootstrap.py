@@ -155,14 +155,39 @@ def merge_class_into_version(
     config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)
 
 
+def _resolved_against_default(
+    config: Dict[str, Any], *, config_manager: Any
+) -> Dict[str, Any]:
+    """``config`` as the pipeline runs it: ``default`` with the profile's keys over it.
+
+    A stored profile can be a sparse delta, and every profile is resolved against
+    ``default`` when it is read for processing (``get_merged_configuration``), so a
+    key the profile lacks takes ``default``'s value rather than the model field's own
+    default. Without ``default`` the profile is judged as stored.
+    """
+    import copy
+
+    from idp_common.config.constants import DEFAULT_VERSION
+    from idp_common.config.merge_utils import deep_update
+
+    default = config_manager.get_raw_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
+    if not default:
+        return config
+    resolved = copy.deepcopy(default)
+    deep_update(resolved, copy.deepcopy(config))
+    return resolved
+
+
 def _models_advanced_extraction_cannot_use(config: Dict[str, Any]) -> List[str]:
     """The extraction models in ``config`` that the advanced engine refuses.
 
     OpenAI GPT-5.x models are called through the Responses API, which the agentic
     engine behind ``extraction.mode: advanced`` does not use, so ``validate_config``
-    refuses that pairing and the extraction step raises on it. The global model and
-    every per-class override are checked; the escalation model only when escalation
-    can run. Escalation is read off the validated ``IDPConfig``, as
+    refuses that pairing and the extraction step raises on it. ``config`` is the
+    profile resolved against ``default`` (see :func:`_resolved_against_default`),
+    so a profile that names no extraction model is judged by the one it inherits.
+    The global model and every per-class override are checked; the escalation model
+    only when escalation can run. Escalation is read off the validated ``IDPConfig``, as
     ``merge_utils._validate_agentic_openai`` reads it, because the raw dict cannot
     answer it for a pre-0.7 ``extraction.agentic.validation`` block.
     """
@@ -232,7 +257,9 @@ def set_processing_options(
             f"'{version}' does not exist yet: save its document class into it first."
         )
     if long_tables:
-        refused_models = _models_advanced_extraction_cannot_use(existing)
+        refused_models = _models_advanced_extraction_cannot_use(
+            _resolved_against_default(existing, config_manager=config_manager)
+        )
         if refused_models:
             raise ValueError(
                 "Long tables need the advanced extraction engine, which cannot use "

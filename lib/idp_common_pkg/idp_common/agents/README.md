@@ -532,8 +532,9 @@ model derives `agentic.enabled` from `mode` and `default` sets `mode: simple`. O
 those keys change; the profile is saved as a full copy of its configuration, as every
 profile save is, so a later change to `default` does not reach it. A pre-0.9 flat
 `classification.sectionSplitting` needs no special case, because reading the profile
-migrates it into `classification.document_shape`; `long_tables` is refused when the profile's extraction model is an
-OpenAI GPT-5.x Responses model, which the advanced engine cannot call. The prompt has
+migrates it into `classification.document_shape`; `long_tables` is refused when the
+extraction model the profile runs with, its own or the one it inherits from `default`,
+is an OpenAI GPT-5.x Responses model, which the advanced engine cannot call. The prompt has
 the agent choose them from the description and examples rather than ask, ask one plain
 question only when it cannot tell, and fix a wrongly split document, or rows missing
 from a long table, itself instead of sending the user to Agent Chat. Other extraction
