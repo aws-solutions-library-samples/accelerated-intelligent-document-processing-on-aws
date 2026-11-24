@@ -17,6 +17,7 @@
 import React, { useCallback, useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -206,11 +207,18 @@ const detailFor = (over: Partial<ReviewItem>): ReviewItemDetail =>
 const mine = () => detailFor({ state: 'CLAIMED', ownerEmail: ADMIN, isMine: true });
 const annotators = () => detailFor({ state: 'CLAIMED', ownerEmail: ANN, isMine: false });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderScreen = (path = '/documents/in%2Fw2.pdf/edit') =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <ProductionItemEdit objectKey="in/w2.pdf" />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 /** A button's label, without a disabled button's reason (rendered for screen readers). */

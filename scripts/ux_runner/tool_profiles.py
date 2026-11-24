@@ -48,6 +48,11 @@ granted or denied by name. A version bump that adds a tool therefore fails until
 somebody decides which list it belongs in, instead of the new tool being refused
 or granted by whatever the default happens to be.
 
+:data:`SCREEN_REVIEW` is closed over the same universe, and its grant is a subset
+of EXPERT's: a screen review of a translated UI may navigate, wait, hover,
+snapshot and screenshot, and nothing that gives input, because the commit guard
+names controls in English only.
+
 The universe was read from chrome-devtools-mcp 1.10.1 itself: ``tools/list`` over
 stdio with networking denied answers exactly these 30 names under the server's
 default flags, and 23 under ``agent.DEVTOOLS_FLAGS``, which switch the emulation,
@@ -323,4 +328,41 @@ STORY_DISALLOWED_TOOLS: tuple[str, ...] = (
 
 STORY = ToolProfile(
     name="story", allowed=STORY_ALLOWED_TOOLS, disallowed=STORY_DISALLOWED_TOOLS
+)
+
+
+#: What a screen review of a translated UI may do: look, and nothing else. It runs
+#: against the review relay like the MR UX test, but the relay's commit guard
+#: knows a control only by its English name (``story_relay.COMMIT_VERBS``), so on a
+#: French or pseudo-locale screen it would let any click through. With no tool that
+#: clicks, types, presses a key, drags or answers a dialog, the review cannot commit
+#: anything whatever its screens say. ``hover`` shows a tooltip and commits nothing.
+SCREEN_REVIEW_ALLOWED_TOOLS: tuple[str, ...] = (
+    "mcp__chrome-devtools__navigate_page",
+    "mcp__chrome-devtools__wait_for",
+    "mcp__chrome-devtools__hover",
+    "mcp__chrome-devtools__take_snapshot",
+    "mcp__chrome-devtools__take_screenshot",
+)
+
+#: EXPERT's deny list, then every tool EXPERT grants that gives input, and the four
+#: recorder tools, because a screen review starts no recorder.
+SCREEN_REVIEW_DISALLOWED_TOOLS: tuple[str, ...] = EXPERT_DISALLOWED_TOOLS + (
+    "mcp__chrome-devtools__click",
+    "mcp__chrome-devtools__fill",
+    "mcp__chrome-devtools__fill_form",
+    "mcp__chrome-devtools__type_text",
+    "mcp__chrome-devtools__press_key",
+    "mcp__chrome-devtools__drag",
+    "mcp__chrome-devtools__handle_dialog",
+    "mcp__ux-recorder__mark",
+    "mcp__ux-recorder__note",
+    "mcp__ux-recorder__pause",
+    "mcp__ux-recorder__resume",
+)
+
+SCREEN_REVIEW = ToolProfile(
+    name="screen-review",
+    allowed=SCREEN_REVIEW_ALLOWED_TOOLS,
+    disallowed=SCREEN_REVIEW_DISALLOWED_TOOLS,
 )

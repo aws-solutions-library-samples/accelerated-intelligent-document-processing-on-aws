@@ -53,7 +53,6 @@ vi.mock('../../components/edit-screen/SectionEditor', () => ({ default: () => nu
 // The real screen, over its I/O adapter: it reports its test set once loaded.
 const testSetName: { value: string | null | undefined } = { value: undefined };
 vi.mock('../../components/edit-screen/test-set-item-edit-adapter', () => ({
-  NOT_ASSIGNED_MESSAGE: 'not assigned',
   useTestSetItemEdit: (testSetId: string, objectKey: string) => {
     const queue =
       testSetName.value === undefined

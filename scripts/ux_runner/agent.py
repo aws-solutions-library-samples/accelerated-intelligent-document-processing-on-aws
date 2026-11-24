@@ -27,7 +27,7 @@ rather than falling through to instance metadata, which would run the model on a
 credential nobody chose while the summary said ``ambient``.
 
 The allowlist decides what ``claude`` inherits, not what it could read. ``claude``
-and both MCP servers run as the job's own uid, the orchestrator's, whose
+and its MCP servers run as the job's own uid, the orchestrator's, whose
 ``/proc/<pid>/environ`` still holds ``GITLAB_REVIEW_TOKEN``, ``UX_TEST_PERSONAS``,
 ``UX_TEST_UI_ENV`` and the job's own AWS keys. What keeps those from the model is
 that it holds no tool that reads a file: ``--tools ''`` leaves no built-in,
@@ -39,7 +39,7 @@ Every MCP server starts under ``env -i``
 ----------------------------------------
 Claude Code starts a stdio MCP server with an environment derived from its own,
 and its own holds the Bedrock session. Rather than depend on which variables that
-derivation passes, :func:`mcp_servers` runs both servers through
+derivation passes, :func:`mcp_servers` runs every server through
 ``/usr/bin/env -i`` with an explicit ``PATH``, ``HOME`` and locale, so the review
 relay, the chrome-devtools-mcp it starts and the recorder adapter receive no
 credential at all. The browser server is the review relay
@@ -234,17 +234,17 @@ def mcp_servers(
     toolchain: paths.Toolchain,
     relay: Path,
     refusal_log: Path,
-    recorder_adapter: Path,
-    recorder_out: Path,
+    recorder_adapter: Path | None = None,
+    recorder_out: Path | None = None,
     python: str,
     home: Path,
     fs_root: Path,
     search_path: str = DEFAULT_SEARCH_PATH,
 ) -> dict[str, Any]:
-    """The two MCP server definitions, keyed by the names the tool ids use.
+    """The MCP server definitions, keyed by the names the tool ids use.
 
-    Both are ``/usr/bin/env -i`` with an explicit environment, so neither inherits
-    ``claude``'s, and both have an empty ``env`` map for the same reason. The one
+    Each is ``/usr/bin/env -i`` with an explicit environment, so none inherits
+    ``claude``'s, and each has an empty ``env`` map for the same reason. The one
     named ``tool_profiles.CHROME_DEVTOOLS_SERVER`` is the review relay at ``relay``,
     which starts the pinned chrome-devtools-mcp itself with this ``PATH`` and
     ``HOME``, in ``fs_root``, the only directory that server writes files under, and
@@ -252,10 +252,17 @@ def mcp_servers(
     servers run under ``python -I``, which ignores ``PYTHON*`` variables and the user
     site directory, so each is kept from writing bytecode into the pinned harness by
     ``-B`` on its command line, where ``PYTHONDONTWRITEBYTECODE`` would be ignored;
-    the recorder adapter writes only under ``recorder_out``.
+    the recorder adapter writes only under ``recorder_out``. A session that records
+    nothing, a screen review's, passes neither ``recorder_adapter`` nor
+    ``recorder_out`` and gets the relay alone; passing one without the other is an
+    :class:`AgentError`.
     """
+    if (recorder_adapter is None) != (recorder_out is None):
+        raise AgentError(
+            "the recorder server needs both its adapter and its output directory"
+        )
     base = ["-i", f"PATH={search_path}", f"HOME={home}", "LANG=C.UTF-8"]
-    return {
+    servers: dict[str, Any] = {
         tool_profiles.CHROME_DEVTOOLS_SERVER: {
             "type": "stdio",
             "command": "/usr/bin/env",
@@ -274,7 +281,9 @@ def mcp_servers(
             ],
             "env": {},
         },
-        tool_profiles.RECORDER_SERVER: {
+    }
+    if recorder_adapter is not None and recorder_out is not None:
+        servers[tool_profiles.RECORDER_SERVER] = {
             "type": "stdio",
             "command": "/usr/bin/env",
             "args": [
@@ -287,8 +296,8 @@ def mcp_servers(
                 str(recorder_out),
             ],
             "env": {},
-        },
-    }
+        }
+    return servers
 
 
 def story_server(

@@ -10,6 +10,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { act, render, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -21,6 +22,12 @@ import SectionEditor from '../SectionEditor';
 import type { SectionEditorContext, SectionEditorController } from '../SectionEditor';
 
 const ORIGINAL = { inference_result: { Name: 'Ann', Total: 10 }, _editHistory: [{ timestamp: 't0', editedBy: 'x' }] };
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const setup = async (record?: { editedBy: string; source: string }) => {
   const onSave = vi.fn(async (_id: string, _data: Record<string, unknown>) => undefined);
@@ -41,6 +48,7 @@ const setup = async (record?: { editedBy: string; source: string }) => {
         return null;
       }}
     />,
+    { wrapper: English },
   );
   await waitFor(() => expect(ctx?.data).not.toBeNull());
   return { onSave, controller, ctx: () => ctx! };
