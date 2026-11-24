@@ -1,18 +1,17 @@
 # Internationalization
 
 Developer notes for `src/ui/src/i18n/`: how the web UI shows a language other than English,
-how a message is declared, and what the gates around it check. Nothing here is visible to a user
-yet (only `en` is enabled); the user-facing description goes into
-[docs/web-ui.md](../../../../docs/web-ui.md) with the pull request that enables `fr-CA`. The series
+how a message is declared, and what the gates around it check. The user-facing description is
+[Interface language](../../../../docs/web-ui.md#interface-language) in the web UI guide. The series
 of pull requests that builds this out is tracked in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
 
 ## What this is
 
 The UI uses [react-intl](https://formatjs.github.io/docs/react-intl/) with the English text kept
-inline in the code. Today only `en` is enabled; `fr-CA` arrives with its reviewed catalog, and the
-pseudo-locale `en-XA` exists on flagged builds only (see below). The rules every piece of this
-module follows:
+inline in the code. `en` and `fr-CA` are enabled, each by its catalog file (see "Catalogs and the
+build"), and the pseudo-locale `en-XA` exists on flagged builds only (see below). The rules every
+piece of this module follows:
 
 - **English inline, stable ids.** Each message is declared next to the component that renders it,
   with an explicit dotted `id` and the English as `defaultMessage`. There is no English catalog to
@@ -107,11 +106,12 @@ The sign-in form is Amplify UI. [`amplify.ts`](amplify.ts) registers Amplify's `
 once and calls `I18n.setLanguage(locale)` in the provider's state initialiser, before the
 Authenticator first renders, and again on every switch. That order matters: once any vocabulary
 exists, Amplify defaults to `navigator.language`, so without it a French browser on an
-English-only deployment would get a French sign-in form while the app resolved `en`. The `fr-CA`
-override dictionary (Québec terms such as "courriel" for e-mail, the space before `?`) lands with
-PR 8 of the series, in the spot `registerAmplifyVocabularies` reserves. The UI's own sign-in
-strings ([`UnauthRoutes.tsx`](../routes/UnauthRoutes.tsx), [`SessionStates.tsx`](../routes/SessionStates.tsx))
-are ordinary messages.
+English-only deployment would get a French sign-in form while the app resolved `en`. Under
+`fr-CA` the sign-in form uses Amplify's built-in `fr` dictionary, through `I18n.get`'s
+language-subtag lookup. No `fr-CA` override dictionary (Québec terms such as "courriel" for
+e-mail, the space before `?`) is registered; one would be added in `registerAmplifyVocabularies`.
+The UI's own sign-in strings ([`UnauthRoutes.tsx`](../routes/UnauthRoutes.tsx),
+[`SessionStates.tsx`](../routes/SessionStates.tsx)) are ordinary messages.
 
 ## Dates, numbers, money
 
@@ -247,12 +247,11 @@ dates (`2026-10-30 17 h 40 min 05 s` against `10/30/2026, 5:40:05 PM`) shows onl
   asserts the marker is never tracked and does travel.
 - **Production builds contain nothing of it**: an unflagged build emits no `en-XA` chunk and its
   entry chunk is identical to a build before the pseudo-locale existed.
-- **A flagged tree makes two tests red on purpose**: with the marker present (or the variable
-  exported), `ENABLED_LOCALES` is `['en', 'en-XA']`, so the production allow-list test in
-  [`resolveLocale.test.ts`](__tests__/resolveLocale.test.ts) and the top-navigation
-  [slot test](../components/genai-idp-top-navigation/__tests__/language-switcher-slot.test.tsx)
-  fail. A flagged tree is not production; remove the marker (the command above does) before
-  running the suite. The marker also changes the `make ui-lint` checksum, so lint re-runs once.
+- **A flagged tree makes one test red on purpose**: with the marker present (or the variable
+  exported), `ENABLED_LOCALES` is `['en', 'fr-CA', 'en-XA']`, so the production allow-list test in
+  [`resolveLocale.test.ts`](__tests__/resolveLocale.test.ts) fails. A flagged tree is not
+  production; remove the marker (the command above does) before running the suite. The marker
+  also changes the `make ui-lint` checksum, so lint re-runs once.
 - `en-XA` has no Cloudscape or Amplify bundle: `importMessages` walks it down to `en` and loads
   `all.en`, so Cloudscape's and Amplify's own strings show their English built-ins.
 - A hand-written `en-XA.json` in this directory while the build is flagged is a build error (the
@@ -403,7 +402,7 @@ percentage. Every English id lands in exactly one of translated, missing, stale 
 `UI_I18N_COVERAGE_ARGS=--json` gives the machine-readable form; `--locale fr-CA` narrows it. It is
 advisory: exit 0 for any report, 2 only for a tool error (no `en.json`, malformed JSON, a
 `--locale` with no file); it is in none of `lint`, `fastlint` or `lint-cicd`. `en-XA` is never a
-candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in release notes.
+candidate (it is never a file). This is the figure release notes quote.
 
 ## Drafting a translation
 
@@ -577,15 +576,10 @@ and calls nothing; a real run needs `--region` (and `--profile` for a named prof
 
 ## What stays English for now
 
-Admin, configuration and Test Studio screens (the configuration editor, including its help text,
-is a committed follow-up right after `fr-CA` ships; the rest is optional later); Cognito
-invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
-dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
-headers and generated report headings; the unit suffixes
-on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on integer percents
-built in template strings (`${progressPct}%`), until their screens convert; extension UIs that do
-not translate their own text, and feature `displayName`s; backend error texts until they carry
-stable codes; and document data, always. The remaining PRs of the series (the screens area by area,
-review tooling, enabling `fr-CA`, Cognito persistence, the configuration editor, error codes,
-agent-convention docs) are listed in
+The list a user reads is [Interface language](../../../../docs/web-ui.md#interface-language) in
+the web UI guide; change it together with this section. On the screens that list keeps English,
+the unit suffixes on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on
+integer percents built in template strings (`${progressPct}%`) stay until those screens convert.
+The follow-ups (keeping the choice with the user account, the configuration editor, stable error
+codes, agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
