@@ -21,6 +21,7 @@ import {
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { DISCOVERY_JOB_PATH } from '../../routes/constants';
+import { activatesWithoutAsking, newQuickStartProfileName } from './quickStartDiscoveryTarget';
 import { SupportPromptGroup, LoadingBar } from '@cloudscape-design/chat-components';
 import SafeMarkdown from '../common/SafeMarkdown';
 import { generateClient } from '../../api/client-shim';
@@ -295,7 +296,7 @@ const chipMessages = defineMessages<{
   },
   addDocumentType: {
     id: 'agentChat.layout.chip.addDocumentType',
-    defaultMessage: 'Add a new document type to my existing configuration',
+    defaultMessage: 'Add a document type to one of my profiles',
     description:
       'Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
   },
@@ -414,16 +415,10 @@ const AgentChatLayout = ({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [completedJobId, setCompletedJobId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const { versions, setActiveVersion, fetchVersions } = useConfigurationVersions();
+  const { setActiveVersion, fetchVersions } = useConfigurationVersions();
   const navigate = useNavigate();
 
-  const targetConfigVersion = useMemo(() => {
-    const active = versions.find((v) => v.isActive);
-    if (active && active.versionName !== 'default') {
-      return active.versionName;
-    }
-    return 'quickstart';
-  }, [versions]);
+  const discoveryTargetRef = useRef<string | null>(null);
 
   const handleUploadComplete = useCallback(
     (result: QuickStartUploadResult) => {
@@ -431,28 +426,36 @@ const AgentChatLayout = ({
       const names = result.classNames.length ? result.classNames.join(', ') : 'document type(s)';
       const discoveryKind = result.totalDocuments === 1 ? 'Single-document' : 'Multi-document';
       const typeCount = result.clustersFound || result.classNames.length;
-      const summary =
+      const summaryFor = (activeness: 'already' | 'not') =>
         `I uploaded ${result.totalDocuments} document(s). ${discoveryKind} discovery inferred ` +
-        `${typeCount} document type(s): ${names}, saved and ready to use. Please summarize what was ` +
+        `${typeCount} document type(s): ${names}, saved as a new configuration profile. Please summarize what was ` +
         `found in plain language for a first-time user. Briefly explain, in one plain sentence, that ` +
         `this was saved as a reusable "configuration" that tells the system what to pull out of these ` +
         `documents (introduce the term gently, do not assume I already know it). Then ask whether I'd ` +
         `like to adjust any fields or start processing my documents. Keep it concise; save deeper ` +
         `configuration-version details for if I ask.\n\n` +
-        `[Discovery saved the schema to configuration profile "${result.configVersion}". Its fields ` +
+        `[Discovery saved the schema to a new configuration profile "${result.configVersion}", which is ${activeness} the active profile; if it is not, ask before I process documents whether to make it the active profile, and call activate_config_version only once I agree. Its fields ` +
         `are not shown here — call get_class_schema for version "${result.configVersion}" before ` +
         `answering questions about the fields or refining them.]`;
+      const send = (activated: boolean) =>
+        sendMessage(summaryFor(activated ? 'already' : 'not'), { enableCodeIntelligence, enableExternalMcpAgents });
       setAttachedFiles([]);
       setUploadError(null);
       setCompletedJobId(result.jobId);
-      if (result.configVersion === 'quickstart' && !versions.some((v) => v.versionName === 'quickstart' && v.isActive)) {
-        setActiveVersion('quickstart')
-          .then(() => fetchVersions())
-          .catch((e) => logger.error('Failed to activate quickstart version:', e));
-      }
-      sendMessage(summary, { enableCodeIntelligence, enableExternalMcpAgents });
+      void fetchVersions().then((current) => {
+        if (!current || !activatesWithoutAsking(current, result.configVersion)) {
+          send(false);
+          return;
+        }
+        setActiveVersion(result.configVersion)
+          .then(() => send(true))
+          .catch((e) => {
+            logger.error('Failed to activate the Quick Start profile:', e);
+            send(false);
+          });
+      });
     },
-    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions, versions],
+    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions],
   );
 
   const handleUploadError = useCallback((message: string) => {
@@ -527,7 +530,8 @@ const AgentChatLayout = ({
 
     if (hasFiles) {
       const filesToProcess = attachedFiles;
-      const version = targetConfigVersion || `bootstrap-${Date.now().toString(36)}`;
+      if (!discoveryTargetRef.current) discoveryTargetRef.current = newQuickStartProfileName(new Date());
+      const version = discoveryTargetRef.current;
       setCompletedJobId(null);
       setUploadError(null);
       setAttachedFiles([]);
@@ -605,6 +609,7 @@ const AgentChatLayout = ({
   const handleSessionSelect = async (session: { sessionId: string }, sessionMessages: ChatMessage[]) => {
     try {
       setIsLoadingSession(true);
+      discoveryTargetRef.current = null;
       console.log('Loading chat session:', session.sessionId);
 
       await loadChatSession(session.sessionId, sessionMessages);
@@ -1064,6 +1069,7 @@ const AgentChatLayout = ({
                 iconName="refresh"
                 onClick={() => {
                   clearChat();
+                  discoveryTargetRef.current = null;
                   setWelcomeAnimated(false);
                   setTimeout(() => {
                     setWelcomeAnimated(true);
