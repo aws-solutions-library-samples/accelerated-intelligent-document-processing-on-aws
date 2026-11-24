@@ -1,0 +1,9 @@
+mutation SelectActiveTenant($tenantId: String!) {
+  selectActiveTenant(tenantId: $tenantId) {
+    userId
+    allowedConfigVersions
+    scopeTenant
+    scopeSource
+    eligibleTenants
+  }
+}

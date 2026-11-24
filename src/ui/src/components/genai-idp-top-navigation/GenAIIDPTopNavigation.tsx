@@ -14,6 +14,8 @@ import useUserDisplayName from '../../hooks/use-user-display-name';
 import useDeploymentContext from '../../hooks/use-deployment-context';
 import { useLanguageSwitcherUtility } from '../../i18n/LanguageSwitcher';
 import { useInboxBellUtility } from '../inbox/inbox-bell';
+import useTenantSwitcher from '../tenant-selection/useTenantSwitcher';
+import { clearTenantHint } from '../../utils/tenant-selection';
 import { buildBugReportUrl, buildFeatureRequestUrl } from '../../utils/github-feedback';
 import { GITHUB_ISSUES_URL } from '../../constants/github';
 
@@ -157,6 +159,7 @@ const SignOutModal = ({ visible, setVisible }: SignOutModalProps): React.JSX.Ele
     try {
       // Set flag to prevent auto-login from immediately signing back in via SSO
       sessionStorage.setItem('idp_signed_out', 'true');
+      clearTenantHint();
 
       // Amplify's signOut() handles both federated and non-federated flows:
       // - Clears local tokens from localStorage
@@ -198,7 +201,20 @@ const GenAIIDPTopNavigation = (): React.JSX.Element => {
   const intl = useIntl();
   const { user } = useAppContext();
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isReviewer, isViewer, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  const {
+    isAdmin,
+    isAuthor,
+    isReviewer,
+    isViewer,
+    isAnnotator,
+    isAnnotatorOnly,
+    eligibleTenants,
+    activeTenant,
+    subject,
+    loading: roleLoading,
+  } = useUserRole();
+  // Present only for a user the identity provider granted several tenants.
+  const tenantSwitcher = useTenantSwitcher({ eligibleTenants, activeTenant, subject });
   const { displayName } = useUserDisplayName();
   const deploymentContext = useDeploymentContext();
   const inboxUtility = useInboxBellUtility();
@@ -270,6 +286,7 @@ const GenAIIDPTopNavigation = (): React.JSX.Element => {
           utilities={[
             // The notifications bell belongs to the Inbox, which every user has.
             inboxUtility,
+            ...(tenantSwitcher.utility ? [tenantSwitcher.utility] : []),
             // An Annotator-only user's shell is Home and the notifications bell.
             ...(isAnnotatorOnly ? [] : [feedbackUtility]),
             // The language menu, present only once a second locale is enabled.
@@ -307,6 +324,7 @@ const GenAIIDPTopNavigation = (): React.JSX.Element => {
         />
       </div>
       <SignOutModal visible={isSignOutModalVisible} setVisible={setIsSignOutModalVisiblesetVisible} />
+      {tenantSwitcher.modal}
     </>
   );
 };

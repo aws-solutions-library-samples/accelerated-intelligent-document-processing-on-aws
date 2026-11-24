@@ -11159,6 +11159,82 @@
     "defaultMessage": "Redirecting to {provider}...",
     "description": "Text shown instead of the sign-in form while the browser is sent to the external identity provider. {provider} is its configured name."
   },
+  "tenantSelection.gate.applying": {
+    "defaultMessage": "Applying your tenant…",
+    "description": "Shown under a spinner while the tenant this browser tab remembers is applied automatically."
+  },
+  "tenantSelection.gate.confirm": {
+    "defaultMessage": "Confirm tenant",
+    "description": "Button that applies the chosen tenant and opens the application."
+  },
+  "tenantSelection.gate.description": {
+    "defaultMessage": "Your account has access to more than one tenant. Choose the one to work in.",
+    "description": "Explanation under the heading of the tenant choice page."
+  },
+  "tenantSelection.gate.errorHeader": {
+    "defaultMessage": "Could not select the tenant",
+    "description": "Heading of the error shown when the server refuses the chosen tenant. The reason follows it."
+  },
+  "tenantSelection.gate.fieldDescription": {
+    "defaultMessage": "You can switch later from the navigation bar.",
+    "description": "Hint under the list of tenants: the choice can be changed after signing in."
+  },
+  "tenantSelection.gate.fieldLabel": {
+    "defaultMessage": "Tenant",
+    "description": "Label of the list of tenants to choose from, and its screen-reader label."
+  },
+  "tenantSelection.gate.signOut": {
+    "defaultMessage": "Sign out",
+    "description": "Button that signs the user out instead of choosing a tenant."
+  },
+  "tenantSelection.gate.title": {
+    "defaultMessage": "Choose a tenant",
+    "description": "Heading of the page shown after sign-in to a user whose account has access to several tenants."
+  },
+  "tenantSelection.hook.selectFailed": {
+    "defaultMessage": "Could not select the tenant. Try again.",
+    "description": "Error shown when choosing the active tenant failed and the server gave no reason of its own."
+  },
+  "tenantSelection.switcher.bodyNoCurrent": {
+    "defaultMessage": "Switch to {tenant}? You will see the documents of {tenant}.",
+    "description": "Question in the switch tenant dialog when no tenant is active now. {tenant} is the tenant to switch to."
+  },
+  "tenantSelection.switcher.bodyWithCurrent": {
+    "defaultMessage": "Switch to {tenant}? You will see the documents of {tenant} instead of those of {current}.",
+    "description": "Question in the switch tenant dialog. {tenant} is the tenant to switch to, {current} the tenant that is active now."
+  },
+  "tenantSelection.switcher.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the switch tenant dialog without switching."
+  },
+  "tenantSelection.switcher.close": {
+    "defaultMessage": "Close",
+    "description": "Screen-reader label of the close button of the switch tenant dialog."
+  },
+  "tenantSelection.switcher.confirm": {
+    "defaultMessage": "Confirm switch",
+    "description": "Button of the switch tenant dialog that switches to the chosen tenant."
+  },
+  "tenantSelection.switcher.errorHeader": {
+    "defaultMessage": "Could not switch tenant",
+    "description": "Heading of the error shown in the switch tenant dialog when the server refuses the switch. The reason follows it."
+  },
+  "tenantSelection.switcher.menu": {
+    "defaultMessage": "Tenant",
+    "description": "Text of the tenant menu button in the top navigation when no tenant is active."
+  },
+  "tenantSelection.switcher.menuWithTenant": {
+    "defaultMessage": "Tenant: {tenant}",
+    "description": "Text of the tenant menu button in the top navigation. {tenant} is the active tenant id."
+  },
+  "tenantSelection.switcher.note": {
+    "defaultMessage": "This applies to every session you have open, and can take up to a minute to take effect everywhere.",
+    "description": "Note in the switch tenant dialog: the choice is stored per user, and the server caches it briefly."
+  },
+  "tenantSelection.switcher.switchTenant": {
+    "defaultMessage": "Switch tenant",
+    "description": "Tooltip and screen-reader label of the tenant menu button, and the heading of its confirmation dialog."
+  },
   "testStudio.addProcessedDocuments.notCompletedBody": {
     "defaultMessage": "Only documents that finished processing can be added to a test set.",
     "description": "Body of the notice about selected documents that are left out."

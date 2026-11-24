@@ -104,11 +104,16 @@ def load_tenants():
 
 def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tenants):
     """Write the tenant the claim grants. Raises on any failure, failing the sign-in."""
-    from idp_common.config.tenants import GRANT_REFUSED, resolve_grants
+    from idp_common.config.tenants import (
+        GRANT_REFUSED,
+        eligible_tenant_ids,
+        resolve_grants,
+    )
     from idp_common.user_scope import (
         SCOPE_SOURCE_IDP,
         apply_tenant_grant,
         clear_granted_scope,
+        tenant_selection_enabled,
     )
 
     users_table = boto3.resource("dynamodb").Table(os.environ["USERS_TABLE_NAME"])
@@ -123,8 +128,25 @@ def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tena
             source=SCOPE_SOURCE_IDP,
         )
     resolution = resolve_grants(idp_groups, tenants)
+    # TenantSelection=UserSelect: a user the claim grants two or more tenants is still
+    # granted none here (the scope below is the deny marker), but the tenants are
+    # recorded so the user can choose one after signing in. Written only from this
+    # trusted fresh sign-in, and emptied for a user with fewer than two, so a list
+    # left by an earlier sign-in cannot outlive the grant that produced it.
+    eligible = None
+    if tenant_selection_enabled():
+        granted = eligible_tenant_ids(idp_groups, tenants)
+        eligible = granted if len(granted) >= 2 else []
     if resolution["outcome"] == GRANT_REFUSED:
-        logger.warning(f"Granting no tenant to user {username}: {resolution['reason']}")
+        if eligible:
+            logger.info(
+                f"User {username} is granted tenants {eligible}; no tenant is active "
+                f"until they choose one"
+            )
+        else:
+            logger.warning(
+                f"Granting no tenant to user {username}: {resolution['reason']}"
+            )
     persona = next((p for p in _PERSONA_ORDER if p in target_groups), "Viewer")
     result = apply_tenant_grant(
         users_table,
@@ -133,6 +155,7 @@ def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tena
         resolution=resolution,
         source=SCOPE_SOURCE_IDP,
         persona_for_new_row=persona,
+        eligible_tenants=eligible,
         # A claim that maps to no role gives the user no Cognito group, so a new row
         # would list someone who cannot use the app under a persona they do not
         # hold. An existing row is still rewritten, which is how an emptied claim

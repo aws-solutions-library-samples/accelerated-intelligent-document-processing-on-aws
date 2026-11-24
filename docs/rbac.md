@@ -645,6 +645,28 @@ A null `tenantId` grants no tenant. The user must already exist, the tenant must
 declared, and an Admin is refused. Refused on a stack whose `TenantGrantSource` is not
 `Api`.
 
+### API: `selectActiveTenant` (any signed-in non-Admin, `TenantSelection=UserSelect`)
+
+```graphql
+mutation SelectActiveTenant($tenantId: String!) {
+  selectActiveTenant(tenantId: $tenantId) {
+    userId
+    allowedConfigVersions
+    scopeTenant
+    eligibleTenants
+  }
+}
+```
+
+For a user the identity provider's claim grants two or more tenants. It sets the
+caller's own scope to the chosen tenant's profile pattern. The caller is the verified
+token's `sub`; no argument names a user. The tenant must be one of the caller's
+`eligibleTenants` (written by the sign-in trigger) and still declared. The operation
+is `ANY_GROUP`, so a caller in no group is refused; an Admin is refused by the handler.
+Refused unless `TenantSelection` is `UserSelect` and `TenantGrantSource` is
+`IdpClaim`. See [Letting a user choose among their
+tenants](multi-tenancy.md#letting-a-user-choose-among-their-tenants).
+
 ### API: `getMyProfile`
 
 All authenticated users can call `getMyProfile` to retrieve their own profile including `allowedConfigVersions`. This is used by the UI to apply client-side scope filtering immediately on page load.
@@ -656,9 +678,14 @@ query GetMyProfile {
     email
     persona
     allowedConfigVersions
+    scopeTenant
+    eligibleTenants
   }
 }
 ```
+
+`eligibleTenants` is returned only under `TenantSelection=UserSelect`, and only for a
+user the claim grants two or more tenants.
 
 ### API: `updateUser` (Admin-only)
 
@@ -696,7 +723,7 @@ operation declares one of:
 | Policy | The dispatcher requires | Count |
 |---|---|---|
 | a group list, e.g. `[Admin, Author]` | one of those groups | 144 |
-| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
+| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 28 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
 
@@ -838,7 +865,7 @@ names did not even have to be known. The Test Set bucket has never been on the r
 Both are reachable only through the three object-read operations above, where
 `key_scope` checks the key against the caller's scope.
 
-So the accurate statement of what `ANY_GROUP` buys is: **those 27 API
+So the accurate statement of what `ANY_GROUP` buys is: **those 28 API
 operations** now refuse a caller in no group, and since the document read path runs
 through three of them, the document bytes are behind that floor too. What the floor
 does **not** supply is per-document authorization; the profile scope supplies as much
