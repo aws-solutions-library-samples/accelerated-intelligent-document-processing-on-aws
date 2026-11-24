@@ -425,7 +425,8 @@ a drafted catalog is committed only in the change that enables its language.
 - **The glossary.** [`glossary.fr-CA.csv`](glossary.fr-CA.csv) is imported as the custom terminology `idp-ui-fr-CA`,
   its first two columns only, again whenever they change. Translate applies a term wherever its English occurs, so
   the file holds names and nouns that are safe in every context, never verbs. A multi-word term matched in Title Case
-  English is put back in the glossary's own case. A new screen's new term goes in the same change as the screen.
+  English is put back in the glossary's own case, before the parity check, so the check judges the text written. A new
+  screen's new term goes in the same change as the screen.
 - **Cost.** Translate bills the characters sent. The run refuses to start above `--max-chars` (by default about
   US$5 at the standard rate); a full `fr-CA` pass is far below it.
 - **Provenance.** Each run writes what it sent and received, the terms Translate applied, the terminology hash and,
