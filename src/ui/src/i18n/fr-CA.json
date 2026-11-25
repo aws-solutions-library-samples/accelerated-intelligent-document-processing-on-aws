@@ -96,8 +96,8 @@
     "sourceHash": "d410a49cf059d2e6"
   },
   "agentChat.layout.chip.addDocumentType": {
-    "message": "Ajouter un nouveau type de document à ma configuration existante",
-    "sourceHash": "153c1e4504a04a18"
+    "message": "Ajouter un type de document à l’un de mes profils",
+    "sourceHash": "c3632916aceb89ec"
   },
   "agentChat.layout.chip.capabilities": {
     "message": "Quelles sont vos capacités?",
@@ -168,7 +168,7 @@
     "sourceHash": "f5c9bd131486e793"
   },
   "agentChat.layout.loadingHistory": {
-    "message": "Chargement de l’historique de clavardage...",
+    "message": "Chargement de l’historique de clavardage…",
     "sourceHash": "d63cd1d38f93fd29"
   },
   "agentChat.layout.newSessionNotice": {
@@ -235,6 +235,10 @@
     "message": "Traitement de votre demande en cours… cela peut prendre une minute.",
     "sourceHash": "76749f9a458a1aa0"
   },
+  "agentChat.quickStart.attachedDocuments": {
+    "message": "{count, plural, one {# document joint} other {# documents joints}}",
+    "sourceHash": "a800707092522701"
+  },
   "agentChat.quickStartUpload.analyzing": {
     "message": "Analyse du document",
     "sourceHash": "fab07da59b2db772"
@@ -292,7 +296,7 @@
     "sourceHash": "be12c90e39e081fc"
   },
   "agentChat.session.generating": {
-    "message": "Génération du résultat final...",
+    "message": "Génération du résultat final…",
     "sourceHash": "3a0b3d37e4ee8c45"
   },
   "agentChat.session.loadFailed": {
@@ -364,7 +368,7 @@
     "sourceHash": "b1f2b7e6e722185c"
   },
   "agentChat.tool.processingResults": {
-    "message": "Traitement des résultats...",
+    "message": "Traitement des résultats…",
     "sourceHash": "82bb570c147760cb"
   },
   "agentChat.tool.status.completed": {
@@ -372,7 +376,7 @@
     "sourceHash": "22a970d2e5b1cc23"
   },
   "agentChat.tool.status.executing": {
-    "message": "Exécution...",
+    "message": "Exécution…",
     "sourceHash": "535a3632148a7926"
   },
   "agentChat.tool.status.executionCompleted": {
@@ -380,7 +384,7 @@
     "sourceHash": "37f6db3b1a4796be"
   },
   "agentChat.tool.status.processingResults": {
-    "message": "Traitement des résultats...",
+    "message": "Traitement des résultats…",
     "sourceHash": "82bb570c147760cb"
   },
   "agentChat.tool.status.starting": {
@@ -440,7 +444,7 @@
     "sourceHash": "1169f548da07f0b4"
   },
   "agents.page.submitting": {
-    "message": "Envoi de votre requête...",
+    "message": "Envoi de votre requête…",
     "sourceHash": "a5b4f63bb5f92ca0"
   },
   "agents.page.subscriptionError": {
@@ -588,7 +592,7 @@
     "sourceHash": "b8d8e06bb55fb7a5"
   },
   "agents.queryInput.placeholder": {
-    "message": "Entrez votre question ici...",
+    "message": "Entrez votre question ici…",
     "sourceHash": "a78265496c4ab0de"
   },
   "agents.queryInput.placeholderNoAgent": {
@@ -780,7 +784,7 @@
     "sourceHash": "9a4f1370f2b72c82"
   },
   "agents.thoughtProcess.thinking": {
-    "message": "L’agent réfléchit...",
+    "message": "L’agent réfléchit…",
     "sourceHash": "ad21dbec5e9cde03"
   },
   "agents.thoughtProcess.title": {
@@ -1404,8 +1408,8 @@
     "sourceHash": "0b29a39292a760d3"
   },
   "common.pageGrouping.draggingPages": {
-    "message": "{count} pages",
-    "sourceHash": "d46e57d6ac42cf6a"
+    "message": "{count, plural, one {# page} other {# pages}}",
+    "sourceHash": "09e1ce4ae931f8ce"
   },
   "common.pageGrouping.dropHere": {
     "message": "Déposez une page ici.",
@@ -1516,8 +1520,8 @@
     "sourceHash": "8d3efaf298e86bee"
   },
   "common.processChangesModal.effect.rules": {
-    "message": "Effacer les résultats de validation des règles du document",
-    "sourceHash": "abe13db4bbd85df8"
+    "message": "Effacer les résultats de la validation des règles de politique du document",
+    "sourceHash": "6827e2fa57989274"
   },
   "common.processChangesModal.effect.values": {
     "message": "Remplacer leurs valeurs extraites, y compris celles corrigées à la main",
@@ -1526,6 +1530,10 @@
   "common.processChangesModal.regroupIntro": {
     "message": "Vous êtes sur le point d’enregistrer le nouveau regroupement de pages, puis d’extraire à nouveau ces sections :",
     "sourceHash": "e910dd0b6432ba0e"
+  },
+  "common.processChangesModal.reprocess": {
+    "message": "Le document est traité de nouveau avec vos modifications enregistrées. Les étapes qui précèdent celle où commence l’exécution ne sont pas répétées : ce qu’elles ont produit est conservé.",
+    "sourceHash": "32f0c9e360a59195"
   },
   "common.processChangesModal.reprocessHeader": {
     "message": "Confirmer le retraitement",
@@ -1884,7 +1892,7 @@
     "sourceHash": "2cfae79a2de4ce1b"
   },
   "configPrefixMappings.history.loading": {
-    "message": "Chargement de l’historique des modifications...",
+    "message": "Chargement de l’historique des modifications…",
     "sourceHash": "2e977231ccf2640c"
   },
   "configPrefixMappings.history.noFieldChange": {
@@ -1915,6 +1923,14 @@
     "message": "Afficher tous les mappages",
     "sourceHash": "2fff39d09ab7745f"
   },
+  "configuration.builder.routingTab": {
+    "message": "Règles d’acheminement",
+    "sourceHash": "2cf589794a6f8d04"
+  },
+  "configuration.layout.policySchemaError": {
+    "message": "Schéma de politique : {path} - {message}",
+    "sourceHash": "cc437d32f09bbff5"
+  },
   "configuration.layout.previewPrompts": {
     "message": "Prévisualiser les invites",
     "sourceHash": "1e2b2b78ddb0dbe6"
@@ -1928,8 +1944,8 @@
     "sourceHash": "e5ef714cc7d40492"
   },
   "configuration.toolsPanel.editingTabsAndPreview": {
-    "message": "L’onglet <strong>Paramètres de traitement</strong> contient les paramètres des étapes de traitement (OCR, classification, extraction, évaluation, synthèse, HITL et le reste). Utilisez les onglets <strong>Schéma de document</strong> et <strong>Schéma de politique</strong> pour modifier les classes de document et les règles de validation, et le bouton <strong>Prévisualiser les invites</strong> pour voir ce que comprend l’invite de chaque étape, avec vos valeurs de configuration renseignées. L’aperçu montre quels espaces réservés une étape contient et lesquels elle laisse vides; ce ne sont pas les octets exacts de la demande.",
-    "sourceHash": "a29992c830dfd87c"
+    "message": "L’onglet <strong>Paramètres de traitement</strong> contient les paramètres des étapes de traitement (OCR, classification, extraction, évaluation, synthèse, acheminement des révisions, etc.). Utilisez les onglets <strong>Schéma de document</strong> et <strong>Schéma de politique</strong> pour modifier les classes de document et les règles de validation, et le bouton <strong>Prévisualiser les invites</strong> pour voir ce que contient l’invite de chaque étape, avec vos valeurs de configuration intégrées. L’aperçu montre quels espaces réservés une étape contient et lesquels elle laisse vides; il ne reproduit pas exactement les octets de la requête.",
+    "sourceHash": "45526c37ae89f806"
   },
   "discovery.policyGroup.constraint": {
     "message": "Jusqu’à {maxLength} caractères : lettres, chiffres, espaces, traits de soulignement, traits d’union et points. Les règles sont ajoutées au groupe, jamais remplacées.",
@@ -1948,8 +1964,8 @@
     "sourceHash": "6e9408d05d71236d"
   },
   "discovery.policyGroup.placeholder": {
-    "message": "p. ex. NCCI Policy Manual",
-    "sourceHash": "9fd3b72339150d58"
+    "message": "p. ex. Bank Statement Review Policy",
+    "sourceHash": "4e1e0fb14ce70c6a"
   },
   "discovery.policyGroup.replaceWithGroup": {
     "message": "Un groupe de politiques ne peut pas être utilisé avec « Remplacer le schéma existant », car cette option supprime toutes les classes de politique du profil, y compris le groupe, avant l’exécution de la découverte. Choisissez « Ajouter au schéma existant » ou effacez le groupe de politiques.",
@@ -2116,8 +2132,8 @@
     "sourceHash": "27c2ccd962c2b8dc"
   },
   "documentActions.editPageText.notice": {
-    "message": "« Enregistrer et retraiter » enregistre le texte de cette page, puis extrait à nouveau les sections qui contiennent la page, en remplaçant leurs valeurs, y compris celles corrigées à la main. Si le document est en attente de révision, sa révision est marquée comme terminée et ses résultats de validation des règles sont effacés.",
-    "sourceHash": "7e13e28f17ce463a"
+    "message": "Enregistrer et retraiter enregistre le texte de cette page, puis extrait de nouveau les sections qui contiennent la page, en remplaçant leurs valeurs, y compris celles corrigées à la main. Si le document est en attente de révision, sa révision est marquée comme terminée et ses résultats de validation des règles de politique sont effacés.",
+    "sourceHash": "4e14ec9cd5278f45"
   },
   "documentActions.editPageText.save": {
     "message": "Enregistrer et retraiter",
@@ -2232,8 +2248,8 @@
     "sourceHash": "cd6f25aa0642202a"
   },
   "documentActions.reasons.noRuleValidation": {
-    "message": "Ce document n’a pas de résumé de validation des règles",
-    "sourceHash": "d7efa75428f7bb66"
+    "message": "Ce document n’a aucun sommaire de validation des règles de politique",
+    "sourceHash": "fb76ae94d197c514"
   },
   "documentActions.reasons.noSendableSelection": {
     "message": "Sélectionnez les documents finis qui ne sont pas en cours de révision",
@@ -2280,8 +2296,8 @@
     "sourceHash": "2c2c86248cef1ce7"
   },
   "documentActions.reasons.ruleValidationHistorical": {
-    "message": "La validation des règles n’est pas conservée pour les versions antérieures",
-    "sourceHash": "5de4c3203148206b"
+    "message": "La validation des règles de politique n’est pas conservée pour les versions antérieures",
+    "sourceHash": "2bab5e16fc699767"
   },
   "documentActions.reasons.sectionNoClass": {
     "message": "Cette section n’a pas de classe",
@@ -2344,20 +2360,20 @@
     "sourceHash": "b20c9863f2612abc"
   },
   "documentActions.reextract.warning": {
-    "message": "Ces sections sont extraites à nouveau : {sections}. Leurs valeurs extraites, y compris celles corrigées à la main, sont remplacées, et leurs classes sont enregistrées comme confirmées. Si le document est en attente de révision, sa révision est marquée comme terminée et ses résultats de validation des règles sont effacés. Les autres sections conservent leurs valeurs; l’OCR et la classification ne sont pas refaites.",
-    "sourceHash": "5346c4242b800dbc"
+    "message": "Ces sections sont extraites de nouveau : {sections}. Leurs valeurs extraites, y compris celles corrigées à la main, sont remplacées, et leurs classes sont enregistrées comme confirmées. Si le document est en attente de révision, sa révision est marquée comme terminée et ses résultats de validation des règles de politique sont effacés. Les autres sections conservent leurs valeurs; l’OCR et la classification ne sont pas répétées.",
+    "sourceHash": "82a9ea4547821442"
   },
   "documentActions.reportDialog.evaluationReport": {
     "message": "Rapport d’évaluation",
     "sourceHash": "8477f1912def6117"
   },
   "documentActions.reportDialog.ruleValidationEmpty": {
-    "message": "Résumé de validation des règles non disponible pour ce document",
-    "sourceHash": "bd393f4162940b60"
+    "message": "Sommaire de validation des règles de politique non disponible pour ce document",
+    "sourceHash": "447139fa88644ae1"
   },
   "documentActions.reportDialog.ruleValidationSummary": {
-    "message": "Résumé de la validation des règles",
-    "sourceHash": "38cbdc01c8f70b68"
+    "message": "Sommaire de validation des règles de politique",
+    "sourceHash": "f7e71a5e01ad8813"
   },
   "documentActions.reports.estimatedCost": {
     "message": "Coût estimé",
@@ -2372,8 +2388,8 @@
     "sourceHash": "9e850b727d6a89f9"
   },
   "documentActions.reports.ruleValidationSummary": {
-    "message": "Résumé de la validation des règles",
-    "sourceHash": "38cbdc01c8f70b68"
+    "message": "Sommaire de validation des règles de politique",
+    "sourceHash": "f7e71a5e01ad8813"
   },
   "documentActions.reports.summary": {
     "message": "Sommaire",
@@ -2424,8 +2440,8 @@
     "sourceHash": "5268bf1cc0ab5a86"
   },
   "documentActions.resetPageClass.reviewCompleted": {
-    "message": "Si le document est en attente de révision, sa révision est marquée comme terminée et ses résultats de validation des règles sont effacés.",
-    "sourceHash": "c934f40abf4c064d"
+    "message": "Si le document est en attente de révision, sa révision est marquée comme terminée et ses résultats de validation des règles de politique sont effacés.",
+    "sourceHash": "432924e777064313"
   },
   "documentActions.resetPageClass.unclassified": {
     "message": "Non classifié",
@@ -2652,11 +2668,11 @@
     "sourceHash": "54a0e8c17ebb21a1"
   },
   "documents.chat.status.loadingDocument": {
-    "message": "Chargement du texte du document...",
+    "message": "Chargement du texte du document…",
     "sourceHash": "f89ca538d8d28830"
   },
   "documents.chat.status.queued": {
-    "message": "En file d’attente...",
+    "message": "En file d’attente…",
     "sourceHash": "abff5572a370fab7"
   },
   "documents.chat.status.streaming": {
@@ -2944,7 +2960,7 @@
     "sourceHash": "d100ace6deecbce3"
   },
   "documents.estimatedCost.loadingPricing": {
-    "message": "Chargement des données de prix...",
+    "message": "Chargement des données de prix…",
     "sourceHash": "4b3601355b7ca92c"
   },
   "documents.estimatedCost.subtotal": {
@@ -3436,8 +3452,8 @@
     "sourceHash": "40d7d76692ac3507"
   },
   "documents.evaluationReport.splitAnalysis.unexpected": {
-    "message": "{count} inattendu",
-    "sourceHash": "fcf5b5345b74e93a"
+    "message": "{count, plural, one {# inattendue} other {# inattendues}}",
+    "sourceHash": "585cf6e9210a8dfa"
   },
   "documents.evaluationReport.splitAnalysis.unmatched": {
     "message": "{unmatched} sur {expected} sans correspondance",
@@ -3532,7 +3548,7 @@
     "sourceHash": "415ea058f600e4f5"
   },
   "documents.fileViewer.loading": {
-    "message": "Chargement du document...",
+    "message": "Chargement du document…",
     "sourceHash": "f651afe11c137eef"
   },
   "documents.fileViewer.office.cannotDisplay": {
@@ -3928,20 +3944,20 @@
     "sourceHash": "cdb4094e68786089"
   },
   "documents.markdownReport.evaluation.loading": {
-    "message": "Chargement du rapport d’évaluation...",
+    "message": "Chargement du rapport d’évaluation…",
     "sourceHash": "c4f052ae965b95fc"
   },
   "documents.markdownReport.ruleValidation.binary": {
-    "message": "Ce fichier contient du contenu binaire qui ne peut pas être consulté dans le résumé de validation des règles.",
-    "sourceHash": "e07e5886ab22f568"
+    "message": "Ce fichier contient du contenu binaire qui ne peut pas être affiché dans le sommaire de validation des règles de politique.",
+    "sourceHash": "acc6412334e74317"
   },
   "documents.markdownReport.ruleValidation.failed": {
-    "message": "Impossible de charger le résumé de validation des règles. Veuillez réessayer.",
-    "sourceHash": "0328e2c17cc30a05"
+    "message": "Échec du chargement du sommaire de validation des règles de politique. Veuillez réessayer.",
+    "sourceHash": "262ab03d5a1cfa54"
   },
   "documents.markdownReport.ruleValidation.loading": {
-    "message": "Chargement du résumé de validation des règles...",
-    "sourceHash": "89ecaa2133828fb8"
+    "message": "Chargement du sommaire de validation des règles de politique…",
+    "sourceHash": "5720afb597d029aa"
   },
   "documents.markdownReport.summary.binary": {
     "message": "Ce fichier contient du contenu binaire qui ne peut pas être visualisé dans le résumé du document.",
@@ -3952,7 +3968,7 @@
     "sourceHash": "6798c1520306453c"
   },
   "documents.markdownReport.summary.loading": {
-    "message": "Chargement du résumé du document...",
+    "message": "Chargement du résumé du document…",
     "sourceHash": "f7c2e491fcf76ae6"
   },
   "documents.markdownViewer.download": {
@@ -3984,7 +4000,7 @@
     "sourceHash": "a11ceb79e3d71b80"
   },
   "documents.pageImage.loading": {
-    "message": "Chargement des images de page...",
+    "message": "Chargement des images de page…",
     "sourceHash": "ac6d115f1d0e0bf0"
   },
   "documents.pageImage.next": {
@@ -4116,7 +4132,7 @@
     "sourceHash": "e1ccbf9971bd8e4e"
   },
   "documents.pageText.loading": {
-    "message": "Chargement du contenu de la page...",
+    "message": "Chargement du contenu de la page…",
     "sourceHash": "1a15340561254c1c"
   },
   "documents.pageText.markdownNote": {
@@ -4347,9 +4363,17 @@
     "message": "Propriétaire de la révision",
     "sourceHash": "03ceb23a5b7c9d1c"
   },
+  "documents.panel.field.reviewQueue": {
+    "message": "File d’attente de révision",
+    "sourceHash": "3e1654beab977bad"
+  },
   "documents.panel.field.reviewStatus": {
     "message": "Statut de la révision",
     "sourceHash": "23a9a1e5a6a621c8"
+  },
+  "documents.panel.field.routingReason": {
+    "message": "Motif d’acheminement",
+    "sourceHash": "2a30e47cf6266207"
   },
   "documents.panel.field.skipReason": {
     "message": "Motif de l’omission",
@@ -4394,6 +4418,14 @@
   "documents.processingFlow.autoRefreshOn": {
     "message": "🔄 Actualisation automatique activée",
     "sourceHash": "f83df5a033c2a0b5"
+  },
+  "documents.processingFlow.beginningBda": {
+    "message": "Bedrock Data Automation",
+    "sourceHash": "5abb5985c31e1e88"
+  },
+  "documents.processingFlow.beginningPipeline": {
+    "message": "OCR",
+    "sourceHash": "5e5bea5354e3f22e"
   },
   "documents.processingFlow.diagram.legendCompleted": {
     "message": "Terminé",
@@ -4480,7 +4512,7 @@
     "sourceHash": "99ab3c6d17e12e60"
   },
   "documents.processingFlow.loading": {
-    "message": "Chargement du flux de traitement...",
+    "message": "Chargement du flux de traitement…",
     "sourceHash": "ee653e463acfe057"
   },
   "documents.processingFlow.malwareScanStep": {
@@ -4515,6 +4547,14 @@
     "message": "Rafraîchir maintenant",
     "sourceHash": "c7b4a057f059ca05"
   },
+  "documents.processingFlow.skippedNote": {
+    "message": "Ignorée selon le plan d’exécution. Cette exécution a commencé à l’étape {step}.",
+    "sourceHash": "35f3f84d8af9728b"
+  },
+  "documents.processingFlow.skippedNoteRejected": {
+    "message": "Ignorée selon le plan d’exécution. Cette exécution a enregistré une révision rejetée et n’a effectué aucune étape de traitement.",
+    "sourceHash": "e6e124d1f4444aed"
+  },
   "documents.processingFlow.status.aborted": {
     "message": "INTERROMPU",
     "sourceHash": "3f448c7a81a3a16e"
@@ -4534,6 +4574,10 @@
   "documents.processingFlow.status.running": {
     "message": "EN COURS D’EXÉCUTION",
     "sourceHash": "d80ffc8dc0795348"
+  },
+  "documents.processingFlow.status.skipped": {
+    "message": "Ignorée",
+    "sourceHash": "12698ce1ea5cd4ab"
   },
   "documents.processingFlow.status.succeeded": {
     "message": "RÉUSSI",
@@ -5207,13 +5251,29 @@
     "message": "Annuler",
     "sourceHash": "19766ed6ccb2f4a3"
   },
+  "documents.reprocessModal.close": {
+    "message": "Fermer",
+    "sourceHash": "7d9eb7acb13e2462"
+  },
   "documents.reprocessModal.confirm": {
     "message": "{count, plural, =0 {Voulez-vous vraiment retraiter ce document?} one {Voulez-vous vraiment retraiter ce document?} other {Voulez-vous vraiment retraiter ces # documents?}}",
     "sourceHash": "f10a3f7bd9b019de"
   },
+  "documents.reprocessModal.documentColumn": {
+    "message": "Document",
+    "sourceHash": "d6bd8c0aeee80fed"
+  },
   "documents.reprocessModal.documentsList": {
     "message": "{count,plural,one{Cela déclenchera un retraitement du flux de travail pour le document suivant :} other{Cela déclenchera le retraitement du flux de travail pour les documents suivants :} =0{Cela déclenchera un retraitement du flux de travail pour le document suivant :}}",
     "sourceHash": "26e8f2ba208213c2"
+  },
+  "documents.reprocessModal.failed": {
+    "message": "Échec",
+    "sourceHash": "031a8f0f659df890"
+  },
+  "documents.reprocessModal.notQueuedHeader": {
+    "message": "{count, plural, one {# document n’a pas été mis} other {# documents n’ont pas été mis}} en file d’attente, sur {total, number}",
+    "sourceHash": "28a5bf598d5adad8"
   },
   "documents.reprocessModal.profile.description": {
     "message": "Sélectionnez le profil de configuration à utiliser pour retraiter ces documents",
@@ -5224,20 +5284,60 @@
     "sourceHash": "cb61b6f147af8c47"
   },
   "documents.reprocessModal.profile.loading": {
-    "message": "Chargement des profils...",
+    "message": "Chargement des profils…",
     "sourceHash": "12a7541833720199"
   },
   "documents.reprocessModal.profile.placeholder": {
     "message": "Sélectionnez le profil de configuration",
     "sourceHash": "b4a0fa0d3b8073ee"
   },
+  "documents.reprocessModal.queued": {
+    "message": "En file d’attente",
+    "sourceHash": "661ff40a07e037bb"
+  },
+  "documents.reprocessModal.reasonColumn": {
+    "message": "Motif",
+    "sourceHash": "f81ab834de5f8491"
+  },
+  "documents.reprocessModal.refused": {
+    "message": "Non mis en file d’attente",
+    "sourceHash": "7e52b62ffb450776"
+  },
   "documents.reprocessModal.reprocess": {
     "message": "Retraiter",
     "sourceHash": "55ecdf8652318bcd"
   },
+  "documents.reprocessModal.resultColumn": {
+    "message": "Résultat",
+    "sourceHash": "6e7d50e84f4731ef"
+  },
+  "documents.reprocessModal.resultsHeader": {
+    "message": "Résultats du retraitement",
+    "sourceHash": "736a53362be642d5"
+  },
+  "documents.reprocessModal.resultsLabel": {
+    "message": "Résultat pour chaque document",
+    "sourceHash": "61f7e0cc76525252"
+  },
+  "documents.reprocessModal.retry": {
+    "message": "Réessayer",
+    "sourceHash": "942087cc2d41e013"
+  },
   "documents.reprocessModal.revisionDescription": {
     "message": "Par défaut, la configuration actuelle du profil est utilisée. Choisissez une révision antérieure pour reproduire le résultat d’une exécution antérieure.",
     "sourceHash": "138d17a4070f3e23"
+  },
+  "documents.reprocessModal.stepsErrorBody": {
+    "message": "Les étapes à partir desquelles ces documents peuvent démarrer n’ont pas pu être lues; l’exécution démarre donc au début.",
+    "sourceHash": "054845e1b546a46a"
+  },
+  "documents.reprocessModal.stepsErrorHeader": {
+    "message": "Impossible de vérifier les étapes de départ",
+    "sourceHash": "d04f52d033b15f1b"
+  },
+  "documents.reprocessModal.stepsLoading": {
+    "message": "Vérification des étapes à partir desquelles l’exécution peut démarrer",
+    "sourceHash": "13d68de5baa2bb95"
   },
   "documents.reprocessModal.title": {
     "message": "{count, plural, =0 {Retraiter le document} one {Retraiter le document} other {Retraiter # documents}}",
@@ -5844,7 +5944,7 @@
     "sourceHash": "3e310b75051c78a3"
   },
   "documents.troubleshoot.running": {
-    "message": "Dépannage...",
+    "message": "Dépannage…",
     "sourceHash": "179908804bccd2ee"
   },
   "documents.troubleshoot.status": {
@@ -5996,7 +6096,7 @@
     "sourceHash": "4e54f22f25398eaf"
   },
   "documents.upload.sample.loading": {
-    "message": "Chargement des échantillons...",
+    "message": "Chargement des échantillons…",
     "sourceHash": "3b1416185328421a"
   },
   "documents.upload.selectionWins": {
@@ -6092,7 +6192,7 @@
     "sourceHash": "9e053092b7f30e0b"
   },
   "documents.versions.comparing": {
-    "message": "Comparaison des résultats d’extraction...",
+    "message": "Comparaison des résultats d’extraction…",
     "sourceHash": "3aa3a8f39e777d49"
   },
   "documents.versions.currentBadge": {
@@ -6184,7 +6284,7 @@
     "sourceHash": "d18c3f880899585d"
   },
   "documents.versions.loading": {
-    "message": "Chargement de l’historique des versions...",
+    "message": "Chargement de l’historique des versions…",
     "sourceHash": "a249367ab9e8e74d"
   },
   "documents.versions.noFieldChanges": {
@@ -6251,6 +6351,10 @@
     "message": "Plus d’actions",
     "sourceHash": "98eea4c1c21f3336"
   },
+  "editScreen.bar.policyRuleValidation": {
+    "message": "Sommaire de validation des règles de politique",
+    "sourceHash": "f7e71a5e01ad8813"
+  },
   "editScreen.bar.processingReport": {
     "message": "Rapport de traitement",
     "sourceHash": "2287e9220fc9cba0"
@@ -6258,6 +6362,14 @@
   "editScreen.bar.refresh": {
     "message": "Rafraîchir",
     "sourceHash": "0e91610117029a62"
+  },
+  "editScreen.bar.reject": {
+    "message": "Rejeter",
+    "sourceHash": "ab604a360777735f"
+  },
+  "editScreen.bar.rejectHint": {
+    "message": "Terminer la révision et rejeter ce document. Un motif est d’abord demandé.",
+    "sourceHash": "0ca2730ece9e0cd2"
   },
   "editScreen.bar.reports": {
     "message": "Rapports",
@@ -6344,8 +6456,8 @@
     "sourceHash": "4a54f08ae59a1ad4"
   },
   "editScreen.directEdit.primaryHint": {
-    "message": "Enregistrez vos modifications et traitez-les : l’évaluation et la synthèse sont réexécutées; l’OCR, la classification et l’extraction ne sont pas répétées.",
-    "sourceHash": "ef76c65bca9fd4c3"
+    "message": "Enregistrez vos modifications et traitez-les. La confirmation liste les étapes de l’exécution; les étapes précédant celle où elle démarre ne sont pas répétées.",
+    "sourceHash": "71653359485c060e"
   },
   "editScreen.directEdit.processOwnerReason": {
     "message": "{processChanges} nécessite un administrateur ou le réviseur qui détient la révision ouverte de ce document. Commencez d’abord la révision.",
@@ -6356,16 +6468,16 @@
     "sourceHash": "3c86942ae3b9cdfc"
   },
   "editScreen.directEdit.processing": {
-    "message": "Traitement des modifications apportées à {name} : l’évaluation et la synthèse sont en cours de réexécution.",
-    "sourceHash": "bb65562a23c6cdf2"
+    "message": "Traitement des modifications apportées à {name}.",
+    "sourceHash": "bb61eb9ca06f3811"
   },
   "editScreen.directEdit.processingNotice": {
     "message": "Consultation seulement. Ce document est toujours en cours de traitement; ses résultats pourront être modifiés une fois le traitement terminé.",
     "sourceHash": "a1f19c5ac1227ccd"
   },
   "editScreen.directEdit.regroupConsequence": {
-    "message": "Déplacer des pages réécrit le <b>regroupement des sections</b> de ce document. Les valeurs des champs extraites sont <b>conservées</b> et le document <b>n’est pas</b> retraité; elles peuvent donc ne plus correspondre à leurs pages. Pour que le pipeline les refasse, ouvrez <b>Plus d’actions › Modifier le regroupement de pages</b> dans la page de document et choisissez <b>Enregistrer et réextraire</b> : l’action <b>{processChanges}</b> de cet écran réexécute uniquement l’évaluation et la synthèse.",
-    "sourceHash": "f495d1c735b5d93d"
+    "message": "Le déplacement de pages réécrit le <b>regroupement des sections</b> de ce document. Les valeurs de champs extraites sont <b>conservées</b> et le document n’est <b>pas</b> retraité; elles pourraient donc ne plus correspondre à leurs pages. Pour que le pipeline les refasse, ouvrez <b>Plus d’actions › Modifier le regroupement de pages</b> sur la page du document et choisissez <b>Enregistrer et réextraire</b> : l’action <b>{processChanges}</b> de cet écran conserve les valeurs qu’une section possède déjà.",
+    "sourceHash": "4eab3da9cb81cfba"
   },
   "editScreen.directEdit.regroupRoleReason": {
     "message": "« Modifier le regroupement de pages » nécessite le rôle d’administrateur ou de réviseur.",
@@ -6539,6 +6651,10 @@
     "message": "commencer à éditer le regroupement de pages",
     "sourceHash": "9b159af82d253122"
   },
+  "editScreen.productionItem.action.reject": {
+    "message": "rejeter le document",
+    "sourceHash": "8d927c330408aed2"
+  },
   "editScreen.productionItem.action.save": {
     "message": "enregistrer votre brouillon",
     "sourceHash": "86afe915b36d1bd7"
@@ -6546,6 +6662,10 @@
   "editScreen.productionItem.action.saveGrouping": {
     "message": "enregistrer le regroupement de pages",
     "sourceHash": "26a23cb3c5b30e4b"
+  },
+  "editScreen.productionItem.action.sendBack": {
+    "message": "renvoyer le document",
+    "sourceHash": "d5641291d49ed770"
   },
   "editScreen.productionItem.action.skip": {
     "message": "ignorer l’élément",
@@ -6568,7 +6688,7 @@
     "sourceHash": "a1338316257176f9"
   },
   "editScreen.productionItem.assignedTakeOver": {
-    "message": "Affecté à {assignee}. Prenez le relais pour le modifier et traiter ses modifications.",
+    "message": "Attribué à {assignee}. Prenez le relais pour le modifier et traiter ses modifications.",
     "sourceHash": "435c79511d0d3d73"
   },
   "editScreen.productionItem.baselineCopying": {
@@ -6643,6 +6763,10 @@
     "message": "Cet élément est retiré",
     "sourceHash": "6f164777f9819524"
   },
+  "editScreen.productionItem.noRejectReasons": {
+    "message": "Cette file d’attente ne liste aucun motif de rejet",
+    "sourceHash": "c34f68701bd23276"
+  },
   "editScreen.productionItem.noResultToReview": {
     "message": "Cette section n’a aucun résultat à examiner",
     "sourceHash": "792f77697b86f3b0"
@@ -6660,16 +6784,32 @@
     "sourceHash": "99e4415b9e11b694"
   },
   "editScreen.productionItem.primaryHint": {
-    "message": "Appliquez vos corrections et terminez la révision : l’évaluation et la synthèse sont réexécutées; l’OCR, la classification et l’extraction ne sont pas répétées.",
-    "sourceHash": "379950229f8ee628"
+    "message": "Terminez la révision : complétez-la avec vos corrections ou renvoyez le document pour qu’il soit traité de nouveau.",
+    "sourceHash": "fd6a89e09563923e"
   },
   "editScreen.productionItem.processing": {
     "message": "Traitement des modifications apportées à {name} : vos corrections sont en cours d’application.",
     "sourceHash": "0ecb4a46bf86693e"
   },
   "editScreen.productionItem.regroupConsequence": {
-    "message": "Le déplacement de pages réécrit le <b>regroupement des sections</b> de ce document. Les valeurs extraites et vos modifications provisoires sont <b>conservées</b> avec leurs sections, et le traitement du document se termine avec ce regroupement lorsque vous choisissez <b>{processChanges}</b>. Une section que vous supprimez emporte ses modifications provisoires.",
-    "sourceHash": "0af89cd81a4cdb72"
+    "message": "Le déplacement de pages réécrit le <b>regroupement des sections</b> de ce document. Lorsque vous choisissez <b>{processChanges}</b> et terminez la révision, une section que vous avez ajoutée ou dont vous avez modifié les pages est <b>extraite de nouveau</b>, puis les corrections que vous avez enregistrées sont appliquées. Les autres sections conservent leurs valeurs extraites et vos modifications provisoires. Une section que vous supprimez emporte ses modifications provisoires.",
+    "sourceHash": "5c15a9956b4bd13c"
+  },
+  "editScreen.productionItem.rejectBody": {
+    "message": "La révision prend fin et le document est rejeté. Ses valeurs extraites restent telles qu’elles étaient avant la révision : vos corrections ne sont pas appliquées, et l’évaluation et la synthèse ne s’exécutent pas.",
+    "sourceHash": "778795aeb68f0026"
+  },
+  "editScreen.productionItem.rejectConfirm": {
+    "message": "Rejeter",
+    "sourceHash": "ab604a360777735f"
+  },
+  "editScreen.productionItem.rejectHeader": {
+    "message": "Rejeter ce document",
+    "sourceHash": "b5afc4a78b5bb0c9"
+  },
+  "editScreen.productionItem.rejected": {
+    "message": "{name} a été rejeté.",
+    "sourceHash": "3b1081bcfb51c784"
   },
   "editScreen.productionItem.reviewNotComplete": {
     "message": "Disponible une fois la révision terminée",
@@ -6678,6 +6818,10 @@
   "editScreen.productionItem.savingLatest": {
     "message": "Enregistrement de vos dernières modifications…",
     "sourceHash": "11bbc5a5679931f5"
+  },
+  "editScreen.productionItem.sentBack": {
+    "message": "{name} a été renvoyé et est en cours de retraitement.",
+    "sourceHash": "d6504dda85f5360f"
   },
   "editScreen.productionItem.skipBody": {
     "message": "L’élément retourne à sa file d’attente, non attribué et non terminé. Vos modifications enregistrées sont conservées pour la personne qui le prendra ensuite.",
@@ -6852,7 +6996,7 @@
     "sourceHash": "988ffe11bf112d99"
   },
   "editScreen.shared.assignedTo": {
-    "message": "Affecté à {assignee}",
+    "message": "Attribué à {assignee}",
     "sourceHash": "88708b04aa1a8eaf"
   },
   "editScreen.shared.backToDocuments": {
@@ -7091,6 +7235,22 @@
     "message": "<b>Modifier | Afficher</b> bascule entre l’Éditeur de document et le fichier original. Les modifications non enregistrées sont conservées tant que le fichier est affiché.",
     "sourceHash": "72307e99d77bf7dd"
   },
+  "editScreen.toolsPanel.button.processChanges": {
+    "message": "<b>{processChanges}</b> enregistre, puis traite les modifications :",
+    "sourceHash": "d4c84c00294a67f3"
+  },
+  "editScreen.toolsPanel.button.processChangesDocument": {
+    "message": "Pour un document ouvert à partir de sa page, une confirmation vous est demandée et les étapes de l’exécution qui suit sont listées. Les étapes précédant celle où elle démarre ne sont pas répétées.",
+    "sourceHash": "35b569f47c55efee"
+  },
+  "editScreen.toolsPanel.button.processChangesQueueItem": {
+    "message": "Pour un élément de file d’attente, on vous demande comment la révision se termine et les étapes de l’exécution qui suit sont listées. <b>Terminer la révision</b> conserve vos corrections; une section dont vous avez modifié les pages est d’abord extraite de nouveau. <b>Renvoyer pour retraitement</b> abandonne vos corrections et tout regroupement de pages, et le document est traité de nouveau à partir de la classification (depuis le début en mode BDA).",
+    "sourceHash": "480cb5d62ad20ce5"
+  },
+  "editScreen.toolsPanel.button.processChangesTestStudio": {
+    "message": "Sur un document du Studio de test, il enregistre aussi les étiquettes comme vérité terrain révisée. Si aucune version brouillon du jeu n’est ouverte, il demande d’abord une confirmation, puis ouvre la version suivante sans modifier la version actuelle.",
+    "sourceHash": "3434c0f6456ba17d"
+  },
   "editScreen.toolsPanel.button.refresh": {
     "message": "<b>Rafraîchir</b> recharge le document; avec les modifications non enregistrées, il demande d’abord.",
     "sourceHash": "71431dfe9caba344"
@@ -7166,6 +7326,10 @@
   "editScreen.toolsPanel.report.history": {
     "message": "<b>Historique</b> : chaque modification de champ enregistrée, et qui a traité l’élément.",
     "sourceHash": "5d80ed51cf9fc841"
+  },
+  "editScreen.toolsPanel.report.policyRuleValidation": {
+    "message": "<b>Sommaire de validation des règles de politique</b> : les règles de politique que le document a respectées et celles qu’il n’a pas respectées, avec le motif de chacune.",
+    "sourceHash": "900e300b29d778e3"
   },
   "editScreen.toolsPanel.report.processing": {
     "message": "<b>Rapport de traitement</b> : comment la section ouverte a été extraite.",
@@ -7440,15 +7604,15 @@
     "sourceHash": "6188fdfa31e4a1f4"
   },
   "helpPanel.documentDetails.barReports": {
-    "message": "<b>Rapports</b> : le résumé, le rapport d’évaluation, le résumé de la validation des règles, le coût estimé et le flux de traitement, chacun dans une boîte de dialogue.",
-    "sourceHash": "be3953e6423e2f39"
+    "message": "<b>Rapports</b> : le sommaire, le rapport d’évaluation, le sommaire de la validation des règles de politique, le coût estimé et le flux de traitement, chacun dans une boîte de dialogue.",
+    "sourceHash": "ce2628ca2df62c9b"
   },
   "helpPanel.documentDetails.barSwitch": {
     "message": "<b>Détails | Source</b> bascule entre les panneaux de la page et le fichier original.",
     "sourceHash": "50a40d34eb20d9f5"
   },
   "helpPanel.documentDetails.docsAssessment": {
-    "message": "Évaluation",
+    "message": "Évaluation de la confiance",
     "sourceHash": "7808eeeb45dfa074"
   },
   "helpPanel.documentDetails.docsClassification": {
@@ -7712,8 +7876,8 @@
     "sourceHash": "f81d413b0af925b9"
   },
   "home.toolsPanels.inboxRetention": {
-    "message": "Les messages sont conservés pendant une durée limitée et jusqu’à un plafond par utilisateur (Configuration › Paramètres de traitement › HITL › Messages de la boîte de réception).",
-    "sourceHash": "5010aae21cb2d702"
+    "message": "Les messages sont conservés pendant une durée limitée et jusqu’à un plafond par utilisateur (Configuration › Paramètres de traitement › Acheminement des révisions › Messages de la boîte de réception).",
+    "sourceHash": "2e78926d8673d340"
   },
   "home.toolsPanels.inboxSettings": {
     "message": "L’icône des paramètres choisit les types de messages que vous recevez.",
@@ -7848,7 +8012,7 @@
     "sourceHash": "36cc331ac5d3f34a"
   },
   "home.toolsPanels.tasksIntro": {
-    "message": "Le travail de révision qui vous est confié : les éléments de la file d’attente de production que vous avez réclamés ou qu’un administrateur vous a assignés, et les documents du Studio de test à annoter.",
+    "message": "Le travail de révision qui vous est confié : les éléments de la file d’attente de production que vous avez réclamés ou qu’un administrateur vous a attribués, et les documents du Studio de test à annoter.",
     "sourceHash": "d53ad96217a6bae1"
   },
   "home.toolsPanels.tasksOpen": {
@@ -7940,8 +8104,8 @@
     "sourceHash": "b8d8a987f42b3274"
   },
   "inbox.deleteModal.more": {
-    "message": "et {count} de plus",
-    "sourceHash": "1a2612705dd79784"
+    "message": "et {count, plural, one {# autre} other {# autres}}",
+    "sourceHash": "04bd2644508e272b"
   },
   "inbox.messageModal.close": {
     "message": "Fermer",
@@ -8024,7 +8188,7 @@
     "sourceHash": "657a4419d81ae2fb"
   },
   "inbox.messagesTable.empty.body": {
-    "message": "Vous verrez des messages ici lorsque du travail vous est assigné ou que quelque chose a besoin de votre attention.",
+    "message": "Vous verrez des messages ici lorsque du travail vous est attribué ou que quelque chose a besoin de votre attention.",
     "sourceHash": "1445f5b6cab28741"
   },
   "inbox.messagesTable.empty.title": {
@@ -8516,8 +8680,8 @@
     "sourceHash": "19b9fbd823f1dbd0"
   },
   "mcp.configuration.matches": {
-    "message": "{count} correspondances",
-    "sourceHash": "43682aec4eded886"
+    "message": "{count, plural, one {# correspondance} other {# correspondances}}",
+    "sourceHash": "132450e51e34273d"
   },
   "mcp.configuration.name": {
     "message": "Nom",
@@ -8924,7 +9088,7 @@
     "sourceHash": "b3a60e61a5233d05"
   },
   "navigation.home.tasksAssigned": {
-    "message": "{count, plural, one {assignée} other {assignées}}",
+    "message": "{count, plural, one {attribuée} other {attribuées}}",
     "sourceHash": "a843badba614871c"
   },
   "navigation.quickStart.button": {
@@ -9140,8 +9304,8 @@
     "sourceHash": "f71ac7ffc6e76950"
   },
   "reviewBulk.bulkSkipModal.headerSelected": {
-    "message": "Ignorer toutes les révisions ({count} sélectionnés)",
-    "sourceHash": "561f2b699b97488b"
+    "message": "Ignorer toutes les révisions ({count, plural, one {# sélectionné} other {# sélectionnés}})",
+    "sourceHash": "7f7fa8b6b2cde0a7"
   },
   "reviewBulk.bulkSkipModal.limitReached": {
     "message": "Plus de 10 000 documents correspondent; seuls les 10 000 premiers sont traités. Réduisez la plage de dates.",
@@ -9624,16 +9788,16 @@
     "sourceHash": "d0f2c1231f46e18b"
   },
   "reviewBulk.reviewMenu.sendSelected": {
-    "message": "Envoyer en révision ({count} sélectionnés)",
-    "sourceHash": "a373fa6213ef4118"
+    "message": "Envoyer en révision ({count, plural, one {# sélectionné} other {# sélectionnés}})",
+    "sourceHash": "a84e789491e63ae9"
   },
   "reviewBulk.reviewMenu.skipProfile": {
     "message": "Ignorer toutes les révisions par profil…",
     "sourceHash": "a53cfb3941dd1a50"
   },
   "reviewBulk.reviewMenu.skipSelected": {
-    "message": "Ignorer toutes les révisions ({count} sélectionnés)",
-    "sourceHash": "561f2b699b97488b"
+    "message": "Ignorer toutes les révisions ({count, plural, one {# sélectionné} other {# sélectionnés}})",
+    "sourceHash": "7f7fa8b6b2cde0a7"
   },
   "reviewBulk.reviewMenu.startReview": {
     "message": "Commencer la révision",
@@ -9644,7 +9808,7 @@
     "sourceHash": "1bed97651be6b556"
   },
   "reviewBulk.sendToReviewModal.body": {
-    "message": "{count, plural, one {Ce document sera ajouté} other {Ces # documents seront ajoutés}} à la file d’attente de révision « Par défaut ». Les réviseurs voient votre motif avec l’élément; terminer la révision retraite le document avec leurs modifications.",
+    "message": "{count, plural, one {Ce document sera ajouté} other {Ces # documents seront ajoutés}} à la file d’attente de révision « Default ». Les réviseurs voient votre motif avec l’élément; terminer la révision retraite le document avec leurs modifications.",
     "sourceHash": "4ed04ccfd00bcad4"
   },
   "reviewBulk.sendToReviewModal.confirm": {
@@ -9738,6 +9902,62 @@
   "reviewQueues.assignModal.title": {
     "message": "Attribuer à l’annotateur",
     "sourceHash": "8ce1a3a47eb20e0b"
+  },
+  "reviewQueues.completionModal.cancel": {
+    "message": "Annuler",
+    "sourceHash": "19766ed6ccb2f4a3"
+  },
+  "reviewQueues.completionModal.complete": {
+    "message": "Terminer la révision",
+    "sourceHash": "f37ad14ee8682544"
+  },
+  "reviewQueues.completionModal.completeDescription": {
+    "message": "Vos corrections sont conservées et le traitement se poursuit avec celles-ci.",
+    "sourceHash": "1bea6a07f493e278"
+  },
+  "reviewQueues.completionModal.confirmComplete": {
+    "message": "Terminer la révision",
+    "sourceHash": "a13f0cc8ed6b3aa4"
+  },
+  "reviewQueues.completionModal.confirmSendBack": {
+    "message": "Renvoyer",
+    "sourceHash": "a7b87f6843ab4ba3"
+  },
+  "reviewQueues.completionModal.discardWarning": {
+    "message": "Les corrections et tout regroupement de pages sont abandonnés, et le document est traité de nouveau à partir de la classification (depuis le début en mode BDA).",
+    "sourceHash": "c50ac9b8c5288ea8"
+  },
+  "reviewQueues.completionModal.errorHeader": {
+    "message": "Le document n’a pas été renvoyé",
+    "sourceHash": "3c428d4324398e64"
+  },
+  "reviewQueues.completionModal.header": {
+    "message": "Conclure la révision",
+    "sourceHash": "d959f5e66a81be95"
+  },
+  "reviewQueues.completionModal.noteDescription": {
+    "message": "La raison du renvoi du document. Conservée dans l’historique des révisions.",
+    "sourceHash": "1ba1dcdfc0713e39"
+  },
+  "reviewQueues.completionModal.noteLabel": {
+    "message": "Note (facultative)",
+    "sourceHash": "f9b73e1abc37cf5b"
+  },
+  "reviewQueues.completionModal.noteTooLong": {
+    "message": "Limitez la note à {max, number} caractères.",
+    "sourceHash": "a1b4fd8832aa0437"
+  },
+  "reviewQueues.completionModal.outcomeLabel": {
+    "message": "Comment cette révision se termine-t-elle?",
+    "sourceHash": "c98758f3382ef8de"
+  },
+  "reviewQueues.completionModal.sendBack": {
+    "message": "Renvoyer pour retraitement",
+    "sourceHash": "703d4be44b9fef8c"
+  },
+  "reviewQueues.completionModal.sendBackDescription": {
+    "message": "Le document est traité de nouveau sans cette révision. Il peut ensuite revenir dans une file d’attente de révision.",
+    "sourceHash": "ddac51345f7f67f6"
   },
   "reviewQueues.myQueues.column.items": {
     "message": "Éléments",
@@ -9851,6 +10071,58 @@
     "message": "Tâches",
     "sourceHash": "b3a60e61a5233d05"
   },
+  "reviewQueues.policyFailures.close": {
+    "message": "Fermer",
+    "sourceHash": "7d9eb7acb13e2462"
+  },
+  "reviewQueues.policyFailures.columnPages": {
+    "message": "Pages",
+    "sourceHash": "9046da16aea909ba"
+  },
+  "reviewQueues.policyFailures.columnPolicy": {
+    "message": "Politique",
+    "sourceHash": "c611981fab983bc6"
+  },
+  "reviewQueues.policyFailures.columnReason": {
+    "message": "Motif",
+    "sourceHash": "f81ab834de5f8491"
+  },
+  "reviewQueues.policyFailures.columnRule": {
+    "message": "Règle de politique",
+    "sourceHash": "abdee84bf86a83ef"
+  },
+  "reviewQueues.policyFailures.empty": {
+    "message": "Aucune règle de politique non respectée n’est répertoriée pour cette révision.",
+    "sourceHash": "9b25c4c9c267c52d"
+  },
+  "reviewQueues.policyFailures.heading": {
+    "message": "Règles de politique non respectées ({count, number})",
+    "sourceHash": "3b298948cd475faa"
+  },
+  "reviewQueues.policyFailures.line": {
+    "message": "<b>{name}</b> · {policy} — <detail>{reason}</detail>",
+    "sourceHash": "22ca33e170aca0b0"
+  },
+  "reviewQueues.policyFailures.modalHeader": {
+    "message": "Règles de politique non respectées ({count, number})",
+    "sourceHash": "3b298948cd475faa"
+  },
+  "reviewQueues.policyFailures.noReason": {
+    "message": "Aucun motif n’a été fourni.",
+    "sourceHash": "8a4a862e2ec2c4df"
+  },
+  "reviewQueues.policyFailures.notAllStored": {
+    "message": "Le document n’a pas respecté {count, plural, one {# règle de politique} other {# règles de politique}}; {listed, plural, one {# est répertoriée} other {# sont répertoriées}} ici. Le sommaire de la validation des règles de politique les présente toutes.",
+    "sourceHash": "9fed60cef02cd896"
+  },
+  "reviewQueues.policyFailures.pages": {
+    "message": "Pages : {pages}",
+    "sourceHash": "2467e992e38c5240"
+  },
+  "reviewQueues.policyFailures.showAll": {
+    "message": "{count, plural, one {Afficher la # règle de politique non respectée} other {Afficher les # règles de politique non respectées}}",
+    "sourceHash": "2638fc940dc72199"
+  },
   "reviewQueues.queuePage.adminDescription": {
     "message": "Sélectionnez des éléments pour les attribuer à un annotateur ou retirer leur attribution. Plus d’actions les déplace vers une autre file d’attente, les retire des files d’attente ou passe leur révision. Modifier ouvre un élément sans changer son attribution.",
     "sourceHash": "89f3f938f629e451"
@@ -9868,7 +10140,7 @@
     "sourceHash": "4ca41db028253700"
   },
   "reviewQueues.queuePage.claimAssignedTo": {
-    "message": "Affecté à {annotator}",
+    "message": "Attribué à {annotator}",
     "sourceHash": "34aab30477566124"
   },
   "reviewQueues.queuePage.claimAssignedToYou": {
@@ -9980,7 +10252,7 @@
     "sourceHash": "f8d46c2570e70736"
   },
   "reviewQueues.queuePage.move": {
-    "message": "Déplacer...",
+    "message": "Déplacer…",
     "sourceHash": "cd799da3521d15cb"
   },
   "reviewQueues.queuePage.nextItem": {
@@ -10136,12 +10408,20 @@
     "sourceHash": "a2019abfe3c42368"
   },
   "reviewQueues.queueSettings.defaultQueueNote": {
-    "message": "Les documents avec des alertes de confiance arrivent ici lorsque HITL est activé dans leur configuration et que cette file d’attente est activée.",
-    "sourceHash": "0bb7a23d813a6943"
+    "message": "Les règles d’acheminement intégrées envoient des documents ici, tout comme une règle d’acheminement dont la file d’attente est manquante ou désactivée. Les documents sont retenus pour révision uniquement lorsque cette file d’attente est activée.",
+    "sourceHash": "ed4a7df78b9ed56d"
   },
   "reviewQueues.queueSettings.description.label": {
     "message": "Description",
     "sourceHash": "526e0087cc3f254d"
+  },
+  "reviewQueues.queueSettings.enabled.constraint": {
+    "message": "Les documents qu’une règle d’acheminement envoie à une file d’attente désactivée sont plutôt dirigés vers la file d’attente « Default ».",
+    "sourceHash": "a9ae01074c7eed20"
+  },
+  "reviewQueues.queueSettings.enabled.defaultConstraint": {
+    "message": "Tant que la file d’attente « Default » est désactivée, aucun document n’est retenu pour révision.",
+    "sourceHash": "6756407704136a53"
   },
   "reviewQueues.queueSettings.enabled.description": {
     "message": "Si désactivée, aucun document n’est ajouté à cette file d’attente.",
@@ -10167,6 +10447,10 @@
     "message": "Cette file d’attente n’existe plus. Elle a peut-être été supprimée. Fermez cette boîte de dialogue.",
     "sourceHash": "9db0dc8dff3ef3fb"
   },
+  "reviewQueues.queueSettings.id.constraint": {
+    "message": "Les règles d’acheminement désignent la file d’attente par cet identifiant.",
+    "sourceHash": "f134a8f482e8c34a"
+  },
   "reviewQueues.queueSettings.id.description": {
     "message": "Utilisé dans les liens. Il ne peut pas être changé plus tard.",
     "sourceHash": "158c8ef23ede8a12"
@@ -10191,13 +10475,17 @@
     "message": "Nom",
     "sourceHash": "dcd1d5223f73b3a9"
   },
+  "reviewQueues.queueSettings.nameExample": {
+    "message": "Réclamations de valeur élevée",
+    "sourceHash": "9fddf3001c2ab640"
+  },
   "reviewQueues.queueSettings.nameRequired": {
     "message": "Entrez un nom.",
     "sourceHash": "099f9079ba79b851"
   },
   "reviewQueues.queueSettings.priority.constraint": {
-    "message": "Un nombre entier. À titre indicatif : détermine l’ordre des files d’attente et de « Élément suivant ». Conservé pour quand il y aura plus d’une file d’attente; avec seulement la file d’attente par défaut, cela ne change encore rien.",
-    "sourceHash": "ab2181f6f5696d70"
+    "message": "Un nombre entier. À titre indicatif : détermine l’ordre des files d’attente et d’Élément suivant.",
+    "sourceHash": "d6677985c71bf29e"
   },
   "reviewQueues.queueSettings.priority.description": {
     "message": "Les nombres les plus élevés sont traités en premier.",
@@ -10300,16 +10588,28 @@
     "sourceHash": "00eebfc322473124"
   },
   "reviewQueues.queuesPage.confirmDeleteMoving": {
-    "message": "Supprimer la file d’attente {name} ({id})? Cette action est irréversible. {count, plural, one {# élément sera déplacé} other {# éléments seront déplacés}} vers la file d’attente par défaut.",
+    "message": "Supprimer la file d’attente {name} ({id})? Cette action est irréversible. {count, plural, one {# élément sera déplacé} other {# éléments seront déplacés}} vers la file d’attente « Default ».",
     "sourceHash": "368a813aeb10008f"
   },
   "reviewQueues.queuesPage.countedAt": {
     "message": "Compté le {time}",
     "sourceHash": "69d82aa6eb85e4cc"
   },
+  "reviewQueues.queuesPage.createQueue": {
+    "message": "Créer une file d’attente",
+    "sourceHash": "844c2409104da266"
+  },
+  "reviewQueues.queuesPage.created": {
+    "message": "La file d’attente {name} a été créée.",
+    "sourceHash": "1d55b761db1643f9"
+  },
   "reviewQueues.queuesPage.defaultNotDeletable": {
     "message": "La file d’attente par défaut ne peut pas être supprimée",
     "sourceHash": "1f099d7d9138e770"
+  },
+  "reviewQueues.queuesPage.defaultQueueOff": {
+    "message": "La file d’attente de révision « Default » est désactivée; les règles d’acheminement ne sont donc pas évaluées.",
+    "sourceHash": "84b9e314e0cba36b"
   },
   "reviewQueues.queuesPage.deleteDialog.cancel": {
     "message": "Annuler",
@@ -10332,12 +10632,12 @@
     "sourceHash": "a19203ee4d490ffb"
   },
   "reviewQueues.queuesPage.deletedMoved": {
-    "message": "La file d’attente {name} a été supprimée; ses éléments ont été déplacés vers la file d’attente par défaut.",
+    "message": "La file d’attente {name} a été supprimée; ses éléments ont été déplacés vers la file d’attente « Default ».",
     "sourceHash": "72e8fcd2bf5fe800"
   },
   "reviewQueues.queuesPage.description": {
-    "message": "Configurez la file d’attente de révision par défaut et indiquez les annotateurs qui y travaillent.",
-    "sourceHash": "10614de90e89d0a5"
+    "message": "Créez et configurez les files d’attente de révision de production, et indiquez les annotateurs qui y travaillent.",
+    "sourceHash": "a9e834d519db0798"
   },
   "reviewQueues.queuesPage.empty": {
     "message": "Aucune file d’attente trouvée. La file d’attente « Default » est créée automatiquement; rechargez la page.",
@@ -10379,13 +10679,17 @@
     "message": "Non définie — déplacez ses éléments vers une file d’attente définie",
     "sourceHash": "c2c0cdfa77ffb27b"
   },
+  "reviewQueues.queuesPage.openDefaultQueueSettings": {
+    "message": "Ouvrir les paramètres de la file d’attente « Default »",
+    "sourceHash": "6c0366e308b68774"
+  },
   "reviewQueues.queuesPage.preparing": {
     "message": "Préparation…",
     "sourceHash": "5d1fa38bcf0d88ca"
   },
   "reviewQueues.queuesPage.production.description": {
-    "message": "Files d’attente à l’échelle du système pour les documents traités. Lorsque HITL est activé dans la configuration d’un document et que la file d’attente « Default » est activée, un document ayant déclenché des alertes de confiance arrive dans la file d’attente « Default ».",
-    "sourceHash": "f0bc35c6f4d5e0b9"
+    "message": "Files d’attente à l’échelle du système pour les documents traités. Tant que l’acheminement des révisions est activé dans le profil de configuration d’un document et que la file d’attente « Default » est activée, les règles d’acheminement de ce profil envoient le document à la file d’attente que désigne une règle d’acheminement. La file d’attente « Default » reçoit les documents retenus par les règles d’acheminement intégrées, ainsi que les documents dont la file d’attente est absente ou désactivée.",
+    "sourceHash": "e172d23f115c1ced"
   },
   "reviewQueues.queuesPage.production.find": {
     "message": "Trouver des files d’attente",
@@ -10422,6 +10726,10 @@
   "reviewQueues.queuesPage.retry": {
     "message": "Réessayer",
     "sourceHash": "942087cc2d41e013"
+  },
+  "reviewQueues.queuesPage.reviewRoutingOff": {
+    "message": "L’acheminement des révisions est désactivé dans le profil de configuration actif; aucun document n’est donc retenu pour révision. Activez-le dans les paramètres de traitement du profil, à la page <link>Configuration</link>.",
+    "sourceHash": "dc481ed3f228330e"
   },
   "reviewQueues.queuesPage.rowActions": {
     "message": "Actions pour {name}",
@@ -10515,6 +10823,106 @@
     "message": "Champ obligatoire manquant : {name}",
     "sourceHash": "b646f5c9ad844288"
   },
+  "reviewQueues.references.checkAction": {
+    "message": "lire les règles d’acheminement qui utilisent cette file d’attente",
+    "sourceHash": "6ba435803beadebd"
+  },
+  "reviewQueues.references.containerDescription": {
+    "message": "Les règles d’acheminement, dans tous les profils de configuration, qui envoient des documents à cette file d’attente. Modifiez-les dans l’onglet Règles d’acheminement du profil.",
+    "sourceHash": "407b23ef490ffd06"
+  },
+  "reviewQueues.references.containerErrorHeader": {
+    "message": "Impossible de charger les règles d’acheminement qui utilisent cette file d’attente",
+    "sourceHash": "e47dfa2c76b1223e"
+  },
+  "reviewQueues.references.containerHeader": {
+    "message": "Règles d’acheminement qui utilisent cette file d’attente",
+    "sourceHash": "05d18cf4349f6541"
+  },
+  "reviewQueues.references.current": {
+    "message": "actuelle",
+    "sourceHash": "97b0560280ed60a5"
+  },
+  "reviewQueues.references.defaultOutcome": {
+    "message": "Résultat par défaut",
+    "sourceHash": "0c9a76a100d19a0b"
+  },
+  "reviewQueues.references.deleteErrorHeader": {
+    "message": "Impossible de vérifier quelles règles d’acheminement utilisent cette file d’attente",
+    "sourceHash": "c15dfe3136f19693"
+  },
+  "reviewQueues.references.deleteErrorNote": {
+    "message": "Vous pouvez quand même supprimer la file d’attente. Les documents qu’une règle d’acheminement y envoie iront plutôt à la file d’attente « Default ».",
+    "sourceHash": "71aef0ece3988aba"
+  },
+  "reviewQueues.references.deleteFallback": {
+    "message": "Les documents que ces règles d’acheminement envoient à cette file d’attente iront plutôt à la file d’attente « Default ».",
+    "sourceHash": "e068396faf0beaf5"
+  },
+  "reviewQueues.references.deleteHeader": {
+    "message": "{count, plural, one {# règle d’acheminement envoie} other {# règles d’acheminement envoient}} des documents à cette file d’attente",
+    "sourceHash": "be3fab3ad91dc2a8"
+  },
+  "reviewQueues.references.deleteLoading": {
+    "message": "Vérification des règles d’acheminement qui utilisent cette file d’attente",
+    "sourceHash": "b10317e738950818"
+  },
+  "reviewQueues.references.emptyDescription": {
+    "message": "Pour envoyer des documents ici, ajoutez une règle d’acheminement dans l’onglet Règles d’acheminement d’un profil de configuration et choisissez cette file d’attente comme résultat.",
+    "sourceHash": "5d00eefd9c6e12d3"
+  },
+  "reviewQueues.references.emptyTitle": {
+    "message": "Aucune règle d’acheminement n’envoie de documents à cette file d’attente.",
+    "sourceHash": "3c85b04f779547f5"
+  },
+  "reviewQueues.references.loading": {
+    "message": "Chargement des règles d’acheminement",
+    "sourceHash": "6330e331ad17e589"
+  },
+  "reviewQueues.references.openConfiguration": {
+    "message": "Ouvrir Configuration",
+    "sourceHash": "d18228d5d7325c20"
+  },
+  "reviewQueues.references.openProfile": {
+    "message": "Ouvrir les règles d’acheminement de {profile}",
+    "sourceHash": "4678c05fff40984c"
+  },
+  "reviewQueues.references.profileColumn": {
+    "message": "Profil de configuration",
+    "sourceHash": "97b7166207cc6e2c"
+  },
+  "reviewQueues.references.published": {
+    "message": "publiée",
+    "sourceHash": "b04e5ea201bb040c"
+  },
+  "reviewQueues.references.publishedRevision": {
+    "message": "publiée r{revision, number}",
+    "sourceHash": "c834e51198af6c27"
+  },
+  "reviewQueues.references.refresh": {
+    "message": "Actualiser les règles d’acheminement",
+    "sourceHash": "acd67350262e0cc0"
+  },
+  "reviewQueues.references.retry": {
+    "message": "Réessayer",
+    "sourceHash": "942087cc2d41e013"
+  },
+  "reviewQueues.references.revisionColumn": {
+    "message": "Révision",
+    "sourceHash": "2e516d68f42f3e35"
+  },
+  "reviewQueues.references.ruleColumn": {
+    "message": "Règle d’acheminement",
+    "sourceHash": "334d82bfe18d5c10"
+  },
+  "reviewQueues.references.ruleWithLabel": {
+    "message": "{label} ({id})",
+    "sourceHash": "f75e838c52cbda64"
+  },
+  "reviewQueues.references.tableLabel": {
+    "message": "Règles d’acheminement qui utilisent cette file d’attente",
+    "sourceHash": "05d18cf4349f6541"
+  },
   "reviewQueues.reviewHistory.close": {
     "message": "Fermer",
     "sourceHash": "7d9eb7acb13e2462"
@@ -10534,6 +10942,38 @@
   "reviewQueues.reviewHistory.column.when": {
     "message": "Quand",
     "sourceHash": "cf9c7aa24a26aac4"
+  },
+  "reviewQueues.reviewHistory.detail.defaultOutcome": {
+    "message": "Résultat par défaut",
+    "sourceHash": "0c9a76a100d19a0b"
+  },
+  "reviewQueues.reviewHistory.detail.limit": {
+    "message": "Limite : {limit, number} de suite",
+    "sourceHash": "b1e2b20cbb9816e0"
+  },
+  "reviewQueues.reviewHistory.detail.queue": {
+    "message": "File d’attente : {queue}",
+    "sourceHash": "586869b534d96c85"
+  },
+  "reviewQueues.reviewHistory.detail.restartSections": {
+    "message": "Sections extraites de nouveau : {sections}",
+    "sourceHash": "e23f18694620a2c4"
+  },
+  "reviewQueues.reviewHistory.detail.restartStep": {
+    "message": "L’exécution commence à : {step}",
+    "sourceHash": "ea58023612bd6700"
+  },
+  "reviewQueues.reviewHistory.detail.routingReason": {
+    "message": "Motif d’acheminement : {reason}",
+    "sourceHash": "8e67e0f2de38979d"
+  },
+  "reviewQueues.reviewHistory.detail.rule": {
+    "message": "Règle d’acheminement : {rule}",
+    "sourceHash": "d7fd8fd23fa2eb63"
+  },
+  "reviewQueues.reviewHistory.detail.startStep": {
+    "message": "Étape de départ : {step}",
+    "sourceHash": "9196dc6398c4e34b"
   },
   "reviewQueues.reviewHistory.empty": {
     "message": "Aucun événement n’a encore eu lieu pour cet élément.",
@@ -10567,8 +11007,12 @@
     "message": "Déplacé",
     "sourceHash": "b11c9047f3512271"
   },
+  "reviewQueues.reviewHistory.event.placementLimitReached": {
+    "message": "Non acheminé de nouveau : limite de placements atteinte",
+    "sourceHash": "00ccf9620738b027"
+  },
   "reviewQueues.reviewHistory.event.reassigned": {
-    "message": "Réaffecté",
+    "message": "Réattribué",
     "sourceHash": "d0c001d90145a278"
   },
   "reviewQueues.reviewHistory.event.reclaimedExpired": {
@@ -10587,9 +11031,25 @@
     "message": "Retiré de la révision",
     "sourceHash": "58ed654d7305d1cb"
   },
+  "reviewQueues.reviewHistory.event.rerouted": {
+    "message": "Acheminé de nouveau vers une file d’attente après la révision",
+    "sourceHash": "b542568519d70d4b"
+  },
+  "reviewQueues.reviewHistory.event.routed": {
+    "message": "Acheminé vers une file d’attente",
+    "sourceHash": "ade29e938477d5ba"
+  },
+  "reviewQueues.reviewHistory.event.routingEvaluationFailed": {
+    "message": "Les règles d’acheminement n’ont pas pu être évaluées",
+    "sourceHash": "e319e17e47909b21"
+  },
   "reviewQueues.reviewHistory.event.sectionReviewed": {
     "message": "Révision de la section terminée",
     "sourceHash": "c868ba64289f9f30"
+  },
+  "reviewQueues.reviewHistory.event.sentBack": {
+    "message": "Renvoyé pour un nouveau traitement",
+    "sourceHash": "58d3cb74cc8b2f60"
   },
   "reviewQueues.reviewHistory.event.sentToReview": {
     "message": "Envoyé en révision",
@@ -10614,6 +11074,26 @@
   "reviewQueues.reviewHistory.title": {
     "message": "Historique des révisions ({count})",
     "sourceHash": "058546892906591b"
+  },
+  "reviewQueues.routedBy.defaultOutcome": {
+    "message": "Acheminé par le résultat par défaut",
+    "sourceHash": "a74f8f40bc18fdfe"
+  },
+  "reviewQueues.routedBy.placedInDefault": {
+    "message": "{why} Le document se trouve plutôt dans la file d’attente « Default ».",
+    "sourceHash": "961dc25861894c68"
+  },
+  "reviewQueues.routedBy.rule": {
+    "message": "Acheminé par la règle : {rule}",
+    "sourceHash": "4de83fba0647359e"
+  },
+  "reviewQueues.routedBy.showLess": {
+    "message": "Afficher moins",
+    "sourceHash": "94ea9b1d33a02975"
+  },
+  "reviewQueues.routedBy.showMore": {
+    "message": "Afficher plus",
+    "sourceHash": "f5c9bd131486e793"
   },
   "reviewQueues.supervisorActions.assign": {
     "message": "Attribuer…",
@@ -10768,20 +11248,24 @@
     "sourceHash": "6ca6a19e6007eae4"
   },
   "reviewQueues.supervisorModals.unassignMany": {
-    "message": "{count, plural, one {Retirer # élément à son annotateur. Il reste dans sa file d’attente, non assigné; le brouillon est conservé et l’annotateur en est informé.} other {Retirer # éléments à leurs annotateurs. Ils restent dans leur file d’attente, non assignés; les brouillons sont conservés et les annotateurs en sont informés.}}",
+    "message": "{count, plural, one {Retirer # élément à son annotateur. Il reste dans sa file d’attente, non attribué; le brouillon est conservé et l’annotateur en est informé.} other {Retirer # éléments à leurs annotateurs. Ils restent dans leur file d’attente, non attribués; les brouillons sont conservés et les annotateurs en sont informés.}}",
     "sourceHash": "ec8169338659c12d"
   },
   "reviewQueues.supervisorModals.unassignOne": {
-    "message": "Retirer {document} à {annotator}. Il reste dans {queue}, non assigné; le brouillon est conservé et l’annotateur en est informé.",
+    "message": "Retirer {document} à {annotator}. Il reste dans {queue}, non attribué; le brouillon est conservé et l’annotateur en est informé.",
     "sourceHash": "d3220ee8dd50c140"
   },
   "reviewQueues.supervisorModals.unassignOneNoAnnotator": {
-    "message": "Retirer {document} à son annotateur. Il reste dans {queue}, non assigné; le brouillon est conservé et l’annotateur en est informé.",
+    "message": "Retirer {document} à son annotateur. Il reste dans {queue}, non attribué; le brouillon est conservé et l’annotateur en est informé.",
     "sourceHash": "5183d201c4d1b03a"
   },
   "reviewQueues.taskContext.confidence": {
     "message": "Confiance {score}, seuil {threshold}",
     "sourceHash": "4a531b009b0eb018"
+  },
+  "reviewQueues.taskContext.counter": {
+    "message": "({count, number})",
+    "sourceHash": "129bbf4d20671ba7"
   },
   "reviewQueues.taskContext.escalated": {
     "message": "Transmis à un niveau supérieur",
@@ -10836,23 +11320,23 @@
     "sourceHash": "9e7c4f54df84c1f4"
   },
   "reviewQueues.toolsPanel.annotators": {
-    "message": "<b>Annotateurs</b> (administrateur) : chaque annotateur répertorié, avec les documents qui lui sont assignés.",
+    "message": "<b>Annotateurs</b> (administrateur) : chaque annotateur répertorié, avec les documents qui lui sont attribués.",
     "sourceHash": "aadca23e04d29783"
   },
   "reviewQueues.toolsPanel.assignmentExpiry": {
-    "message": "Une assignation n’expire pas. Une fois le délai de la file d’attente écoulé, l’annotateur reçoit un seul rappel.",
+    "message": "Une attribution n’expire pas. Une fois le délai de la file d’attente écoulé, l’annotateur reçoit un seul rappel.",
     "sourceHash": "8a25b60678ab9fda"
   },
   "reviewQueues.toolsPanel.assignmentsHeading": {
-    "message": "Assignations",
+    "message": "Attributions",
     "sourceHash": "2c7e21f63a475b9d"
   },
   "reviewQueues.toolsPanel.documentsTable": {
-    "message": "Le tableau des documents : triez par <b>Annotateur</b> pour voir le travail de chaque personne. Sélectionnez les documents à attribuer, désassigner, déplacer ou réclamer; ouvrez-en un pour le modifier.",
+    "message": "Le tableau des documents : triez par <b>Annotateur</b> pour voir le travail de chaque personne. Sélectionnez les documents à attribuer, désattribuer, déplacer ou réclamer; ouvrez-en un pour le modifier.",
     "sourceHash": "40271addfa0bdb71"
   },
   "reviewQueues.toolsPanel.keyMetrics": {
-    "message": "<b>Mesures clés</b> : le nombre de documents en attente, assignés et en cours, ainsi que les annotateurs et la priorité de la file d’attente.",
+    "message": "<b>Mesures clés</b> : le nombre de documents en attente, attribués et en cours, ainsi que les annotateurs et la priorité de la file d’attente.",
     "sourceHash": "950946508fa399d8"
   },
   "reviewQueues.toolsPanel.linkHumanReview": {
@@ -10862,6 +11346,10 @@
   "reviewQueues.toolsPanel.linkReviewQueues": {
     "message": "Files d’attente de révision",
     "sourceHash": "7340557b87e6f55e"
+  },
+  "reviewQueues.toolsPanel.linkReviewRouting": {
+    "message": "Acheminement des révisions",
+    "sourceHash": "a38cdf870c5e9513"
   },
   "reviewQueues.toolsPanel.linkTestStudio": {
     "message": "Studio de test",
@@ -10879,6 +11367,14 @@
     "message": "Sur cette page",
     "sourceHash": "b5658fc8edda24f9"
   },
+  "reviewQueues.toolsPanel.productionCreateAndDelete": {
+    "message": "<b>Créer une file d’attente</b> ajoute une file d’attente que les règles d’acheminement peuvent désigner par son identifiant. La suppression d’une file d’attente déplace ses documents vers la file d’attente « Default », et affiche d’abord la liste des règles d’acheminement qui la désignent.",
+    "sourceHash": "7ba1a0bfa7f4c572"
+  },
+  "reviewQueues.toolsPanel.productionDefaultQueue": {
+    "message": "La file d’attente « Default » reçoit les documents retenus par les règles d’acheminement intégrées (extractions échouées, alertes de confiance, champs obligatoires manquants) ainsi que les documents dont la file d’attente est manquante ou désactivée.",
+    "sourceHash": "9fcb9ba8c1a04405"
+  },
   "reviewQueues.toolsPanel.productionHeading": {
     "message": "Files d’attente de production",
     "sourceHash": "e8bf189b010585f2"
@@ -10888,8 +11384,8 @@
     "sourceHash": "381dda84da9f8327"
   },
   "reviewQueues.toolsPanel.productionRouting": {
-    "message": "Un document dont les champs ont déclenché des alertes de confiance est envoyé à la file d’attente « Default » lorsque HITL est activé dans sa configuration.",
-    "sourceHash": "7c2b49f224376a6f"
+    "message": "Lorsque l’acheminement des révisions est activé dans le profil de configuration d’un document et que la file d’attente « Default » est activée, les règles d’acheminement de ce profil décident si le document est révisé et l’envoient vers la file d’attente désignée par une règle d’acheminement. Un avertissement sur cette page indique quand les règles d’acheminement ne sont pas évaluées, et pourquoi.",
+    "sourceHash": "107e039eaaa168ec"
   },
   "reviewQueues.toolsPanel.productionSettings": {
     "message": "<b>Paramètres</b> définit le nom, la priorité, le délai, les annotateurs admissibles et le commutateur « Activé » d’une file d’attente. Une modification enregistrée s’affiche aussitôt.",
@@ -10996,8 +11492,8 @@
     "sourceHash": "3b2fe03e36893916"
   },
   "reviewQueues.workItemsTable.column.reason": {
-    "message": "Raison principale",
-    "sourceHash": "a1d43f3b9dbd28d8"
+    "message": "Motif",
+    "sourceHash": "f81ab834de5f8491"
   },
   "reviewQueues.workItemsTable.column.source": {
     "message": "Source",
@@ -11006,6 +11502,10 @@
   "reviewQueues.workItemsTable.column.state": {
     "message": "État",
     "sourceHash": "a3b50c476732c740"
+  },
+  "reviewQueues.workItemsTable.failedPolicyRules": {
+    "message": "{count, plural, one {# règle de politique non respectée} other {# règles de politique non respectées}}",
+    "sourceHash": "aa4267bb85bc2c4b"
   },
   "reviewQueues.workItemsTable.find": {
     "message": "Rechercher des éléments",
@@ -11022,6 +11522,30 @@
   "reviewQueues.workItemsTable.openDocument": {
     "message": "Ouvrir {objectKey}",
     "sourceHash": "44ecf590eb7c5e1f"
+  },
+  "reviewQueues.workItemsTable.preferences.cancel": {
+    "message": "Annuler",
+    "sourceHash": "19766ed6ccb2f4a3"
+  },
+  "reviewQueues.workItemsTable.preferences.columns": {
+    "message": "Préférences des colonnes",
+    "sourceHash": "d734d75121ff81a2"
+  },
+  "reviewQueues.workItemsTable.preferences.confirm": {
+    "message": "Confirmer",
+    "sourceHash": "eebdd24a77d9ad32"
+  },
+  "reviewQueues.workItemsTable.preferences.pageSize": {
+    "message": "Taille de page",
+    "sourceHash": "bd69e66e00ef1b4c"
+  },
+  "reviewQueues.workItemsTable.preferences.pageSizeOption": {
+    "message": "{count, plural, one {# élément} other {# éléments}}",
+    "sourceHash": "1eb9964e951859b5"
+  },
+  "reviewQueues.workItemsTable.preferences.title": {
+    "message": "Préférences",
+    "sourceHash": "66962f72a0888373"
   },
   "reviewQueues.workItemsTable.rowActions": {
     "message": "Actions pour {name}",
@@ -11124,8 +11648,1112 @@
     "sourceHash": "938301b6c380b58a"
   },
   "routes.unauth.redirecting": {
-    "message": "Redirection vers {provider}...",
+    "message": "Redirection vers {provider}…",
     "sourceHash": "a1919db191cbb318"
+  },
+  "routing.aggregate.all": {
+    "message": "Toutes les valeurs",
+    "sourceHash": "1198b6e3fe89d396"
+  },
+  "routing.aggregate.any": {
+    "message": "N’importe quelle valeur",
+    "sourceHash": "004f62d2d5b5c5be"
+  },
+  "routing.aggregate.count": {
+    "message": "Nombre de valeurs",
+    "sourceHash": "ee7faf11c00414f7"
+  },
+  "routing.conditions.actionsAria": {
+    "message": "Actions pour la condition {position, number}",
+    "sourceHash": "b8213b8e0db17b90"
+  },
+  "routing.conditions.add": {
+    "message": "Ajouter une condition",
+    "sourceHash": "60a0d83510ea99a1"
+  },
+  "routing.conditions.aggregateAria": {
+    "message": "Correspondance de la condition {position, number}",
+    "sourceHash": "c19d9f97a7ac4131"
+  },
+  "routing.conditions.aggregateColumn": {
+    "message": "Correspondance",
+    "sourceHash": "03c0e806becb1425"
+  },
+  "routing.conditions.duplicate": {
+    "message": "Dupliquer",
+    "sourceHash": "02cdaabfca805d6a"
+  },
+  "routing.conditions.empty": {
+    "message": "Aucune condition. La règle d’acheminement correspond à tous les documents.",
+    "sourceHash": "6f5961d3d91f63af"
+  },
+  "routing.conditions.examples": {
+    "message": "Par exemple {first} ou {second}",
+    "sourceHash": "9bd438583ed4b4e4"
+  },
+  "routing.conditions.inputAria": {
+    "message": "Entrée de la condition {position, number}",
+    "sourceHash": "78a9d1a800dbd274"
+  },
+  "routing.conditions.inputColumn": {
+    "message": "Entrée",
+    "sourceHash": "36ecb4f8669133ce"
+  },
+  "routing.conditions.inputPlaceholder": {
+    "message": "Choisissez une entrée",
+    "sourceHash": "c91b6bd05cb6475d"
+  },
+  "routing.conditions.inputRequired": {
+    "message": "Choisissez une entrée.",
+    "sourceHash": "f0dcad75bdd15e8c"
+  },
+  "routing.conditions.limit": {
+    "message": "Une règle d’acheminement comporte au plus {max, number} conditions.",
+    "sourceHash": "020ad8327026ca11"
+  },
+  "routing.conditions.moveDown": {
+    "message": "Déplacer vers le bas",
+    "sourceHash": "40bb50da160cdc21"
+  },
+  "routing.conditions.moveUp": {
+    "message": "Déplacer vers le haut",
+    "sourceHash": "c66feb5eb8f217c7"
+  },
+  "routing.conditions.pathAll": {
+    "message": "Tous les types de politiques",
+    "sourceHash": "4df298be33dcf0f5"
+  },
+  "routing.conditions.pathAria": {
+    "message": "Ce que lit l’entrée de la condition {position, number}",
+    "sourceHash": "dd4fac93f67ec6cc"
+  },
+  "routing.conditions.pathClass": {
+    "message": "Classe",
+    "sourceHash": "4f3a9bd003974a5e"
+  },
+  "routing.conditions.pathEmpty": {
+    "message": "Ce profil n’offre aucun choix",
+    "sourceHash": "49cf5ac3b44f24db"
+  },
+  "routing.conditions.pathField": {
+    "message": "Champ",
+    "sourceHash": "f45fc1dfdc96db27"
+  },
+  "routing.conditions.pathPlaceholder": {
+    "message": "Choisissez",
+    "sourceHash": "c7f937836f5d82d5"
+  },
+  "routing.conditions.pathPolicyRule": {
+    "message": "Règle de politique",
+    "sourceHash": "abdee84bf86a83ef"
+  },
+  "routing.conditions.pathPolicyType": {
+    "message": "Type de politique",
+    "sourceHash": "5e4623659cf48ffb"
+  },
+  "routing.conditions.pathRequired": {
+    "message": "Choisissez ce que lit cette entrée.",
+    "sourceHash": "216367af85142fd1"
+  },
+  "routing.conditions.remove": {
+    "message": "Supprimer",
+    "sourceHash": "c3812fc4acb861d5"
+  },
+  "routing.conditions.testAria": {
+    "message": "Expression de la condition {position, number}",
+    "sourceHash": "3ada02baf11b7005"
+  },
+  "routing.conditions.testRequired": {
+    "message": "Entrez une valeur.",
+    "sourceHash": "8b347a23ecbb7b44"
+  },
+  "routing.conditions.title": {
+    "message": "Condition {position, number}",
+    "sourceHash": "26846c46e5473750"
+  },
+  "routing.conditions.valueLabel": {
+    "message": "Valeur",
+    "sourceHash": "8e37953d23daca5f"
+  },
+  "routing.conditions.valueNoInput": {
+    "message": "Choisissez une entrée pour saisir sa valeur.",
+    "sourceHash": "cf2fd1824120b18b"
+  },
+  "routing.dmn.cancel": {
+    "message": "Annuler",
+    "sourceHash": "19766ed6ccb2f4a3"
+  },
+  "routing.dmn.confirmBody": {
+    "message": "{file} contient {rules, plural, one {# règle d’acheminement} other {# règles d’acheminement}}. Elles remplacent toutes les règles d’acheminement du tableau.",
+    "sourceHash": "17fe71b1d1b13586"
+  },
+  "routing.dmn.confirmHeader": {
+    "message": "Remplacer le tableau d’acheminement?",
+    "sourceHash": "7437a325527260af"
+  },
+  "routing.dmn.confirmNote": {
+    "message": "Rien n’est enregistré tant que vous n’enregistrez pas la configuration.",
+    "sourceHash": "e2ea23c043872590"
+  },
+  "routing.dmn.exportError": {
+    "message": "Le tableau n’a pas pu être exporté",
+    "sourceHash": "0f62b530e67a8a44"
+  },
+  "routing.dmn.importAria": {
+    "message": "Fichier DMN à importer",
+    "sourceHash": "92537e065b649844"
+  },
+  "routing.dmn.importError": {
+    "message": "Le fichier n’a pas pu être importé",
+    "sourceHash": "2343af8e694b9991"
+  },
+  "routing.dmn.replace": {
+    "message": "Remplacer",
+    "sourceHash": "95e154398a4bc009"
+  },
+  "routing.dmn.tooLarge": {
+    "message": "Le fichier dépasse {limit, number} Ko.",
+    "sourceHash": "b253cc1b9eecd78f"
+  },
+  "routing.fallback.evaluationError": {
+    "message": "Le tableau n’a pas pu être évalué.",
+    "sourceHash": "2ec2ed2644f7cf0d"
+  },
+  "routing.fallback.queueDisabled": {
+    "message": "La file d’attente nommée par la règle d’acheminement est désactivée.",
+    "sourceHash": "f5b96797577ec77f"
+  },
+  "routing.fallback.queueMissing": {
+    "message": "La file d’attente nommée par la règle d’acheminement n’existe pas.",
+    "sourceHash": "13159df2349fdb3c"
+  },
+  "routing.guided.between": {
+    "message": "Entre",
+    "sourceHash": "c1ea3f5e7aa47303"
+  },
+  "routing.guided.cannotShow": {
+    "message": "Les commandes guidées ne peuvent pas afficher cette expression.",
+    "sourceHash": "1eed2bb777ae57e3"
+  },
+  "routing.guided.comparisonAria": {
+    "message": "Comparaison de la condition {position, number}",
+    "sourceHash": "9c2500e3337efe1b"
+  },
+  "routing.guided.comparisonLabel": {
+    "message": "Comparaison",
+    "sourceHash": "571527339d0e3e34"
+  },
+  "routing.guided.editAsExpression": {
+    "message": "Modifier en tant qu’expression",
+    "sourceHash": "2fa927e95250ae20"
+  },
+  "routing.guided.equals": {
+    "message": "Est égal à",
+    "sourceHash": "f939ae3d30c69e33"
+  },
+  "routing.guided.expressionLabel": {
+    "message": "Expression",
+    "sourceHash": "c67415bcff328a59"
+  },
+  "routing.guided.fromLabel": {
+    "message": "De",
+    "sourceHash": "218197693424e015"
+  },
+  "routing.guided.greater": {
+    "message": "Supérieur à",
+    "sourceHash": "1fbcaddaa36260ff"
+  },
+  "routing.guided.greaterOrEqual": {
+    "message": "Au moins",
+    "sourceHash": "3251982cbfa9f225"
+  },
+  "routing.guided.isNotOneOf": {
+    "message": "N’est aucune des valeurs",
+    "sourceHash": "7cfe42492ea89882"
+  },
+  "routing.guided.isOneOf": {
+    "message": "Est l’une des valeurs",
+    "sourceHash": "e3c693d1b34cefc7"
+  },
+  "routing.guided.less": {
+    "message": "Inférieur à",
+    "sourceHash": "23105bdfc3d62ed1"
+  },
+  "routing.guided.lessOrEqual": {
+    "message": "Au plus",
+    "sourceHash": "6797626fe47326c4"
+  },
+  "routing.guided.missing": {
+    "message": "Absente",
+    "sourceHash": "6be36ca49ee85210"
+  },
+  "routing.guided.no": {
+    "message": "Non",
+    "sourceHash": "1ea442a134b2a184"
+  },
+  "routing.guided.notAvailable": {
+    "message": "Cette valeur n’a pas de commandes guidées.",
+    "sourceHash": "6b3180aafce50da7"
+  },
+  "routing.guided.notEquals": {
+    "message": "N’est pas égal à",
+    "sourceHash": "e47c3280f3bfbdfc"
+  },
+  "routing.guided.numberAria": {
+    "message": "Nombre de la condition {position, number}",
+    "sourceHash": "264dbfce4fdf07e8"
+  },
+  "routing.guided.numberLabel": {
+    "message": "Nombre",
+    "sourceHash": "bd82cf16699be29e"
+  },
+  "routing.guided.present": {
+    "message": "Présente",
+    "sourceHash": "43f9b89c0b9d22d8"
+  },
+  "routing.guided.removeValue": {
+    "message": "Supprimer {value}",
+    "sourceHash": "4bd5a2cd289728e6"
+  },
+  "routing.guided.toAria": {
+    "message": "Nombre supérieur de la condition {position, number}",
+    "sourceHash": "b31a46dd7e7b8a35"
+  },
+  "routing.guided.toLabel": {
+    "message": "À",
+    "sourceHash": "f4b06ef6d3c81436"
+  },
+  "routing.guided.typedPlaceholder": {
+    "message": "Saisissez une valeur et appuyez sur Entrée",
+    "sourceHash": "0a0c9adc5bb081ad"
+  },
+  "routing.guided.useGuided": {
+    "message": "Utiliser les commandes guidées",
+    "sourceHash": "96e2ca478614832e"
+  },
+  "routing.guided.valueAria": {
+    "message": "Valeur de la condition {position, number}",
+    "sourceHash": "7fad9dfe97cbf914"
+  },
+  "routing.guided.valuesAria": {
+    "message": "Valeurs de la condition {position, number}",
+    "sourceHash": "282cf5621e9cbefb"
+  },
+  "routing.guided.valuesEmpty": {
+    "message": "Ce profil n’a aucune valeur à proposer",
+    "sourceHash": "d492ce025db08680"
+  },
+  "routing.guided.valuesLabel": {
+    "message": "Valeurs",
+    "sourceHash": "53b09e104f608daa"
+  },
+  "routing.guided.valuesPlaceholder": {
+    "message": "Choisissez des valeurs",
+    "sourceHash": "9d442e1c3aec923c"
+  },
+  "routing.guided.yes": {
+    "message": "Oui",
+    "sourceHash": "85a39ab345d672ff"
+  },
+  "routing.input.classPresent": {
+    "message": "La classe est présente",
+    "sourceHash": "21be2fe7377aca1c"
+  },
+  "routing.input.confidenceAlertCount": {
+    "message": "Nombre d’alertes de confiance",
+    "sourceHash": "741a540f8995b67f"
+  },
+  "routing.input.documentClass": {
+    "message": "Classe de document",
+    "sourceHash": "53ca687de9d19f6a"
+  },
+  "routing.input.extractionFailedCount": {
+    "message": "Nombre d’extractions échouées",
+    "sourceHash": "fe6360fa7cd50efe"
+  },
+  "routing.input.failedPolicyRuleCount": {
+    "message": "Nombre de règles de politique non respectées",
+    "sourceHash": "c96833bd1a470c2f"
+  },
+  "routing.input.fieldValue": {
+    "message": "Valeur du champ",
+    "sourceHash": "ca3653fa9b7844f0"
+  },
+  "routing.input.missingRequiredFieldCount": {
+    "message": "Nombre de champs obligatoires manquants",
+    "sourceHash": "5a370dcd030075a7"
+  },
+  "routing.input.pageCount": {
+    "message": "Nombre de pages",
+    "sourceHash": "2905c1b81f2e921f"
+  },
+  "routing.input.policyRuleVerdict": {
+    "message": "Verdict de la règle de politique",
+    "sourceHash": "bb3543493e734f58"
+  },
+  "routing.input.processingMode": {
+    "message": "Mode de traitement",
+    "sourceHash": "25aaa653a57aace3"
+  },
+  "routing.input.reviewed": {
+    "message": "Révisé",
+    "sourceHash": "fad6057bb5403e59"
+  },
+  "routing.input.routeMissingRequiredFields": {
+    "message": "Acheminer les champs obligatoires manquants (paramètre)",
+    "sourceHash": "acd3111bd70fa120"
+  },
+  "routing.input.sectionClasses": {
+    "message": "Classes des sections",
+    "sourceHash": "abc0aaf0e9c6dfb2"
+  },
+  "routing.input.sectionCount": {
+    "message": "Nombre de sections",
+    "sourceHash": "c41711da4ec387b3"
+  },
+  "routing.layout.actionsAria": {
+    "message": "Actions pour la règle d’acheminement {id}",
+    "sourceHash": "5f5db3102075f54b"
+  },
+  "routing.layout.actionsColumn": {
+    "message": "Actions",
+    "sourceHash": "ff8059dc6752afdd"
+  },
+  "routing.layout.addRule": {
+    "message": "Ajouter une règle d’acheminement",
+    "sourceHash": "f0b5b553a838c5ce"
+  },
+  "routing.layout.builtIn": {
+    "message": "Intégrée",
+    "sourceHash": "1f43948106d1d47f"
+  },
+  "routing.layout.conditionsColumn": {
+    "message": "Conditions",
+    "sourceHash": "97d4be8960698f97"
+  },
+  "routing.layout.counter": {
+    "message": "({count, number})",
+    "sourceHash": "129bbf4d20671ba7"
+  },
+  "routing.layout.defaultNoReview": {
+    "message": "Aucune révision",
+    "sourceHash": "61231fe7fa8d6690"
+  },
+  "routing.layout.defaultOutcomeDescription": {
+    "message": "Ce qu’il advient d’un document auquel aucune règle d’acheminement ne correspond.",
+    "sourceHash": "a62f36aa4909daba"
+  },
+  "routing.layout.defaultOutcomeLabel": {
+    "message": "Résultat par défaut",
+    "sourceHash": "0c9a76a100d19a0b"
+  },
+  "routing.layout.defaultQueue": {
+    "message": "Envoyer dans une file d’attente de révision",
+    "sourceHash": "8115e97dd1dcac47"
+  },
+  "routing.layout.defaultQueueLabel": {
+    "message": "File d’attente pour le résultat par défaut",
+    "sourceHash": "1044a2320aac283e"
+  },
+  "routing.layout.deleteBody": {
+    "message": "La règle d’acheminement est retirée de la table. Rien n’est enregistré tant que vous n’enregistrez pas la configuration.",
+    "sourceHash": "87489f7644412090"
+  },
+  "routing.layout.deleteCancel": {
+    "message": "Annuler",
+    "sourceHash": "19766ed6ccb2f4a3"
+  },
+  "routing.layout.deleteConfirm": {
+    "message": "Supprimer",
+    "sourceHash": "e2d0a54968ead24e"
+  },
+  "routing.layout.deleteHeader": {
+    "message": "Supprimer la règle d’acheminement {id}?",
+    "sourceHash": "0b1ce0cadcbe9d16"
+  },
+  "routing.layout.description": {
+    "message": "Après la validation des règles de politique, la première règle d’acheminement activée dont toutes les conditions sont remplies détermine si un document est révisé et dans quelle file d’attente. Les règles d’acheminement sont évaluées dans l’ordre affiché.",
+    "sourceHash": "7dcd0007991196a7"
+  },
+  "routing.layout.duplicate": {
+    "message": "Dupliquer",
+    "sourceHash": "02cdaabfca805d6a"
+  },
+  "routing.layout.edit": {
+    "message": "Modifier",
+    "sourceHash": "464c4ffd019e1e96"
+  },
+  "routing.layout.editNamedRule": {
+    "message": "Modifier la règle d’acheminement {id}",
+    "sourceHash": "32162dca2ec17be3"
+  },
+  "routing.layout.emptyDescription": {
+    "message": "Chaque document reçoit le résultat par défaut.",
+    "sourceHash": "dd57bf340a880236"
+  },
+  "routing.layout.emptyTitle": {
+    "message": "Aucune règle d’acheminement",
+    "sourceHash": "95f27d17d02f2a28"
+  },
+  "routing.layout.enabledAria": {
+    "message": "Règle d’acheminement {id} activée",
+    "sourceHash": "ea6849032c4c89d2"
+  },
+  "routing.layout.enabledColumn": {
+    "message": "Activée",
+    "sourceHash": "92c1cdfdf4cb9cf6"
+  },
+  "routing.layout.exportDmn13": {
+    "message": "Exporter en DMN 1.3",
+    "sourceHash": "12d01cfad3c6500d"
+  },
+  "routing.layout.exportDmn13Hint": {
+    "message": "La version qu’ouvre Camunda Modeler",
+    "sourceHash": "8533f9610352ac25"
+  },
+  "routing.layout.exportDmn15": {
+    "message": "Exporter en DMN 1.5",
+    "sourceHash": "512563342396382d"
+  },
+  "routing.layout.header": {
+    "message": "Règles d’acheminement",
+    "sourceHash": "2cf589794a6f8d04"
+  },
+  "routing.layout.idColumn": {
+    "message": "Identifiant",
+    "sourceHash": "12156e921bdb6085"
+  },
+  "routing.layout.importDmn": {
+    "message": "Importer un fichier DMN",
+    "sourceHash": "4ddae00e471aa9dc"
+  },
+  "routing.layout.labelColumn": {
+    "message": "Libellé",
+    "sourceHash": "0e66373f45dcf3dd"
+  },
+  "routing.layout.moreActions": {
+    "message": "Autres actions",
+    "sourceHash": "f8d46c2570e70736"
+  },
+  "routing.layout.moveDown": {
+    "message": "Déplacer vers le bas",
+    "sourceHash": "40bb50da160cdc21"
+  },
+  "routing.layout.moveUp": {
+    "message": "Déplacer vers le haut",
+    "sourceHash": "c66feb5eb8f217c7"
+  },
+  "routing.layout.noConditions": {
+    "message": "Chaque document",
+    "sourceHash": "f72c0f5033ecf22f"
+  },
+  "routing.layout.notReviewed": {
+    "message": "Non révisé",
+    "sourceHash": "dc9250522c33e458"
+  },
+  "routing.layout.openAria": {
+    "message": "Règle d’acheminement {id}",
+    "sourceHash": "75157bfb4318b606"
+  },
+  "routing.layout.outcomeColumn": {
+    "message": "Résultat",
+    "sourceHash": "4e80abb5b14656d4"
+  },
+  "routing.layout.outcomeQueue": {
+    "message": "File d’attente de révision : {queue}",
+    "sourceHash": "6e8bb75e70cd3648"
+  },
+  "routing.layout.placementsDescription": {
+    "message": "Nombre de fois consécutives qu’un document peut être placé dans une file d’attente de révision : la première fois, puis chaque fois qu’une règle d’acheminement renvoie un document révisé dans une file d’attente. Au-delà, le traitement se poursuit sans autre révision.",
+    "sourceHash": "7ce5d3dad55731cb"
+  },
+  "routing.layout.placementsError": {
+    "message": "Entrez un nombre entier de {min, number} à {max, number}.",
+    "sourceHash": "7c8e077114a6e232"
+  },
+  "routing.layout.placementsLabel": {
+    "message": "Nombre maximal de placements consécutifs",
+    "sourceHash": "cf5522532bdf1d05"
+  },
+  "routing.layout.positionColumn": {
+    "message": "Ordre",
+    "sourceHash": "6be090825c997103"
+  },
+  "routing.layout.queuePlaceholder": {
+    "message": "Choisissez une file d’attente",
+    "sourceHash": "99e06d779006690a"
+  },
+  "routing.layout.queuesError": {
+    "message": "Les files d’attente de révision n’ont pas pu être chargées : les files d’attente sont donc affichées par identifiant et ne peuvent pas être vérifiées.",
+    "sourceHash": "1290536d42bc7186"
+  },
+  "routing.layout.readOnly": {
+    "message": "Seuls les administrateurs peuvent modifier les règles d’acheminement.",
+    "sourceHash": "fbd72d134401daa6"
+  },
+  "routing.layout.remove": {
+    "message": "Supprimer",
+    "sourceHash": "e2d0a54968ead24e"
+  },
+  "routing.layout.reorderAria": {
+    "message": "Réordonner la règle d’acheminement {id}. Appuyez sur Espace pour la saisir, sur les touches fléchées pour la déplacer et sur Espace pour la déposer.",
+    "sourceHash": "514574299aeeed8e"
+  },
+  "routing.layout.reorderColumn": {
+    "message": "Réordonner",
+    "sourceHash": "14ac200e93f72412"
+  },
+  "routing.layout.restoreBuiltIn": {
+    "message": "Restaurer les règles d’acheminement intégrées",
+    "sourceHash": "95b10327344aee08"
+  },
+  "routing.layout.restoreBuiltInNone": {
+    "message": "La table contient toutes les règles d’acheminement intégrées.",
+    "sourceHash": "3be92bc32842128c"
+  },
+  "routing.layout.ruleLimit": {
+    "message": "Un tableau compte au plus {max, number} règles d’acheminement.",
+    "sourceHash": "a76d30e10f366666"
+  },
+  "routing.layout.serverErrorHeader": {
+    "message": "La configuration n’a pas été enregistrée : la table d’acheminement a été refusée",
+    "sourceHash": "e3c6799716d861e0"
+  },
+  "routing.layout.shadowedHeader": {
+    "message": "Règles d’acheminement qui ne peuvent jamais s’appliquer",
+    "sourceHash": "b9f91272fb1c17e9"
+  },
+  "routing.layout.shadowedItem": {
+    "message": "{rule} ne s’applique jamais : chaque document qu’elle viserait est pris par {earlier}, qui la précède.",
+    "sourceHash": "4d3a89a7518c6434"
+  },
+  "routing.layout.unknownDefaultQueue": {
+    "message": "Le résultat par défaut envoie les documents vers {queue}, qui n’est pas une file d’attente de révision.",
+    "sourceHash": "48ff9d744567aa47"
+  },
+  "routing.layout.unknownQueueHeader": {
+    "message": "Files d’attente inexistantes",
+    "sourceHash": "38fe30eb386ce565"
+  },
+  "routing.layout.unknownQueueItem": {
+    "message": "{rule} envoie les documents vers {queue}, qui n’est pas une file d’attente de révision. Créez la file d’attente dans Gestion des révisions, ou choisissez-en une autre.",
+    "sourceHash": "d5ea77982aeb2532"
+  },
+  "routing.reason.bytes": {
+    "message": "{used, number} octets sur {max, number}",
+    "sourceHash": "eba2cae024dc251b"
+  },
+  "routing.reason.conditionValue": {
+    "message": "Valeur de comparaison de la condition {position, number}",
+    "sourceHash": "1c4a0c164519e344"
+  },
+  "routing.reason.conditionsGroup": {
+    "message": "Conditions de cette règle d’acheminement",
+    "sourceHash": "b4ba02b61a0d42cd"
+  },
+  "routing.reason.confidenceThreshold": {
+    "message": "Seuil de confiance",
+    "sourceHash": "36462bb0ea5ff34c"
+  },
+  "routing.reason.description": {
+    "message": "Ce que le réviseur lit sur un document placé dans la file d’attente. Une valeur insérée affiche celle du document. Sans motif, un motif est généré.",
+    "sourceHash": "72e15ac95a64c502"
+  },
+  "routing.reason.documentGroup": {
+    "message": "Document",
+    "sourceHash": "d6bd8c0aeee80fed"
+  },
+  "routing.reason.insert": {
+    "message": "Insérer une valeur",
+    "sourceHash": "a026c48cd419f8f7"
+  },
+  "routing.reason.label": {
+    "message": "Motif pour le réviseur (facultatif)",
+    "sourceHash": "1f1581b910f1c973"
+  },
+  "routing.reason.placeholderLimit": {
+    "message": "Un motif contient au plus {max, number} valeurs.",
+    "sourceHash": "c807a159b01e5a88"
+  },
+  "routing.reason.policyNote": {
+    "message": "Les règles de politique non respectées sont automatiquement indiquées au réviseur, avec les motifs fournis par la validation des règles de politique.",
+    "sourceHash": "b5b9deb010d9cbd4"
+  },
+  "routing.reason.tooLong": {
+    "message": "Le motif dépasse {max, number} octets.",
+    "sourceHash": "7b29afa95dbebe9d"
+  },
+  "routing.ruleModal.cancel": {
+    "message": "Annuler",
+    "sourceHash": "19766ed6ccb2f4a3"
+  },
+  "routing.ruleModal.close": {
+    "message": "Fermer",
+    "sourceHash": "7d9eb7acb13e2462"
+  },
+  "routing.ruleModal.conditionsCounter": {
+    "message": "({count, number}/{max, number})",
+    "sourceHash": "3a37a6e1900faffc"
+  },
+  "routing.ruleModal.conditionsDescription": {
+    "message": "La règle d’acheminement s’applique à un document lorsque toutes les conditions sont remplies.",
+    "sourceHash": "ae476b2efa6e40bb"
+  },
+  "routing.ruleModal.conditionsGroup": {
+    "message": "Conditions",
+    "sourceHash": "97d4be8960698f97"
+  },
+  "routing.ruleModal.createHeader": {
+    "message": "Ajouter une règle d’acheminement",
+    "sourceHash": "f0b5b553a838c5ce"
+  },
+  "routing.ruleModal.editHeader": {
+    "message": "Modifier la règle d’acheminement {id}",
+    "sourceHash": "32162dca2ec17be3"
+  },
+  "routing.ruleModal.enabledDescription": {
+    "message": "Une règle d’acheminement désactivée est conservée dans le tableau, mais n’est jamais évaluée.",
+    "sourceHash": "b08e3f912d6bc4f9"
+  },
+  "routing.ruleModal.enabledLabel": {
+    "message": "Activée",
+    "sourceHash": "92c1cdfdf4cb9cf6"
+  },
+  "routing.ruleModal.enabledOff": {
+    "message": "Désactivée",
+    "sourceHash": "75081b593d15cf6e"
+  },
+  "routing.ruleModal.enabledOn": {
+    "message": "Activée",
+    "sourceHash": "92c1cdfdf4cb9cf6"
+  },
+  "routing.ruleModal.idConstraint": {
+    "message": "Lettres minuscules, chiffres, traits d’union, points et traits de soulignement. Il ne pourra pas être modifié par la suite.",
+    "sourceHash": "509e9e4e0fb5bade"
+  },
+  "routing.ruleModal.idDescription": {
+    "message": "Consigné sur chaque document qu’elle place.",
+    "sourceHash": "3e6b6b8cbbd6001a"
+  },
+  "routing.ruleModal.idInvalid": {
+    "message": "Utilisez de 1 à 64 lettres minuscules, chiffres, traits d’union, points ou traits de soulignement, en commençant par une lettre ou un chiffre.",
+    "sourceHash": "c1fcc2ce1eab75c4"
+  },
+  "routing.ruleModal.idLabel": {
+    "message": "Identifiant de la règle d’acheminement",
+    "sourceHash": "7b78622f72632112"
+  },
+  "routing.ruleModal.idRequired": {
+    "message": "Entrez un identifiant.",
+    "sourceHash": "36933d6c76947024"
+  },
+  "routing.ruleModal.idTaken": {
+    "message": "Une autre règle d’acheminement utilise cet identifiant.",
+    "sourceHash": "5fc1a53902877703"
+  },
+  "routing.ruleModal.labelDescription": {
+    "message": "Le nom que les réviseurs voient sur un document qu’elle a placé dans une file d’attente.",
+    "sourceHash": "b475e4c26d8a1453"
+  },
+  "routing.ruleModal.labelLabel": {
+    "message": "Libellé",
+    "sourceHash": "0e66373f45dcf3dd"
+  },
+  "routing.ruleModal.outcomeGroup": {
+    "message": "Résultat et motif",
+    "sourceHash": "b139d55b25310eb4"
+  },
+  "routing.ruleModal.outcomeLabel": {
+    "message": "Lorsque la règle d’acheminement correspond",
+    "sourceHash": "12781196e7cd5d6b"
+  },
+  "routing.ruleModal.outcomeNoReview": {
+    "message": "Aucune révision",
+    "sourceHash": "61231fe7fa8d6690"
+  },
+  "routing.ruleModal.outcomeNoReviewDescription": {
+    "message": "Le traitement se poursuit sans révision.",
+    "sourceHash": "f3187b342b8bbffd"
+  },
+  "routing.ruleModal.outcomeQueue": {
+    "message": "Envoyer vers une file d’attente de révision",
+    "sourceHash": "8115e97dd1dcac47"
+  },
+  "routing.ruleModal.outcomeQueueDescription": {
+    "message": "Le document attend dans la file d’attente jusqu’à ce qu’une révision soit terminée.",
+    "sourceHash": "fe4b8c57270855ef"
+  },
+  "routing.ruleModal.previewLabel": {
+    "message": "Motif pour le dernier document testé",
+    "sourceHash": "6962f7a204592820"
+  },
+  "routing.ruleModal.previewNote": {
+    "message": "Tiré du dernier test effectué dans cet onglet, avec la règle d’acheminement telle qu’elle était alors. Testez de nouveau pour voir une modification.",
+    "sourceHash": "8a4e32d85d258944"
+  },
+  "routing.ruleModal.queueEmpty": {
+    "message": "Aucune file d’attente de révision. Créez-en une dans Gestion des révisions.",
+    "sourceHash": "90d02b1c365f3479"
+  },
+  "routing.ruleModal.queueLabel": {
+    "message": "File d’attente de révision",
+    "sourceHash": "3e1654beab977bad"
+  },
+  "routing.ruleModal.queuePlaceholder": {
+    "message": "Choisissez une file d’attente",
+    "sourceHash": "99e06d779006690a"
+  },
+  "routing.ruleModal.queueRequired": {
+    "message": "Choisissez la file d’attente vers laquelle la règle d’acheminement envoie les documents.",
+    "sourceHash": "35e377da7fd3cf47"
+  },
+  "routing.ruleModal.ruleGroup": {
+    "message": "Règle d’acheminement",
+    "sourceHash": "334d82bfe18d5c10"
+  },
+  "routing.ruleModal.save": {
+    "message": "Enregistrer la règle d’acheminement",
+    "sourceHash": "e6155b826b9dcea8"
+  },
+  "routing.ruleModal.serverErrorHeader": {
+    "message": "La configuration n’a pas été enregistrée",
+    "sourceHash": "77e95411d4707aab"
+  },
+  "routing.ruleModal.viewHeader": {
+    "message": "Règle d’acheminement {id}",
+    "sourceHash": "75157bfb4318b606"
+  },
+  "routing.testPanel.decisionContinue": {
+    "message": "Aucune révision : le traitement se poursuit",
+    "sourceHash": "e49be6a266af5305"
+  },
+  "routing.testPanel.decisionHold": {
+    "message": "Retenu pour révision",
+    "sourceHash": "57b7af20f83c65af"
+  },
+  "routing.testPanel.decisionLabel": {
+    "message": "Décision",
+    "sourceHash": "640ae4baf96061fe"
+  },
+  "routing.testPanel.errorHeader": {
+    "message": "La table n’a pas pu être testée",
+    "sourceHash": "2fa63167ec3c6655"
+  },
+  "routing.testPanel.fallbackLabel": {
+    "message": "Pourquoi la file d’attente « Default »",
+    "sourceHash": "af53a065d2228c42"
+  },
+  "routing.testPanel.header": {
+    "message": "Tester sur un document",
+    "sourceHash": "8306612083e1bf3c"
+  },
+  "routing.testPanel.inputsLabel": {
+    "message": "Entrées lues",
+    "sourceHash": "c6c7fe95949585b0"
+  },
+  "routing.testPanel.inputsNone": {
+    "message": "Aucune : aucune règle d’acheminement activée ne lit d’entrée.",
+    "sourceHash": "6149a414c803ef60"
+  },
+  "routing.testPanel.intro": {
+    "message": "Voyez ce que cette table, telle que modifiée ici, décide pour un document déjà traité. Rien n’est enregistré et le document n’est pas modifié.",
+    "sourceHash": "e6a17ffd693dd806"
+  },
+  "routing.testPanel.keyLabel": {
+    "message": "Clé du document",
+    "sourceHash": "75622cdf9465d1a6"
+  },
+  "routing.testPanel.keyPlaceholder": {
+    "message": "batch-1/invoice.pdf",
+    "sourceHash": "e21e7de12663c2f4"
+  },
+  "routing.testPanel.queueLabel": {
+    "message": "File d’attente de révision",
+    "sourceHash": "3e1654beab977bad"
+  },
+  "routing.testPanel.queueNone": {
+    "message": "Aucune",
+    "sourceHash": "dc937b59892604f5"
+  },
+  "routing.testPanel.reasonLabel": {
+    "message": "Motif pour le réviseur",
+    "sourceHash": "02089f861b9b419c"
+  },
+  "routing.testPanel.reasonSourceAdmin": {
+    "message": "Le motif tel que rédigé, avec les valeurs de ce document.",
+    "sourceHash": "c716fe2b7a8625fc"
+  },
+  "routing.testPanel.reasonSourceFallback": {
+    "message": "Généré : le résultat n’a pas de motif, ou son motif n’a pas pu être rempli pour ce document.",
+    "sourceHash": "1b8c97c157a40deb"
+  },
+  "routing.testPanel.ruleDefault": {
+    "message": "Aucune : le résultat par défaut a été appliqué",
+    "sourceHash": "b2d5dadf55c36c02"
+  },
+  "routing.testPanel.ruleLabel": {
+    "message": "Règle d’acheminement correspondante",
+    "sourceHash": "2533dbbc89f186ff"
+  },
+  "routing.testPanel.staleHeader": {
+    "message": "La table fait référence à des éléments que ce document ne contient pas",
+    "sourceHash": "9a9713dfa1b531ac"
+  },
+  "routing.testPanel.test": {
+    "message": "Tester",
+    "sourceHash": "532eaabd9574880d"
+  },
+  "routing.warnings.defaultQueueOff": {
+    "message": "La file d’attente de révision « Default » est désactivée : les règles d’acheminement ne sont donc pas évaluées et les documents suivent le flux de révision par page de document. Activez-la dans <link>Gestion des révisions</link>.",
+    "sourceHash": "bf564e5c5ba90e0b"
+  },
+  "routing.warnings.openProcessingSettings": {
+    "message": "Ouvrir les paramètres de traitement",
+    "sourceHash": "4e227bfddf73a3ec"
+  },
+  "routing.warnings.policyOff": {
+    "message": "Teste le résultat d’une règle de politique; la validation des règles de politique est désactivée",
+    "sourceHash": "75ed9dfd4f4968c8"
+  },
+  "routing.warnings.reviewRoutingOff": {
+    "message": "L’acheminement des révisions est désactivé pour ce profil : aucun document n’est donc retenu pour révision et ces règles d’acheminement ne sont pas évaluées.",
+    "sourceHash": "2408b8de716d39fc"
+  },
+  "runPlan.picker.blockedFor": {
+    "message": "Non disponible pour {count, number} documents sur {total, number}. {why}",
+    "sourceHash": "2337b6adac7d13fd"
+  },
+  "runPlan.picker.description": {
+    "message": "L’exécution refait cette étape et toutes les étapes suivantes. Les résultats des étapes précédentes sont conservés.",
+    "sourceHash": "137cb15b5499706c"
+  },
+  "runPlan.picker.label": {
+    "message": "Commencer à",
+    "sourceHash": "334c284f438cdc24"
+  },
+  "runPlan.picker.unavailable": {
+    "message": "Non disponible pour ce document.",
+    "sourceHash": "4cc96d3f88e4cf5b"
+  },
+  "runPlan.plannedSteps.causeAdded": {
+    "message": "ajoutée",
+    "sourceHash": "279b8a60f444fa8b"
+  },
+  "runPlan.plannedSteps.causeNoResult": {
+    "message": "aucun résultat",
+    "sourceHash": "9fa161bc44c00c15"
+  },
+  "runPlan.plannedSteps.causePagesChanged": {
+    "message": "pages modifiées",
+    "sourceHash": "c299d2c35585bbd1"
+  },
+  "runPlan.plannedSteps.heading": {
+    "message": "Étapes de l’exécution",
+    "sourceHash": "b22f0ec4fc9f62b0"
+  },
+  "runPlan.plannedSteps.listLabel": {
+    "message": "Les étapes de traitement dans l’ordre, chacune indiquant si l’exécution l’effectue",
+    "sourceHash": "d9c3eae20f436ac1"
+  },
+  "runPlan.plannedSteps.loadFailed": {
+    "message": "Impossible de charger les étapes de l’exécution",
+    "sourceHash": "9d3ff53f2711ec08"
+  },
+  "runPlan.plannedSteps.loading": {
+    "message": "Chargement des étapes de l’exécution",
+    "sourceHash": "40b721afa6d4f722"
+  },
+  "runPlan.plannedSteps.retry": {
+    "message": "Réessayer",
+    "sourceHash": "942087cc2d41e013"
+  },
+  "runPlan.plannedSteps.section": {
+    "message": "{sectionId} ({cause})",
+    "sourceHash": "21fe264c16050897"
+  },
+  "runPlan.plannedSteps.sections": {
+    "message": "Sections extraites de nouveau : {sections}",
+    "sourceHash": "e23f18694620a2c4"
+  },
+  "runPlan.plannedSteps.startsAt": {
+    "message": "Commence à l’étape {step}",
+    "sourceHash": "ecdfa981bbdc7015"
+  },
+  "runPlan.plannedSteps.stateNotEnabled": {
+    "message": "Non activée",
+    "sourceHash": "2b0e80483609c439"
+  },
+  "runPlan.plannedSteps.stateRun": {
+    "message": "Exécutée",
+    "sourceHash": "848f54e89660cea4"
+  },
+  "runPlan.plannedSteps.stateSkipped": {
+    "message": "Ignorée",
+    "sourceHash": "12698ce1ea5cd4ab"
+  },
+  "runPlan.reason.malwareGate": {
+    "message": "Le document a été retenu ou refusé par l’analyse antimaliciel.",
+    "sourceHash": "76116c6c989ffe15"
+  },
+  "runPlan.reason.notFailed": {
+    "message": "Le document n’a pas échoué : il n’y a donc aucune exécution échouée à reprendre.",
+    "sourceHash": "79d8f9dbdaea05b0"
+  },
+  "runPlan.reason.other": {
+    "message": "Non disponible ({code}).",
+    "sourceHash": "47a92b3d3db7fe33"
+  },
+  "runPlan.reason.otherProfileBeginningOnly": {
+    "message": "Avec un autre profil de configuration, l’exécution commence au début.",
+    "sourceHash": "0f065bb067cb072b"
+  },
+  "runPlan.reason.outputMissing": {
+    "message": "Le document ne contient pas les résultats des étapes précédentes.",
+    "sourceHash": "0ee24061f2e4f043"
+  },
+  "runPlan.reason.revisionChangesMode": {
+    "message": "La révision choisie change le mode de traitement : l’exécution commence donc au début.",
+    "sourceHash": "f9d46175e87f495d"
+  },
+  "runPlan.reason.revisionHasPreprocessingHook": {
+    "message": "La révision choisie comporte un point d’ancrage de prétraitement, qu’un démarrage ultérieur sauterait.",
+    "sourceHash": "295fcabff779b99d"
+  },
+  "runPlan.reason.runInProgress": {
+    "message": "Le document est en cours de traitement. Attendez la fin de l’exécution ou annulez-la.",
+    "sourceHash": "c695b434d3e1c444"
+  },
+  "runPlan.reason.stepNotInMode": {
+    "message": "Cette étape n’existe pas dans le mode de traitement du document.",
+    "sourceHash": "a6e0e2a8439925f0"
+  },
+  "runPlan.reason.unknownStep": {
+    "message": "Une exécution ne peut pas commencer à cette étape.",
+    "sourceHash": "e0b6876aef532dfa"
+  },
+  "runPlan.step.applyReviewChanges": {
+    "message": "Appliquer les modifications de révision",
+    "sourceHash": "c5dc9791fb2472d1"
+  },
+  "runPlan.step.assessment": {
+    "message": "Évaluation de la confiance",
+    "sourceHash": "7808eeeb45dfa074"
+  },
+  "runPlan.step.beginning": {
+    "message": "Début",
+    "sourceHash": "9e6b4172e207e657"
+  },
+  "runPlan.step.classification": {
+    "message": "Classification",
+    "sourceHash": "72f049954fdd06c8"
+  },
+  "runPlan.step.evaluation": {
+    "message": "Évaluation",
+    "sourceHash": "163e44b102626149"
+  },
+  "runPlan.step.extraction": {
+    "message": "Extraction",
+    "sourceHash": "3ded2af71d1e6250"
+  },
+  "runPlan.step.policyRuleValidation": {
+    "message": "Validation des règles de politique",
+    "sourceHash": "e9afcf598f7673a0"
+  },
+  "runPlan.step.resume": {
+    "message": "Reprendre à l’étape en échec",
+    "sourceHash": "ac88f3401767e32e"
+  },
+  "runPlan.step.reviewRouting": {
+    "message": "Acheminement des révisions",
+    "sourceHash": "667356267cbd69cd"
+  },
+  "runPlan.step.summarization": {
+    "message": "Synthèse",
+    "sourceHash": "30f5b09d7e66bc25"
+  },
+  "runPlan.stepPipeline.beginning": {
+    "message": "OCR (début)",
+    "sourceHash": "5775f84bc08a7a92"
+  },
+  "schemaBuilder.inspector.excludeDescription": {
+    "message": "Lorsque cette case est cochée, les sections classées dans cette classe sont IGNORÉES par les étapes en aval (extraction, évaluation de la qualité, synthèse, validation des règles de politique, évaluation). Utilisez cette option pour les pages statiques standard (instructions, mentions légales, pages couvertures) qui ne contiennent aucune donnée extractible.",
+    "sourceHash": "c6532dceed50c644"
+  },
+  "tenantSelection.gate.applying": {
+    "message": "Application de votre locataire…",
+    "sourceHash": "73f48eba27385e09"
+  },
+  "tenantSelection.gate.confirm": {
+    "message": "Confirmer le locataire",
+    "sourceHash": "fc14500ac514cedf"
+  },
+  "tenantSelection.gate.description": {
+    "message": "Votre compte a accès à plus d’un locataire. Choisissez celui dans lequel vous voulez travailler.",
+    "sourceHash": "def06d1fe898b557"
+  },
+  "tenantSelection.gate.errorHeader": {
+    "message": "Impossible de sélectionner le locataire",
+    "sourceHash": "31973e69e9717fd3"
+  },
+  "tenantSelection.gate.fieldDescription": {
+    "message": "Vous pourrez changer plus tard à partir de la barre de navigation.",
+    "sourceHash": "2a4fe36cb87d6c17"
+  },
+  "tenantSelection.gate.fieldLabel": {
+    "message": "Locataire",
+    "sourceHash": "e23969d284c3424c"
+  },
+  "tenantSelection.gate.signOut": {
+    "message": "Se déconnecter",
+    "sourceHash": "48f0d3d397d49f13"
+  },
+  "tenantSelection.gate.title": {
+    "message": "Choisir un locataire",
+    "sourceHash": "f9724065e3b4bda3"
+  },
+  "tenantSelection.hook.selectFailed": {
+    "message": "Impossible de sélectionner le locataire. Réessayez.",
+    "sourceHash": "b9212c57d74e1405"
+  },
+  "tenantSelection.switcher.bodyNoCurrent": {
+    "message": "Passer à {tenant}? Vous verrez les documents de {tenant}.",
+    "sourceHash": "a2034da5e74d0f60"
+  },
+  "tenantSelection.switcher.bodyWithCurrent": {
+    "message": "Passer à {tenant}? Vous verrez les documents de {tenant} au lieu de ceux de {current}.",
+    "sourceHash": "fbdf68265d8a33e2"
+  },
+  "tenantSelection.switcher.cancel": {
+    "message": "Annuler",
+    "sourceHash": "19766ed6ccb2f4a3"
+  },
+  "tenantSelection.switcher.close": {
+    "message": "Fermer",
+    "sourceHash": "7d9eb7acb13e2462"
+  },
+  "tenantSelection.switcher.confirm": {
+    "message": "Confirmer le changement",
+    "sourceHash": "939f37bb9bb81ac4"
+  },
+  "tenantSelection.switcher.errorHeader": {
+    "message": "Impossible de changer de locataire",
+    "sourceHash": "e191ce98c4796d30"
+  },
+  "tenantSelection.switcher.menu": {
+    "message": "Locataire",
+    "sourceHash": "e23969d284c3424c"
+  },
+  "tenantSelection.switcher.menuWithTenant": {
+    "message": "Locataire : {tenant}",
+    "sourceHash": "e896dc96a6847d7a"
+  },
+  "tenantSelection.switcher.note": {
+    "message": "Ce changement s’applique à toutes vos sessions ouvertes et peut prendre jusqu’à une minute pour être en vigueur partout.",
+    "sourceHash": "122f3d7fa86b4726"
+  },
+  "tenantSelection.switcher.switchTenant": {
+    "message": "Changer de locataire",
+    "sourceHash": "5febbbdf96f92ba4"
   },
   "testStudio.addProcessedDocuments.notCompletedBody": {
     "message": "Seuls les documents dont le traitement est terminé peuvent être ajoutés à un jeu de tests.",
@@ -11324,7 +12952,7 @@
     "sourceHash": "44af6553373c3f30"
   },
   "testStudio.itemEdit.reviewActivity.assigned": {
-    "message": "Affecté à {assignee}",
+    "message": "Attribué à {assignee}",
     "sourceHash": "88708b04aa1a8eaf"
   },
   "testStudio.itemEdit.roleCannotRegroup": {
@@ -11344,7 +12972,7 @@
     "sourceHash": "4984fae8f0369354"
   },
   "testStudio.itemEdit.skipBody": {
-    "message": "Il retourne dans sa file d’attente, non assigné et non révisé, pour qu’un autre annotateur le réclame.",
+    "message": "Il retourne dans sa file d’attente, non attribué et non révisé, pour qu’un autre annotateur le réclame.",
     "sourceHash": "f6eaa83f0c2de746"
   },
   "testStudio.itemEdit.skipHeader": {

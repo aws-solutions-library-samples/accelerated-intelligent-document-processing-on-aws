@@ -650,7 +650,7 @@ const messages = defineMessages<{
   },
   splitUnexpected: {
     id: 'documents.evaluationReport.splitAnalysis.unexpected',
-    defaultMessage: '{count} unexpected',
+    defaultMessage: '{count, plural, one {# unexpected} other {# unexpected}}',
     description:
       'Count shown after the unmatched count beside the Section split analysis heading in Reports › Evaluation Report on the document page, joined with a middle dot. {count} is how many predicted sections match no expected section.',
   },
