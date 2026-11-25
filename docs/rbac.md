@@ -31,7 +31,7 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
 | **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues), within their `allowedConfigVersions`: claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed. Works Production review queues only: Test Studio queues, labelling and test-set file reads are for Admins, Authors and Annotators |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the review queues that list it in **Eligible Annotators**, Production and Test Studio, claiming their items or taking those an Admin assigns to it: production review items (save, skip, complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info), with no Document List and no configuration pages. No test sets outside its `allowedTestSets`; its document reads are answered within its configuration-profile scope, as for every role. See [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the review queues that list it in **Eligible Annotators**, Production and Test Studio, claiming their items or taking those an Admin assigns to it: production review items (save, skip, complete, send back, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info), with no Document List and no configuration pages. No test sets outside its `allowedTestSets`; its document reads are answered within its configuration-profile scope, as for every role. See [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -249,6 +249,7 @@ DOCUMENTS
   View document details            ✅      ✅†      ✅*†      ✅†       ✅†
   Upload documents                 ✅      ✅       ❌        ❌        ❌
   Delete documents                 ✅      ✅       ❌        ❌        ❌
+  Delete a document version        ✅      ❌       ❌        ❌        ❌
   Reprocess documents              ✅      ✅       ❌        ❌        ❌
   Abort workflows                  ✅      ✅       ❌        ❌        ❌
   Copy to evaluation baseline      ✅      ✅       ❌        ❌        ❌
@@ -269,7 +270,8 @@ REVIEW QUEUES
 
 CONFIGURATION
   View config profiles             ✅      ✅†      ❌        ✅†       ❌
-  View/Edit configuration          ✅      ✅†      ❌        ❌        ❌
+  View configuration               ✅      ✅†      ❌        ✅†       ❌
+  Edit configuration               ✅      ✅†      ❌        ❌        ❌
   Save as Profile (new profile)    ✅      ❌       ❌        ❌        ❌
   Save as Default                  ✅      ❌       ❌        ❌        ❌
   Delete config profile            ✅      ❌       ❌        ❌        ❌
@@ -300,7 +302,6 @@ CUSTOM MODEL FINE-TUNING
   List/view fine-tuning jobs       ✅      ✅       ✅        ✅        ✅
   Create fine-tuning jobs          ✅      ✅       ❌        ❌        ❌
   Delete fine-tuning jobs          ✅      ✅       ❌        ❌        ❌
-  List available models            ✅      ✅       ❌        ❌        ❌
 
 CAPACITY PLANNING
   Calculate capacity               ✅      ✅       ❌        ✅        ❌
@@ -312,6 +313,7 @@ USER MANAGEMENT
   List all users                   ✅      ❌       ❌        ❌        ❌
   Create/delete users              ✅      ❌       ❌        ❌        ❌
   Edit user scope                  ✅      ❌       ❌        ❌        ❌
+  List/declare/delete tenants      ✅      ❌       ❌        ❌        ❌
   View own profile                 ✅      ✅       ✅        ✅        ✅
 
 PRICING
@@ -333,9 +335,11 @@ Claim/Release review, Complete section review: an Annotator only on a document o
 Regroup pages, Claim/Release review, Complete section review, Skip all section reviews, Process changes: a Reviewer who is not also an Admin, Author or Annotator only on a production document, never one in a test set
 Work Production queues: list, open, claim, save, skip, finish, send back and reject the items of a Production review queue. A Reviewer works every Production queue and an Annotator the queues that list them; saving, skipping, finishing and rejecting need the claim
 Work Test Studio queues: open a test set's queue and label its documents. An Annotator works only the queues that list them and the sets in their allowedTestSets, and saves or skips only a document assigned to them. Taking a document (claimTestSetDocument) is the Annotator's alone: Admins assign test-set documents, and Admins and Authors label them without taking them. Listing the Test Studio queues (listTestSetQueues) is for Admins and Annotators; an Author opens a set's queue from Test Studio
-View/Edit configuration: getConfigVersion answers a Reviewer or an Annotator with the class names and descriptions only, for the annotation class dropdown
+View configuration: getConfigVersion answers a Reviewer or an Annotator with the class names and descriptions only, for the annotation class dropdown; a Viewer gets the read-only Configuration page
 Chat with agent, Code intelligence: Reviewers and Annotators are refused on the REST API and on the chat-streaming Function URL, which verifies the caller's ID token (see the Agent Chat note below)
 Use Quick Start: a Quick Start turn (an agent chat message with method quick_start) creates and activates a configuration profile, and only an Admin may create one (Save as Profile), so both chat routes refuse a Quick Start turn from every other group, the UI offers Quick Start to Admins only, and neither Agent Chat nor Document Analytics lists or runs Quick Start's agent. On a stack deployed with EnableQuickStartWidget=false, both chat routes refuse it from an Admin too
+Delete a document version: deleteDocumentVersion, Admin only; listing and viewing versions follow View document details (see docs/document-versions.md)
+List/declare/delete tenants: listTenants, putTenant and deleteTenant, Admin only (see docs/multi-tenancy.md)
 List/view fine-tuning jobs: the API answers every signed-in user (listFinetuningJobs and getFinetuningJob are ANY); the navigation offers Custom Models to Admin and Author only, and an Annotator-only console has no route to it
 ```
 
@@ -1019,6 +1023,8 @@ enforcement itself is Layer 2.
 |----------|---------------|
 | `deleteConfigVersion` | Admin |
 | `deleteConfigProfileRevision` | Admin |
+| `deleteDocumentVersion` | Admin |
+| `listTenants`, `putTenant`, `deleteTenant` | Admin |
 | `restoreConfigProfileRevision`, `labelConfigProfileRevision` | Admin, Author |
 | `listConfigPrefixMappings`, `putConfigPrefixMapping`, `deleteConfigPrefixMapping`, `listConfigPrefixMappingHistory` | Admin. A prefix mapping *assigns* a Configuration Profile to everything arriving under an S3 prefix, so writing one decides which scoped users can see those documents — the same side of the line as minting a profile, not the same side as editing one's content |
 | `resolveConfigPrefixMapping` | Admin, Author. A read-only dry run ("what would this key process under?") serving the upload form, so Author is the lowest role that can use it — a Viewer cannot upload. **Scope-filtered**: a caller outside the resolved profile's scope is told the destination is out of scope and nothing else — not the profile's name, not the revision, and not the **mapping prefix**. The `reason` field is returned, carrying one fixed sentence that names none of those, because it is what the upload panel renders as the whole body of its alert. The prefix is withheld because the caller supplied a *key*, so returning the mapping that governs it reveals where the boundary sits, and a probe at a time that reconstructs the routing policy `listConfigPrefixMappings` is Admin-only to protect. The subject of the check is every profile the answer could *disclose*, not the one it selected — a refusal names the mapped profile in its reason while resolving to no profile at all, and metadata precedence resolves to the caller's own in-scope profile while explaining that it beat the mapping's |

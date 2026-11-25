@@ -31,8 +31,9 @@ existing configuration profile's document class. You can add an optional
 **scenario** theme (with an AI **Suggest** helper), choose a **quality** level
 (faster vs. higher quality), and see an estimated cost/time band before starting.
 Generation runs as a background job; the resulting test set appears in the list
-when it completes. Click a test set's name to preview its generated documents
-without running a test execution. See the
+when it completes. A new set's name whose id is already taken is refused when
+the job is submitted, with the same message Test Studio gives. Click a test set's
+name to preview its generated documents without running a test execution. See the
 [Test Set Generator extension](extensions/idp-data-generator.md) for details and
 installation.
 
@@ -637,7 +638,10 @@ Every source shares three optional fields:
 The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, read as UTC, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
-files** button that reports the match count before you commit. Changing the
+files** button that reports the match count before you commit. The
+`addTestSet` and `addDocumentsToTestSet` API operations refuse a **Modified after**
+value that is not an ISO 8601 date-time with a 400 naming the value, before writing
+the set's record or queuing a copy. Changing the
 bucket, the pattern or the time filter clears that count, and a check still
 running when you change one of them is discarded rather than shown. When reading from
 the input bucket, a matching document with no ground truth in the evaluation baseline
@@ -1664,6 +1668,7 @@ revisions:
 - **Retention**: A revision pinned by a run is exempt from revision pruning, so later saves never push it out of the profile's history, but its body still expires `DataRetentionInDays` after the revision was cut, like every revision's ([Retention](configuration-profiles.md#retention))
 - **Validation**: A run that names a profile that does not exist, or a revision whose body cannot be read (deleted, pruned, expired under the Configuration bucket's `DataRetentionInDays` lifecycle rule, or never cut), is rejected when submitted rather than queued to fail per document
 - **Context Generation**: Test context automatically includes the selected profile and revision
+- **No review queues**: A document processed by a test run is never held in a production review queue, whatever the profile's Review Routing switch and routing rules say, because the run is scored on the machine's output. Test set documents are reviewed in the test set's own queue instead
 
 For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
 

@@ -205,7 +205,12 @@ is in `benchmarks/`, with sample documents in `samples/`.
 `CustomerManagedEncryptionKey`, with `EnableKeyRotation: true`, encrypts the DynamoDB
 tables, the S3 buckets via SSE-KMS, the SNS topics and the CloudWatch log groups. It is
 referenced from the parent template and passed into the nested stacks, so there is one
-key to audit and one key policy to review.
+key to audit and one key policy to review. A new stack can use a key of your own
+instead: set `CustomerManagedKmsKeyArn` when the stack is created, and the stack
+creates no key and uses the supplied one in the same places (see
+[Customer Managed KMS Key](./customer-managed-kms-key.md)). The key the stack creates
+carries `DeletionPolicy: Retain`, so deleting the stack keeps it, and the retained
+buckets it encrypts stay readable until you schedule it for deletion.
 
 **Untrusted input at the ingest boundary.** Every document comes from outside the
 solution, and two different controls cover two different parts of that. Bedrock

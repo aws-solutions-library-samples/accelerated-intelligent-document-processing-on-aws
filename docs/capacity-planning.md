@@ -229,6 +229,14 @@ escalation, the measured or the default rate and its value. A per-class
 charged to the global escalation model. The judge and escalation models need
 entries in the quota code maps like any step model.
 
+**Policy rule validation is not planned.** Its Bedrock requests, made by
+`rule_validation.fact_extraction.model` and
+`rule_validation.rule_validation_orchestrator.model` while `rule_validation.enabled`
+is true, are in no line of the plan (`STEP_MODEL_CONFIG_KEYS` and
+`PATTERN_BEDROCK_STEPS` in `src/lambda/calculate_capacity/index.py` hold no
+rule-validation step). For a profile that runs policy rule validation, the reported
+requirement is a floor: add that demand to the models it uses yourself.
+
 **Latency Bar Color Coding**:
 - **Green** (P50, P75): When all model quotas are within limits
 - **Blue** (P90, P95, P99): When all model quotas are within limits

@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators and Reviewers also get their Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 - **Interface language** — use the everyday screens in English or French (Canada), chosen from the language menu in the top navigation (see [Interface language](#interface-language))
 
@@ -608,6 +608,9 @@ rule's label opens it.
 Whether routing rules are evaluated at all is the **Review Routing** switch, in
 **Processing Settings → Review Routing (Optional)**. That section comes after
 **Policy Rule Validation (Optional)**, in the order the pipeline runs the two steps.
+A newly created stack turns Review Routing (`hitl.enabled`) on in the profiles it
+creates; a stack update leaves each profile's switch as it is (see
+[The Review Routing switch](review-routing.md#the-review-routing-switch)).
 
 Routing rules, inputs, tests, the reason and its placeholders, the warnings and the
 DMN format are described in [Review Routing](review-routing.md).
@@ -848,7 +851,9 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   built-in routing rules, a production document that raised confidence alerts, left
   a required field without a value or has a section whose extraction failed goes
   to the Default queue, when Review Routing is on in its configuration and the
-  Default queue is enabled.
+  Default queue is enabled. A newly created stack turns Review Routing
+  (`hitl.enabled`) on in the profiles it creates (see
+  [The Review Routing switch](review-routing.md#the-review-routing-switch)).
   Queues have no threshold of their own: the alerts use each field's own
   threshold, otherwise `hitl.confidence_threshold`. A queue's page lists the
   **Routing rules that use this queue**. Deleting a queue moves its

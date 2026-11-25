@@ -1178,9 +1178,10 @@ inside a profile, never its own access-control object. See [RBAC](rbac.md).
 When you upgrade the IDP solution to a new release:
 
 1. **`default` profile is updated** with new settings, prompts, or model defaults from the deployment — recorded as a new revision, so `default` r(n-1) → r(n) is a diff of exactly what the upgrade changed
-2. **All other profiles remain unchanged** — they are locked snapshots
-3. **Trade-off**: New default features (e.g., improved prompts, new model options) do NOT automatically propagate to existing profiles
-4. **Rollback**: If an upgrade's configuration changes are unwanted, restore the previous revision of `default` from its revision history
+2. **Managed profiles are overwritten** with the versions shipped in the release, so they always reflect its defaults
+3. **Custom profiles keep every setting they hold** — a changed prompt or model default in `default` does not replace a value your profile already has
+4. **Settings a custom profile lacks come from `default`** — typically a section the release adds. Every profile is read against `default` ([see above](#every-profile-resolves-against-default)), and for a profile with revision history the deployment records the filled-in result as a new revision by `system` ([see above](#settings-filled-in-from-default-are-recorded-as-a-revision)). From then on those values belong to the profile and later changes to them in `default` no longer reach it
+5. **Rollback**: If an upgrade's configuration changes are unwanted, restore the previous revision of `default` from its revision history
 
 ### Managing Divergence
 

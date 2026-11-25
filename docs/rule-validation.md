@@ -244,8 +244,8 @@ rule_validation:
     model: us.anthropic.claude-sonnet-4-6
     temperature: 0.0
     top_k: 20
-    top_p: 0.01
-    max_tokens: 4096
+    top_p: 0
+    max_tokens: ""  # empty uses the selected model's maximum output
     system_prompt: |
       You are a specialized fact extraction assistant...
     task_prompt: |
@@ -259,8 +259,8 @@ rule_validation:
     model: us.anthropic.claude-sonnet-4-6
     temperature: 0.0
     top_k: 20
-    top_p: 0.01
-    max_tokens: 4096
+    top_p: 0
+    max_tokens: ""  # empty uses the selected model's maximum output
     system_prompt: |
       You are a compliance decision orchestrator...
     task_prompt: |

@@ -858,38 +858,47 @@ UI and hooks. See the
 > `idp-cli config-delete` (the Web UI refuses stack-managed profiles; the CLI warns
 > and proceeds).
 
-## Two reference samples
+## Bundled extensions
 
-Both bundled extensions are **samples** — reference implementations for feature
-authors, not production products. They're labelled accordingly (each display
-name starts with `Sample:`) and set `showInNav: false`, so they appear on the
-**Browse catalog** page rather than as nav entries until installed. In
-particular, *Sample: Health Insurance Review* is a minimal demo of a use-case
-extension; it is **not** the planned Claims Processing marketplace product.
+`idp-cli publish` builds every extension listed in
+`config_library/extensions-oss.yaml` and adds it to the generated `catalog.json`,
+so each one appears on the **Browse catalog** page, ready to install. The list is:
 
-| Sample (nav label) | featureId | Kind | Demonstrates |
-| ------------------ | --------- | ---- | ------------ |
-| [Sample: Document Status (feature add-on)](extensions/sample-document-status.md) | `docs-by-status` | feature add-on | The minimal contract: UI bundle, Cognito-auth HTTP API over the tracking table, registration. |
-| [Sample: Health Insurance Review](extensions/sample-health-insurance-review.md) | `sample-health-insurance-review` | use-case add-on | An advanced vertical: a bundled config preset, a `postRuleValidation` pipeline hook computing claim status, host-GraphQL Rules Discovery, and a multi-route feature API — built on [rule validation](rule-validation.md). |
+| Extension | featureId | What it is |
+| --------- | --------- | ---------- |
+| [Sample: Document Status (feature add-on)](extensions/sample-document-status.md) | `docs-by-status` | Sample. The minimal contract: UI bundle, Cognito-auth HTTP API over the tracking table, registration. |
+| [Sample: Health Insurance Review](extensions/sample-health-insurance-review.md) | `sample-health-insurance-review` | Sample use-case add-on. An advanced vertical: a bundled config preset, a `postRuleValidation` pipeline hook computing claim status, host-GraphQL Rules Discovery, and a multi-route feature API — built on [rule validation](rule-validation.md). |
+| [PII Anonymization](extensions/pii-anonymizer.md) | `pii-anonymizer` | A `preprocessing` pipeline hook that redacts PII from source documents before the classification and extraction models see them, with a Config Pairing wizard and a Redaction Report API. Experimental. |
+| [Test Set Generator](extensions/idp-data-generator.md) | `idp-data-generator` | Generates labeled synthetic test sets with SEED on an AgentCore Runtime; powers Quick Start generation and Test Studio's **Generate Synthetic Data**. |
+| [Test Set - ConfBench](extensions/confbench-testset.md) | `confbench-testset` | Ingests the amazon/ConfBench benchmark into Test Studio on demand, by size tier or individual noise variant. |
+| [Decision Model: Strands Decider](extensions/decision-model-decider.md) | `decision-model-decider` | Builds the Strands Decider's Lambda image in your account with CodeBuild and installs an inactive configuration profile that selects it for section classification. |
+
+The two whose display names start with `Sample:` are **samples** — reference
+implementations for feature authors, not production products. They set
+`showInNav: false`, so they appear on the **Browse catalog** page rather than as
+nav entries until installed. In particular, *Sample: Health Insurance Review* is a
+minimal demo of a use-case extension; it is **not** the planned Claims Processing
+marketplace product.
 
 ## Deployment
 
 ```bash
 # Default — feature platform on, auto-subscribe mode (no entitlement endpoint)
-idp-cli deploy
+idp-cli deploy --stack-name my-idp --admin-email admin@example.com
 ```
 
 ```bash
 # Bolt entitlement checks onto a running stack (no rebuild) — deploy the
 # standalone marketplace-simulator separately, then point the stack at it:
-idp-cli deploy --params FeaturePlatformSimulatorEndpoint=https://simulator.example.com
+idp-cli deploy --stack-name my-idp \
+  --parameters FeaturePlatformSimulatorEndpoint=https://simulator.example.com
 ```
 
 The default brings up:
 
 - the main IDP stack,
 - the `InstalledFeatures` DDB table + feature-platform Lambdas,
-- `catalog.json` in the ConfigurationBucket, listing the bundled sample feature.
+- `catalog.json` in the ConfigurationBucket, listing the [bundled extensions](#bundled-extensions).
 
 ### Enabling the platform on an existing stack
 

@@ -251,7 +251,9 @@ When classifying documents:
 `classification.strategy`.** Every prompt example on this page edits
 `classification.combined.page.task_prompt`, which is the right place under
 `strategy: combined` (*Split and classify together (one call)* in the configuration
-editor) — the default.
+editor) — the default — with `combined.granularity: page`. With
+`combined.granularity: packet` the call reads `classification.combined.packet.task_prompt`
+instead; the shipped one carries the placeholder too.
 Under `strategy: split_then_classify`:
 
 - `{FEW_SHOT_EXAMPLES}` belongs in
@@ -268,6 +270,13 @@ Under `strategy: split_then_classify`:
   asked where sections start.
 - Editing `combined.page.task_prompt` under `split_then_classify` changes nothing and
   raises no error, because that block is not read.
+- With `section_classification.method: embeddings` and `references: examples`, the
+  examples' **images** (`x-aws-idp-examples` entries with an `x-aws-idp-image-path`)
+  are the class references the embeddings compare against, not prompt text. A class
+  with no loadable example image has no reference and is never chosen by the
+  embeddings; its sections are labelled correctly only when they fall below a
+  threshold and reach the LLM. See
+  [Classification](classification.md#section-classification-by-embeddings).
 
 ### Extraction Process
 
@@ -744,8 +753,8 @@ Monitor these metrics to ensure optimal cache usage:
 
 **Examples Not Loading**
 - Verify `{FEW_SHOT_EXAMPLES}` placeholder exists in task prompts. The shipped
-  extraction prompts include it; a **custom** extraction `task_prompt` and every
-  classification prompt must add it explicitly, and exactly once (the placeholder
+  extraction and classification prompts include it; a **custom** `task_prompt`
+  must add it explicitly, and exactly once (the placeholder
   is ignored if it appears more than once).
 - Check that examples are defined for the document classes being processed
 - Ensure examples have the required prompt fields (`x-aws-idp-class-prompt` /

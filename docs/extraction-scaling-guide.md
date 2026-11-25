@@ -167,21 +167,28 @@ from 800 rows upward. At the shipped default the two cost the same at 100 rows, 
 the run-to-run spread at 400, and Advanced is the cheaper at 800. Advanced cost per row is close to flat from 400 rows upward, at
 $0.00157–0.00167 per row including OCR at the control model.
 
-In the earlier study (v0.6.0), a 6,400-row, 131-page document extracted completely but
-failed at summarization, which is not measured on v0.6.14:
+In the earlier study (v0.6.0), a 6,400-row, 131-page document extracted completely
+across 10 shards but then failed at summarization: that step is a *single, non-sharded*
+LLM call over the whole document, and it overflowed the input window
+(`Input Tokens Exceeded`), failing the document after a full extraction. Sizes above
+3,200 rows are not measured on v0.6.14.
 
-**The true advanced-mode ceiling is a downstream step, not extraction.** At 131 pages,
-all 6,400 rows extracted correctly across 10 shards, but the **summarization** step —
-which is a *single, non-sharded* LLM call over the whole document — overflowed the input
-window and failed the entire document (`Input Tokens Exceeded`). So a very large document
-can incur a full, expensive extraction and still fail at the end.
+**Summarization no longer fails a large document.** It fits its prompt to the model's
+input window instead: arrays in `EXTRACTION_RESULTS` longer than
+`summarization.max_extraction_array_items` are sampled to their first and last items
+plus an `... (N items total)` marker, and if the prompt would still overflow,
+`DOCUMENT_TEXT` is truncated with a note that the summary covers the leading portion of
+the document. If Bedrock rejects the prompt as too large anyway, the section gets a
+*Summary Unavailable* stub and the document completes with its extraction intact. What
+remains is a quality limit rather than a failure: on a very large document the summary
+may be based on only part of its text.
 
 **Mitigations for very large documents:**
 - **Split the document** (by statement period, account, or page range) if it is much
-  larger than the 3,200 rows / 66 pages measured on v0.6.14 — that keeps the
-  summarization step within bounds; extraction cost per row stays about flat with size.
+  larger than the 3,200 rows / 66 pages measured on v0.6.14 and you need a summary of
+  the whole of it; extraction cost per row stays about flat with size.
 - **Disable summarization** (`summarization` off) if you only need extraction — this
-  avoids the downstream ceiling for large documents.
+  saves the summarization call's cost on large documents.
 - Budget about $0.0012–0.0017 per row, OCR included (v0.6.14, 400 to 3,200 rows, the
   shipped default and the control model); expect 2–8 min for thousand-to-few-thousand-row
   documents.

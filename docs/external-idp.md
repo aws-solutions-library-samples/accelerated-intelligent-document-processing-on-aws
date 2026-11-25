@@ -130,8 +130,12 @@ Two further points of timing, once the IdP is authoritative:
 With `TenantGrantSource=IdpClaim` the same claim also decides each user's tenant on
 a multi-tenant stack: at every fresh federated sign-in the trigger matches the claim's
 values against each tenant's **Granted by** values and writes the user's
-configuration scope to that one tenant. A user whose values grant two or more tenants
-is granted none. The parameter requires `ExternalIdPGroupAttributeName`.
+configuration scope to that one tenant. What happens to a user whose values grant two
+or more tenants depends on `TenantSelection`: with `Disabled` (the default) the user is
+granted none, and with `UserSelect` the user is shown a **Choose a tenant** page after
+signing in and picks which of those tenants is active (see
+[Letting a user choose among their tenants](multi-tenancy.md#letting-a-user-choose-among-their-tenants)).
+The parameter requires `ExternalIdPGroupAttributeName`.
 
 Two behaviours differ from the role mapping above. An absent or empty claim **does**
 change something: it grants no tenant and removes the previous one, because losing a

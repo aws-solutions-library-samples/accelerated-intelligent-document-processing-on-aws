@@ -329,6 +329,11 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:Query`, `dynamodb:GetItem` on the Users table and its indexes (the caller's test-set and configuration scope)
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
 
+* **Delete Document Resolver Role** (API resolver Lambda for deleting documents from the web UI):
+  * SAM `S3CrudPolicy` on the Input and Output buckets
+  * `s3:ListBucketVersions` on the Input and Output buckets and `s3:DeleteObjectVersion` on their objects: both buckets are versioned, and a delete removes every version and delete marker of the document's keys. `S3CrudPolicy` grants only the unversioned forms
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+
 * **Inbox producers**. A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
   * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
   * read access to the Configuration table (for retention and the per-user cap)
@@ -342,7 +347,7 @@ The solution creates various IAM roles to run different components of the system
 
 * **API Dispatcher, Document Versions, Delete Document, Abort Workflow, Copy-to-Baseline and Test Results resolver roles**, scope additions: `dynamodb:Query` and `dynamodb:GetItem` on the UsersTable and its indexes, to resolve the caller's configuration scope before acting on one document or test run.
 
-* **User Management Role** (API resolver Lambda for `createUser`, `updateUser`, `deleteUser`, `listUsers` and `setUserTenant`):
+* **User Management Role** (API resolver Lambda for `createUser`, `updateUser`, `deleteUser`, `listUsers`, `setUserTenant` and `selectActiveTenant`, with which a user chooses their active tenant when [`TenantSelection`](./multi-tenancy.md#letting-a-user-choose-among-their-tenants) is `UserSelect`):
   * `dynamodb` CRUD on the UsersTable
   * `dynamodb:GetItem` on the ConfigurationTable, restricted by a `dynamodb:LeadingKeys` condition to the single key `TenantIndex#__index` (reads the [tenant declarations](./multi-tenancy.md) so that a user's configuration scope cannot be set across tenants)
   * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminListGroupsForUser`, `ListUsers`, `ListUsersInGroup` on the stack's user pool
@@ -389,6 +394,7 @@ The solution creates various IAM roles to run different components of the system
 
 * **Workflow Tracking Role**:
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
+  * `s3:ListBucketVersions` on the Input and Output buckets, and `s3:DeleteObjectVersion` on their objects: when a redacted copy supersedes an original, every version of the original's upload and of its output objects is deleted
   * `cloudwatch:PutMetricData`
   * `logs:*`
   
