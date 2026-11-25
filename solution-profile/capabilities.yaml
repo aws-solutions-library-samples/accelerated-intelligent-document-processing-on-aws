@@ -87,15 +87,24 @@ capabilities:
       In pipeline mode, classification splits a document or packet into sections and
       assigns each a class. classification.strategy chooses one combined call or
       split_then_classify (a boundary call with no class list, then one call per
-      section, optionally with a decision model), and granularity chooses one call
-      per page (default) or one call per packet or window. document_shape.sectionSplitting
-      can instead treat the whole document as one section or every page as its own
-      section. Packet granularity needs a long-context model and window_pages on long
+      section), and granularity chooses one call per page (default) or one call per
+      packet or window. Under split_then_classify, section_classification.method can
+      name each section with an LLM (default), a decision model on Lambda, or
+      embeddings compared against each class's examples with an LLM fallback; on 171
+      held-out RVL-CDIP-N sections the embeddings method matched the LLM's accuracy
+      only while still sending 75% of sections to the LLM, at the same cost, so it is
+      off by default. document_shape.sectionSplitting can instead treat the whole
+      document as one section or every page as its own section, and
+      document_shape.pageOrder can classify pages in the order of their printed page
+      numbers. Packet granularity needs a long-context model and window_pages on long
       packets; the default classification model is Amazon Nova 2 Lite.
     evidence:
       - docs/classification.md#how-the-classification-settings-are-organised
       - docs/classification.md#choosing-granularity-modality-and-strategy
       - docs/classification.md#limitations-of-packet-level-classification
+      - docs/classification.md#section-classification-by-embeddings
+      - docs/classification.md#page-order
+      - docs/decision-models.md
       - lib/idp_common_pkg/idp_common/config/models.py
     modes: [pipeline]
     configuration:
@@ -104,6 +113,7 @@ capabilities:
       - classification.split_then_classify.splitting.llm.granularity
       - classification.split_then_classify.section_classification.method
       - classification.document_shape.sectionSplitting
+      - classification.document_shape.pageOrder
     related:
       - capability:few-shot-examples
       - capability:fine-tuning
@@ -169,7 +179,10 @@ capabilities:
       field. extraction.confidence.mode is separate (default; a dedicated pass, default
       model Amazon Nova Lite, with lists scored in batches of at most 25 rows, sized
       down from the confidence model's output limit to 13 rows for a 3-column list on
-      Nova Lite with bounding boxes, and split further on truncation), integrated (confidence on the extraction call) or off. Measured on
+      Nova Lite with bounding boxes, and split further on truncation), integrated (confidence on the extraction call) or off.
+      In separate mode, extraction.confidence.method decision_model scores each value
+      with a yes/no question to a decision model on Lambda instead of an LLM call,
+      reading at most the text that fits the model's window. Measured on
       the v0.6.14 benchmark, integrated was not cheaper than separate in simple mode and
       cost about 42% more at the default model in advanced mode; only off saved money.
       With the default Nova Lite confidence model, 0 of 119,937 confidence values on
@@ -180,10 +193,12 @@ capabilities:
     evidence:
       - docs/extraction-and-confidence.md#confidence-mode-separate-vs-integrated-vs-off
       - docs/human-review.md#confidence-threshold-configuration
+      - docs/decision-models.md#3-or-use-it-for-extraction-confidence
       - lib/idp_common_pkg/idp_common/config/system_defaults/base-confidence.yaml
     modes: [pipeline]
     configuration:
       - extraction.confidence.mode
+      - extraction.confidence.method
       - extraction.confidence.model
       - extraction.confidence.list_batch_size
       - extraction.geometry.mode
@@ -201,8 +216,10 @@ capabilities:
       the document, and records a per-rule result and recommendation. It runs in the
       shared tail of both modes when rule_validation.enabled is true and at least one
       policy class is configured; with no policy classes it is skipped. Rules can be
-      written by hand or drafted from policy documents with Policy Discovery, and the
-      rule-validation preset ships a bank statement review example.
+      written by hand or drafted from policy documents with Policy Discovery, where
+      uploads sharing a policy group build one policy class and a later upload can
+      replace or supersede chosen rules; the rule-validation preset ships a bank
+      statement review example.
     evidence:
       - docs/rule-validation.md
       - docs/policy-discovery.md
@@ -301,12 +318,16 @@ capabilities:
       hold a failed extraction, a confidence alert and a missing required field in the
       Default queue, and an Admin can add routing rules on document values, classes and
       policy rule results that send a document to another queue with a reason for the
-      reviewer.
+      reviewer. A reviewer completes the review, rejects the document or sends it back
+      for reprocessing. A newly created stack turns hitl.enabled on in the profiles it
+      creates, so unattended processing on a new stack must turn it off.
     evidence:
       - docs/human-review.md
       - docs/review-queues.md#overview
       - docs/review-queues.md#limits-and-behaviour-to-know
       - docs/review-routing.md
+      - docs/review-queues.md#how-a-review-ends
+      - docs/migration-v0615-to-v0616.md#new-stacks-turn-review-routing-on
     modes: [bda, pipeline]
     configuration: [hitl.enabled, hitl.confidence_threshold, hitl.route_missing_required_fields, routing]
     tags: [preset:review-routing-showcase]
@@ -345,9 +366,11 @@ capabilities:
       close match from existing configuration profiles where one exists, drafts an
       extraction schema for review in chat, and creates and activates a configuration
       profile. Attached example documents are run through Discovery for a schema based
-      on real documents. It is offered in the web UI (stack parameter
-      EnableQuickStartWidget, default true) and as idp-cli bootstrap, and needs Claude
-      model access on Bedrock.
+      on real documents, and it chooses how files split into documents, whether long
+      tables use advanced extraction, and whether summaries run. Each conversation
+      saves into a new profile rather than the active one. It is offered to Admins in
+      the web UI (stack parameter EnableQuickStartWidget, default true) and as
+      idp-cli bootstrap, and needs Claude model access on Bedrock.
     evidence:
       - docs/quick-start.md
       - docs/quick-start.md#requirements
@@ -437,11 +460,15 @@ capabilities:
       and history, each document's pages, sections, extracted values, confidence and
       evaluation, and the workflow's execution flow. It also edits configuration
       profiles and the document schema, previews the prompts a step will send, holds
-      review queues, an Inbox, document analytics, knowledge-base query and chat. It is
+      review queues, an Inbox, document analytics, knowledge-base query and chat. Its
+      language menu switches between English and French (Canada); every catalog entry
+      is translated, but text not yet in the catalog, mostly on admin, configuration,
+      Capacity Planning and Test Studio screens, stays English. It is
       served through CloudFront by default or through API Gateway for VPC-only hosting,
       and a headless deployment omits it.
     evidence:
       - docs/web-ui.md#features
+      - docs/web-ui.md#interface-language
       - docs/apigateway-hosting.md
       - docs/rbac.md
     related:
@@ -641,7 +668,9 @@ capabilities:
       configuration profile, a user's scope limits them to documents of matching
       profiles, and a tenant declaration ties prefixes and profile patterns together.
       Stack parameter TenantIsolationMode=Strict makes it fail closed (unscoped non-Admin
-      users see nothing; uploads outside or across tenants are refused). Isolation is
+      users see nothing; uploads outside or across tenants are refused), and with
+      TenantSelection enabled a user granted several tenants by the identity provider
+      chooses the active one. Isolation is
       enforced by the application, not IAM: processing functions, tables and buckets
       are shared, throughput is shared, and test sets carry no tenant; the docs advise
       separate stacks or accounts where a tenant needs credential separation, its own
@@ -649,6 +678,7 @@ capabilities:
     evidence:
       - docs/multi-tenancy.md#how-isolation-works
       - docs/multi-tenancy.md#strict-mode
+      - docs/multi-tenancy.md#letting-a-user-choose-among-their-tenants
       - docs/multi-tenancy.md#what-this-does-not-isolate
       - docs/multi-tenancy.md#when-to-use-separate-stacks-instead
     related:
@@ -911,9 +941,30 @@ capabilities:
       Every processing run of a document is kept as a read-only version, so
       reprocessing or re-uploading a document does not lose its earlier results.
       Versions can be viewed, compared, downloaded and deleted in the web UI, which
-      helps when comparing a configuration change on the same document.
+      helps when comparing a configuration change on the same document. Reprocessing
+      can start at a chosen step, from the web UI, idp-cli, the SDK or the MCP tool.
+      Deleting a document removes every version of its upload from the input bucket.
     evidence:
       - docs/document-versions.md
+      - docs/document-versions.md#reprocessing
+      - docs/idp-cli.md#delete-documents
     related:
       - capability:configuration-versions
       - capability:web-ui
+
+  - id: document-attributes
+    title: Caller-supplied document attributes carried from upload to results
+    description: >-
+      Key-value identifiers such as an account id or claim number can be attached to
+      a document at upload, as S3 object metadata, a JSON sidecar, idp-cli process
+      --attribute, the SDK or a manifest column. They are stored with the document,
+      returned unchanged with its results and status, and kept through reprocessing.
+      Keys, value types, count and size are bounded, and attributes are never used in
+      prompts or paths or logged. An uploaded object whose key ends in
+      .idp-attributes.json is treated as a sidecar and not processed.
+    evidence:
+      - docs/document-attributes.md
+    related:
+      - capability:idp-cli
+      - capability:idp-sdk
+      - extension:downstream-integration

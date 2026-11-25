@@ -420,12 +420,15 @@ limitations:
   - id: policy-discovery-single-document
     title: Policy discovery extracts rules from one manual at a time
     description: >-
-      Policy discovery turns each uploaded policy manual into its own policy
-      class, with no grouping of several uploads into one policy, no automatic
-      document-name regex, and no deduplication of a rule that appears in two
-      manuals. A duplicated rule is evaluated by its own model call on every
-      document. Very large manuals can exceed one call's output limit and fail the
-      job, and are split by chapter.
+      Policy discovery extracts each uploaded policy manual independently. Uploads
+      join one policy class only when they name the same policy group, and a later
+      upload supersedes earlier rules only when it replaces the group or names the
+      rules; an amendment added without that is evaluated beside the rule it
+      rewords. There is no automatic document-name regex and no deduplication of a
+      rule that appears in two manuals, and a duplicated rule is evaluated by its own
+      model call on every document. Very large manuals can exceed one call's output
+      limit and fail the job, and are split by chapter into uploads sharing a
+      group.
     evidence:
       - docs/policy-discovery.md#limitations
     impact: low

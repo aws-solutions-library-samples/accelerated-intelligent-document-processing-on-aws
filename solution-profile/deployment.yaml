@@ -15,9 +15,14 @@ options:
       temporary password for the web UI and a separate alerts-subscription email that
       must be confirmed before any alarm is delivered. Lambda container images are
       built by AWS CodeBuild during the stack deployment, inside the customer's
-      account.
+      account. CustomerManagedKmsKeyArn, settable only when the stack is created,
+      encrypts the stack's data with the customer's own KMS key instead of one the
+      stack creates, and with several deployments in one Region,
+      ManageApiGatewayAccountSettings is left true on only one of them.
     evidence:
       - docs/deployment.md#option-1-one-click-cloudformation-console-deployment-recommended-for-first-time-users
+      - docs/customer-managed-kms-key.md
+      - docs/monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role
       - README.md#quick-start
       - scripts/aws-release.sh
     status: ga
@@ -37,12 +42,14 @@ options:
       --from-code it deploys the published template of the Region; with --from-code it
       builds and publishes the templates from a local checkout into the deployer's own
       artifact bucket first, which is how a customised build or a Region without
-      published templates is deployed. The same command takes --headless, --govcloud
-      and the experimental --terraform.
+      published templates is deployed, and which needs Node.js 26 or later to build
+      the web UI. The same command takes --headless, --govcloud and the experimental
+      --terraform.
     evidence:
       - docs/idp-cli.md#deploy
       - docs/deployment.md#option-2-cli-based-deployment-recommended-for-automation
       - docs/deployment.md#option-a-idp-cli---from-code-recommended
+      - docs/deployment.md#dependencies
     status: ga
     partitions: [aws, aws-us-gov]
     time_to_deploy: 10-15 minutes, as the deployment guide and the CLI guide state
@@ -141,10 +148,15 @@ options:
       headless and GovCloud modules are validated offline but have not been applied.
       Differences include that a failed apply is not rolled back, physical resource
       names differ, and feature-platform extensions still install as CloudFormation
-      stacks.
+      stacks. idp-cli deploy --terraform can keep the state in a locked S3 bucket,
+      tag every resource, and pin a published module version from the versions
+      index, and an upgrade keeps the parameter values the deployment has.
     evidence:
       - docs/terraform.md
       - docs/terraform.md#getting-the-module
+      - docs/terraform.md#keeping-the-state-in-s3
+      - docs/terraform.md#the-versions-index
+      - docs/terraform.md#upgrading
       - docs/terraform.md#differences-from-cloudformation-and-current-limitations
     status: experimental
     regions: [us-west-2, us-east-1, eu-central-1, ca-central-1]

@@ -379,7 +379,7 @@ extension_points:
       results.
     evidence:
       - docs/feature-platform.md#pipeline-hooks
-      - docs/feature-platform.md#two-reference-samples
+      - docs/feature-platform.md#bundled-extensions
       - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
     when_to_use: >-
       Turn rule-validation results into a business decision, such as an approve or

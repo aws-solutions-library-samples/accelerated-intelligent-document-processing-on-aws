@@ -11,6 +11,39 @@
 # markers; for those, the upgrade items the CHANGELOG states imperatively (or
 # marks upgrade-visible) are listed instead.
 releases:
+  - version: 0.6.16
+    date: 2026-11-25
+    summary: >-
+      Routing rules that send documents to review queues, new review outcomes
+      (complete, reject, send back) and reprocessing from a chosen step on every
+      surface; decision models and embeddings for section classification and
+      decision models for extraction confidence; the web UI in French (Canada);
+      document attributes, tenant selection, customer managed KMS keys and Terraform
+      state in S3. Fixes content-filter blocks failing whole documents, transient
+      Bedrock errors not being retried, failed workflows' cost going unreported,
+      and idp-cli reprocess and status filters.
+    action_required:
+      - text: Read the v0.6.15 to v0.6.16 migration guide before upgrading; review/status.json moves to schema 1.1, reprocessDocument and listReviewQueues return new shapes, pipeline step names change, and SDK and CLI reprocessing needs lambda:InvokeFunction.
+        affects: [capability:hitl-review-queues, capability:document-versions, capability:idp-sdk, capability:idp-cli]
+      - text: On a newly created stack used for unattended processing, turn Review Routing off in the profile or deploy with hitl.enabled false; new stacks now hold documents with a confidence alert or a missing required field for review.
+        affects: [capability:hitl-review-queues]
+      - text: Remove extra {DOCUMENT_IMAGE} placeholders from classification and extraction prompts; a prompt holding it more than once is now refused and its documents fail.
+        affects: [extension:prompt-customisation, capability:classification]
+      - text: Expect a deleted document's upload to be unrecoverable from the input bucket's noncurrent versions, and grant s3:ListBucketVersions and s3:DeleteObjectVersion on the input bucket to CLI or SDK callers that delete documents.
+        affects: [capability:document-versions, capability:idp-cli, capability:idp-sdk]
+      - text: If you publish from source or develop locally, install Node.js 26 or later.
+        affects: [deployment:cli-deploy]
+      - text: In a configuration profile you created in an EU stack, choose the model again for any step that fails with an invalid model identifier.
+        affects: [capability:bedrock-model-choice]
+      - text: Do not upload documents whose key ends in .idp-attributes.json; such objects are now read as attribute sidecars and not processed.
+        affects: [capability:document-attributes]
+      - text: Code that read the SDK's MultiDocDiscoveryResult.noise_documents to detect embedding failures should read failed_embeddings.
+        affects: [capability:discovery, capability:idp-sdk]
+      - text: Apply this release's Terraform module to a deployment whose upgrade stopped part way on the CloudFront security-headers policy or the Lambda asynchronous-invocation settings.
+        affects: [deployment:terraform]
+    affects: [capability:hitl-review-queues, capability:classification, capability:assessment-confidence, capability:web-ui, capability:document-attributes, capability:multi-tenancy, deployment:cloudformation, deployment:terraform]
+    evidence: [CHANGELOG.md]
+
   - version: 0.6.15
     date: 2026-11-13
     summary: >-
