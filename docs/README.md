@@ -153,7 +153,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 ## Migration
 
 - [Migration v0.6.12 to v0.6.13](./migration-v0612-to-v0613.md) - Classification settings nested by model call (config format 0.9)
-- [Migration v0.6.15 to v0.6.16](./migration-v0615-to-v0616.md) - Review routing and run plans: workflow state names, hooks, the review status object, API and SDK changes, rollback
+- [Migration v0.6.15 to v0.6.16](./migration-v0615-to-v0616.md) - Review routing and run plans (workflow state names, hooks, the review status object, API and SDK changes, rollback), and the other behaviour changes an upgrade brings
 - [Migration v0.5 to v0.6](./migration-v05-to-v06.md) - The standalone `assessment:` block folded into `extraction.confidence`, `extraction.geometry` and `hitl`
 - [Granular Assessment Retirement](./migration-granular-retirement.md) - What the retirement of granular assessment means for your configuration
 - [AppSync to REST API Migration](./migration-appsync-to-rest.md) - How the REST transport reproduces what the UI previously got from AWS AppSync

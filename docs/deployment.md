@@ -133,9 +133,10 @@ You need to have the following packages installed on your computer:
 1. bash shell (Linux, MacOS, Windows-WSL)
 2. aws (AWS CLI)
 3. [sam (AWS SAM)](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
-4. python 3.12 or later
-5. Python packages: `pip install boto3 rich typer PyYAML botocore setuptools ruff build cfn-lint`
-6. **Node.js 26+** and **npm** (required for UI validation in publish script)
+4. Python 3.12 or 3.13 (the `idp_common`, `idp_sdk` and `idp_cli` packages declare `>=3.12,<3.14`)
+5. [uv](https://docs.astral.sh/uv/getting-started/installation/) (the publisher refuses to run without it)
+6. Python packages: `pip install boto3 rich typer PyYAML botocore setuptools ruff build cfn-lint`
+7. **Node.js 26+** and **npm** (required for UI validation in publish script)
 
 > **Docker is NOT required on your workstation.** Lambda functions are packaged as source code by `idp-cli publish` and uploaded to S3; AWS CodeBuild builds the container images during stack deployment.
 
@@ -296,14 +297,14 @@ aws cloudformation update-stack \
 
 The solution deploys a **Unified Pattern** that supports both BDA and pipeline processing modes. The processing mode is controlled at runtime by the `use_bda` configuration flag (set via the UI), not at deployment time.
 
-- **Pipeline mode** (`use_bda: false`, default) — Textract OCR → Bedrock Classification → Bedrock Extraction → Assessment → Rule Validation → Summarization
-- **BDA mode** (`use_bda: true`) — Bedrock Data Automation for end-to-end processing → Rule Validation → Summarization
+- **Pipeline mode** (`use_bda: false`, default) — Textract OCR → Bedrock Classification → Bedrock Extraction → Assessment → Rule Validation → Review Routing → Summarization
+- **BDA mode** (`use_bda: true`) — Bedrock Data Automation for end-to-end processing → Rule Validation → Review Routing → Summarization
 
 After deployment, check the Outputs tab in the CloudFormation console to find links to dashboards, buckets, workflows, and other solution resources.
 
 ## Container-Based Lambda Deployment
 
-The solution **automatically** deploys all Lambda functions as container images — no manual configuration is required. During stack deployment, CodeBuild builds Docker images for each Lambda function, pushes them to ECR, and configures the Lambda functions to use the container images.
+The solution **automatically** deploys the processing functions whose dependencies do not fit a ZIP package as container images — no manual configuration is required. Those are the functions declared with `PackageType: Image` in `patterns/unified/template.yaml` and `nested/multi-doc-discovery/template.yaml`; every other function is deployed as a ZIP package. During stack deployment, CodeBuild builds a Docker image for each of them, pushes it to ECR, and configures the function to use it.
 
 ### Prerequisites
 
@@ -315,7 +316,7 @@ The solution **automatically** deploys all Lambda functions as container images 
 When you deploy (or build from source), the following happens automatically:
 
 1. Creates/verifies an ECR repository for Lambda images
-2. Builds optimized multi-stage Docker images for each Lambda function
+2. Builds optimized multi-stage Docker images for each image-packaged function
 3. Pushes images to ECR with appropriate tags
 4. Configures CloudFormation templates to reference the container images
 
@@ -324,8 +325,17 @@ When you deploy (or build from source), the following happens automatically:
 ### Monitoring Container Deployments
 
 ```bash
+# Find the ECR repository: CloudFormation generates its name, so read it from
+# the nested pattern stack (logical id PATTERNSTACK), whose ECRRepository holds it
+PATTERN_STACK=$(aws cloudformation describe-stack-resource --stack-name <stack-name> \
+  --logical-resource-id PATTERNSTACK \
+  --query StackResourceDetail.PhysicalResourceId --output text)
+REPO=$(aws cloudformation describe-stack-resource --stack-name "$PATTERN_STACK" \
+  --logical-resource-id ECRRepository \
+  --query StackResourceDetail.PhysicalResourceId --output text)
+
 # View ECR images
-aws ecr list-images --repository-name idp-<stack-name>-lambda
+aws ecr list-images --repository-name "$REPO"
 
 # Check Lambda function configuration
 aws lambda get-function --function-name <function-name>

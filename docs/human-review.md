@@ -441,6 +441,7 @@ object key under it. The actions are in one bar at the top:
 | More Actions | **Use As Evaluation Baseline** | Copies the finished document's results into the evaluation baseline (Admin, Author) |
 | Document Editor panel | **Edit Page Grouping** | Opens the page-grouping board, where each section's pages are changed (the item's holder) |
 | Button | **Skip** | Gives the item back to its queue, with a reason |
+| Button | **Reject** | Ends the review with the document `REJECTED`: asks for a reason from the queue's reject list, with an optional note, and leaves the extracted values as they were before the review, so your corrections are not applied and evaluation and summarization do not run. Unavailable, with the reason on hover, when the queue lists no reject reasons |
 | Button | **Cancel** | Leaves the item without finishing it; asks before discarding unsaved edits, and keeps the saved draft |
 | Button | **Save** | Saves the draft now (it is also saved as you type) |
 | Button | **Process Changes** | Saves your latest edits and opens **Finish the review**, which asks how the review ends and lists the steps that ending runs |
@@ -683,8 +684,10 @@ documents in their configuration scope.
 
 A reason is required (**Spot check**, **Suspected extraction error**, **Customer or
 downstream query**, **Other (see note)**) with an optional note. Reviewers see it on the
-item as **Sent to review**. From then on the item is worked like any other: completing it
-reprocesses the document with the reviewer's edits.
+item as **Sent to review**. From then on the item is worked like any other: completing
+it starts the run after the review, which begins at **Apply Review Changes** (or at
+**Extraction** for sections that have to be extracted again), as described in
+[What a completed review runs](#3-what-a-completed-review-runs).
 
 A document can be sent when it has finished processing, is not already in a review, and
 is not a Test Studio document. The Default queue must be enabled; the profile's

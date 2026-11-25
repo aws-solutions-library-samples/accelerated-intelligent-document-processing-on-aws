@@ -229,9 +229,11 @@ Two places to look for it:
 
 - **Before you upload.** `idp-cli config-validate --config-file <file>` lists them
   as warnings, with the path. This is the cheap moment — the file is in front of
-  you. Note that `idp-cli config-upload` does **not** print them: it checks only
-  whether the configuration is valid, and an ignored key does not make it invalid.
-  `--strict` turns a **top-level** extra into a non-zero exit; a nested one is
+  you. `idp-cli config-upload` prints the same warnings under a `Warnings:`
+  heading and still stores the configuration, because an ignored key does not make
+  it invalid; the SDK's `config.upload()` returns them in
+  `ConfigUploadResult.warnings`. See [config-upload](./idp-cli.md#config-upload).
+  `config-validate --strict` turns a **top-level** extra into a non-zero exit; a nested one is
   reported but does not fail, so adding this flag to a pipeline cannot break a
   configuration that passes today.
 - **On load, in CloudWatch.** The same finding appears at `WARNING` from the Lambda
@@ -740,6 +742,8 @@ Key parameters that can be configured during CloudFormation deployment:
 - `CloudFrontPriceClass`: Set CloudFront price class for UI distribution (CloudFront hosting only)
 - `CloudFrontAllowedGeos`: Optional geographic restrictions for UI access (CloudFront hosting only)
 - `WebUIHosting`: Select hosting mode — `CloudFront` (default) or `APIGateway` for VPC-based hosting (see [API Gateway Hosting](./apigateway-hosting.md))
+- `TenantSelection`: Whether a user whom the identity provider grants two or more tenants chooses the active one (`UserSelect`) or is granted none (`Disabled`, the default). Requires `TenantGrantSource=IdpClaim`. See [Multi-Tenant Isolation](./multi-tenancy.md#letting-a-user-choose-among-their-tenants)
+- `CustomerManagedKmsKeyArn`: Optional ARN of a symmetric customer managed KMS key in the stack's account and Region, used instead of the key the stack creates. It can be set only when the stack is created; an update that sets, clears or changes it is refused. See [Customer Managed KMS Key](./customer-managed-kms-key.md)
 - `CustomConfigPath`: Optional S3 URI to a custom configuration file that overrides pattern presets. Leave blank to use selected pattern configuration. Example: s3://my-bucket/custom-config/config.yaml
 
 ### Integration and Tracing Parameters

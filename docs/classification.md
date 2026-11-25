@@ -49,7 +49,7 @@ classification:
         system_prompt, task_prompt
         model settings + validation + confidence
       decision_model:            # only with method: decision_model
-        endpoint, input, max_pages, instructions, timeout_ms, max_concurrency
+        endpoint, input, max_pages, max_input_tokens, instructions, timeout_ms, max_concurrency
       embeddings:                # only with method: embeddings
         model, references, min_similarity, temperature, max_image_dimension
       low_confidence: {min_confidence, on_low_confidence}
@@ -57,6 +57,7 @@ classification:
   document_shape:                # Advanced — what you already know about a document
     sectionSplitting: llm_determined   # detect boundaries | disabled | page
     maxPagesForClassification: ALL     # only with sectionSplitting: disabled
+    pageOrder: scan                    # scan | printed_page_numbers
 ```
 
 The model settings are the same block in every call: a model, its parameters,
@@ -2120,11 +2121,11 @@ You can define custom document classes through the Web UI configuration:
 
 ## Image Placement with {DOCUMENT_IMAGE} Placeholder
 
-Pipeline mode supports precise control over where document images are positioned within your classification prompts using the `{DOCUMENT_IMAGE}` placeholder. This feature allows you to specify exactly where images should appear in your prompt template, rather than having them automatically appended at the end.
+Pipeline mode supports precise control over where document images are positioned within your classification prompts using the `{DOCUMENT_IMAGE}` placeholder. The placeholder also decides whether images are sent at all: the shipped `modality.images` is empty, and an empty value is inferred from the call's task prompt, so a prompt without `{DOCUMENT_IMAGE}` sends no image.
 
 ### How {DOCUMENT_IMAGE} Works
 
-**Without Placeholder (Default Behavior):**
+**Without Placeholder (Text Only):**
 ```yaml
 classification:
   combined:
@@ -2136,7 +2137,10 @@ classification:
     
         Classify it as one of: {CLASS_NAMES_AND_DESCRIPTIONS}
 ```
-Images are automatically appended after the text content.
+No image is sent: with `modality.images` unset, the missing placeholder makes this
+call text-only. Setting `modality.images: true` on the call sends images anyway, by
+appending a `<document-image>{DOCUMENT_IMAGE}</document-image>` element to the end of
+the prompt (logged at INFO, since it is a prompt you did not write).
 
 **With Placeholder (Controlled Placement):**
 ```yaml
@@ -2226,7 +2230,7 @@ classification:
 - **📱 Better Multimodal Understanding**: Help models correlate visual and textual information
 - **🔄 Flexible Prompt Design**: Create prompts that flow naturally between different content types
 - **⚡ Improved Performance**: Strategic image placement can improve classification accuracy
-- **🔒 Backward Compatible**: Existing prompts without the placeholder continue to work unchanged
+- **🔒 Modality follows the prompt**: A prompt without the placeholder is text-only unless `modality.images` is set to `true`
 
 ### Multi-Page Documents
 

@@ -132,9 +132,9 @@ The solution automatically migrates legacy configurations to JSON Schema format:
 
 ### When Migration Happens
 
-1. **First read after upgrade** - When configuration is loaded from DynamoDB
-2. **Automatic persistence** - Migrated format is saved back to DynamoDB
-3. **One-time process** - Subsequent reads use JSON Schema format directly
+1. **Every read of a legacy configuration** - When a configuration whose `classes` (or `policy_classes`) are in the legacy format is loaded from DynamoDB, they are converted to JSON Schema in memory before anything uses them
+2. **Persisted when the configuration is next saved** - The read does not write the converted form back; the stored item keeps the legacy format until the configuration is saved (for example from the configuration editor or with `idp-cli config-upload`), which writes JSON Schema
+3. **No-op once converted** - A configuration already in JSON Schema format is read directly
 
 ### Migration Behavior
 
@@ -145,18 +145,27 @@ The solution automatically migrates legacy configurations to JSON Schema format:
 
 ### Migration Logs
 
-Check Lambda logs to verify migration:
+The conversion is logged by whichever Lambda function reads the configuration. The
+web UI's configuration reads go through the configuration resolver in the API
+resolvers nested stack, whose log group takes CloudFormation's generated name
+(`<STACK>-APIRESOLVERSTACK-<ID>-ConfigurationResolverFunctionLogGroup-<ID>`, with no
+leading `/`), so find it by prefix first:
 
 ```bash
-aws logs tail /aws/lambda/<STACK>-ConfigurationResolverFunction-<ID> \
-  --region <REGION> --follow
+aws logs describe-log-groups --region <REGION> \
+  --log-group-name-prefix '<STACK>-APIRESOLVERSTACK-' \
+  --query 'logGroups[].logGroupName' --output text | tr '\t' '\n' | grep ConfigurationResolver
+aws logs tail <LOG_GROUP_NAME> --region <REGION> --follow
 ```
 
-Look for:
+Look for, where `<TYPE>` is the stored configuration type (such as `Config`):
 ```
-Migrating 6 legacy classes to JSON Schema format
-Successfully migrated classes to JSON Schema format
+Migrating <TYPE> configuration to JSON Schema format
+Migrating <TYPE> policy_classes to JSON Schema format
 ```
+
+The first line is logged for legacy `classes`, the second for legacy
+`policy_classes`.
 
 ## AWS IDP Extensions
 

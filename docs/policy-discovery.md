@@ -234,7 +234,7 @@ All Policy Discovery settings live under the `discovery.rules` section of the Co
 
 ### Model Configuration
 
-**Supported Models:** The same Bedrock model catalog as the Discovery module. Recommended: `us.anthropic.claude-sonnet-4-6` for quality (or `global.anthropic.claude-sonnet-4-6` if your deployment uses global inference profiles); any Claude or Nova model may be substituted.
+**Supported Models:** The same Bedrock model catalog as the Discovery module. The default is `global.anthropic.claude-sonnet-4-6` (use `us.anthropic.claude-sonnet-4-6` if your deployment needs a US-only inference profile); any Claude or Nova model may be substituted.
 
 > **⚠️ OpenAI GPT-5.x is NOT supported for Policy/Rule Discovery.** Rule
 > discovery sends whole-PDF `document` blocks (and agentic rule discovery uses
@@ -262,7 +262,7 @@ All Policy Discovery settings live under the `discovery.rules` section of the Co
 **Parameter Guidelines:**
 - **Temperature: `0.0`** — deterministic rule extraction; re-running on the same document should give the same rules
 - **Top P: `0.0` / Top K: `5`** — strict decoding, minimizes off-rule hallucination
-- **Max Tokens: `64000`** — policy manuals often have dozens to hundreds of rules; a high cap avoids mid-JSON truncation
+- **Max Tokens: empty (the default)** — uses the selected model's maximum output, because policy manuals often have dozens to hundreds of rules and a low cap truncates the JSON mid-reply. Set a positive value only to cap output below the model maximum
 
 ### Prompt Customization
 

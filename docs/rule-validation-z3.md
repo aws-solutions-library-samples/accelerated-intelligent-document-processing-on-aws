@@ -67,11 +67,23 @@ Z3 rules require:
 
 ### Z3 Engine Settings (Optional)
 
-Add these to the `rule_validation` section to customize Z3 behavior:
+The deployed pipeline reads one Z3 setting from the `rule_validation` section:
 
 ```yaml
 rule_validation:
   z3_timeout_ms: 5000          # Solver timeout (1–300000 ms, default 5000)
+```
+
+The schema also accepts `z3_rule_translator` and `z3_value_extraction` blocks, but
+**only the standalone engine reads them** (`Z3Engine`, as used from notebooks and
+scripts). A deployed stack ignores both: the **Generate RuleJSON** button calls a
+resolver that translates with the packaged prompts in
+`z3/config/translator_config.yaml`, and per-document parameter values are taken from
+the facts the `fact_extraction` step produced, using that step's model settings. Set
+them only when you drive `Z3Engine` yourself:
+
+```yaml
+rule_validation:
   z3_rule_translator:          # LLM for rule → SMT-LIB translation
     model: us.anthropic.claude-sonnet-4-6
     temperature: 0
@@ -87,7 +99,7 @@ rule_validation:
     task_prompt: "..."
 ```
 
-If `z3_rule_translator` and `z3_value_extraction` are both omitted, the engine uses built-in default prompts from `z3/config/translator_config.yaml`.
+If `z3_rule_translator` and `z3_value_extraction` are both omitted, the standalone engine uses the same packaged prompts from `z3/config/translator_config.yaml`.
 
 ## How It Works
 

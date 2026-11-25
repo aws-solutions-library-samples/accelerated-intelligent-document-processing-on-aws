@@ -1,11 +1,11 @@
 ---
-title: "v0.6.15 → v0.6.16 Migration (Review Routing and Run Plans)"
+title: "v0.6.15 → v0.6.16 Migration"
 ---
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-# v0.6.15 → v0.6.16 Migration (Review Routing and Run Plans)
+# v0.6.15 → v0.6.16 Migration
 
 v0.6.16 adds [review routing](./review-routing.md) (routing rules that decide
 whether a document is reviewed, in which review queue and with which reason for the
@@ -26,7 +26,11 @@ document, which v0.6.15 let complete unreviewed (see
 Every other document is not reviewed. **A stack you create with v0.6.16 turns Review Routing on**; see
 [New stacks turn Review Routing on](#new-stacks-turn-review-routing-on). This page
 lists what behaves differently, what to check if you integrate with the workflow,
-the API, the SDK or the review status object, and what a rollback does.
+the API, the SDK or the review status object, and what a rollback does. The other
+changes in this release that an upgrade makes visible (document deletion, status
+filters, prefix mappings, prompts, Quick Start, the stack's KMS key, new stack
+parameters and Terraform upgrades) are in
+[Other behaviour changes in this release](#other-behaviour-changes-in-this-release).
 
 ## Before you upgrade
 
@@ -44,6 +48,7 @@ Check each of these that applies to you:
 | deployed with the `rule-validation` Configuration Preset, or use its healthcare samples | [The rule-validation preset is now a bank statement review](#the-rule-validation-preset-is-now-a-bank-statement-review) |
 | query the reporting database | [Reporting](#reporting) |
 | document or script the configuration page | [Names in the web UI](#names-in-the-web-ui) |
+| delete documents, filter by status, use prefix mappings, deploy in an EU Region, deploy with Terraform, or write hooks or extensions | [Other behaviour changes in this release](#other-behaviour-changes-in-this-release) |
 
 ## What stays the same
 
@@ -383,6 +388,144 @@ Routing** and **Apply Review Changes** wherever a step is listed.
 - `document_reviews` gains the column `routing_reason`: the reason of the routing
   rule that placed the document, as written, with its placeholders unfilled. See
   [Reporting Database](./reporting-database.md#document-reviews-table).
+
+## Other behaviour changes in this release
+
+These changes are not part of Review Routing or run plans, but an upgrade makes
+each of them visible. The [CHANGELOG](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/CHANGELOG.md)
+has the full entry for each.
+
+### Deleting a document purges every version of its upload
+
+The input bucket is versioned. Deleting a document (web UI, `idp-cli
+delete-documents`, the SDK, or the PII Anonymizer's *redact copy and stop* mode)
+now deletes every version and delete marker of the document's upload, so a deleted
+document's upload can no longer be restored from the input bucket's noncurrent
+versions. A CLI or SDK caller needs `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion` on the input bucket in its own IAM policy; without them
+the current object is still removed, but the document is reported as failed,
+naming the input bucket, because the versions remain. See
+[delete-documents](./idp-cli.md#delete-documents).
+
+### Status filters select documents, and accept only real statuses
+
+`idp-cli delete-documents --status-filter` and the SDK's
+`client.batch.delete_documents(status_filter=...)` used to match no document at
+all, so a script that passed a filter deleted nothing. They now match the status
+the pipeline records, so **the same script now deletes the documents it names**.
+Check such scripts before you run them against an updated stack.
+
+The CLI's status options (`delete-documents --status-filter`, `status
+--object-status`) and the SDK's `status_filter` accept only the statuses a
+document can be recorded with, and refuse anything else, including `PROCESSING`;
+the SDK raises `IDPConfigurationError`. Use the step status you mean, such as
+`RUNNING`, `OCR` or `EXTRACTING`. `idp-cli status --batch-id` with no
+`--object-status` now also finds documents at a processing step, aborted,
+rejected or waiting for review. See [status](./idp-cli.md#status) and
+[batch.delete_documents()](./idp-sdk.md#batchdelete_documents).
+
+### Prefix mappings
+
+- A prefix mapping that names a configuration profile which does not exist now
+  refuses the document: it is recorded as **Failed** with a reason naming the
+  mapping and the missing profile, where it used to be processed under the profile
+  its upload named or the active one. See
+  [A mapping whose profile does not exist](./configuration-profiles.md#a-mapping-whose-profile-does-not-exist).
+- Only `test-studio` and `pii-anonymizer`, the `submission-source` values Test
+  Studio and the PII Anonymizer write, exempt an object from prefix mappings. An
+  object carrying any other value is mapped like an ordinary upload. See
+  [Documents this deployment submits itself are exempt](./configuration-profiles.md#documents-this-deployment-submits-itself-are-exempt).
+
+### A prompt with more than one `{DOCUMENT_IMAGE}` fails the document
+
+A classification or extraction prompt that contains `{DOCUMENT_IMAGE}` more than
+once used to be accepted with a log warning; a document sent with it now fails
+with `found N occurrences, but exactly 1 is required`. Run `idp-cli
+config-validate` on your profiles, which reports these prompts, and remove the
+extra placeholders. See
+[Image placement](./extraction-and-confidence.md#image-placement-with-document_image).
+
+### A content-filter block fails only its section
+
+When Amazon Bedrock's content filter withholds the extraction model's reply for
+one section, that section is shown as **Failed** with an `extraction_failed`
+issue and the rest of the document completes, where the whole document used to
+fail. With Review Routing on, such a document is held for review (see
+[Where a failed section shows up](./extraction-and-confidence.md#where-a-failed-section-shows-up)).
+
+### EU profiles saved before this release keep a `us.` model id
+
+A model setting that a configuration leaves out now takes the stack's Region's
+inference profile, so an EU stack gets the `eu.` profile. A configuration profile
+you created in an EU stack before this release stored the `us.` id it was given
+as an explicit value, and keeps it; the update rewrites only the profiles the
+deployment itself provides. In such a profile, choose the model again (or restore
+it from the default) for each step that fails with an invalid model identifier.
+See [EU Region Model Support](./eu-region-model-support.md).
+
+### Quick Start is Admin-only
+
+Only Admins see Quick Start and only Admins can send it a message; both chat
+routes refuse a Quick Start message from any other group. On a stack deployed
+with `EnableQuickStartWidget=false`, the chat routes also refuse every Quick Start
+message, where the parameter used to hide Quick Start in the web UI only. See
+[Quick Start](./quick-start.md#web-ui).
+
+### Deleting the stack keeps its KMS key
+
+The KMS key the stack creates now carries `DeletionPolicy: Retain`, so the
+retained buckets it encrypts stay readable after the stack is deleted. The key
+is billed until you schedule it for deletion; `idp-cli delete` names it and
+prints the command. See [The retained KMS key](./idp-cli.md#the-retained-kms-key).
+
+### New stack parameters
+
+All three default to the previous behaviour.
+
+- `TenantSelection` (default `Disabled`) lets a user whom the identity provider
+  grants two or more tenants choose the active one. It requires
+  `TenantGrantSource=IdpClaim`. See
+  [Letting a user choose among their tenants](./multi-tenancy.md#letting-a-user-choose-among-their-tenants).
+- `ManageApiGatewayAccountSettings` (default `true`) decides whether the stack
+  sets the Region's API Gateway CloudWatch logging role. Set it to `false` on
+  every deployment in a Region but one. See
+  [Monitoring](./monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role).
+- `CustomerManagedKmsKeyArn` (default empty) uses a KMS key of your own instead
+  of the one the stack creates. It can be set only when a stack is **created**;
+  an update that sets, clears or changes it is refused and rolled back. See
+  [Customer Managed KMS Key](./customer-managed-kms-key.md).
+
+### Document attribute sidecars
+
+A JSON sidecar of document attributes must be stored at the document's own key
+plus `.idp-attributes.json`. An object whose key ends in `.idp-attributes.json`
+is treated as a sidecar and not processed. See
+[S3 upload: a JSON sidecar](./document-attributes.md#s3-upload-a-json-sidecar).
+
+### Terraform upgrades keep the deployment's parameter values
+
+An `idp-cli deploy --terraform` upgrade now keeps the value the deployment has
+for every parameter you do not pass, as a CloudFormation update does, reading it
+from the deployment's label stack. It used to keep only the parameters passed to
+earlier deploys from the same directory, so a parameter never passed took the new
+release's default. A parameter new in this release takes its default. See
+[Upgrading](./terraform.md#upgrading).
+
+### Node.js 26 to publish or build from source
+
+Building the web UI from a checkout, and so `idp-cli publish`, `publish.py` and
+`make setup-node`, needs Node.js 26 or later. A stack update builds the web UI in
+CodeBuild with Node.js 26 and needs nothing from you. See
+[Deployment](./deployment.md#dependencies).
+
+### numpy 2 and pyarrow 26
+
+`idp_common`'s `ocr`, `multi_document_discovery` and `all` extras pin numpy 2,
+and its `reporting`, `test` and `all` extras pin pyarrow 26, as do the Lambda
+layers and images built from them. The solution's results and Parquet files are
+unchanged. A pipeline hook or extension that installs `idp_common` with those
+extras, or imports numpy or pyarrow from the reporting layer, gets the new major
+versions and should be tested against them.
 
 ## During the upgrade
 

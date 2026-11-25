@@ -217,6 +217,7 @@ Ready-to-deploy sample Lambda hook functions are provided in [`samples/lambda-ho
 | **GENAIIDP-chandra-ocr-hook** | Calls the [Datalab Chandra OCR 2](https://github.com/datalab-to/chandra) hosted API for high-quality OCR — converts page images to structured Markdown, JSON, or HTML |
 | **GENAIIDP-mistral-ocr-hook** | Calls the hosted [Mistral OCR](https://mistral.ai/news/ocr-4/) API for high-quality OCR — returns Markdown **plus per-word confidence and bounding-box geometry** (Textract format) for explainability, with per-page cost metering. Fully serverless |
 | **GENAIIDP-cohere-parse-hook** | Calls the hosted [Cohere Parse](https://cohere.com/blog/parse) API for low-cost OCR ($1.50 / 1,000 pages) — converts Cohere's HTML tables to Markdown pipe tables and returns **table/figure bounding boxes**, but **no confidence scores** (Parse provides none). Fully serverless |
+| **GENAIIDP-w2-copy-consistency** | **Assessment** hook (not OCR): deterministically flags Form-W2 fields that disagree across duplicate copies of the same employee on one page (hand-filled Copy B vs Copy C). Pure Python comparison — no LLM call, no added inference cost. No-op passthrough for every other document class |
 
 Each sample includes:
 - Well-commented Python code with clearly marked customization points
