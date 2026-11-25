@@ -550,7 +550,9 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     if (newMessage.messageType === 'structured_data_start') {
       structuredDataModeRef.current = true;
 
-      // Add a placeholder message to show we're generating the final result
+      // Add a placeholder message to show we're generating the final result. Its text is
+      // written here, when the answer starts, and a language switch does not re-word it; the
+      // final response replaces it.
       updateMessages((prevMessages) => {
         const placeholderMessage: ChatMessage = {
           role: 'assistant',
