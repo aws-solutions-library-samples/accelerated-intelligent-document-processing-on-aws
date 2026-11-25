@@ -1147,6 +1147,12 @@ navigation, the globe just before your user name, shows the current language and
 language under its own name: **English** and **Français (Canada)**. Choosing one switches the
 page in place, without a reload.
 
+
+
+https://github.com/user-attachments/assets/33b46ac6-00ff-49e6-951e-bfd107e524d5
+
+
+
 **Which language a browser opens in.** The UI takes the first of these that applies:
 
 1. the language last chosen from the menu in this browser;
