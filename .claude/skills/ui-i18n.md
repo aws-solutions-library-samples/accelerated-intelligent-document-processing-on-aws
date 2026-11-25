@@ -1,7 +1,8 @@
 # Web UI translations — GenAI IDP Accelerator
 
 Use this skill when a change adds, edits or removes user-facing text in `src/ui/`,
-adds a product term, or is a review of such a change. The web UI ships in English and French (Canada). A message's translations are
+adds a product term, or is a review of such a change, and before a release is cut.
+The web UI ships in English and French (Canada). A message's translations are
 added, updated or removed in the change that adds or edits its English, and the
 coding agent that edited the screen writes the French, since it knows where the
 text shows. How a message is declared, the catalogs and the gates are in
@@ -82,3 +83,10 @@ flag:
 
 The review is advisory. Of all this, only a stale entry blocks a merge, through
 `make check-ui-i18n-catalog`; a missing translation never does.
+
+## Before a release
+
+[prepare-changelog.md](prepare-changelog.md) holds the catch-up before the cut and
+where the coverage figure goes, and [release-validation.md](release-validation.md)
+and [ux-test.md](ux-test.md#reviewing-in-french-canada) the run of the release's
+flows in French (Canada).

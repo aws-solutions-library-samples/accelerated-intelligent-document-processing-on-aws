@@ -175,6 +175,22 @@ not passed and not failed.
 is only on an unmerged branch, the stack will not have it and the flow is
 **blocked**, not broken. Say which, so nobody chases a phantom bug.
 
+## Reviewing in French (Canada)
+
+For a release, and for a change to translated screens, run the flows again in
+`fr-CA`. Switch the signed-in UI the way `signin.set_locale`
+(`scripts/ux_runner/signin.py`) switches it for the unattended reviews: with
+`evaluate_script`, set the `localStorage` key `idp-locale` to `fr-CA` and reload,
+then go on once `<html lang>` is `fr-CA` and the sidebar's stack name has left its
+English label, which is when the catalog has arrived. A person does the same from
+the language menu in the top navigation. The choice stays in the debug profile, so
+switch back to `en` the same way when you finish.
+
+Look for what only the French shows: English left on a French screen, text cut off
+by its layout, a placeholder shown raw, a term wrong for its place. Whether a
+message means what its English means is the catalog review's question
+([ui-i18n.md](ui-i18n.md)), not this one's.
+
 ## Recording a review (optional)
 
 Use this when the user wants a video **of the review** — "record the walkthrough",
