@@ -169,7 +169,8 @@ The commit message is published text: write it at summary level.
 Report the version and the rule that chose it, the CHANGELOG drops and merges, the
 French figures, the solution profile changes, each gate's result, and the commit SHA and
 where it was pushed. Then list what this skill does not do, which the maintainer runs
-from [docs/release-runbook.md](../../../docs/release-runbook.md):
+from [docs/release-runbook.md](../../../docs/release-runbook.md), and which the
+[release](../release/SKILL.md) skill runs with `make release`:
 
 1. Merge `develop` into `main`.
 2. Publish the artifacts with `scripts/aws-release.sh` (runbook Step 3). The CHANGELOG

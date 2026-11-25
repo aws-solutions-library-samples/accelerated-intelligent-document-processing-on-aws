@@ -386,7 +386,10 @@ rollback has failed.
 
 ## 4. What is not automated
 
-No CI job publishes a release. Every step is run by hand, in this order:
+No CI job publishes a release. `make release` (`scripts/release.py`, driven by
+`.claude/skills/release/SKILL.md`) runs Steps 3 to 7 from a workstation, after preflight
+checks, with the GitHub Release kept a draft until the artifacts verify; without it,
+every step is run by hand, in this order:
 
 1. `make version V=<x.y.z>`.
 2. Preparing and cutting `CHANGELOG.md`.
