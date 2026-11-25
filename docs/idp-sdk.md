@@ -83,6 +83,7 @@ client.stack.deploy(...)
 client.stack.delete(...)
 client.stack.get_resources()
 client.stack.exists()
+client.stack.get_parameters()
 client.stack.get_status()
 client.stack.check_in_progress()
 client.stack.monitor(...)
@@ -101,6 +102,8 @@ client.batch.get_results(...)
 client.batch.get_confidence(...)
 client.batch.list()
 client.batch.download_results(...)
+client.batch.list_versions(...)
+client.batch.download_version(...)
 client.batch.download_sources(...)
 client.batch.delete_documents(...)
 client.batch.stop_workflows()
@@ -166,8 +169,35 @@ client.manifest.validate(...)
 # Terraform-only operations (genai-idp-terraform migration)
 client.terraform.migrate_from_genai_idp_terraform.plan(...)
 
+# Fit check (sample documents against the stack)
+client.fit_check.run(...)
+
+# Tenancy operations (multi-tenant isolation)
+client.tenancy.list()
+client.tenancy.put(...)
+client.tenancy.audit(...)
+client.tenancy.verify(...)
+
+# MCP service credentials
+client.mcp.list_credentials()
+client.mcp.create_credential(...)
+client.mcp.rotate_credential(...)
+client.mcp.revoke_credential(...)
+
+# Publish operations (build artifacts and template variants)
+client.publish.build(...)
+client.publish.transform_template_headless(...)
+client.publish.transform_template_govcloud(...)
+client.publish.print_deployment_urls(...)
+
+# Agent Companion Chat
+client.chat.send_message(...)
+
 # Testing operations
 client.testing.load_test(...)
+client.testing.get_test_result(...)
+client.testing.compare_test_runs(...)
+client.testing.abort_test_run(...)
 ```
 
 ## Client Initialization
@@ -244,6 +274,7 @@ migration.freeze(apply=True, wait=True)
 migration.fix_config(apply=True)
 migration.adopt_user_pool(apply=True)
 result = migration.apply(apply=True)
+migration.restore_config(apply=True)
 migration.detach("./old-idp", apply=True)
 migration.check_destroy("destroy-plan.json")
 ```
@@ -253,9 +284,10 @@ migration.check_destroy("destroy-plan.json")
 | `plan(old_state_path, admin_email, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` | `TerraformMigrationPlanResult` | Writes the root configuration, runs `terraform init`, writes `adopt.tf` and the migration plan. Raises `IDPConfigurationError` on an old stateful resource with no verdict. |
 | `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. `notes` says what was not checked. |
 | `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30, ignore_documents=())` | `TerraformMigrationStepResult` | `details` separates documents in flight from documents awaiting review. |
-| `fix_config(terraform_dir=None, *, apply=False, restore=None)` | `TerraformMigrationStepResult` | `backup_path` names the backup. |
+| `fix_config(terraform_dir=None, *, apply=False, restore=None, restore_after_apply=False)` | `TerraformMigrationStepResult` | `backup_path` names the backup. A `restore` is refused once the first apply has recorded a revision history for a backed-up profile, unless `restore_after_apply=True`, which discards that history; `restore_config` is the usual remedy. |
 | `adopt_user_pool(terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
 | `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=(), accept_changes=(), ignore_documents=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts; `details["review"]` lists the allowed in-place changes to adopted resources. `accept_changes` takes `"<address>:<rule>"` as a finding names it. |
+| `restore_config(terraform_dir=None, *, apply=False)` | `TerraformMigrationStepResult` | Restores, as a new revision, each kept profile whose published revision the first deploy cut over it. See [step 6a](./terraform-migration.md#6a-restore-the-configuration-profiles-the-first-deploy-replaced). |
 | `detach(old_terraform_dir, terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
 | `check_destroy(destroy_plan_path, terraform_dir=None)` | `TerraformMigrationStepResult` | Reads only. |
 
@@ -740,6 +772,37 @@ result = client.batch.download_results(
 )
 
 print(f"Downloaded {result.files_downloaded} files")
+```
+
+### batch.list_versions()
+
+List the processing-run versions recorded for a document, newest first.
+
+**Parameters:**
+- `document_id` (str, required): The document's S3 object key (its tracking id)
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `list[dict]` — one run record per version, with `RunId`, `CompletionTime`, `ConfigVersion`, `FileCount`, `ManifestUri` and more. Raises `IDPResourceNotFoundError` if the stack's tracking table cannot be resolved.
+
+### batch.download_version()
+
+Download the exact output bytes of one document version. Each output object is fetched by the S3 `VersionId` pinned in that run's manifest, so the download reflects that run even if later runs have overwritten the objects.
+
+**Parameters:**
+- `document_id` (str, required): The document's S3 object key
+- `run_id` (str, required): Run identifier, from `list_versions()`
+- `output_dir` (str, required): Local directory to save results
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `BatchDownloadResult` with `files_downloaded`, `documents_downloaded` and `output_dir`
+
+```python
+versions = client.batch.list_versions(document_id="invoices/inv-001.pdf")
+client.batch.download_version(
+    document_id="invoices/inv-001.pdf",
+    run_id=versions[0]["RunId"],
+    output_dir="./inv-001-latest",
+)
 ```
 
 ### batch.download_sources()
@@ -1367,7 +1430,7 @@ print(f"Status: {result.status}")
 
 ### stack.deploy_terraform() / stack.delete_terraform()
 
-Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments) for the behaviour.
+Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments-1) for the behaviour.
 
 - `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None, allow_replace_stateful=False, allow_replace_retained=False, tags=None, terraform_state="local", module_version=None)` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`, and `module_version` (for example `"0.6.15"`) deploys that version from the `idp-terraform-versions.json` index beside the pointer instead of the latest, checking the zip's sha256 against the index entry before anything is written (see [Pinning a version](./terraform.md#pinning-a-version)); `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one. It applies a saved plan after checking it, and raises `IDPStackError` without applying anything when the plan deletes or replaces a resource that holds data or that CloudFormation would retain (the module's `statefulAddresses` and `retainedAddresses`), unless `allow_replace_stateful=True` (`allow_replace_retained` is the earlier name). A parameter not in `parameters` keeps the value the deployment has, read from its label stack (`NoEcho` ones from the directory's `idp-cli-parameters.json`), and one new in the module takes its default; the kept values and the new parameters' defaults are logged at `INFO`, and a warning naming each changed default at `WARNING` when no label stack can be read, on the `idp_sdk.operations.stack` logger.
 - `tags` (`deploy_terraform`) is a dict of tags for every taggable resource, as CloudFormation stack tags are: `main.tf` passes it to the module's `tags` variable, which the module merges into each `awscc` resource, and to the `aws` provider's `default_tags`. It replaces the deployment's tags; `None` keeps the tags the directory's `terraform.tfvars` holds from the previous deploy. `{}` stops passing tags: the `aws` resources lose them, but an `awscc` resource whose template sets no tags is then given `null`, which the provider may treat as keeping the tags it has, so do not rely on `{}` to remove them there. More than 10 tags, or tags for a module whose `idp-terraform.json` has no `tagsVariable`, raise `IDPConfigurationError`.
@@ -1406,6 +1469,15 @@ if client.stack.exists():
 else:
     print("Stack not found")
 ```
+
+### stack.get_parameters()
+
+Get the parameter values a CloudFormation stack was deployed with.
+
+**Parameters:**
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `dict[str, str]` — `{parameter name: value}`; empty if the stack cannot be read
 
 ### stack.get_status()
 
@@ -1653,6 +1725,25 @@ if result.success:
     print("Headless template written to:", result.output_path)
 else:
     print("Error:", result.error)
+```
+
+### publish.transform_template_govcloud()
+
+Transform an existing CloudFormation template into the **GovCloud** variant. Unlike the headless transform it keeps the full Web UI; it removes the `AWS::CloudFront::*` resources, which do not exist in GovCloud regions, and forces `WebUIHosting=APIGateway` so the UI is served through the REST API. The output is then linted offline with a region-aware `cfn-lint`, so a remaining resource type GovCloud does not support (`E3006`) fails the transform rather than the deploy; the lint is skipped if `cfn-lint` is not installed. See [GovCloud Deployment](./govcloud-deployment.md).
+
+**Parameters:**
+- `source_template` (str, required): Path to the source CloudFormation YAML template
+- `output_path` (str, optional): Path to write the transformed template. If omitted, appends `-govcloud` to the source filename.
+- `verbose` (bool, optional, keyword-only): If `True`, enable verbose logging. Default: `False`.
+- `lint_region` (str, optional, keyword-only): GovCloud region to lint against (default: `us-gov-west-1`); `None` skips the lint.
+
+**Returns:** `TemplateTransformResult` (same fields as `transform_template_headless()`)
+
+```python
+result = client.publish.transform_template_govcloud(
+    source_template="./.aws-sam/idp-main.yaml",
+    output_path="./.aws-sam/idp-govcloud.yaml",
+)
 ```
 
 ### publish.print_deployment_urls()
@@ -2523,6 +2614,25 @@ for finding in report.findings:
     print(finding.kind, finding.subject, finding.detail)
 ```
 
+## Chat Operations
+
+### chat.send_message()
+
+Send one message to the [Agent Companion Chat](./agent-companion-chat.md) — the operation behind `idp-cli chat`.
+
+**Parameters:**
+- `prompt` (str, required): Natural-language message
+- `session_id` (str, optional): Session ID for a multi-turn conversation; reuse the `session_id` of a previous response
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `ChatResponse` with `response` (the reply text), `session_id` and `agent_names`. Raises `IDPProcessingError` if the request fails.
+
+```python
+reply = client.chat.send_message("How many documents failed today?")
+follow_up = client.chat.send_message("Which classes?", session_id=reply.session_id)
+print(follow_up.response)
+```
+
 ## Manifest Operations
 
 Operations for manifest generation and validation.
@@ -2673,6 +2783,21 @@ else:
         print(f"\n{difference['setting']}")
         for test_run_id, value in difference["values"].items():
             print(f"  {test_run_id}: {value}")
+```
+
+### testing.abort_test_run()
+
+Abort one or more Test Studio runs: stops their running document workflows and sets the runs' status to `ABORTED`. Only runs whose status is `QUEUED` or `RUNNING` can be aborted. The operation behind `idp-cli abort-test-run`.
+
+**Parameters:**
+- `test_run_ids` (list[str], required): Test run identifiers to abort
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `dict` with `success` (whether any run was aborted), `message`, `aborted_count`, `failed_count` and `errors`. Raises `IDPProcessingError` if the operation fails.
+
+```python
+result = client.testing.abort_test_run(["Fake-W2-Tax-Forms-20260410-173735"])
+print(result["message"])
 ```
 
 ---

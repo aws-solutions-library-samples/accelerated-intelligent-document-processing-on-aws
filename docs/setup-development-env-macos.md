@@ -18,7 +18,7 @@ When to use this guide:
 • You want to ensure exact tool versions match project specifications  
 
 # What you'll achieve: 
-A fully functional local development environment with Python 3.13, AWS CLI, Docker Desktop, VS Code with AI extensions, and integrated development tools - all configured through a single automated setup script. This document provides a step-by-step guide to setting up a development environment on macOS. It covers installing essential tools such as VS Code, Python 3.13.x, AWS CLI, SAM CLI, Node.js, Docker Desktop, Miniconda, Cline for VS Code, and Amazon Q in Terminal.
+A fully functional local development environment with Python 3.12, AWS CLI, Docker Desktop, VS Code with AI extensions, and integrated development tools - all configured through a single automated setup script. This document provides a step-by-step guide to setting up a development environment on macOS. It covers installing essential tools such as VS Code, Python 3.12.x, AWS CLI, SAM CLI, Node.js, Docker Desktop, Miniconda, Cline for VS Code, and Amazon Q in Terminal.
 
 # Prerequisites
 
@@ -110,7 +110,8 @@ if ! grep -q 'pyenv init' ~/.zshrc 2>/dev/null; then
     echo 'eval "$(pyenv init -)"' >> ~/.zshrc
 fi
 
-# Use pyenv to install and set Python 3.12 (adjust if you prefer 3.11, etc.)
+# Use pyenv to install and set Python 3.12. 3.13 also works; the packages
+# require Python 3.12 or 3.13 (requires-python >=3.12,<3.14), so not 3.11 or 3.14
 eval "$(pyenv init -)"
 pyenv install -s 3.12.5
 pyenv global 3.12.5

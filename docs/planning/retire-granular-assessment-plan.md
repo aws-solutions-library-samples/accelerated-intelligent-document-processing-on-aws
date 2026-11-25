@@ -4,24 +4,27 @@ SPDX-License-Identifier: MIT-0
 # Plan: Retire granular assessment safely (+ unify extraction/confidence docs)
 
 **Author:** design, 2026-07-03
-**Status:** PROPOSAL → implement in sequenced PRs (do NOT reorder).
+**Status:** implemented. Granular assessment is retired; see the
+[Granular Assessment Retirement](../migration-granular-retirement.md) note for what
+changed and what it means for a configuration.
 **Reproducibility:** planning documents written before September 2026 predate the
 project's [reproducibility rules](../benchmarking/index.md#reproducibility-and-reporting-rules)
 — treat their numbers as unaudited. **Cost** figures have a second, independent
-problem: `_get_unit_cost` in
-`lib/idp_common_pkg/idp_common/reporting/save_reporting_data.py` falls back to a
-substring match when a model's pricing entry does not name the metered unit, and
+problem: when this plan was written, `_get_unit_cost` in
+`lib/idp_common_pkg/idp_common/reporting/save_reporting_data.py` fell back to a
+substring match when a model's pricing entry did not name the metered unit, and
 `"inputTokens" in "cacheReadInputTokens"` is true — so cache reads, priced at ~10%
-of fresh input, are charged the fresh rate (cache writes, at ~115%, are
-undercharged by ~20%). The overstatement is bounded: `1/(0.1 + 1.15f)` for a
+of fresh input, were charged the fresh rate (cache writes, at ~115%, were
+undercharged by ~20%). The overstatement was bounded: `1/(0.1 + 1.15f)` for a
 cache-write share `f` of cache tokens, i.e. ~1.5× at `f=0.5`, rising toward 10× as
-`f` approaches zero. It is exactly zero for the 73 of 96 `config_library/pricing.yaml`
-entries that price `cacheReadInputTokens` explicitly, because the exact match wins
-and the fallback never runs — so the error is model-dependent, not universal. A cost
-figure in this document is therefore citable only if the model it was measured on
-prices `cacheReadInputTokens`, or if it was measured after that fallback is fixed.
-Citing committed benchmark data is **not** sufficient on its own: committed data
-measured on an affected model sits on the mispriced path too.
+`f` approaches zero. It was exactly zero for the `config_library/pricing.yaml`
+entries that price `cacheReadInputTokens` explicitly, because the exact match won
+and the fallback never ran — so the error was model-dependent, not universal. The
+substring fallback was removed in #926. A cost figure in this document is therefore
+citable only if the model it was measured on prices `cacheReadInputTokens`, or if it
+was measured after #926. Citing committed benchmark data is **not** sufficient on its
+own: committed data measured on an affected model before #926 sits on the mispriced
+path too.
 **Owner note:** this is a *major* update. The hard constraint: **no silent quality
 regression for customers on non-agentic (simple) + separate confidence + granular
 who process long documents / large lists.**

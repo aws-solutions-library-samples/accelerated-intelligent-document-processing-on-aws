@@ -35,7 +35,9 @@ There are two kinds of queue:
 
 An **Admin** assigns queue items to **Annotators**. An Annotator corrects the
 item and finishes it with **Process Changes**, rejects it, or skips it to give it
-back to its queue. An Admin can work
+back to its queue. **Reviewers** work every Production queue without being listed
+on it: they claim items themselves and work them as an Annotator does, with no
+assignment needed, but they do not work Test Studio queues. An Admin can work
 a Production item too. For a Production
 document, the corrections are applied by a second run, which produces the
 document's final outputs. The system decides where that run starts; the reviewer
@@ -469,6 +471,7 @@ has:
 | Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items. Empty means no Annotators (Admins and Reviewers only). Taking an Annotator off the list stops them seeing the queue and claiming from it; items they already hold stay assigned to them until they finish or release them, or you unassign them. A change can take up to 30 seconds to apply everywhere | empty |
 | Enabled | When off, no documents are added to the queue: a document a routing rule sends to it goes to the Default queue instead. While the Default queue is off, no document is held for review at all | on |
 | Skip reasons | The reasons an Annotator chooses from to give an item back unfinished, one per line (up to 20) | Needs expert review; Document unclear or incomplete; Conflict of interest; Out of time; Other (see note) |
+| Reject reasons | The reasons a reviewer must choose one of to **Reject** an item; a queue with none listed offers no Reject. Not edited in the web UI's queue dialog, which keeps an existing queue's list and gives a new queue the defaults; set it with `--reject-reason` (repeatable) on `idp-cli review-queues create` or `update`, or with the SDK | Illegible or poor-quality document; Wrong document type; Pages missing or out of order; Duplicate document; Other (see note) |
 
 A saved change shows at once on the queue's page, including its name in the title and the breadcrumb, and in Review Management.
 
@@ -716,7 +719,10 @@ See [IDP CLI](./idp-cli.md#process--run-inference) and
 - Documents processed by a Test Studio run are never held in a production review
   queue, whatever the Default queue's settings. Test runs are scored on the machine's output,
   and their documents are reviewed in the test set's own queue instead.
-- The legacy Document List **Start Review** flow is separate from review queues and
-  works as before for users who have the Document List. A Reviewer with no Admin,
-  Author or Viewer role works from Home › Queues and Home › Tasks instead.
+- The document-page **Start Review** flow applies only while the Default queue is
+  off: documents then wait as **Review Pending** and are reviewed on the document page
+  (see [When the Default queue is off](./human-review.md#when-the-default-queue-is-off)).
+  While the Default queue is on, a document in a review queue is worked from its
+  queue item. A Reviewer with no Admin, Author or Viewer role works from Home › Queues
+  and Home › Tasks.
 - The Integration API and IDP Monitor don't yet distinguish review states.

@@ -74,8 +74,11 @@ You need the following before you deploy:
   scoped rather than administrator-level is described under
   [Deploying with a scoped role](#deploying-with-a-scoped-role).
 - Terraform 1.7 or later, or OpenTofu 1.7 or later, on your path.
-- Access to the Amazon Bedrock models the solution uses, as listed in the
-  [Deployment Guide](./deployment.md).
+- Access to the Amazon Bedrock models the solution uses, in the Region you deploy to.
+  The models the shipped configuration defaults call are listed in the
+  [README](../README.md), under the request-access note; the authoritative set is
+  whatever `lib/idp_common_pkg/idp_common/config/system_defaults/` names, plus any
+  model your own configuration names.
 - Read access to the S3 bucket the module was published to. The module refers to the
   Lambda code and other artifacts that the CloudFormation publish uploaded beside it,
   exactly as the CloudFormation template does.

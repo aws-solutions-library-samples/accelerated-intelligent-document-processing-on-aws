@@ -4,11 +4,14 @@ SPDX-License-Identifier: MIT-0
 # Plan: make agentic "integrated" confidence truly single-shot
 
 **Author:** design proposal, 2026-07-02
-**Status:** IMPLEMENTED behind a hidden default-off flag (branch
-`feature/agentic-integrated-single-shot`). Shipping strategy revised per review:
-single_shot is gated behind `extraction.agentic.integrated_confidence_strategy`
-(default `two_step` = current behavior, zero user-visible change). A/B on IDPAgentic
-picks the eventual default. See §10 (revised shipping plan) at the end.
+**Status:** implemented and shipped behind a hidden knob; the default decision was not
+made. `extraction.agentic.integrated_confidence_strategy` exists in
+`lib/idp_common_pkg/idp_common/config/models.py`, is not surfaced in the config UI,
+defaults to `two_step` (the extract-then-assess behaviour) and accepts `two_step`,
+`single_shot` and `topk` — the last a top-K elicitation added after this plan,
+described in the extraction module README's top-K section. The A/B in §10 that was to
+pick the default was not run, and the stack it named no longer exists, so `two_step`
+remains the default.
 **Goal:** In advanced/agentic extraction with `confidence.mode: integrated`, have the
 extraction agent emit **values + per-field confidence in the SAME inference** — the way
 simple/non-agentic integrated already works — instead of the current
@@ -267,4 +270,5 @@ ocr_only, two throwaway config versions (`two_step` vs `single_shot`). Compare:
 - [x] Prompt updated; fallback wired.
 - [x] Unit tests (both strategies) green; existing factory-unpack test fixed (5-tuple).
 - [x] Docs (README + assessment.md) + this plan.
-- [ ] A/B on IDPAgentic → data-driven default decision (post-merge, supervised).
+- [ ] A/B → data-driven default decision. Not run; `two_step` remains the default (see
+  the status line at the top).

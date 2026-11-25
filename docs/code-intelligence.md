@@ -117,11 +117,11 @@ Every call must carry a `repoName` parameter, which the system prompt pins to th
 ### Accessing the Feature
 
 1. Log in to the GenAI IDP Web UI
-2. Navigate to **Agent Companion Chat** in the main navigation
+2. Open **Assistants › Agent Chat** in the side navigation (shown to Admins; see [Accessing the Feature](./agent-companion-chat.md#accessing-the-feature))
 3. Check the **"Enable Code Intelligence Agent"** checkbox at the bottom of the chat interface
 4. Start asking code-related questions — the orchestrator will automatically route them to the Code Intelligence Agent
 
-> **Note**: Code Intelligence is disabled by default for security reasons. Enable it only when you need code assistance and ensure your queries contain no sensitive information. A warning message reminds you: *"Avoid sharing sensitive information, the Code Intelligence Agent may use third-party services."*
+> **Note**: Code Intelligence is disabled by default for security reasons. Enable it only when you need code assistance and ensure your queries contain no sensitive information. A warning message reminds you: *"Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services."*
 
 ### Types of Questions
 

@@ -1110,18 +1110,28 @@ polling `getAgentJobStatus`, as described under
 
 #### CloudWatch Logs Integration
 
-**Log Group Discovery**:
-```python
-# Pattern for stack log groups
-log_group_pattern = f"/{stack_name}/lambda/"
+**Log Group Discovery**: the agent does not derive log group names from the stack
+name. It reads the `CloudWatchLogGroups` setting from the stack's SSM settings
+parameter (`get_stack_log_groups` in
+`lib/idp_common_pkg/idp_common/monitoring/cloudwatch_logs_service.py`, cached for
+five minutes), a comma-separated list the main `template.yaml` builds when it writes
+that parameter:
 
-# Searches across:
-- /stack-name/lambda/OCRFunction
-- /stack-name/lambda/ClassificationFunction
-- /stack-name/lambda/ExtractionFunction
-- /stack-name/lambda/AssessmentFunction
-- /stack-name/lambda/SummarizationFunction
-```
+- the main stack's own queue sender, queue processor, workflow tracker and
+  reporting log groups, which take CloudFormation's generated names
+  (`<StackName>-<LogicalId>-<hash>`);
+- the pattern stack's `PatternLogGroups` output (`patterns/unified/template.yaml`),
+  which lists the BDA-branch, pipeline-branch and shared function log groups plus
+  the state machine's log group. Those are named after the **nested** pattern
+  stack, not the parent: `/<PatternStackName>/lambda/<FunctionLogicalId>`, for
+  example `/<StackName>-PATTERNSTACK-<id>/lambda/OCRFunction`.
+
+To see exactly which groups a deployment searches, read that output (or the
+`CloudWatchLogGroups` value in the settings parameter) rather than relying on a
+list here. Before searching, the agent orders the groups by the document's status:
+for a `FAILED` document it puts classification and extraction groups first, and for
+an `IN_PROGRESS` one the queue processor and workflow groups. If the setting is
+missing the agent logs a warning and searches no log groups.
 
 **Log Filtering**:
 ```python

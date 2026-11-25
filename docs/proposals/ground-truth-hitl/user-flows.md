@@ -3,12 +3,16 @@ SPDX-License-Identifier: MIT-0
 
 # Test Sets & Ground-Truth Datasets — User Flows
 
-**What this is:** the proposed functionality expressed as user stories in **priority
+**Status:** versioned test sets, draft labels and publishing are implemented; see
+[Test Sets](../../test-studio.md#test-sets),
+[Versioning test sets](../../test-studio.md#versioning-test-sets) and
+[Draft labeling](../../test-studio.md#draft-labeling-unlabeled-documents--ground-truth)
+in the Test Studio guide for what ships. The status legend below is the design-time
+record; the Test Studio guide is authoritative for current behaviour.
+
+**What this is:** the functionality expressed as user stories in **priority
 order** (P0 → P3), each with the step-by-step flow through the UI. Companion to [data-model.md](data-model.md) (the shape of the data) and
 [implementation/](implementation/) (per-slice build notes).
-
-> (test stack `sr-testing`; sign in as the stack admin. Screens are addressable via
-> `?step=<id>` — which itself demonstrates story 1's shareable deep link.)
 
 **Personas**
 
@@ -201,7 +205,6 @@ in the "About this screen" panel.
 This document is the design record for the work, not a progress tracker. For
 what actually shipped and what remains, see the Test Studio entries in
 [CHANGELOG.md](../../../CHANGELOG.md) and the user-facing documentation in
-[docs/test-studio.md](../../test-studio.md). The one design question still open —
-whether a published version should pin label *bytes* (S3 manifest vs
-copy-on-publish) rather than metadata — is recorded as a known limitation there,
-because the choice is coupled to `DataRetentionInDays`.
+[docs/test-studio.md](../../test-studio.md). Publishing copies a version's labels to
+`{testSetId}/versions/{n}/baseline/`, so a published version pins label bytes as well
+as metadata (a version published before 0.6.10 has no such copy); see [Publishing a version](../../test-studio.md#publishing-a-version).

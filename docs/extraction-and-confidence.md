@@ -400,9 +400,11 @@ which makes the previewed saving a floor, not a ceiling.
 
 Agentic extraction automatically handles throttling and transient errors:
 
-- **Automatic retries**: Up to 7 retry attempts with exponential backoff (matching bedrock client behavior)
-- **Adaptive retry mode**: Intelligently adjusts retry timing based on error types
-- **Step Functions integration**: If retries are exhausted, `ThrottlingException` is propagated to Step Functions for workflow-level retry handling
+- **Automatic retries**: `invoke_agent_with_retry` retries throttling, timeouts and transient Bedrock errors — including an HTTP 500, 502, 503 or 504 and a bare 429 — with exponential backoff starting at 5 seconds
+- **Bounded by time, not attempts**: each sleep is capped (`AGENT_MAX_BACKOFF_SECONDS`), the sleeps together are capped (`AGENT_MAX_TOTAL_BACKOFF_SECONDS`; once spent the ladder stops and re-raises), and no sleep runs past the Lambda deadline. Both caps live in `idp_common.timeout_budget`
+- **One layer of retries**: the botocore client's own attempts are pinned to the shard time budget (`BOTOCORE_TOTAL_MAX_ATTEMPTS`), so a stalled request is not retried inside the client where the ladder and the deadline check cannot see it
+- **Resumes rather than re-sends**: a retry continues the conversation the failed attempt started, so the prompt is not appended twice and rows already mapped by the table tools are not emitted again
+- **Step Functions integration**: If retries are exhausted, the error is propagated to Step Functions for workflow-level retry handling
 - **No configuration needed**: Retry logic is transparent
 
 #### Deterministic table parsing
@@ -1380,6 +1382,17 @@ extraction:
 > `ValidationException` on every document that reaches the pass concerned. Check
 > these values by hand against `config_library/pricing.yaml` when you change
 > them.
+
+**Scoring with a decision model.** `extraction.confidence.method` is `llm`
+(the default, the pass described above) or `decision_model`, which asks a deployed
+decision model one yes/no question per extracted value and takes the confidence
+from its answer distribution. It needs `mode: separate` — under `integrated` the
+extraction call scores its own values and no confidence pass runs, so the
+combination is refused — and an `extraction.confidence.decision_model.endpoint`.
+Because a decision model returns no bounding boxes, it also refuses
+`extraction.geometry.mode` `llm` and `llm_grounded`; use `ocr_only` (the default).
+Setup, the text window and cost are in
+[Decision Models](decision-models.md#3-or-use-it-for-extraction-confidence).
 
 **Behavior when disabled** (`enabled: false` or `mode: off`): the assessment
 Lambda is still invoked (minimal overhead) but returns immediately with logging
@@ -3178,6 +3191,7 @@ the system automatically adds `confidence_threshold` from configuration.
 
 - [Human Review](human-review.md) — HITL workflow and review UI
 - [Few-Shot Examples](few-shot-examples.md) — building example sets
+- [Decision Models](decision-models.md) — `extraction.confidence.method: decision_model`
 - [Configuration Guide](configuration.md) — configuration schema details
 - [Granular Assessment Retirement](migration-granular-retirement.md) — v0.6 migration notes
 - [OpenAI GPT-5.x Models](openai-models.md) — non-agentic-only model support
