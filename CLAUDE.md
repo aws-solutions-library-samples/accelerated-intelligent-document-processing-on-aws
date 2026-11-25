@@ -72,6 +72,16 @@ make ui-lint
 # UI build verification
 make ui-build
 
+# The UI's i18n gates (part of lint, fastlint and lint-cicd): en.json matches the
+# messages, every translation compiles and none is stale, and no file gains a
+# hardcoded user-facing string (see .claude/skills/ui-i18n.md)
+make check-ui-i18n-catalog
+make check-ui-string-debt
+
+# Advisory, never fails: what each translation catalog still lacks, and the make
+# target that clears each list
+make ui-i18n-coverage
+
 # CI/CD linting (check-only, no modifications)
 make lint-cicd
 
