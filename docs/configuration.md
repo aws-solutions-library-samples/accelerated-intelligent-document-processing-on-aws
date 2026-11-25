@@ -1925,8 +1925,8 @@ the same page gives the model no way to prefer the printed value, short of the
 page image.
 
 `ocr.mark_handwriting: true` adds the missing signal. Every run of words Textract
-typed as handwriting is followed by `(HANDWRITING)`, and a short note at the end of the
-page explains the marker and tells the model not to copy it into a value:
+typed as handwriting is followed by `(HANDWRITING)`, and a short note after the
+page text explains the marker and tells the model not to copy it into a value:
 
 ```text
 Account holder: Jane Smith

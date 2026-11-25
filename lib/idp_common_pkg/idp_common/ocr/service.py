@@ -1792,8 +1792,10 @@ class OcrService:
 
         Returns:
             Text confidence data as a markdown table of text and confidence (plus
-            handwriting markers and a signature-detection summary), much smaller
-            than the raw response
+            a signature-detection summary), much smaller than the raw response.
+            A line is suffixed with "(HANDWRITING)" only when its LINE block
+            carries TextType HANDWRITING; Textract sets TextType on WORD blocks
+            only, so Textract pages carry no such suffix.
         """
         # Start building the markdown table with explicit left alignment
         markdown_lines = ["| Text | Confidence |", "|:-----|:-----------|"]
@@ -1818,7 +1820,10 @@ class OcrService:
                     else "N/A"
                 )
 
-                # Add text type indicator if it's handwriting
+                # Only fires when a LINE block carries TextType. Textract sets it on
+                # WORD blocks only, and the one in-tree producer of a LINE TextType
+                # (the converted-document synthesis in _process_converted_page)
+                # always writes PRINTED, so no Textract page reaches this branch.
                 if block.get("TextType") == "HANDWRITING":
                     markdown_lines.append(f"| {text} (HANDWRITING) | {confidence} |")
                 else:
@@ -2247,7 +2252,7 @@ class OcrService:
             words = [
                 by_id[child_id]
                 for rel in line.get("Relationships") or []
-                if rel.get("Type") == "CHILD"
+                if isinstance(rel, dict) and rel.get("Type") == "CHILD"
                 for child_id in rel.get("Ids") or []
                 if by_id.get(child_id, {}).get("BlockType") == "WORD"
             ]

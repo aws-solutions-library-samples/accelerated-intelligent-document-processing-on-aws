@@ -388,7 +388,7 @@ The format varies by OCR backend:
 The `text` field contains a markdown table with two columns:
 - **Text**: The extracted text content (with pipe characters escaped as `\|`)
 - **Confidence**: OCR confidence score rounded to 1 decimal point
-- Handwriting is meant to be indicated with a "(HANDWRITING)" suffix in the text column, but the suffix is read from the LINE block's `TextType`, which Textract does not set (it sets `TextType` on WORD blocks only), so Textract pages carry no suffix. To mark handwriting in the page text, see `ocr.mark_handwriting`.
+- Handwriting is not marked on Textract pages: the "(HANDWRITING)" suffix comes from the LINE block's `TextType`, which Textract sets on WORD blocks only (observed on real `AnalyzeDocument` responses). To mark handwriting in the page text, see `ocr.mark_handwriting`.
 
 **Bedrock Backend (no confidence data):**
 ```json

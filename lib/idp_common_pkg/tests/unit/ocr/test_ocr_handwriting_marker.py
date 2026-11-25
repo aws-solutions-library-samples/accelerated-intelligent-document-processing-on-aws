@@ -19,10 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
-pytest.importorskip("textractor")
-
-from idp_common.config.models import IDPConfig, OCRConfig  # noqa: E402
-from idp_common.ocr.service import (  # noqa: E402
+from idp_common.config.models import IDPConfig, OCRConfig
+from idp_common.ocr.service import (
     HANDWRITING_LEGEND,
     HANDWRITING_MARKER,
     OcrService,
@@ -210,7 +208,14 @@ class TestMarkHandwritingBlocks:
         assert marked["Blocks"][1]["Text"] == "Jane Smlth"
 
     @pytest.mark.parametrize(
-        "response", [{}, {"Blocks": None}, {"Blocks": "x"}, {"Blocks": [None, 3]}]
+        "response",
+        [
+            {},
+            {"Blocks": None},
+            {"Blocks": "x"},
+            {"Blocks": [None, 3]},
+            {"Blocks": [{"BlockType": "LINE", "Id": "l0", "Relationships": ["x", 3]}]},
+        ],
     )
     def test_tolerates_malformed_responses(self, response):
         _, count = OcrService._mark_handwriting_blocks(response)
