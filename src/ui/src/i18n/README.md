@@ -184,7 +184,9 @@ pins an export beside its localized cell.
 replays the `i18n:extract` script from `package.json` into a temporary file, by path out of
 `src/ui/node_modules` (never `npx`), and fails with a diff when `en.json` is stale ("Run `make
 ui-i18n-extract` and commit"); it then compiles every other catalog and fails on any problem a
-build would hit. Check-only; part of `lint`, `fastlint` and `lint-cicd`. Off CI without
+build would hit. It also fails on any stale translation, naming `make ui-i18n-todo` then `make
+ui-i18n-ingest` to translate it again, or `make ui-i18n-drop-stale` to delete it. Check-only;
+part of `lint`, `fastlint` and `lint-cicd`. Off CI without
 `src/ui/node_modules`, or on a machine the installed `@formatjs/cli` ships no native binary for
 (the wrapper is installed everywhere, the binary per platform), it prints `⏭️ SKIPPED` (a skip,
 never a pass, naming the cause); in CI either is an error.
@@ -192,7 +194,8 @@ never a pass, naming the cause); in CI either is an error.
 What compiling checks: every entry must be present in `en.json` (an id the English no longer has
 is a dead translation and fails the build), be the `{ message, sourceHash }` shape with a
 well-formed hash, and pass the parity check against its English. The hash's *value* is not
-compared at build time: a stale translation compiles and ships, and the coverage report lists it.
+compared at build time: a stale translation compiles, so `make check-ui-i18n-catalog` fails on it
+instead, and the coverage report lists it.
 An id the translation lacks is fine (English fallback). A problem throws inside the plugin, so
 `vite build` fails naming the catalog, the id and the reason; nothing degraded ships. `formatjs
 extract` itself does not validate ICU syntax, so a malformed English `defaultMessage` is caught

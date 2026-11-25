@@ -472,7 +472,7 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
 
-check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build (issue #1770)
+check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build or holds a stale entry, whose English changed after it was translated (issues #1770, #2080)
 	@# Check-only: re-extracts into a temp file and diffs; `make ui-i18n-extract` is
 	@# the writer. Off CI without src/ui/node_modules it prints a SKIP (not a pass);
 	@# in CI that is an error. It runs a node tool out of src/ui/node_modules, so it

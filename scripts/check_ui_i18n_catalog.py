@@ -2,7 +2,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Fail when the committed English UI message catalog is stale, or a translation would fail the build.
+"""Fail when the committed English UI message catalog is stale, or a translation would fail the build or is stale.
 
 The web UI declares every user-facing message next to the code that renders it
 (react-intl ``defineMessages`` / ``<FormattedMessage>``: an explicit stable id, the
@@ -13,7 +13,7 @@ from, and the coverage report and the catalog compiler both read it, so a stale
 copy misreports coverage and lets a translation drift from the English it claims
 to translate. Issue #1770.
 
-Two checks, both check-only:
+Three checks, all check-only:
 
 1. **English catalog currency.** Re-run the extraction into a temporary file with
    exactly the arguments of the ``i18n:extract`` script (read from
@@ -29,6 +29,17 @@ Two checks, both check-only:
    argument and plural/select parity, entry shape, no dead ids). A translation that
    would fail ``vite build`` therefore fails ``make lint`` first, with the same
    wording.
+
+3. **No translation is stale.** An entry whose recorded ``sourceHash`` is not the
+   hash of its English as it is now translates English that has since changed. The
+   build compiles and ships it, so without this check the screen would show the old
+   meaning with every gate green. The rule is ``stale_ids`` in
+   ``scripts/ui_i18n_catalog.py``, whose ``make ui-i18n-todo`` lists the same
+   entries; an entry that no longer compiles is named here too. The failure names
+   both fixes: translate the entries again (``make ui-i18n-todo``, then
+   ``make ui-i18n-ingest``), or delete them with ``make ui-i18n-drop-stale`` so the
+   English shows. A missing translation never fails: the English shows, and the
+   advisory ``make ui-i18n-coverage`` lists it. Issue #2080.
 
 The extraction needs the UI's npm dependencies. Off CI, a checkout without
 ``src/ui/node_modules`` is an ordinary state (a Python-only change) and the gate
@@ -78,6 +89,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ui_deps_freshness import describe, stale_dependencies  # noqa: E402
+from ui_i18n_catalog import stale_ids  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -285,6 +297,38 @@ def check_translation_catalogs(layout: Layout, report: Report) -> None:
             report.notes.append(output or f"{locale}.json compiles")
 
 
+def check_stale_translations(layout: Layout, report: Report) -> None:
+    """Fail on every translation whose English changed after it was translated."""
+    try:
+        english = json.loads(layout.en_catalog.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # the English check reports a missing or unreadable en.json
+    for locale in catalog_locales(layout):
+        if locale == SOURCE_LOCALE:
+            continue
+        path = layout.catalog_dir / f"{locale}.json"
+        try:
+            catalog = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # the compile check reports an unreadable catalog
+        if not isinstance(english, dict) or not isinstance(catalog, dict):
+            continue  # and one that is not keyed by message id
+        stale = stale_ids(english, catalog)
+        if not stale:
+            continue
+        listed = "".join(f"\n    {entry_id}" for entry_id in stale)
+        report.failures.append(
+            f"{layout.relative(path)} holds {len(stale)} stale translation(s): the "
+            f"English changed after they were translated, so the screen shows the old "
+            f"meaning:{listed}\n"
+            f"Translate them again: 'make ui-i18n-todo LOCALE={locale}' lists them; give "
+            f'each entry of that list a "message" and run '
+            f"'make ui-i18n-ingest LOCALE={locale} FILE=<list>'.\nOr delete them, so "
+            f"the English shows until they are translated: "
+            f"'make ui-i18n-drop-stale LOCALE={locale}'."
+        )
+
+
 def check(layout: Layout, report: Report) -> None:
     # The two halves need different tools. Only the English re-extraction runs the
     # FormatJS CLI's native binary; when that cannot run here, the translation catalogs
@@ -295,6 +339,7 @@ def check(layout: Layout, report: Report) -> None:
     except ToolchainCannotRunHere as exc:
         report.english_not_measured = str(exc)
     check_translation_catalogs(layout, report)
+    check_stale_translations(layout, report)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -381,7 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     if report.english_not_measured is not None:
         host = f"{sys.platform}-{platform.machine()}"
         compiled = (
-            f"the {len(translations)} translation catalog(s) compile against it"
+            f"the {len(translations)} translation catalog(s) compile against it, "
+            f"with no stale entry"
             if translations
             else "there is no translation catalog to compile yet"
         )
@@ -397,7 +443,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(
         f"✅ {GATE}: {layout.relative(layout.en_catalog)} matches a fresh extraction "
-        f"and {len(translations)} translation catalog(s) compile against it"
+        f"and {len(translations)} translation catalog(s) compile against it, with no "
+        f"stale entry"
     )
     return 0
 
