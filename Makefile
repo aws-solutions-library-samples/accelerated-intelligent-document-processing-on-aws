@@ -1992,12 +1992,12 @@ fastcommit: fastlint ## Fast lint only, auto-generate commit message, commit, an
 	git push
 
 ##@ Release
-# Usage: make release [PHASE=git|publish|post] [CONFIRM=x.y.z] [DRY_RUN=1] [SKIP_DOCS=1] [SKIP_BUMP=1]
+# Usage: make release [CONFIRM=x.y.z] [PHASE=all|git|publish|post] [DRY_RUN=1] [SKIP_DOCS=1] [SKIP_BUMP=1]
 # See scripts/release.py and .claude/skills/release/SKILL.md. PHASE=publish needs
 # the publishing account's credentials in the environment (RELEASE_ACCOUNT_ID optional).
 .PHONY: release
-release: ## Merge develop to main, tag, publish, create the GitHub Release (PHASE=git|publish|post)
-	@$(PYTHON) scripts/release.py --phase $(or $(PHASE),git) $(if $(DRY_RUN),--dry-run) $(if $(SKIP_DOCS),--skip-docs) $(if $(SKIP_BUMP),--skip-bump) $(if $(CONFIRM),--confirm $(CONFIRM))
+release: ## Merge develop to main, tag, publish, release, deploy docs, bump develop (CONFIRM=x.y.z)
+	@$(PYTHON) scripts/release.py --phase $(or $(PHASE),all) $(if $(DRY_RUN),--dry-run) $(if $(SKIP_DOCS),--skip-docs) $(if $(SKIP_BUMP),--skip-bump) $(if $(CONFIRM),--confirm $(CONFIRM))
 
 ##@ Version Management
 # Usage: make version V=0.6.0
@@ -2085,7 +2085,7 @@ docs-build: docs-setup ## Build documentation site (no serve)
 docs-deploy: docs-build ## Deploy docs to GitHub Pages (from local build)
 	@echo "Deploying documentation site to GitHub Pages..."
 	touch docs-site/dist/.nojekyll
-	cd docs-site && npx gh-pages -d dist --dotfiles --repo https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws.git
+	cd docs-site && npx --yes gh-pages -d dist --dotfiles --repo https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws.git
 	@echo -e "$(GREEN)✅ Docs deployed to GitHub Pages!$(NC)"
 
 ##@ Security (SRT)

@@ -7,21 +7,28 @@ Run from the repository root, on a develop that prep-develop-for-release has
 prepared (VERSION final, CHANGELOG section cut, solution profile reviewed, pushed
 to both remotes).
 
-Two phases, because the publish needs credentials for the publishing account,
-which are pasted into the shell between them:
+Paste the publishing account's temporary credentials into the shell first, then
 
-    make release                      # phase "git": preflight, merge, tag, push
-    make release PHASE=publish        # phase "publish": check account, publish,
-                                      #   draft release, verify, publish release
-    make release PHASE=post           # rerun only the last steps: docs-deploy from
-                                      #   the tag, then develop to <next>.dev1
+    make release CONFIRM=<x.y.z>      # everything: all checks first (including the
+                                      #   credentials), then merge, tag, push, publish,
+                                      #   draft release, verify, publish release,
+                                      #   docs-deploy, develop to <x.y.z+1>.dev1
     make release DRY_RUN=1            # print the plan and run the read-only checks
 
-Phase "publish" ends by running phase "post" (make docs-deploy, then fast-forward
-develop to main, make version V=<x.y.z+1>.dev1, commit and push to both remotes).
+To resume after a failure, run one phase on its own:
 
-Phase "publish" names the account and role the credentials belong to in its
-confirmation, so CONFIRM=<x.y.z> also confirms the account. RELEASE_ACCOUNT_ID (or
+    make release PHASE=git            # preflight, merge, tag, push
+    make release PHASE=publish        # check account, publish, draft release,
+                                      #   verify, publish release, then phase post
+    make release PHASE=post           # docs-deploy from the tag, then develop to
+                                      #   <next>.dev1
+
+While the artifacts upload, the script prints each Region's start and end, a
+heartbeat every minute with the publisher's latest status line, and a warning if
+the publisher has written nothing for five minutes.
+
+The confirmation names the account and role the credentials belong to, so
+CONFIRM=<x.y.z> also confirms the account. RELEASE_ACCOUNT_ID (or
 --account), when set, makes that a strict check instead. The id is never written
 into this file, because this repository is public and scripts/check_account_ids.py
 refuses a committed account id.
@@ -212,6 +219,36 @@ def preflight_git(version: str) -> None:
     say("  ok: solution profile reviewed for this version")
 
 
+def check_credentials(account: str | None) -> str:
+    """Name the account and role of the credentials in the environment."""
+    identity = "(dry run: no credentials checked)"
+    if (
+        DRY_RUN
+        and not os.environ.get("AWS_ACCESS_KEY_ID")
+        and not os.environ.get("AWS_PROFILE")
+    ):
+        say(
+            "  (dry run: no credentials in the environment; the account check would run here)"
+        )
+    else:
+        ident = json.loads(
+            run(["aws", "sts", "get-caller-identity", "--output", "json"])
+        )
+        identity = f"account {ident['Account']} as {ident['Arn']}"
+        if account and ident["Account"] != account:
+            raise ReleaseError(
+                f"Credentials are for account {ident['Account']}, not RELEASE_ACCOUNT_ID {account}. "
+                "Paste the publishing account's temporary credentials (environment variables beat "
+                "AWS_PROFILE) and rerun."
+            )
+        say(
+            f"  ok: credentials are for the publishing account ({identity})"
+            if account
+            else f"  credentials: {identity} (set RELEASE_ACCOUNT_ID to check it strictly)"
+        )
+    return identity
+
+
 def preflight_publish(version: str, account: str | None) -> str:
     say("Preflight (publish)")
     tag = f"v{version}"
@@ -245,31 +282,7 @@ def preflight_publish(version: str, account: str | None) -> str:
             f"idp-cli reports {cli!r}, not {version}: it is installed from another checkout. Run `make setup`."
         )
     say(f"  ok: {cli}")
-    identity = "(dry run: no credentials checked)"
-    if (
-        DRY_RUN
-        and not os.environ.get("AWS_ACCESS_KEY_ID")
-        and not os.environ.get("AWS_PROFILE")
-    ):
-        say(
-            "  (dry run: no credentials in the environment; the account check would run here)"
-        )
-    else:
-        ident = json.loads(
-            run(["aws", "sts", "get-caller-identity", "--output", "json"])
-        )
-        identity = f"account {ident['Account']} as {ident['Arn']}"
-        if account and ident["Account"] != account:
-            raise ReleaseError(
-                f"Credentials are for account {ident['Account']}, not RELEASE_ACCOUNT_ID {account}. "
-                "Paste the publishing account's temporary credentials (environment variables beat "
-                "AWS_PROFILE) and rerun with PHASE=publish."
-            )
-        say(
-            f"  ok: credentials are for the publishing account ({identity})"
-            if account
-            else f"  credentials: {identity} (set RELEASE_ACCOUNT_ID to check it strictly)"
-        )
+    identity = check_credentials(account)
     release_notes(version)
     return identity
 
@@ -296,8 +309,9 @@ def confirm(version: str, what: str, assume_yes: bool) -> None:
         raise ReleaseError("Not confirmed; nothing was changed by this step.")
 
 
-def phase_git(version: str, assume_yes: bool) -> None:
-    preflight_git(version)
+def phase_git(version: str, assume_yes: bool, standalone: bool = True) -> None:
+    if standalone:
+        preflight_git(version)
     tag = f"v{version}"
     confirm(
         version,
@@ -319,11 +333,12 @@ def phase_git(version: str, assume_yes: bool) -> None:
         git("push", remote, "main", mutate=True)
     for remote in REMOTES:
         git("push", remote, tag, mutate=True)
-    say(
-        f"\nPhase git done. HEAD is main at {tag}.\n"
-        "Next: paste the publishing account's temporary credentials into this shell, then\n"
-        f"  make release PHASE=publish CONFIRM={version}"
-    )
+    if standalone:
+        say(
+            f"\nPhase git done. HEAD is main at {tag}.\n"
+            "Next: paste the publishing account's temporary credentials into this shell, then\n"
+            f"  make release PHASE=publish CONFIRM={version}"
+        )
 
 
 def url_status(url: str) -> int:
@@ -374,6 +389,93 @@ def verify_artifacts(version: str) -> list[str]:
             f"  {region}: {'ok' if not any(p.startswith(region) for p in problems) else 'PROBLEM'}"
         )
     return problems
+
+
+HEARTBEAT_SECONDS = 60
+STALL_SECONDS = 300
+STATUS_LINE = re.compile(r"^(✅|❌|⚠️|ERROR|Error|Uploaded|Built|Publishing)")
+
+
+def fmt_secs(seconds: float) -> str:
+    m, sec = divmod(int(seconds), 60)
+    return f"{m}m{sec:02d}s"
+
+
+def watch_publish(publisher: subprocess.Popen, log_path: Path, started: float) -> int:
+    """Wait for the publisher, printing each Region's start and end, a heartbeat, and stalls."""
+    regions = [r for r, _, _ in publish_targets()]
+    current: str | None = None
+    region_started = started
+    last_size, last_growth, last_beat = 0, started, started
+    stall_warned = False
+
+    def scan() -> tuple[str | None, str]:
+        region, status = None, ""
+        for line in log_path.read_text(errors="replace").splitlines():
+            if line.startswith("+ idp-cli publish") and "--region " in line:
+                region = line.split("--region ", 1)[1].split()[0]
+            elif STATUS_LINE.match(line.strip()):
+                status = line.strip()
+        return region, status
+
+    while True:
+        rc = publisher.poll()
+        now = time.time()
+        region, status = scan()
+        if region != current:
+            if current is not None:
+                say(
+                    f"  [{regions.index(current) + 1}/{len(regions)}] {current} done in {fmt_secs(now - region_started)}"
+                )
+            if region is not None:
+                n = regions.index(region) + 1 if region in regions else "?"
+                say(f"  [{n}/{len(regions)}] {region} publishing")
+            current, region_started = region, now
+        size = log_path.stat().st_size
+        if size != last_size:
+            last_size, last_growth, stall_warned = size, now, False
+        elif now - last_growth > STALL_SECONDS and not stall_warned:
+            say(
+                f"  WARNING: no publisher output for {fmt_secs(now - last_growth)}; it may be stuck (see {log_path.relative_to(ROOT)})"
+            )
+            stall_warned = True
+        if rc is not None:
+            if current is not None:
+                label = "done" if rc == 0 else f"FAILED (exit {rc})"
+                n = regions.index(current) + 1 if current in regions else "?"
+                say(
+                    f"  [{n}/{len(regions)}] {current} {label} in {fmt_secs(now - region_started)}"
+                )
+            return rc
+        if now - last_beat >= HEARTBEAT_SECONDS:
+            say(
+                f"  ... {fmt_secs(now - started)} elapsed, {current or 'starting'}: {status[:100] or '(building)'}"
+            )
+            last_beat = now
+        time.sleep(5)
+
+
+def phase_all(version: str, account: str | None, assume_yes: bool) -> None:
+    """Every phase in one run, with every check made before the first change."""
+    preflight_git(version)
+    say("Preflight (publish)")
+    cli = run(["idp-cli", "--version"], check=False)
+    if not cli.endswith(version):
+        raise ReleaseError(
+            f"idp-cli reports {cli!r}, not {version}: it is installed from another checkout. Run `make setup`."
+        )
+    say(f"  ok: {cli}")
+    identity = check_credentials(account)
+    tag = f"v{version}"
+    confirm(
+        version,
+        f"About to release {tag}: merge develop into main, tag {tag} and push both to "
+        f"{', '.join(REMOTES)}; publish with {RELEASE_SCRIPT.name} using {identity}; create and "
+        "publish the GitHub Release; deploy the docs; and start the next version on develop.",
+        assume_yes,
+    )
+    phase_git(version, assume_yes=True, standalone=False)
+    phase_publish(version, account, assume_yes=True)
 
 
 def phase_publish(version: str, account: str | None, assume_yes: bool) -> None:
@@ -439,9 +541,9 @@ def phase_publish(version: str, account: str | None, assume_yes: bool) -> None:
 
     if publisher is not None:
         started = time.time()
-        rc = publisher.wait()
+        rc = watch_publish(publisher, log_path, started)
         log.close()
-        say(f"  publish finished in {int(time.time() - started) // 60} min, exit {rc}")
+        say(f"  publish finished in {fmt_secs(time.time() - started)}, exit {rc}")
         if rc != 0:
             tail = "\n".join(log_path.read_text().splitlines()[-30:])
             raise ReleaseError(
@@ -521,7 +623,7 @@ def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--phase", choices=("git", "publish", "post"), default="git")
+    p.add_argument("--phase", choices=("all", "git", "publish", "post"), default="all")
     p.add_argument(
         "--skip-docs",
         action="store_true",
@@ -555,7 +657,9 @@ def main() -> int:
     try:
         version = read_version()
         say(f"Release v{version}, phase {a.phase}{' (dry run)' if DRY_RUN else ''}")
-        if a.phase == "git":
+        if a.phase == "all":
+            phase_all(version, a.account, a.yes)
+        elif a.phase == "git":
             phase_git(version, a.yes)
         elif a.phase == "publish":
             phase_publish(version, a.account, a.yes)
