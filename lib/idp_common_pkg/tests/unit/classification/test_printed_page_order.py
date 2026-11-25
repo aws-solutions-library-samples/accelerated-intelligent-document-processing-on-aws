@@ -32,7 +32,7 @@ from idp_common.classification.page_order import (
 from idp_common.classification.service import ClassificationService
 from idp_common.config.models import DocumentShapeConfig
 from idp_common.models import Document, Page, ProcessingIssue, Status
-from idp_common.ocr.service import HANDWRITING_LEGEND, HANDWRITING_MARKER
+from idp_common.ocr.service import HANDWRITING_LEGEND, HANDWRITING_MARKER, OcrService
 
 
 def _class(name: str) -> Dict[str, Any]:
@@ -697,23 +697,35 @@ class TestReadingAPrintedPageNumber:
     # The OCR step appends notes after the page text. They are not printed on
     # the page, so a multi-line footer must still be read with a note below it.
     FOOTER = "Rev. 01/2026\nPage 2 of 5\nConfidential"
-    SIGNATURE_NOTE = (
-        "--- OCR signature detections ---\n"
-        "The OCR engine flagged 1 region on this page as containing a signature.\n"
-        "- Signature 1: bottom right, confidence 98.1"
-    )
+
+    @staticmethod
+    def _signature_note():
+        """The note the OCR step writes for one signature, from the code that
+        writes it, so a change to its wording is what this test checks."""
+        block = {
+            "BlockType": "SIGNATURE",
+            "Id": "sig-1",
+            "Confidence": 98.1,
+            "Geometry": {
+                "BoundingBox": {"Left": 0.7, "Top": 0.9, "Width": 0.2, "Height": 0.05}
+            },
+        }
+        return OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([block])
+        )
 
     @pytest.mark.parametrize(
         "notes",
         [
             pytest.param(lambda: [HANDWRITING_LEGEND], id="handwriting"),
             pytest.param(
-                lambda: [TestReadingAPrintedPageNumber.SIGNATURE_NOTE], id="signature"
+                lambda: [TestReadingAPrintedPageNumber._signature_note()],
+                id="signature",
             ),
             pytest.param(
                 lambda: [
                     HANDWRITING_LEGEND,
-                    TestReadingAPrintedPageNumber.SIGNATURE_NOTE,
+                    TestReadingAPrintedPageNumber._signature_note(),
                 ],
                 id="both",
             ),
@@ -740,6 +752,14 @@ class TestReadingAPrintedPageNumber:
         text = "\n\n".join([f"{BODY}\n{footer}", HANDWRITING_LEGEND])
         reading = read_printed_page_number(text)
         assert (reading.number, reading.total) == (number, total)
+
+    def test_the_note_headers_page_order_skips_are_the_ones_ocr_writes(self):
+        """page_order finds a note by its first line. Both notes are taken from
+        the OCR code, so rewording either header fails here."""
+        for note in (HANDWRITING_LEGEND, self._signature_note()):
+            assert note, "the OCR code wrote no note"
+            header = note.splitlines()[0]
+            assert page_order._OCR_NOTE_HEADER_RE.search(f"page text\n\n{header}")
 
     def test_the_marker_page_order_removes_is_the_one_ocr_writes(self):
         """page_order keeps its own copy of the marker so classification does

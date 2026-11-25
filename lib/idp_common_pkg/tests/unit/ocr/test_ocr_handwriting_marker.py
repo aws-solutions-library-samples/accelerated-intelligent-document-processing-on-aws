@@ -232,6 +232,28 @@ class TestParseTextractResponse:
             if line.startswith(("Monthly Card", "Account holder")):
                 assert HANDWRITING_MARKER not in line
 
+    def test_each_run_is_marked_exactly_once_in_the_page_text(self):
+        """One marker per run of handwritten words, not one per word, and the
+        marking is not applied twice on the way through textractor."""
+        text = _text(
+            True,
+            _response(
+                [
+                    (_words("Account holder: Jane Smith", P), 0.1),
+                    (_words("Jane Eleanor Smlth", H), 0.2),
+                    ([("Smlth", H), ("account", P), ("4821", H)], 0.3),
+                ]
+            ),
+        )
+        page_lines = text.split(HANDWRITING_LEGEND)[0].splitlines()
+        one_run = [line for line in page_lines if "Eleanor" in line]
+        two_runs = [line for line in page_lines if "4821" in line]
+        assert len(one_run) == 1 and one_run[0].count(HANDWRITING_MARKER) == 1
+        assert one_run[0].strip() == f"Jane Eleanor Smlth {HANDWRITING_MARKER}"
+        assert len(two_runs) == 1 and two_runs[0].count(HANDWRITING_MARKER) == 2
+        assert text.split(HANDWRITING_LEGEND)[0].count(HANDWRITING_MARKER) == 3
+        assert text.count(HANDWRITING_LEGEND) == 1
+
     def test_real_document_shape_is_marked(self):
         # Modelled on a real court-order page: printed decree, handwritten note.
         response = _response(
