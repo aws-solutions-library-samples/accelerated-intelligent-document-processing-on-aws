@@ -32,7 +32,7 @@ from idp_common.classification.page_order import (
 from idp_common.classification.service import ClassificationService
 from idp_common.config.models import DocumentShapeConfig
 from idp_common.models import Document, Page, ProcessingIssue, Status
-from idp_common.ocr.service import HANDWRITING_LEGEND
+from idp_common.ocr.service import HANDWRITING_LEGEND, HANDWRITING_MARKER
 
 
 def _class(name: str) -> Dict[str, Any]:
@@ -727,11 +727,11 @@ class TestReadingAPrintedPageNumber:
     @pytest.mark.parametrize(
         "footer, number, total",
         [
-            ("Page 2 (HANDWRITING)", 2, None),
-            ("2 (HANDWRITING)", 2, None),
-            ("Rev. 01/2026 Page 2 (HANDWRITING)", 2, None),
-            ("Page 2 of 5 (HANDWRITING)", 2, 5),
-            ("**Page 2** (HANDWRITING)", 2, None),
+            (f"Page 2 {HANDWRITING_MARKER}", 2, None),
+            (f"2 {HANDWRITING_MARKER}", 2, None),
+            (f"Rev. 01/2026 Page 2 {HANDWRITING_MARKER}", 2, None),
+            (f"Page 2 of 5 {HANDWRITING_MARKER}", 2, 5),
+            (f"**Page 2** {HANDWRITING_MARKER}", 2, None),
         ],
     )
     def test_a_page_number_marked_as_handwriting_is_read(self, footer, number, total):
@@ -740,6 +740,14 @@ class TestReadingAPrintedPageNumber:
         text = "\n\n".join([f"{BODY}\n{footer}", HANDWRITING_LEGEND])
         reading = read_printed_page_number(text)
         assert (reading.number, reading.total) == (number, total)
+
+    def test_the_marker_page_order_removes_is_the_one_ocr_writes(self):
+        """page_order keeps its own copy of the marker so classification does
+        not import from ocr. This ties the copy to the constant: renaming
+        HANDWRITING_MARKER fails here rather than silently breaking page-number
+        reading."""
+        assert page_order._HANDWRITING_MARKER_RE.fullmatch(f" {HANDWRITING_MARKER}")
+        assert page_order._HANDWRITING_MARKER_RE.fullmatch(HANDWRITING_MARKER)
 
     def test_a_note_header_inside_the_page_text_is_not_a_note(self):
         """Only a header after a blank line starts a note; the same text inside a

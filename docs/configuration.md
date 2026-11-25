@@ -1971,9 +1971,9 @@ never sends page images to a model.
   page asks it not to.
 - **The OCR Lines pane shows no marker.** The page viewer's OCR Lines pane reads
   `pageData.json`, which is built from the unmarked blocks. Its per-line
-  `textType` comes from the LINE block, and Textract reports `TextType` on WORD
-  blocks ([Lines and words of text](https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html)), so in practice it is empty for
-  Textract pages as well.
+  `textType` is read from the LINE block, which Textract does not generally
+  populate ([Lines and words of text](https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html) shows `TextType` on the WORD
+  blocks), so it is usually empty for Textract pages as well.
 - **Token cost.** Each marker adds a few tokens, and the note adds about 60
   tokens to each page that has handwriting. Pages without handwriting are
   unchanged.

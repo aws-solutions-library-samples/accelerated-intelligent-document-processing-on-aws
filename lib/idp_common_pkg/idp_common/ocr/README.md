@@ -388,7 +388,7 @@ The format varies by OCR backend:
 The `text` field contains a markdown table with two columns:
 - **Text**: The extracted text content (with pipe characters escaped as `\|`)
 - **Confidence**: OCR confidence score rounded to 1 decimal point
-- A line gets a "(HANDWRITING)" suffix only when its LINE block carries `TextType: HANDWRITING`. Textract reports `TextType` on WORD blocks (see [Lines and words of text](https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html), whose example response types the WORDs and not the LINE), so in practice Textract pages carry no suffix here; the check remains for OCR backends that type LINE blocks, such as a LambdaHook backend. To mark handwriting in the page text, see `ocr.mark_handwriting`.
+- A line gets a "(HANDWRITING)" suffix only when its LINE block carries `TextType: HANDWRITING`. This field is read from LINE blocks, which Textract does not generally populate: the response shape in [Lines and words of text](https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html) carries `TextType` on the WORD blocks and not on the LINE. So a Textract page does not usually get the suffix, while an OCR backend that types LINE blocks, such as a LambdaHook backend, does. To mark handwriting in the page text from Textract's WORD-level `TextType`, see `ocr.mark_handwriting`.
 
 **Bedrock Backend (no confidence data):**
 ```json
