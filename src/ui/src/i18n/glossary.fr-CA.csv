@@ -13,6 +13,8 @@ Amazon Textract,Amazon Textract,"Product name, unchanged."
 annotator,annotateur,Noun; masculine generic; alternative: annotateur ou annotatrice.
 annotators,annotateurs,"Noun, plural; masculine generic. Translate matches whole terms, so plurals get their own row."
 API key,clé d’API,Noun phrase; alternative: clé API.
+assignment,attribution,Noun; feminine.
+assignments,attributions,"Noun, plural; feminine."
 authentication,authentification,Noun.
 author,auteur,Role name; masculine generic.
 AWS Lambda,AWS Lambda,"Product name, unchanged."
