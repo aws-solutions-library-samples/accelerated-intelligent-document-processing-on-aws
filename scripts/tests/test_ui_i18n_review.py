@@ -417,6 +417,12 @@ def test_the_prefix_holds_the_rules_and_the_whole_glossary(tmp_path, monkeypatch
 
     prefix = client.requests[0]["system"][0]["text"]
     assert "The formal register: vous, never tu." in prefix
+    # A verb, so not in the glossary, which Amazon Translate applies in every context.
+    assert (
+        "- Assign is attribuer, with its forms attribué (agreeing in gender and number), "
+        "attribution, réattribuer, désattribuer and non attribué; never assigner, "
+        "affecter or assignation.\n"
+    ) in prefix
     assert "never list a problem about them" in prefix
     assert (
         "en,fr-CA,note\ndocument,document,Noun.\nreview queue,file d’attente de révision,Noun phrase.\n"
