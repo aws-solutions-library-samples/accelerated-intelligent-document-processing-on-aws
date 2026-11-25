@@ -1944,7 +1944,7 @@
     "sourceHash": "e5ef714cc7d40492"
   },
   "configuration.toolsPanel.editingTabsAndPreview": {
-    "message": "L’onglet <strong>Paramètres de traitement</strong> contient les paramètres des étapes de traitement (OCR, classification, extraction, évaluation, synthèse, acheminement vers la révision, etc.). Utilisez les onglets <strong>Schéma de document</strong> et <strong>Schéma de politique</strong> pour modifier les classes de document et les règles de validation, et le bouton <strong>Aperçu des requêtes</strong> pour voir ce que contient la requête de chaque étape, avec vos valeurs de configuration intégrées. L’aperçu montre quels espaces réservés une étape contient et lesquels elle laisse vides; il ne reproduit pas exactement les octets de la requête.",
+    "message": "L’onglet <strong>Paramètres de traitement</strong> contient les paramètres des étapes de traitement (OCR, classification, extraction, évaluation, synthèse, acheminement des révisions, etc.). Utilisez les onglets <strong>Schéma de document</strong> et <strong>Schéma de politique</strong> pour modifier les classes de document et les règles de validation, et le bouton <strong>Prévisualiser les invites</strong> pour voir ce que contient l’invite de chaque étape, avec vos valeurs de configuration intégrées. L’aperçu montre quels espaces réservés une étape contient et lesquels elle laisse vides; il ne reproduit pas exactement les octets de la requête.",
     "sourceHash": "45526c37ae89f806"
   },
   "discovery.policyGroup.constraint": {
@@ -6456,7 +6456,7 @@
     "sourceHash": "4a54f08ae59a1ad4"
   },
   "editScreen.directEdit.primaryHint": {
-    "message": "Enregistrer vos modifications et les traiter. La confirmation liste les étapes de l’exécution; les étapes précédant celle où elle démarre ne sont pas répétées.",
+    "message": "Enregistrez vos modifications et traitez-les. La confirmation liste les étapes de l’exécution; les étapes précédant celle où elle démarre ne sont pas répétées.",
     "sourceHash": "71653359485c060e"
   },
   "editScreen.directEdit.processOwnerReason": {
@@ -6476,7 +6476,7 @@
     "sourceHash": "a1f19c5ac1227ccd"
   },
   "editScreen.directEdit.regroupConsequence": {
-    "message": "Le déplacement de pages réécrit le <b>regroupement des sections</b> de ce document. Les valeurs de champs extraites sont <b>conservées</b> et le document n’est <b>pas</b> retraité; elles pourraient donc ne plus correspondre à leurs pages. Pour que le pipeline les refasse, ouvrez <b>Plus d’actions › Modifier le regroupement de pages</b> sur la page du document et choisissez <b>Enregistrer et extraire de nouveau</b> : l’action <b>{processChanges}</b> de cet écran conserve les valeurs qu’une section possède déjà.",
+    "message": "Le déplacement de pages réécrit le <b>regroupement des sections</b> de ce document. Les valeurs de champs extraites sont <b>conservées</b> et le document n’est <b>pas</b> retraité; elles pourraient donc ne plus correspondre à leurs pages. Pour que le pipeline les refasse, ouvrez <b>Plus d’actions › Modifier le regroupement de pages</b> sur la page du document et choisissez <b>Enregistrer et réextraire</b> : l’action <b>{processChanges}</b> de cet écran conserve les valeurs qu’une section possède déjà.",
     "sourceHash": "4eab3da9cb81cfba"
   },
   "editScreen.directEdit.regroupRoleReason": {
@@ -6784,7 +6784,7 @@
     "sourceHash": "99e4415b9e11b694"
   },
   "editScreen.productionItem.primaryHint": {
-    "message": "Terminer la révision : la compléter avec vos corrections ou renvoyer le document pour qu’il soit traité de nouveau.",
+    "message": "Terminez la révision : complétez-la avec vos corrections ou renvoyez le document pour qu’il soit traité de nouveau.",
     "sourceHash": "fd6a89e09563923e"
   },
   "editScreen.productionItem.processing": {
@@ -7328,7 +7328,7 @@
     "sourceHash": "5d80ed51cf9fc841"
   },
   "editScreen.toolsPanel.report.policyRuleValidation": {
-    "message": "<b>Sommaire de la validation des règles de politique</b> : les règles de politique que le document a respectées et celles qu’il n’a pas respectées, avec le motif de chacune.",
+    "message": "<b>Sommaire de validation des règles de politique</b> : les règles de politique que le document a respectées et celles qu’il n’a pas respectées, avec le motif de chacune.",
     "sourceHash": "900e300b29d778e3"
   },
   "editScreen.toolsPanel.report.processing": {
@@ -11384,7 +11384,7 @@
     "sourceHash": "381dda84da9f8327"
   },
   "reviewQueues.toolsPanel.productionRouting": {
-    "message": "Lorsque Review Routing est activé dans le profil de configuration d’un document et que la file d’attente par défaut est activée, les règles d’acheminement de ce profil décident si le document est révisé et l’envoient vers la file d’attente désignée par une règle d’acheminement. Un avertissement sur cette page indique quand les règles d’acheminement ne sont pas évaluées, et pourquoi.",
+    "message": "Lorsque l’acheminement des révisions est activé dans le profil de configuration d’un document et que la file d’attente par défaut est activée, les règles d’acheminement de ce profil décident si le document est révisé et l’envoient vers la file d’attente désignée par une règle d’acheminement. Un avertissement sur cette page indique quand les règles d’acheminement ne sont pas évaluées, et pourquoi.",
     "sourceHash": "107e039eaaa168ec"
   },
   "reviewQueues.toolsPanel.productionSettings": {
@@ -12664,7 +12664,7 @@
     "sourceHash": "ac88f3401767e32e"
   },
   "runPlan.step.reviewRouting": {
-    "message": "Acheminement vers la révision",
+    "message": "Acheminement des révisions",
     "sourceHash": "667356267cbd69cd"
   },
   "runPlan.step.summarization": {
