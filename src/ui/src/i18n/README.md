@@ -413,14 +413,55 @@ advisory: exit 0 for any report, 2 only for a tool error (no `en.json`, malforme
 `--locale` with no file); it is in none of `lint`, `fastlint` or `lint-cicd`. `en-XA` is never a
 candidate (it is never a file). This is the figure release notes quote.
 
+## Translating in the same change
+
+A message's translations are added, updated or removed in the change that adds or edits its
+English. The coding agent that edited the screen writes the French, since it knows where each
+message shows; the make targets over [`ui_i18n_catalog.py`](../../../../scripts/ui_i18n_catalog.py)
+do the mechanics. They call no AWS service and no model.
+
+1. Declare or edit the message (see [Writing a message](#writing-a-message)) and run
+   `make ui-i18n-extract`.
+2. `make ui-i18n-todo LOCALE=fr-CA > scratch/todo.json` (after `mkdir -p scratch`; `scratch/` is
+   gitignored) writes the entries to translate as JSON: those the catalog lacks, and the stale
+   ones, whose English changed after they were translated, including those that no longer compile
+   because an argument, a plural or a tag changed. Each carries its English, its `description`,
+   the glossary rows its English uses and, when stale, the translation it holds.
+3. Add each entry's French as a `"message"`, in the glossary's terms and the locale's rules
+   (`STYLE_RULES` in [`ui_i18n_review.py`](../../../../scripts/ui_i18n_review.py) and
+   `REVISE_RULES` in [`ui_i18n_revise.py`](../../../../scripts/ui_i18n_revise.py)). A term the
+   change introduces goes into the glossary in the same change. Large lists can be written and
+   ingested in parts: an entry needs only its `id` and its `message`.
+4. `make ui-i18n-ingest LOCALE=fr-CA FILE=scratch/todo.json` writes them. Each message gets the
+   locale's spacing before punctuation by code, as the Bedrock tools apply it, and the build's
+   parity check; one that fails is refused with the build's wording and its entry keeps its text.
+   A message that passes is written with the `sourceHash` of its English, dead entries are
+   removed, and running the same file again changes nothing. An entry whose `english` is no longer
+   the English is refused: the English changed after the list was made, so list it again.
+5. `make check-ui-i18n-catalog` passes once no entry is stale or rejected by the build.
+
+When the French cannot be written in the change, `make ui-i18n-drop-stale LOCALE=fr-CA` deletes the
+stale entries, and any dead ones, so the screen shows the English until a later change translates
+it. A missing translation never fails a job: the English shows, and `make ui-i18n-coverage` lists
+it.
+
+For catch-up before a release and for audits, the Bedrock tools below run on your own AWS
+credentials: `make ui-i18n-revise` with `--refresh` drafts every missing entry and every stale one
+the build still accepts, then `make ui-i18n-review` with `--provenance` reviews what it wrote, and a
+person samples the result.
+`make ui-i18n-translate` (Amazon Translate) is not part of this flow: its drafts lost too much of
+each message's context.
+
 ## Drafting a translation
 
 `make ui-i18n-translate LOCALE=fr-CA` ([`ui_i18n_translate.py`](../../../../scripts/ui_i18n_translate.py) over
 [`translate-segments.mjs`](../../scripts/i18n/translate-segments.mjs)) drafts, with Amazon Translate, the entries of
-`<locale>.json` that the coverage report calls missing or stale, and writes them with their `sourceHash`. It is a
-developer tool, run with your own AWS credentials: no CI job runs it and no deployed stack calls it. Start with
-`UI_I18N_TRANSLATE_ARGS=--dry-run`, which prints the entries, the characters and the estimated cost and calls
-nothing; a real run needs `--region` (and `--profile` for a named profile), and `--limit N` takes a small batch first.
+`<locale>.json` that the coverage report calls missing or stale, and writes them with their `sourceHash`. It is no
+longer part of the flow (see [Translating in the same change](#translating-in-the-same-change)), and stays for a
+one-off draft. It is a developer tool, run with your own AWS credentials: no CI job runs it and no deployed stack
+calls it. Start with `UI_I18N_TRANSLATE_ARGS=--dry-run`, which prints the entries, the characters and the
+estimated cost and calls nothing; a real run needs `--region` (and `--profile` for a named profile), and
+`--limit N` takes a small batch first.
 A `<locale>.json` in this directory turns that language on in the switcher (`availableLocales` is file presence), so
 a drafted catalog is committed only in the change that enables its language.
 

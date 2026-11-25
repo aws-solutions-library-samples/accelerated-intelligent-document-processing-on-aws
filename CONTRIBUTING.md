@@ -858,6 +858,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make ui-build` | Lint, typecheck, and production Vite build |
 | `make ui-i18n-extract` | Re-extract the UI's English message catalog into `src/ui/src/i18n/en.json` (the writer for `check-ui-i18n-catalog`; commit the result) |
 | `make ui-i18n-coverage` | Report translation coverage per locale catalog: missing, stale (English changed since translation) and invalid entries; advisory, never fails (`UI_I18N_COVERAGE_ARGS=--json` for JSON) |
+| `make ui-i18n-todo LOCALE=fr-CA` | Print, as JSON, the entries of a translation catalog that the change editing the English leaves missing or stale, with their English, description and glossary terms |
+| `make ui-i18n-ingest LOCALE=fr-CA FILE=<list>` | Write that list, given a `"message"` per entry, through the UI build's parity check, with each entry's `sourceHash` |
+| `make ui-i18n-drop-stale LOCALE=fr-CA` | Delete the stale and dead entries of a translation catalog, so the English shows until they are translated again |
 | `make docs-setup` | One-time docs site setup |
 | `make docs` | Build and serve the docs site locally |
 
