@@ -173,7 +173,8 @@ export const coverageReport = (catalogDir, { locale = null } = {}) => {
 };
 
 /**
- * The report as text: one block per locale, the totals first, then the ids in each list.
+ * The report as text: one block per locale, the totals first, then the ids in each list, and
+ * under each list that is not empty a `fix:` line naming the make targets that clear it.
  *
  * @param {CoverageReport} report
  * @param {string} catalogDir named when there is nothing to report on, so the reader knows where was looked
@@ -189,20 +190,38 @@ export const formatReport = (report, catalogDir) => {
     /** @type {string} */ name,
     /** @type {string} */ meaning,
     /** @type {string[]} */ ids,
-    /** @type {string[]} */ details = [],
+    /** @type {string[]} */ details,
+    /** @type {string} */ fix,
   ) => {
     lines.push(`  ${name} (${ids.length}): ${meaning}`);
     for (const id of ids) lines.push(`    ${id}`);
     for (const detail of details) lines.push(`      ${detail}`);
+    if (ids.length > 0) lines.push(`    fix: ${fix}`);
   };
   for (const tag of tags) {
     const c = report.locales[tag];
+    // The make targets of scripts/ui_i18n_catalog.py (issue #2080), named so a reader of
+    // the report knows what to run.
+    const translate = `make ui-i18n-todo LOCALE=${tag} lists them; give each a "message" and run make ui-i18n-ingest LOCALE=${tag} FILE=<list>`;
+    const drop = `make ui-i18n-drop-stale LOCALE=${tag}`;
     lines.push('');
     lines.push(`${tag}.json: ${c.translated} of ${report.sourceKeys} translated (${c.coveragePercent}%)`);
-    section('missing', 'no entry, so the English is shown', c.missing);
-    section('stale', 'the English changed since the translation was made (sourceHash differs)', c.stale);
-    section('invalid', 'the build rejects these, with the wording below', c.invalid, c.problems);
-    section('dead', 'not in en.json', c.dead);
+    section('missing', 'no entry, so the English is shown', c.missing, [], translate);
+    section(
+      'stale',
+      'the English changed since the translation was made (sourceHash differs)',
+      c.stale,
+      [],
+      `${translate}, or delete them with ${drop}`,
+    );
+    section(
+      'invalid',
+      'the build rejects these, with the wording below',
+      c.invalid,
+      c.problems,
+      `give each a message that passes and run make ui-i18n-ingest LOCALE=${tag} FILE=<list>; make ui-i18n-todo LOCALE=${tag} lists those whose English changed, and ${drop} deletes them`,
+    );
+    section('dead', 'not in en.json', c.dead, [], `${drop} deletes them`);
   }
   lines.push('');
   return lines.join('\n');
