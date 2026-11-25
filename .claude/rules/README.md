@@ -8,7 +8,7 @@ always loads.
 | Rule file | Scope | Purpose | Source |
 |---|---|---|---|
 | [backend-lambda.md](backend-lambda.md) | `src/lambda/**`, `lib/**/*.py` | Thin handlers, reuse of `idp_common` with no duplication, and Lambda conventions | [backend-lambda](../skills/backend-lambda.md), [code-review](../skills/code-review.md) |
-| [frontend-ui.md](frontend-ui.md) | `src/ui/**` | Consistent UI: Cloudscape components, reuse of shared components and hooks, uniform loading, empty and error states | [frontend-ui](../skills/frontend-ui.md), [pr-review](../skills/pr-review.md) |
+| [frontend-ui.md](frontend-ui.md) | `src/ui/**` | Consistent UI: Cloudscape components, reuse of shared components and hooks, uniform loading, empty and error states; text through react-intl, with its French in the same change | [frontend-ui](../skills/frontend-ui.md), [pr-review](../skills/pr-review.md), [ui-i18n](../skills/ui-i18n.md) |
 | [infrastructure.md](infrastructure.md) | templates, `nested/**`, `patterns/**`, `iam-roles/**` | Partition-safe templates, log groups, retriers, IAM, and keeping the service inventories in sync | [infrastructure](../skills/infrastructure.md) |
 | [api-authorization.md](api-authorization.md) | `nested/api-resolvers/**`, `src/lambda/**`, `src/ui/src/graphql/**`, `scripts/api_rbac_expectations.yaml` | Default-deny operations, group and scope checks, Function URL paths | [api-rbac-test](../skills/api-rbac-test.md), [docs/rbac.md](../../docs/rbac.md) |
 | [sdk-cli-mcp.md](sdk-cli-mcp.md) | `lib/idp_sdk/**`, `lib/idp_cli_pkg/**`, `lib/idp_mcp_connector_pkg/**` | The CLI calls the SDK and the SDK calls `idp_common`, with nothing duplicated; public interface; CLI output | [docs/idp-sdk.md](../../docs/idp-sdk.md), [docs/idp-cli.md](../../docs/idp-cli.md) |
