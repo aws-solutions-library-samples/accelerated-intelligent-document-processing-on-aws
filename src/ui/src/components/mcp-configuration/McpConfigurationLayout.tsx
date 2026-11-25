@@ -150,7 +150,7 @@ const messages = defineMessages<{
   revoke: NoMessageValues;
   tableHeader: NoMessageValues;
   findCredentials: NoMessageValues;
-  matches: { readonly count: string };
+  matches: { readonly count: number };
   name: NoMessageValues;
   role: NoMessageValues;
   all: NoMessageValues;
@@ -547,7 +547,7 @@ const messages = defineMessages<{
   },
   matches: {
     id: 'mcp.configuration.matches',
-    defaultMessage: '{count} matches',
+    defaultMessage: '{count, plural, one {# match} other {# matches}}',
     description: 'Number of credentials the filter matches. {count} is the number.',
   },
   name: {
@@ -1201,7 +1201,7 @@ const McpConfigurationLayout = (): React.JSX.Element => {
           <TextFilter
             {...filterProps}
             filteringPlaceholder={intl.formatMessage(messages.findCredentials)}
-            countText={intl.formatMessage(messages.matches, { count: String(filteredItemsCount ?? 0) })}
+            countText={intl.formatMessage(messages.matches, { count: filteredItemsCount ?? 0 })}
           />
         }
         pagination={<Pagination {...paginationProps} />}

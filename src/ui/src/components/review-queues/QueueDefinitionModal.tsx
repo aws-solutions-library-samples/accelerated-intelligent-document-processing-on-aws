@@ -90,6 +90,7 @@ const messages = defineMessages<{
   idDescription: NoMessageValues;
   idConstraint: NoMessageValues;
   example: { readonly example: string };
+  nameExample: NoMessageValues;
   nameLabel: NoMessageValues;
   nameDescription: NoMessageValues;
   priorityLabel: NoMessageValues;
@@ -252,7 +253,13 @@ const messages = defineMessages<{
     id: 'reviewQueues.queueSettings.example',
     defaultMessage: 'e.g. {example}',
     description:
-      'Placeholder of the Queue id and Name fields: an example of what to type. {example} is the example, shown as it is, so the example id stays a valid id.',
+      'Placeholder of the Queue id and Name fields: an example of what to type. {example} is the example: for the id, an id shown as it is, so it stays a valid id; for the name, the translated example name.',
+  },
+  nameExample: {
+    id: 'reviewQueues.queueSettings.nameExample',
+    defaultMessage: 'High-value claims',
+    description:
+      'Example queue name inside the placeholder "e.g. {example}" of the Name field: a queue for claims of high value. A short name, not a sentence, with no final period.',
   },
   nameLabel: {
     id: 'reviewQueues.queueSettings.name.label',
@@ -654,7 +661,7 @@ const QueueDefinitionModal = ({
               >
                 <Input
                   value={name}
-                  placeholder={intl.formatMessage(messages.example, { example: 'High-value claims' })}
+                  placeholder={intl.formatMessage(messages.example, { example: intl.formatMessage(messages.nameExample) })}
                   onChange={({ detail }) => setName(detail.value)}
                 />
               </FormField>

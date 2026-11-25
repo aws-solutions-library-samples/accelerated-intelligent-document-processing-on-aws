@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { IntlProvider, createIntl } from 'react-intl';
 
@@ -98,6 +98,14 @@ describe('McpConfigurationLayout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'I have stored the secret' }));
     await waitFor(() => expect(screen.queryByText(SECRET)).toBeNull());
+  });
+
+  it('counts the credentials a filter matches, one in the singular', async () => {
+    renderPage();
+    await screen.findByText('nightly');
+    const filter = createWrapper(document.body).findTable()!.findTextFilter()!;
+    act(() => filter.findInput().setInputValue('night'));
+    expect(filter.findResultsCount().getElement().textContent).toBe('1 match');
   });
 
   it('takes its text from the catalog of the active locale', async () => {

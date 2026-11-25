@@ -28,7 +28,7 @@ import type { ActionBarControl, ActionBarMenu, ActionBarMenuItem } from '../comm
 import { copyDocumentToBaseline } from '../common/copy-to-baseline';
 import ReasonModal from '../common/ReasonModal';
 import { SKIP_ALL_REASONS } from '../common/review-status';
-import TroubleshootModal from '../document-panel/TroubleshootModal';
+import TroubleshootModal, { type TroubleshootError } from '../document-panel/TroubleshootModal';
 import type { EditorNotice } from '../edit-screen/EditorNotices';
 import usePageClassBoard from '../edit-screen/use-page-class-board';
 import { documentName } from '../review-queues/review-api';
@@ -390,7 +390,7 @@ interface TroubleshootJob {
   status: string | null;
   result: string | Record<string, unknown> | null;
   agentMessages: unknown;
-  error: string | null;
+  error: TroubleshootError | null;
   timestamp: number;
   documentKey: string | undefined;
 }

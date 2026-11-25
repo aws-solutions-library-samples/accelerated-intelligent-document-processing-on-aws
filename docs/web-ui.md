@@ -1164,9 +1164,10 @@ account.
 
 **What stays English.** These are not translated:
 
-- the admin, configuration and Test Studio screens, including the configuration editor's help
-  text, and Test Studio's own text on a test-set item's edit page and on a test set's queue page
-  in Review Studio;
+- the text that is not yet in the UI's message catalog on the admin, configuration and Test
+  Studio screens, which are only partly translated, and in what Test Studio shows on a test-set
+  item's edit page and on a test set's queue page in Review Studio. That text includes the
+  configuration editor's help text;
 - `(Active)`, which marks the active configuration profile in the profile lists of the
   **Upload Documents** page and the **Reprocess** and **Skip All Reviews by profile** dialogs;
 - on the **Edit Page Grouping** board, the instructions and announcements a screen reader reads
@@ -1190,8 +1191,8 @@ account.
 - document data, always: extracted values, document class names, configuration content and file
   names appear as they were written.
 
-At this release, **2,903 of 2,903** interface messages (**100%**) have a French (Canada)
-translation; a message without one is shown in English.
+A message without a French (Canada) translation is shown in English; `make ui-i18n-coverage`
+lists those messages by id.
 
 Developers: the [i18n README](../src/ui/src/i18n/README.md) explains how a message is declared
 and how a language is added.

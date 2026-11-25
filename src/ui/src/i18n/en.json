@@ -1408,7 +1408,7 @@
     "description": "Label, for screen readers, of a page's thumbnail on the Edit Page Grouping board when the page is selected with others, which move with it. {id} is the page's number; {others} is how many other pages are selected."
   },
   "common.pageGrouping.draggingPages": {
-    "defaultMessage": "{count} pages",
+    "defaultMessage": "{count, plural, one {# page} other {# pages}}",
     "description": "Label under the page being dragged on the Edit Page Grouping board when the selected pages move with it. {count} is how many pages move, two or more."
   },
   "common.pageGrouping.dropHere": {
@@ -3452,7 +3452,7 @@
     "description": "Heading of the table in Reports › Evaluation Report on the document page that pairs each section the ground truth expects with the section the processing predicted."
   },
   "documents.evaluationReport.splitAnalysis.unexpected": {
-    "defaultMessage": "{count} unexpected",
+    "defaultMessage": "{count, plural, one {# unexpected} other {# unexpected}}",
     "description": "Count shown after the unmatched count beside the Section split analysis heading in Reports › Evaluation Report on the document page, joined with a middle dot. {count} is how many predicted sections match no expected section."
   },
   "documents.evaluationReport.splitAnalysis.unmatched": {
@@ -8104,7 +8104,7 @@
     "description": "Title of the dialog that confirms deleting Inbox messages. {count} is the number of messages to delete."
   },
   "inbox.deleteModal.more": {
-    "defaultMessage": "and {count} more",
+    "defaultMessage": "and {count, plural, one {# more} other {# more}}",
     "description": "Last line of the list of message titles in the delete dialog, when it lists only the first ten. {count} is how many are not listed."
   },
   "inbox.messageModal.close": {
@@ -8680,7 +8680,7 @@
     "description": "Shown in the credentials table while it loads."
   },
   "mcp.configuration.matches": {
-    "defaultMessage": "{count} matches",
+    "defaultMessage": "{count, plural, one {# match} other {# matches}}",
     "description": "Number of credentials the filter matches. {count} is the number."
   },
   "mcp.configuration.name": {
@@ -9304,7 +9304,7 @@
     "description": "Title of the bulk Skip All Reviews dialog that chooses documents by configuration profile and submitted dates."
   },
   "reviewBulk.bulkSkipModal.headerSelected": {
-    "defaultMessage": "Skip All Reviews ({count} selected)",
+    "defaultMessage": "Skip All Reviews ({count, plural, one {# selected} other {# selected}})",
     "description": "Title of the bulk Skip All Reviews dialog for selected documents. {count} is the number of selected documents it applies to."
   },
   "reviewBulk.bulkSkipModal.limitReached": {
@@ -9788,7 +9788,7 @@
     "description": "Why the Release Review menu item is disabled: no selected document has a claimed review."
   },
   "reviewBulk.reviewMenu.sendSelected": {
-    "defaultMessage": "Send to review ({count} selected)",
+    "defaultMessage": "Send to review ({count, plural, one {# selected} other {# selected}})",
     "description": "Review menu item that sends the selected finished documents to the Default review queue. {count} is the number of selected documents it applies to."
   },
   "reviewBulk.reviewMenu.skipProfile": {
@@ -9796,7 +9796,7 @@
     "description": "Review menu item that opens bulk Skip All Reviews by configuration profile and submitted dates."
   },
   "reviewBulk.reviewMenu.skipSelected": {
-    "defaultMessage": "Skip All Reviews ({count} selected)",
+    "defaultMessage": "Skip All Reviews ({count, plural, one {# selected} other {# selected}})",
     "description": "Review menu item that skips the pending reviews of the selected documents. {count} is the number of selected documents it applies to."
   },
   "reviewBulk.reviewMenu.startReview": {
@@ -10441,7 +10441,7 @@
   },
   "reviewQueues.queueSettings.example": {
     "defaultMessage": "e.g. {example}",
-    "description": "Placeholder of the Queue id and Name fields: an example of what to type. {example} is the example, shown as it is, so the example id stays a valid id."
+    "description": "Placeholder of the Queue id and Name fields: an example of what to type. {example} is the example: for the id, an id shown as it is, so it stays a valid id; for the name, the translated example name."
   },
   "reviewQueues.queueSettings.goneQueue": {
     "defaultMessage": "This queue no longer exists. It may have been deleted. Close this dialog.",
@@ -10474,6 +10474,10 @@
   "reviewQueues.queueSettings.name.label": {
     "defaultMessage": "Name",
     "description": "Label of the Queue Settings dialog's field for the queue's name."
+  },
+  "reviewQueues.queueSettings.nameExample": {
+    "defaultMessage": "High-value claims",
+    "description": "Example queue name inside the placeholder \"e.g. {example}\" of the Name field: a queue for claims of high value. A short name, not a sentence, with no final period."
   },
   "reviewQueues.queueSettings.nameRequired": {
     "defaultMessage": "Enter a name.",

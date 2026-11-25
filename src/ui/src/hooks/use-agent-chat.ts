@@ -527,7 +527,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     return null;
   };
 
-  // One string per render: the placeholder below is written with it and later found by it.
+  // The placeholder below is written with this text and found later by its id, never by the text.
   const generating = intl.formatMessage(uiMessages.generating);
 
   // Handle streaming messages with proper phase management
@@ -550,7 +550,9 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     if (newMessage.messageType === 'structured_data_start') {
       structuredDataModeRef.current = true;
 
-      // Add a placeholder message to show we're generating the final result
+      // Add a placeholder message to show we're generating the final result. Its text is
+      // written here, when the answer starts, and a language switch does not re-word it; the
+      // final response replaces it.
       updateMessages((prevMessages) => {
         const placeholderMessage: ChatMessage = {
           role: 'assistant',
@@ -605,7 +607,8 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
 
         const updatedMessages = [...prevMessages];
         const placeholderIndex = updatedMessages.findIndex(
-          (msg) => msg.content === generating && msg.sessionId === newMessage.sessionId && msg.isProcessing,
+          (msg) =>
+            typeof msg.id === 'string' && msg.id.endsWith('-generating') && msg.sessionId === newMessage.sessionId && msg.isProcessing,
         );
 
         if (placeholderIndex >= 0) {
