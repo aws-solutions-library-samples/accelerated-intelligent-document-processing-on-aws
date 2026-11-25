@@ -165,7 +165,7 @@ from .models import (
     classify_document_state,
 )
 
-__version__ = "0.6.16"
+__version__ = "0.6.17.dev1"
 
 from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
 

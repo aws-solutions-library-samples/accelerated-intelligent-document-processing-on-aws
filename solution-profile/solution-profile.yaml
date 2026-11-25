@@ -12,7 +12,7 @@
 schema_version: 1
 id: genai-idp-accelerator
 name: GenAI Intelligent Document Processing Accelerator
-version: 0.6.16
+version: 0.6.17-dev1
 reviewed_for_version: 0.6.16
 source:
   repository: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws

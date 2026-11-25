@@ -46,7 +46,7 @@ Mappings:
   # would ever substitute it. Hence a literal.
   ServiceMeta:
     ServiceVersion:
-      Value: '0.6.16'
+      Value: '0.6.17.dev1'
 
 Parameters:
   ProductRegistryJson:

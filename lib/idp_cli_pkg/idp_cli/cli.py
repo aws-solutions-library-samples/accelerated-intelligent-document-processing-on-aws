@@ -859,7 +859,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.16")
+@click.version_option(version="0.6.17.dev1")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
