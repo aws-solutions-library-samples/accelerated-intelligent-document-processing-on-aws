@@ -1810,6 +1810,32 @@ ui-i18n-coverage: ## Report translation coverage for each locale catalog present
 	@# report); in CI that is an error. Exit 2 only when no report could be made.
 	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
 
+# THE PER-CHANGE TRANSLATION TOOLS (issue #2080), NOT GATES: they call no AWS service and
+# no model, no CI job runs them, they are prerequisites of none of `lint`, `fastlint` or
+# `lint-cicd`, and their names match none of the check shapes test_ci_gate_parity.py
+# classifies by. In the change that edits the English, `ui-i18n-todo` prints the missing
+# and stale entries of src/ui/src/i18n/<LOCALE>.json as JSON (nothing else on stdout);
+# `ui-i18n-ingest FILE=<list>` writes that list once each entry has a "message",
+# refusing any message the build's parity check rejects; `ui-i18n-drop-stale` deletes
+# the stale entries (and the dead ones), so the English shows. `todo` and `ingest` run
+# node out of src/ui/node_modules (the coverage worker), and `ingest` and `drop-stale`
+# write the catalog, which the lock keeps to one writer, so all three take the same lock
+# as the UI targets (issue #1447). FILE is taken from the command line only, not from an
+# environment variable of that common name.
+FILE :=
+ui-i18n-todo: ## List the missing and stale entries of src/ui/src/i18n/<LOCALE>.json as JSON, with their English, description and glossary terms, for the change that edits the English to translate (LOCALE=fr-CA) (issue #2080)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-todo LOCALE=fr-CA$(NC)" >&2; exit 2; fi
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_catalog.py todo --locale $(LOCALE)'
+
+ui-i18n-ingest: ## Write a ui-i18n-todo list, given a "message" per entry, into src/ui/src/i18n/<LOCALE>.json with each entry's sourceHash, refusing any message the build's parity check rejects (LOCALE=fr-CA FILE=<list.json>) (issue #2080)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-ingest LOCALE=fr-CA FILE=todo.json$(NC)" >&2; exit 2; fi
+	@if [ -z "$(FILE)" ]; then echo -e "$(RED)ERROR: FILE is required, e.g. make ui-i18n-ingest LOCALE=fr-CA FILE=todo.json$(NC)" >&2; exit 2; fi
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_catalog.py ingest --locale $(LOCALE) "$(FILE)"'
+
+ui-i18n-drop-stale: ## Delete the stale and dead entries of src/ui/src/i18n/<LOCALE>.json, so the English shows until they are translated again (LOCALE=fr-CA) (issue #2080)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-drop-stale LOCALE=fr-CA$(NC)" >&2; exit 2; fi
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_catalog.py drop-stale --locale $(LOCALE)'
+
 # A DEVELOPER TOOL, NOT A GATE: it calls Amazon Translate with the developer's own
 # AWS credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
 # `fastlint` or `lint-cicd`, and its name matches none of the check shapes
