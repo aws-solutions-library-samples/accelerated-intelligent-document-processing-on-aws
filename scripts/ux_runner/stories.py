@@ -80,7 +80,6 @@ _STORY_KEYS = (
     "tier",
     "since",
     "origin",
-    "claims",
     "rbac",
     "match",
 )
@@ -96,7 +95,6 @@ _STORY_REQUIRED = (
     "origin",
 )
 _MATCH_KEYS = ("docs", "issues", "terms", "ui_paths")
-_CLAIM_KEYS = ("lead",)
 _INTENT_ONLY = "stories state intent only"
 _FOREIGN_STORY_KEYS: dict[str, str] = {
     "steps": _INTENT_ONLY,
@@ -122,7 +120,6 @@ _LIMIT_CEILINGS: dict[str, float] = {
     "flow_minutes": 60,
 }
 _DESCRIPTION_CHARS = 200
-_LEAD_CHARS = 300
 _RBAC_CHARS = 80
 _TERM_CHARS = 60
 _GLOB_CHARS = 200
@@ -203,11 +200,6 @@ class Fixture:
 
 
 @dataclass(frozen=True)
-class Claim:
-    lead: str
-
-
-@dataclass(frozen=True)
 class Match:
     docs: tuple[str, ...] = ()
     issues: tuple[int, ...] = ()
@@ -229,7 +221,6 @@ class Story:
     tier: str
     since: str
     origin: str
-    claims: tuple[Claim, ...]
     rbac: str | None
     match: Match
 
@@ -583,21 +574,6 @@ def _since(value: object, where: str) -> str:
     return value
 
 
-def _claims(value: object, where: str) -> tuple[Claim, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise CatalogueError(f"{where}: claims must be an array of {{ lead = ... }}")
-    claims: list[Claim] = []
-    for number, entry in enumerate(value, start=1):
-        here = f"{where}: claim #{number}"
-        table = _table(entry, here)
-        _closed(table, here, _CLAIM_KEYS, _CLAIM_KEYS)
-        lead = _text(table["lead"], here, "lead", _LEAD_CHARS)
-        if any(claim.lead == lead for claim in claims):
-            raise CatalogueError(f"{here}: lead repeats an earlier claim of this story")
-        claims.append(Claim(lead=lead))
-    return tuple(claims)
-
-
 def _match(value: object, where: str) -> Match:
     here = f"{where}: match"
     body = _table(value, here)
@@ -665,12 +641,6 @@ def _story(
     tier = _choice(body["tier"], where, "tier", TIERS)
     since = _since(body["since"], where)
     origin = _choice(body["origin"], where, "origin", ORIGINS)
-    claims = _claims(body.get("claims", []), where)
-    if origin == "changelog" and not claims:
-        raise CatalogueError(
-            f"{where}: origin changelog needs at least one claim, the CHANGELOG "
-            "lead the story covers"
-        )
     rbac = None
     if "rbac" in body:
         rbac = _text(body["rbac"], where, "rbac", _RBAC_CHARS)
@@ -687,7 +657,6 @@ def _story(
         tier=tier,
         since=since,
         origin=origin,
-        claims=claims,
         rbac=rbac,
         match=_match(body.get("match", {}), where),
     )

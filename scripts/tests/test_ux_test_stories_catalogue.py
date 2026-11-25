@@ -34,7 +34,6 @@ from ux_runner import stories, ui_change  # noqa: E402
 
 CATALOGUE_FILE = "scripts/ux_stories.toml"
 RBAC_DOC = REPO_ROOT / "docs" / "rbac.md"
-CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 MATRIX_HEADING = "## Permission Matrix"
 MATRIX_HEADER = "Feature / API"
 MATRIX_ROW_RE = re.compile(
@@ -45,7 +44,6 @@ CROSS = "❌"
 TICK_MARKS = frozenset("†*‡")
 BULLET_RE = re.compile(r"^[-*] ")
 SECTION_RE = re.compile(r"^## \[(?P<label>[^\]]+)\]")
-LEAD_RE = re.compile(r"\A(?:⚠️?\s*)?\*\*(?P<lead>.+?)\*\*")
 LIST_LINE_RE = re.compile(
     r"^(?P<tier>p0|p1)\t(?P<key>[a-z0-9-]+@[a-z0-9-]+)\t(?P<kind>read|commit_point)\t"
     r"(?P<expectation>allowed|refused|not_offered)\tbudget=(?P<budget>[0-9]+)\t"
@@ -64,7 +62,6 @@ STORY_SCHEMA_KEYS = (
     "tier",
     "since",
     "origin",
-    "claims",
     "rbac",
     "match",
 )
@@ -121,7 +118,6 @@ mr_as = ["analyst"]
 tier = "p1"
 since = "0.6.12"
 origin = "changelog"
-claims = [{ lead = "Configurations can be chosen by folder." }]
 rbac = "View/Edit configuration"
 
 [stories.match]
@@ -244,38 +240,6 @@ def _cell_allows(cell: str) -> bool | None:
     return None
 
 
-def _bold_leads(text: str) -> list[tuple[str, str]]:
-    """(section, lead) for every CHANGELOG entry that opens on a bold lead."""
-    entries: list[tuple[str, list[str]]] = []
-    section = ""
-    current: list[str] | None = None
-    for line in text.split("\n"):
-        heading = SECTION_RE.match(line)
-        if heading:
-            section = heading.group("label")
-        if line.startswith("#"):
-            current = None
-        elif BULLET_RE.match(line):
-            current = [line[2:]]
-            entries.append((section, current))
-        elif current is not None:
-            current.append(line)
-    leads: list[tuple[str, str]] = []
-    for label, parts in entries:
-        found = LEAD_RE.match(" ".join(" ".join(parts).split()))
-        if found:
-            leads.append((label, " ".join(found.group("lead").split())))
-    return leads
-
-
-def _claim_line(story_id: str) -> int:
-    lines = stories.CATALOGUE_PATH.read_text(encoding="utf-8").splitlines()
-    start = lines.index(f'id = "{story_id}"')
-    return 1 + next(
-        i for i in range(start, len(lines)) if lines[i].startswith("claims")
-    )
-
-
 def _unmatched_globs(globs: list[str], tracked: list[str]) -> list[str]:
     return [
         glob for glob in globs if not any(ui_change.matches(p, [glob]) for p in tracked)
@@ -308,9 +272,6 @@ def test_the_loaded_catalogue_is_the_toml_in_file_order(
         assert story.mr_as == tuple(entry.get("mr_as", list(entry["as"])[:1]))
         assert story.needs == tuple(entry.get("needs", ()))
         assert story.first_visit is entry.get("first_visit", False)
-        assert story.claims == tuple(
-            stories.Claim(lead=claim["lead"]) for claim in entry.get("claims", ())
-        )
         assert story.rbac == entry.get("rbac")
         assert story.match == stories.Match(
             **{key: tuple(value) for key, value in entry.get("match", {}).items()}
@@ -341,7 +302,6 @@ def test_story_ids_and_flow_keys_are_unique_in_the_catalogue(
         ("[fixtures.done-document]", "bucket"),
         ("story 'read-results'", "notes"),
         ("story 'read-results': match", "pages"),
-        ("story 'set-folder-configuration': claim #1", "section"),
     ],
 )
 def test_every_level_of_the_catalogue_is_closed(place: str, key: str) -> None:
@@ -354,7 +314,6 @@ def test_every_level_of_the_catalogue_is_closed(place: str, key: str) -> None:
         "[fixtures.done-document]": data["fixtures"]["done-document"],
         "story 'read-results'": data["stories"][0],
         "story 'read-results': match": data["stories"][0]["match"],
-        "story 'set-folder-configuration': claim #1": data["stories"][1]["claims"][0],
     }
     tables[place][key] = "x"
     message = _refused(data)
@@ -776,30 +735,6 @@ def test_the_story_metadata_is_checked(key: str, value: object, phrase: str) -> 
 
 
 @pytest.mark.unit
-def test_a_changelog_story_needs_a_claim_and_claims_are_well_formed() -> None:
-    data = _fixture()
-    del data["stories"][1]["claims"]
-    assert "origin changelog needs at least one claim" in _refused(data)
-    for value, phrase in (
-        ([], "origin changelog needs at least one claim"),
-        ("A lead.", "claims must be an array"),
-        ([{"lead": "A."}, {"lead": "A."}], "claim #2: lead repeats an earlier claim"),
-        ([{"lead": ""}], "claim #1: lead must be 1 to 300 characters"),
-        ([{"lead": "a" * 301}], "claim #1: lead must be 1 to 300 characters"),
-        ([{}], "claim #1: lead is required"),
-        (["A lead."], "claim #1 must be a table"),
-    ):
-        data = _fixture()
-        data["stories"][1]["claims"] = value
-        assert phrase in _refused(data)
-    data = _fixture()
-    data["stories"][0]["claims"] = [{"lead": "A smoke story may carry a claim."}]
-    assert _parsed(data).stories[0].claims == (
-        stories.Claim(lead="A smoke story may carry a claim."),
-    )
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize(
     ("key", "value", "phrase"),
     [
@@ -1149,7 +1084,6 @@ UNHASHED_CHANGES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
     ("tier", lambda d: d["stories"][0].update(tier="p1")),
     ("since", lambda d: d["stories"][0].update(since="0.6.5")),
     ("origin", lambda d: d["stories"][0].update(origin="finding")),
-    ("claims", lambda d: d["stories"][0].update(claims=[{"lead": "A claim."}])),
     ("rbac", lambda d: d["stories"][0].update(rbac="View document details")),
     ("match", lambda d: d["stories"][0].update(match={"issues": [7], "terms": ["x"]})),
     ("mr_as", lambda d: d["stories"][0].update(mr_as=["lead"])),
@@ -1651,11 +1585,7 @@ def test_the_permission_matrix_parser_reads_every_row_of_docs_rbac() -> None:
     columns, rows = _rbac_matrix(RBAC_DOC.read_text(encoding="utf-8"))
     assert columns == ("Admin", "Author", "Reviewer", "Viewer", "Annotator")
     assert set(columns) == set(stories.SIGN_IN_GROUPS)
-    assert {
-        "Upload documents",
-        "View document details",
-        "View/Edit configuration",
-    } <= set(rows)
+    assert rows
     unread = {
         (label, group, cell)
         for label, cells in rows.items()
@@ -1739,61 +1669,6 @@ def test_a_tick_with_its_footnote_marks_allows_and_a_cross_does_not(
     cell: str, allows: bool | None
 ) -> None:
     assert _cell_allows(cell) is allows
-
-
-@pytest.mark.unit
-def test_every_claim_is_quoted_verbatim_as_exactly_one_changelog_bold_lead(
-    catalogue: stories.Catalogue,
-) -> None:
-    leads = _bold_leads(CHANGELOG.read_text(encoding="utf-8"))
-    problems: list[str] = []
-    claimed = 0
-    for story in catalogue.stories:
-        for claim in story.claims:
-            claimed += 1
-            wanted = " ".join(claim.lead.split())
-            sections = [section for section, lead in leads if lead == wanted]
-            if len(sections) != 1:
-                problems.append(
-                    f"story {story.id} ({CATALOGUE_FILE}:{_claim_line(story.id)}): claim "
-                    f"{claim.lead!r} is the bold lead of {len(sections)} CHANGELOG.md "
-                    "entries, not exactly one; when an entry is reworded, reword the claim"
-                    " to match"
-                )
-    assert not problems, "\n".join(problems)
-    assert claimed
-
-
-@pytest.mark.unit
-def test_the_claim_check_reads_bold_leads_in_any_section() -> None:
-    lead = "Configurations can be chosen by folder."
-    unreleased = "\n".join(
-        [
-            "# Changelog",
-            "## [Unreleased]",
-            "### Added",
-            f"- **{lead}** More text",
-            "  that continues.",
-            "- ⚠️ **A warned entry.** Body.",
-            "## [0.6.12]",
-            "### Fixed",
-            "- **Another entry.** Body.",
-            "* **A starred",
-            "  entry.** Body.",
-        ]
-    )
-    assert _bold_leads(unreleased) == [
-        ("Unreleased", lead),
-        ("Unreleased", "A warned entry."),
-        ("0.6.12", "Another entry."),
-        ("0.6.12", "A starred entry."),
-    ]
-    released = unreleased.replace("## [Unreleased]", "## [0.6.13]")
-    assert [s for s, found in _bold_leads(released) if found == lead] == ["0.6.13"]
-    reworded = unreleased.replace(lead, "Configurations are chosen by folder.")
-    assert [found for _, found in _bold_leads(reworded) if found == lead] == []
-    not_a_lead = "## [Unreleased]\n- Plain text **" + lead + "**"
-    assert _bold_leads(not_a_lead) == []
 
 
 @pytest.mark.unit

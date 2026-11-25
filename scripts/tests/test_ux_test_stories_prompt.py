@@ -622,7 +622,6 @@ def test_only_the_title_intent_and_kind_of_the_story_reach_the_text() -> None:
         tier="p1",
         since="9.9.9",
         origin="finding",
-        claims=(stories.Claim(lead="Sentinel CHANGELOG lead."),),
         rbac="Sentinel rbac row",
         match=stories.Match(
             docs=("sentinel.md#anchor",),
