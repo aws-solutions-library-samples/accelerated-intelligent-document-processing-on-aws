@@ -35,8 +35,9 @@ Two input routes at S3 intake, both read by :func:`read_object_attributes`:
    ``<name>`` becomes ``_`` in the stored key: ``idp-attr-account-id`` is the
    attribute ``account_id``. Values on this route are always strings.
 2. **A JSON sidecar** named by ``x-amz-meta-idp-attributes-uri``. It must be in the
-   same bucket as the document, its key must end in :data:`SIDECAR_SUFFIX`, and it
-   is read once, at intake, up to :data:`MAX_TOTAL_BYTES`. The suffix is what
+   same bucket as the document and its key must be the document's own key plus
+   :data:`SIDECAR_SUFFIX` (:func:`sidecar_key_for`), so a document can carry only
+   the sidecar written beside it. It is read once, at intake, up to :data:`MAX_TOTAL_BYTES`. The suffix is what
    stops the queue sender processing the sidecar as a document of its own
    (:func:`is_sidecar_key`). An inline attribute with the same key wins.
 
@@ -265,8 +266,21 @@ def is_sidecar_key(key: str) -> bool:
     return key.endswith(SIDECAR_SUFFIX)
 
 
-def _parse_sidecar_uri(uri: str, bucket: str) -> Tuple[Optional[str], Optional[str]]:
-    """``(key, None)`` for an acceptable sidecar URI, else ``(None, reason)``."""
+def sidecar_key_for(document_key: str) -> str:
+    """The one key a document's sidecar may have: its own key plus the suffix."""
+    return document_key + SIDECAR_SUFFIX
+
+
+def _parse_sidecar_uri(
+    uri: str, bucket: str, document_key: str
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(key, None)`` for an acceptable sidecar URI, else ``(None, reason)``.
+
+    The sidecar must sit beside the document (:func:`sidecar_key_for`). Intake
+    reads it with the stack's role, not the uploader's, so without that binding a
+    document could name a sidecar written under a prefix its uploader cannot
+    write, and carry that sidecar's values into results the uploader can read.
+    """
     if not uri.startswith("s3://"):
         return None, "sidecar URI is not an s3:// URI"
     uri_bucket, _, key = uri[len("s3://") :].partition("/")
@@ -274,6 +288,8 @@ def _parse_sidecar_uri(uri: str, bucket: str) -> Tuple[Optional[str], Optional[s
         return None, "sidecar is not in the document's input bucket"
     if not key or not is_sidecar_key(key):
         return None, f"sidecar key does not end in {SIDECAR_SUFFIX}"
+    if not document_key or key != sidecar_key_for(document_key):
+        return None, "sidecar key is not the document's key plus " + SIDECAR_SUFFIX
     return key, None
 
 
@@ -302,16 +318,17 @@ def _read_sidecar(
 
 
 def read_object_attributes(
-    metadata: Mapping[str, str], bucket: str, s3_client: Any
+    metadata: Mapping[str, str], bucket: str, s3_client: Any, *, document_key: str
 ) -> AttributeIntake:
     """The attributes an uploaded object carries, from its S3 user metadata.
 
-    ``metadata`` is ``head_object``'s ``Metadata`` map. Reads the sidecar when one
-    is named. Never raises for bad input: anything out of bounds is dropped and
+    ``metadata`` is ``head_object``'s ``Metadata`` map for the object at
+    ``document_key``. Reads the sidecar when one is named and it is that
+    document's own (:func:`sidecar_key_for`). Never raises for bad input: anything out of bounds is dropped and
     reported in :attr:`AttributeIntake.dropped`.
     """
     try:
-        return _read_object_attributes(metadata, bucket, s3_client)
+        return _read_object_attributes(metadata, bucket, s3_client, document_key)
     except Exception as e:  # noqa: BLE001 - this route never raises; see docstring
         # Nothing in the rules should get here. If something does, the document
         # still processes, without attributes and with the warning saying so.
@@ -321,14 +338,14 @@ def read_object_attributes(
 
 
 def _read_object_attributes(
-    metadata: Mapping[str, str], bucket: str, s3_client: Any
+    metadata: Mapping[str, str], bucket: str, s3_client: Any, document_key: str
 ) -> AttributeIntake:
     candidate: Dict[Any, Any] = {}
     early_drops: List[Tuple[str, str]] = []
 
     uri = metadata.get(SIDECAR_URI_METADATA_KEY)
     if uri:
-        key, problem = _parse_sidecar_uri(uri, bucket)
+        key, problem = _parse_sidecar_uri(uri, bucket, document_key)
         data = None
         if key is not None:
             data, problem = _read_sidecar(s3_client, bucket, key)
@@ -378,7 +395,7 @@ def encode_for_upload(
     no key containing ``-`` (which the inline route turns into ``_``), and the
     whole metadata block within S3's limit. Otherwise the set goes in a sidecar
     and ``sidecar_body`` is its JSON; the caller uploads it to
-    ``<document key>`` + :data:`SIDECAR_SUFFIX` *before* the document and adds
+    ``sidecar_key_for(<document key>)`` *before* the document and adds
     :data:`SIDECAR_URI_METADATA_KEY` to the returned metadata.
     """
     metadata = dict(base_metadata or {})

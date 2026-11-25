@@ -580,7 +580,7 @@ def revise_batches(
         try:
             response = client.converse(**converse_request(model, prefix, batch))
         except errors as exc:
-            review.count_call(spend, rates, ceiling, None)
+            review.count_call(spend, rates, ceiling, exc)
             if spend.calls == 0:
                 raise ToolError(
                     f"Bedrock refused the run, so nothing was written (its attempts "

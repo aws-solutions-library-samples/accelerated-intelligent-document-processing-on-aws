@@ -642,9 +642,9 @@ and calls nothing; a real run needs `--region` (and `--profile` for a named prof
 ## What stays English for now
 
 The list a user reads is [Interface language](../../../../docs/web-ui.md#interface-language) in
-the web UI guide; change it together with this section. On the screens that list keeps English,
-the unit suffixes on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on
-integer percents built in template strings (`${progressPct}%`) stay until those screens convert.
+the web UI guide; change it together with this section. In the text that list keeps English, the
+unit suffixes on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on
+integer percents built in template strings (`${progressPct}%`) stay until that text converts.
 The follow-ups (keeping the choice with the user account, the configuration editor, stable error
 codes, agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
