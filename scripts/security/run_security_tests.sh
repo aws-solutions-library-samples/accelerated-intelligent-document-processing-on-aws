@@ -5,7 +5,7 @@
 # One-shot: run the security tests and curate a public-safe snapshot into
 # security/test-results/<version>/. This is the single entry point behind
 # `make security-results` and the "run security tests and update results"
-# request (see .claude/skills/curate-security-results.md).
+# request (see .claude/skills/curate-security-results/SKILL.md).
 #
 # What runs depends on whether a live stack is available:
 #   * Always (no AWS): SRT SAST/deps scan + RBAC static authorization scan.

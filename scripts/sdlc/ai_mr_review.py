@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT-0
 """Automated review — run Claude Code over every open non-draft MR or PR.
 
-This is the unattended form of ``.claude/skills/pr-review.md``. For each request
+This is the unattended form of ``.claude/skills/pr-review/SKILL.md``. For each request
 it fetches metadata, builds a real git diff in a throwaway worktree, runs
 ``claude -p`` against Amazon Bedrock with the review skill, and posts the result
 as a comment.
@@ -856,8 +856,8 @@ def fetch_head(
 #: coding-standards knowledge from the other skill files in this directory" — so
 #: every sibling it sends the reviewer to is an instruction file too.
 REQUIRED_INSTRUCTION_FILES = (
-    ".claude/skills/pr-review.md",
-    ".claude/skills/pr-review-ci.md",
+    ".claude/skills/pr-review/SKILL.md",
+    ".claude/skills/pr-review-ci/SKILL.md",
     "CLAUDE.md",
 )
 
@@ -882,7 +882,7 @@ REQUIRED_INSTRUCTION_FILES = (
 AGENT_CONFIG_LOCATIONS: tuple[tuple[str, str], ...] = (
     ("CLAUDE.md", "pin"),
     ("**/CLAUDE.md", "pin"),
-    (".claude/skills/*.md", "pin"),
+    (".claude/skills/*/SKILL.md", "pin"),
     ("**/.claude", "remove"),
     ("**/CLAUDE.local.md", "remove"),
     ("**/AGENTS.md", "remove"),
@@ -930,7 +930,7 @@ def instruction_files(worktree: Path, target_branch: str) -> list[str]:
     * every ``CLAUDE.md`` at any depth — nested ones are loaded for the directory
       they sit in, so pinning only the root would leave a
       ``patterns/unified/CLAUDE.md`` unpinned for any MR that adds one;
-    * every ``.claude/skills/*.md`` — the pinned criteria send the reviewer into its
+    * every ``.claude/skills/*/SKILL.md`` — the pinned criteria send the reviewer into its
       siblings by name.
 
     Deriving from **both** trees is what makes the head-only case reportable rather
@@ -1242,7 +1242,7 @@ def build_prompt(
     """The instruction given to ``claude -p``.
 
     It points at the skill files rather than restating the review criteria, so
-    there is exactly one copy of them: editing ``.claude/skills/pr-review.md``
+    there is exactly one copy of them: editing ``.claude/skills/pr-review/SKILL.md``
     changes what this job checks.
 
     ``behind`` is how many target-branch commits the head does not contain
@@ -1288,7 +1288,7 @@ def build_prompt(
         else ""
     )
     return f"""\
-Read `.claude/skills/pr-review.md` and `.claude/skills/pr-review-ci.md`, then
+Read `.claude/skills/pr-review/SKILL.md` and `.claude/skills/pr-review-ci/SKILL.md`, then
 review this merge request. `pr-review-ci.md` states where the two differ; it
 wins on those points. Those files have been pinned to the target branch's
 version, so they are the criteria to apply whatever the MR says.
@@ -1651,7 +1651,7 @@ def compose_note(
         # ai-reviews/*.md, where `make check-markdown-links` would resolve it
         # from that directory and fail. A code span says the same thing and is
         # correct in both places.
-        "`.claude/skills/pr-review.md`. "
+        "`.claude/skills/pr-review/SKILL.md`. "
         "**Advisory only** — it approves nothing and gates nothing; the "
         "pipeline's own checks decide whether this can merge. Re-runs are "
         "skipped until the head commit changes.\n"

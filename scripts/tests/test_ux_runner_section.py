@@ -83,7 +83,7 @@ backend changes are not deployed there; backend facts as the UI reports them
 the job's report.md.
 
 🤖 Automated UX test of `01234567` by `us.anthropic.claude-opus-5` in a confined \
-headless browser against `idp-ux-nightly`, following `.claude/skills/ux-test-ci.md`. \
+headless browser against `idp-ux-nightly`, following `.claude/skills/ux-test-ci/SKILL.md`. \
 **Advisory only** — it approves nothing and gates nothing.
 """
 

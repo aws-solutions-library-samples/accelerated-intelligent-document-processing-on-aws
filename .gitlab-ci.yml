@@ -1493,7 +1493,7 @@ dep_audit:
     expire_in: 1 week
 
 # Advisory AI code review. Runs Claude Code (via Amazon Bedrock) over the MR diff
-# with .claude/skills/pr-review.md and posts the result as an MR note.
+# with .claude/skills/pr-review/SKILL.md and posts the result as an MR note.
 #
 # ⚠️ NOT A GATE, and `allow_failure: true` says so in the one place a reader will
 # look. A model's opinion must not decide whether code merges — the fast_checks
@@ -1699,7 +1699,7 @@ ai_mr_review:
 # the ai_mr_review note for the same head. NOT A GATE: `allow_failure: true` on
 # both jobs, and neither is in test_ci_gate_parity.py's SHARED_GATES. See
 # footnote ³ in scripts/sdlc/docs/CI_TEST_COVERAGE.md and
-# .claude/skills/ux-test-ci.md.
+# .claude/skills/ux-test-ci/SKILL.md.
 #
 # ⚠️ TWO JOBS, because the browser job must not run MR code. Chrome's DevTools
 # port is unauthenticated, so the MR's build (npm ci with its lifecycle scripts,
@@ -1890,7 +1890,7 @@ ai_ux_test:
     # whatever the variables say. A merge request whose .gitlab-ci.yml predates
     # this setup runs this job as it was then, naming the harness in its own script
     # where no variable reaches it and setting neither; ai_ux_test.py runs for it.
-    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test/SKILL.md .claude/skills/ux-test-ci/SKILL.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test.py"
     UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID"
     UX_ARTIFACTS: "ux-tests"
@@ -1984,7 +1984,7 @@ ai_ux_test:
 # ai_ux_test_stories_digest at the end of this file, are all
 # `allow_failure: true`, GitLab-only, and absent from test_ci_gate_parity.py's
 # SHARED_GATES. See footnote ⁴ in scripts/sdlc/docs/CI_TEST_COVERAGE.md and
-# .claude/skills/ux-test-stories-ci.md; test_ux_test_stories_ci_jobs.py pins
+# .claude/skills/ux-test-stories-ci/SKILL.md; test_ux_test_stories_ci_jobs.py pins
 # the three jobs' shape.
 #
 # UX_TEST_STORIES switches them: unset or empty runs all three, `mr` keeps only
@@ -2057,7 +2057,7 @@ ai_ux_test_stories:
     # The MR's story inputs diff against its merge base with develop.
     GIT_DEPTH: 0
     UX_HARNESS_DIR: "/tmp/ux-harness"
-    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
+    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories/SKILL.md .claude/skills/ux-test-stories-ci/SKILL.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
     # Posting is opt-in: this flag is what lets the precheck's one-line replies
     # and the run's reply reach the MR, and no other story job carries it.

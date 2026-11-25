@@ -34,7 +34,7 @@ including the failure and recovery paths, see the [Release Runbook](../release-r
 
 The whole battery is driven by one request to the assistant — e.g. *"validate the 0.6.8
 release"* — via the
-[`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md)
+[`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation/SKILL.md)
 skill, which fixes the tier list below, the order, the stacks, the redaction rules, and the
 two PRs that carry the results. The per-tier make targets remain runnable on their own.
 
@@ -51,7 +51,7 @@ two PRs that carry the results. The per-tier make targets remain runnable on the
 | Deploy variants (APIGateway GLOBAL / PRIVATE, WAF, Jobs API, tenant isolation) | that each hosting/parameter combination actually creates and serves, and that `TenantIsolationMode=Strict` keeps tenants apart | `make stacktest-hosting-global` · `-waf` · `-hosting-private` · `-jobsapi` · `-tenancy` |
 | Template transforms (`--headless`, `--govcloud`) | that a **transformed** template deploys and processes a document — the only tier that can | `make transform-deploy-test-all` |
 | Seller Entitlement Service e2e | that the service deploys into a seller account and refuses correctly | `make stacktest-seller` |
-| In-place upgrade (X→Y) | that a customer's existing stack survives `update-stack` without rollback **and keeps working** | see [`test-upgrade`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/test-upgrade.md) |
+| In-place upgrade (X→Y) | that a customer's existing stack survives `update-stack` without rollback **and keeps working** | see [`test-upgrade`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/test-upgrade/SKILL.md) |
 | Release benchmark A/B | accuracy / completeness / cost / latency vs the previous published release | `make benchmark-release` |
 
 Every method above, plus the layers that *do* run in CI, is described in
@@ -81,5 +81,5 @@ These records are **public-safe by construction**: account IDs, VPC/subnet/secur
 ids, API hostnames, Cognito pool ids, stack physical ids and local paths are replaced with
 placeholders (`<ACCOUNT_ID>`, `<VPC_ID>`, `<API_HOST>`, …). Raw logs stay in gitignored
 `scratch/`. Never paste a raw probe log into this directory — the same rule the
-[security curator](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/curate-security-results.md)
+[security curator](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/curate-security-results/SKILL.md)
 enforces mechanically.

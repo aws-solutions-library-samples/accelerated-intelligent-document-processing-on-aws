@@ -1,0 +1,363 @@
+---
+name: infrastructure
+description: "Use when changing CloudFormation or SAM templates, nested stacks, IAM, log groups or GovCloud compatibility."
+---
+
+# Infrastructure — CloudFormation / SAM / IaC — GenAI IDP Accelerator
+
+## Architecture Overview
+The solution uses **nested CloudFormation stacks** via AWS SAM:
+
+```
+template.yaml (Main Stack — ~584 KB)
+├── patterns/unified/template.yaml (Unified Pattern — ~364 KB)
+├── nested/api-resolvers/ (logical id APIRESOLVERSTACK — the API Gateway REST API
+│                          the UI calls, its dispatcher Lambda, and the resolver
+│                          Lambdas; also serves the Web UI as an S3 proxy when
+│                          WebUIHosting=APIGateway — the API-Gateway alternative
+│                          to CloudFront)
+├── nested/bedrockkb/ (Bedrock Knowledge Base)
+├── nested/multi-doc-discovery/ (Discovery pipeline)
+└── feature-platform/main-stack-extensions/ (FeaturePlatformStack, conditional on
+                            EnableFeaturePlatform)
+```
+
+## Main Stack (`template.yaml`)
+Contains pattern-agnostic resources:
+- S3 Buckets (Input, Output, Working, Configuration, Evaluation Baseline)
+- SQS Queues + Dead Letter Queues
+- DynamoDB Tables (Execution Tracking, Concurrency, Configuration)
+- Lambda Functions (Queue Processing, Queue Sending, Workflow Tracking, etc.)
+- CloudWatch Alarms + Dashboard
+- Web UI (CloudFront, S3 static hosting, CodeBuild)
+- Authentication (Cognito User Pool + Identity Pool)
+- API Gateway REST API + dispatcher Lambda (UI ↔ backend communication) — these
+  live in the `nested/api-resolvers/` stack (logical id `APIRESOLVERSTACK`),
+  which the main stack wires up. There is **no AppSync**: zero
+  `AWS::AppSync::*` resources exist in any template. See
+  `docs/migration-appsync-to-rest.md`.
+
+## Key Parameters
+- `AdminEmail`, `AllowedSignUpEmailDomain`
+- `ExternalIdPType` (SAML/OIDC federation)
+- `ConfigurationPreset` (maps to `config_library/unified/` presets)
+- `CustomConfigPath` (S3 path for user config override)
+- `LogLevel`, `EnableXRayTracing`, `EnableMLflow`
+- `BedrockModelId` (default: `us.amazon.nova-pro-v1:0`)
+- `MaxConcurrent` (Step Functions concurrency limit)
+
+## CRITICAL: GovCloud Compatibility Rules
+EVERY template change MUST follow these rules:
+1. **ARN partition**: Use `!Sub "arn:${AWS::Partition}:service:${AWS::Region}:${AWS::AccountId}:resource"`
+   - NEVER hardcode `arn:aws:` — it breaks in GovCloud (`arn:aws-us-gov:`)
+2. **Service endpoints**: Use `!Sub "service.${AWS::URLSuffix}"`
+   - NEVER hardcode `amazonaws.com` — GovCloud uses `amazonaws.com` but China uses `amazonaws.com.cn`
+3. **Condition checks**: Use `!If [HasPermissionsBoundary, ...]` for permissions boundaries
+4. **Step Functions service integrations**: in an ASL file, write
+   `arn:${Partition}:states:::dynamodb:updateItem` and add
+   `Partition: !Ref AWS::Partition` to the state machine's `DefinitionSubstitutions`.
+   Step Functions rejects a hardcoded `aws` partition in GovCloud outright
+   ("resource belongs to a different partition").
+5. Run `make check-arn-partitions` before committing to verify compliance
+
+### How `make check-arn-partitions` finds what it scans
+
+Templates and state machines are discovered by **content**, not filename:
+`scripts/discover_templates.sh cfn` lists every `*.yaml`/`*.yml` that declares
+`AWSTemplateFormatVersion`; `scripts/discover_templates.sh asl` lists every
+`*.json` with a `"StartAt"` key. Both gates (`check-arn-partitions` and
+`cfn-lint`) call the same script, so a new template anywhere in the repo is
+covered the moment it exists — the old hardcoded glob list never looked at
+`nested/`, `samples/`, `notebooks/`, `scripts/`, `iam-roles/` or `src/lambda/`,
+which is how six hardcoded `arn:aws:states:::` integrations shipped.
+`.gitignore` is honoured (git ls-files), so build output and `scratch/`
+worktrees are not scanned.
+
+When the gate flags a line that is genuinely fine:
+
+- **Prose** (`Description:`, `Comment:`, cfn_nag/cdk_nag `reason:`, `#` comments)
+  is already filtered by key. A literal inside a *folded* multi-line
+  `Description: >` block is not, because only the key line carries the key —
+  reword the example (`vpce.<URLSuffix>`) rather than adding a filter.
+- **An ARN that can only exist in one partition** is exempted per **line** in
+  `ARN_PARTITION_EXEMPT` in the Makefile, spelled `<path>:<line-pattern>`, each
+  entry with a written justification. Today there is one: the two statements in
+  `scripts/sdlc/cfn/credential-vendor.yml` trusting a named role in the commercial
+  CI account, which cross-partition IAM trust makes unparameterisable.
+  - Exempt a line, never a rule, and never a directory. Three tests in
+    `scripts/tests/test_discover_templates.py` enforce it: the entry must name a
+    real path and be named in the justification comment; it must hide at least one
+    finding (an exemption that shields nothing still pre-exempts the next edit to
+    that path); and it must not hide findings in more than one file, so one reason
+    can only ever answer for one file.
+  - That last one is the important one. The entry used to be the directory
+    `scripts/sdlc/cfn/`, and its reason — "names a commercial cross-account
+    principal" — was true of 2 lines out of the 51 it hid. The other 49 were
+    own-account ARNs and service principals that just needed parameterising.
+    Nothing was wrong with the sentence; what was wrong was that one sentence
+    answered for four templates, and read in aggregate it checks out. If your
+    exemption needs a second file, write a second entry and its own reason — and
+    if you cannot write one, that is the finding.
+
+## Lambda Resource Pattern
+```yaml
+MyFunction:
+  Type: AWS::Serverless::Function
+  Metadata:
+    cfn_nag:
+      rules_to_suppress:
+        - id: W89
+          reason: "VPC not required for this function"
+        - id: W92
+          reason: "ReservedConcurrentExecutions not needed"
+    checkov:
+      skip:
+        - id: CKV_AWS_116
+        - id: CKV_AWS_117
+        - id: CKV_AWS_115
+  Properties:
+    Runtime: python3.12
+    Handler: index.handler
+    CodeUri: ../../src/lambda/my_function
+    Architectures: [arm64]
+    Timeout: 60
+    MemorySize: 128
+    Tracing: !If [IsXRayEnabled, Active, !Ref "AWS::NoValue"]
+    Role: !GetAtt MyFunctionRole.Arn
+    Environment:
+      Variables:
+        LOG_LEVEL: !Ref LogLevel
+        METRIC_NAMESPACE: !Ref MetricNamespace
+        STACK_NAME: !Ref "AWS::StackName"
+    # VPC conditional (private-API deployments — ApiGatewayVisibility=PRIVATE in
+    # template.yaml, passed to the nested stack as UsePrivateApi=true, which
+    # defines the IsPrivateApi condition)
+    VpcConfig:
+      !If
+        - IsPrivateApi
+        - SecurityGroupIds: [!Ref LambdaSecurityGroup]
+          SubnetIds: !Ref PrivateSubnetIds
+        - !Ref "AWS::NoValue"
+    # Points the function at the log group below. This is what makes the
+    # LOG GROUP the dependency and the FUNCTION second — see the rule below.
+    LoggingConfig:
+      LogGroup: !Ref MyFunctionLogGroup
+
+MyFunctionLogGroup:
+  Type: AWS::Logs::LogGroup
+  DeletionPolicy: Delete
+  Properties:
+    LogGroupName: !Sub "/${AWS::StackName}/lambda/MyFunction"
+    RetentionInDays: !Ref LogRetentionDays
+    KmsKeyId: !If [HasKmsKey, !Ref KmsKeyArn, !Ref "AWS::NoValue"]
+```
+
+### Log group naming — the invariant
+
+A log group name must satisfy all three of:
+
+1. **It must not reference the function resource.** No `${MyFunction}` in the
+   name — that is the defect below.
+2. **It must be stack-scoped and stable** across function replacement, so it
+   derives from `AWS::StackName` (or another parameter fixed for the stack's
+   lifetime), not from anything CloudFormation regenerates.
+3. **If you name it explicitly at all, the function needs a matching
+   `LoggingConfig`** pointing at it — otherwise Lambda writes to its own default
+   group and the one you declared sits empty.
+
+Or simply omit `LogGroupName` and let CloudFormation generate it
+(`<stack>-<LogicalId>-<random>`), which satisfies all three for free.
+
+Three shapes in this repo comply, and you will see all of them. Prefer the first
+for new code; **do not "fix" the second or third** — they are correct:
+
+| Shape | Where |
+|---|---|
+| `/${AWS::StackName}/lambda/<FunctionLogicalId>` | `patterns/unified` (18), every feature-platform extension |
+| `/aws/lambda/${AWS::StackName}-<Name>` | 5 in the parent `template.yaml`, 2 in `nested/api-resolvers/` |
+| `/aws/lambda/${SomeParameter}-<Name>` | `idp-data-generator`, keyed on `MainStackName`/`FeatureId` |
+| *(generated — no `LogGroupName`)* | most of the parent `template.yaml` (49 groups) |
+
+**One exemption, and only one:** a Lambda that runs *only* during a
+CloudFormation stack operation — a `ServiceToken` custom-resource handler, or an
+install hook invoked by another stack's custom resource — may omit its log group
+entirely and keep Lambda's auto-created one. Those are very low volume and log
+nothing but stack operations, so indefinite retention is an accepted cost rather
+than an oversight. Every other Lambda needs a log group with `RetentionInDays`.
+
+All of this is enforced by `scripts/tests/test_lambda_log_groups.py`, which
+gates **every** template in the repo that declares a Lambda (21 of them, and a
+meta-test fails if a new one is added and not listed) on five rules:
+
+1. Every Lambda has a `LoggingConfig` that resolves to a real
+   `AWS::Logs::LogGroup` **in the same template** — a typo'd or bare-string
+   `LogGroup` fails.
+2. Every log group sets a non-null `RetentionInDays`.
+3. No `LogGroupName` references a function resource, in **any** intrinsic form —
+   `Fn::Sub` scalar and list form, `Fn::Join`, `Ref`, `GetAtt`, nested.
+4. A log group's `Condition` matches its function's, so a group is never created
+   where its function is absent, nor missing where it is present.
+5. A custom-resource handler (a `ServiceToken` target) with a declared log
+   group has a role that denies `logs:CreateLogGroup` on that group, naming it
+   both as `!GetAtt <Group>.Arn` and as the bare
+   `arn:${AWS::Partition}:logs:...:log-group:${<Group>}`, with no `Condition`
+   and not behind `Fn::If`. CloudFormation sends the handler a
+   `Delete` while deleting the stack, and Lambda delivers that invocation's
+   last lines a few seconds after the function, its role and its group are
+   gone; the delivery recreates the group under the function's role, with no
+   retention and no KMS key (#1754). Ordering cannot fix it, because the
+   function already depends on its group through `LoggingConfig` and so is
+   deleted first. The deny costs nothing while the stack lives, because the
+   group exists before the function does, and naming the group in the role's
+   policy makes the role depend on it, so CloudFormation deletes the group
+   after the role rather than alongside it. On a live delete that delay is
+   what kept every group gone; the deny was not exercised, so treat it as the
+   backstop, not as a proven guarantee. Copy the shape from any
+   `ServiceToken` handler in `template.yaml`.
+
+The exemption list is *verified*, not trusted: an exempt function must be a
+`ServiceToken` target or have its ARN exported via a direct `GetAtt`, and must
+have no event source (SAM `Events`, `EventSourceMapping`, `Lambda::Permission`,
+`Events::Rule`, or an API Gateway method/integration).
+
+The gate has its own meta-tests, pinning 16 cases that earlier revisions accepted
+— `Fn::Join` and `Fn::Sub`'s list form slipped rule 3, a `LoggingConfig` naming a
+non-existent group satisfied rule 1, `RetentionInDays: ~` satisfied rule 2, and
+the exemption check accepted any export merely *mentioning* the function.
+`test_gate_catches_known_bypasses` pins each closed, so the rules cannot silently
+weaken. Be aware the check is still structural: it reasons about the template, not
+about what actually invokes a function at runtime.
+
+**Never name a log group after the function resource:**
+
+```yaml
+# WRONG — do not do this
+MyFunctionLogGroup:
+  Properties:
+    LogGroupName: !Sub "/aws/lambda/${MyFunction}"   # resolves the function's generated name
+```
+
+Two defects, both observed in production (issue #818 — 79 never-expiring
+orphan log groups holding 14.8 MiB on one stack):
+
+1. **It inverts the create order.** `!Sub "/aws/lambda/${MyFunction}"` makes the
+   *log group* depend on the *function*, so CloudFormation builds the function
+   first. Anything that invokes it in that window makes Lambda auto-create
+   `/aws/lambda/<fn>` itself, and CloudFormation's `CREATE` then fails
+   `ResourceAlreadyExists`. This bites custom-resource Lambdas hardest, since
+   CloudFormation invokes those during the same stack operation.
+2. **It orphans never-expiring groups on function replacement.** `${MyFunction}`
+   embeds Lambda's random suffix, so replacing the function renames the group.
+   CloudFormation creates the new one and deletes the old; if the outgoing
+   function logs once more, Lambda recreates the old name and CloudFormation no
+   longer owns it. It then lives forever with **no retention policy**, because
+   Lambda's auto-create sets none. A group with `retentionInDays: null` is the
+   fingerprint of one of these.
+
+The `/${AWS::StackName}/lambda/<Fn>` form avoids both: the group is created
+first, and the name is stable across function replacement. Log-group names
+permit `/`, `.`, `-`, `_`, `#` and alphanumerics, up to 512 characters.
+
+Note that a *stable* explicit name still carries one residual risk that a
+CloudFormation-generated name does not: if a log group is newly added to an
+already-existing stack and that update rolls back, a straggler invocation can
+resurrect the group, and the retry's `CREATE` then collides under the same name.
+Because the name is stable, **a plain retry collides identically every time**
+until someone deletes the resurrected group by hand — unlike a generated name,
+where the retry simply picks a new one. So prefer generated names for one-shot
+custom-resource Lambdas introduced by an upgrade, where that is exactly the
+scenario (this is why `MeteringHourMigrationFunctionLogGroup` in the parent
+template is deliberately unnamed).
+
+## Build & Deploy
+```bash
+# Build and publish artifacts to S3
+make publish REGION=us-east-1
+# With custom bucket
+make publish REGION=us-east-1 BUCKET_BASENAME=my-bucket PREFIX=v1
+
+# Deploy stack
+make deploy STACK_NAME=my-idp ADMIN_EMAIL=me@example.com
+# Deploy from local source
+make deploy STACK_NAME=my-idp ADMIN_EMAIL=me@example.com FROM_CODE=1
+
+# Delete stack
+make delete-stack STACK_NAME=test-stack FORCE=1
+
+# Validate buildspec files
+make validate-buildspec
+```
+
+## Keep the service/role inventories in sync
+
+Two hand-maintained files inventory the AWS services and IAM permissions the
+solution uses. Neither is generated from the templates, so both drift easily.
+**Whenever a template change adds, removes, or materially re-scopes a service or
+IAM role, update BOTH in the same PR:**
+
+1. **`docs/aws-services-and-roles.md`** — the published conceptual reference
+   (service tables + deployment/runtime role scopes).
+2. **`iam-roles/cloudformation-management/`** — the example CloudFormation
+   service role. Its `IDP-Cloudformation-Service-Role.yaml` is a *real
+   deployable policy* and its `README.md` documents it service-by-service. A new
+   top-level AWS service usually means a new `service:*` line in the
+   `IDPAcceleratorPermissions` policy **and** a new row in the README
+   tables/accordions. (This README is repo-only by design — it is NOT published
+   to the Starlight doc site; do not move it into `docs/`.)
+
+   ⚠️ **The IAM half of that template is not a flat wildcard list and must not
+   become one** (see
+   [#927](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/927)).
+   `iam:CreateRole` and the other role-mutating actions are scoped to the
+   `ManagedStackNamePrefix` name pattern and conditioned on
+   `iam:PermissionsBoundary`; `iam:PassRole` is scoped and carries
+   `iam:PassedToService`; four explicit `Deny` statements stop the boundary being
+   stripped, the boundary policy being edited, the service role editing itself,
+   and IAM user/access-key creation. `scripts/sdlc/validate_service_role_permissions.py`
+   now **fails** on an IAM write granted on `Resource: "*"` without a boundary
+   condition, and on a `PassRole` without `iam:PassedToService` — run it after any
+   edit to that file. Note also that the IAM `Null` condition operator must be
+   written quoted (`'Null':`): unquoted, YAML resolves the key to the null scalar
+   and the rendered policy is invalid.
+
+Triggers that REQUIRE a doc update:
+- A new `AWS::IAM::Role` / `AWS::IAM::ManagedPolicy`, or a new service principal.
+- A new AWS service referenced anywhere in `template.yaml`,
+  `patterns/unified/template.yaml`, or `nested/**/template.yaml` (look for a new
+  ARN `service:` segment, a new managed policy, or a new `*:Action`).
+- Removing/replacing a service (e.g. the UDOP SageMaker endpoint was removed; KB
+  moved from OpenSearch domains → OpenSearch Serverless / S3 Vectors).
+- A new optional/conditional feature gated by a parameter (e.g. `EnableMCP` →
+  Bedrock AgentCore, `MlflowTrackingURI` → SageMaker MLflow).
+
+How to re-audit quickly (run from repo root):
+```bash
+# Every explicit IAM role and its assuming principal
+grep -rn "Type: AWS::IAM::Role" template.yaml patterns/unified/template.yaml nested/*/template.yaml
+# Distinct AWS services referenced via ARNs
+grep -rhoE "arn:\\\$\{AWS::Partition}:[a-z0-9-]+" template.yaml patterns/unified/template.yaml | sort -u
+# Distinct IAM action namespaces (service prefixes)
+grep -rhoE "^\s*-?\s*[a-z0-9-]+:[A-Za-z*]+" template.yaml patterns/unified/template.yaml | grep -oE "^\s*-?\s*[a-z0-9-]+:" | tr -d ' -' | sort -u
+# Service:* grants currently in the example CloudFormation service role
+grep -oE "[a-z0-9-]+:\*" iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml | sort -u
+```
+Cross-check the results against the service tables and Deployment/Runtime role
+lists in `docs/aws-services-and-roles.md`, AND against the `service:*` grants +
+README tables in `iam-roles/cloudformation-management/`. Remember the
+architecture is **unified** (`use_bda` flag), not Pattern 1/2/3 — describe modes
+as "BDA mode" / "Pipeline mode", and never reintroduce the removed SageMaker
+UDOP endpoint (SageMaker is now only the optional MLflow integration).
+
+The `pr-review.md` / `code-review.md` checklists already flag new IAM roles for a
+`PermissionsBoundary` conditional; when they fire, also confirm both inventories
+were updated.
+
+## Scripts (`scripts/`)
+- `generate_govcloud_template.py` — GovCloud template generation
+- `generate_standard_classes.py` — BDA standard class catalog
+- `generate_commit_message.sh` — AI-generated commit messages via Bedrock
+- `deploy-vpc-endpoints.py` — VPC endpoint provisioning
+- `sdlc/` — CI/CD pipeline scripts
+- `sdlc/validate_buildspec.py` — Buildspec validation
+- `sdlc/typecheck_pr_changes.py` — Type check only changed files
+- `dsr/` — Dynamic Security Review tools

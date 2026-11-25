@@ -220,8 +220,8 @@ def markdown_files(root: Path) -> list[str]:
     flips at ``git add`` time is one nobody can act on. ``--exclude-standard``
     keeps build output and ``scratch/`` out.
 
-    ``.cline/skills/*.md`` are symlinks to ``.claude/skills/*.md``; reading both
-    would report every finding in them twice, at a path the author did not write.
+    A Markdown symlink is the same bytes under a second name; reading both would
+    report every finding in it twice, at a path the author did not write.
     """
     listed = subprocess.run(
         [
@@ -352,7 +352,7 @@ def iter_links(text: str) -> list[Link]:
     """Every Markdown link in ``text`` that a reader could click.
 
     Code is removed first, in both forms. That is what keeps the illustrative
-    placeholders in ``.claude/skills/*.md`` — ``docs/...md``,
+    placeholders in ``.claude/skills/*/SKILL.md`` — ``docs/...md``,
     ``./<doc>.md#<anchor>`` — out of the results: they sit in fenced blocks, so
     they are not links, and no list of them has to be maintained anywhere.
 

@@ -3,7 +3,7 @@
 
 # Advisory AI code review, the GitHub counterpart of `ai_mr_review` in
 # .gitlab-ci.yml. Runs Claude Code (via Amazon Bedrock) over the pull request
-# diff with .claude/skills/pr-review.md and posts the result as a PR comment.
+# diff with .claude/skills/pr-review/SKILL.md and posts the result as a PR comment.
 #
 # ⚠️ NOT A GATE. A model's opinion must not decide whether code merges — the
 # gates in developer-tests.yml and security-checks.yml do that. This job is

@@ -354,7 +354,7 @@ class TestGuardIsWiredIn:
     """The helper existing is not the same as it being called.
 
     A control that exists but is never consulted is one of the two recurring defect
-    classes named in ``.claude/skills/repo-quality-review.md``, so the wiring is asserted
+    classes named in ``.claude/skills/repo-quality-review/SKILL.md``, so the wiring is asserted
     rather than assumed.
     """
 

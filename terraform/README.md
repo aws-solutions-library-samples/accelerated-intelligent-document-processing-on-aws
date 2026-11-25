@@ -511,7 +511,7 @@ the validation below is:
    `tools/parity_baseline.json` explains it, one entry per type and property path
    with its reason; so does a resource on one side only and an entry that explained
    nothing. It is a release-validation tier
-   (`.claude/skills/release-validation.md`).
+   (`.claude/skills/release-validation/SKILL.md`).
 7. `terraform destroy`, and check for leftovers: CodeBuild creates
    `/aws/codebuild/<project>` log groups itself, on both the Terraform and the
    CloudFormation side.

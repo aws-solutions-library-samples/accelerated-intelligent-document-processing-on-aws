@@ -325,7 +325,7 @@ def compose_reply(
         f"🤖 Automated first-time-user stories of `{sha8}` by "
         f"`{_code(model, _NAME_CHARS)}` in a confined headless browser against "
         f"`{_code(stack, _NAME_CHARS)}`, following "
-        "`.claude/skills/ux-test-stories-ci.md`. **Advisory only** — it approves "
+        "`.claude/skills/ux-test-stories-ci/SKILL.md`. **Advisory only** — it approves "
         "nothing and gates nothing.",
     ]
     return "\n".join(lines) + "\n"

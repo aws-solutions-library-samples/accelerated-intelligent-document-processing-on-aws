@@ -162,7 +162,7 @@ The capacity calculation system provides the following analysis through its reso
 > for each key — so a model the pipeline never calls constrains neither the token
 > limit nor the request limit. The two maps carry the same keys, and a model added
 > to one and not the other is the case the checklist in
-> `.claude/skills/add-model.md` exists to prevent.
+> `.claude/skills/add-model/SKILL.md` exists to prevent.
 >
 > ⚠️ **For a plan that calls only Claude Sonnet 5 or Sonnet 5.5, the request limit is
 > therefore the placeholder above and does not bind.** The processing rate is then
@@ -183,7 +183,7 @@ The capacity calculation system provides the following analysis through its reso
 > read. A model AWS publishes no quota for is mapped to `null`, which gives the
 > same warning without a lookup. Confirm a new code resolves in the Regions you
 > deploy to, with the `aws service-quotas list-service-quotas --service-code
-> bedrock` query in `.claude/skills/add-model.md`. `BEDROCK_MODEL_QUOTA_CODES` and
+> bedrock` query in `.claude/skills/add-model/SKILL.md`. `BEDROCK_MODEL_QUOTA_CODES` and
 > `BEDROCK_MODEL_RPM_QUOTA_CODES` in `template.yaml` are the authority for which
 > models are covered — read them rather than a list here, which would go stale on
 > the next model addition.

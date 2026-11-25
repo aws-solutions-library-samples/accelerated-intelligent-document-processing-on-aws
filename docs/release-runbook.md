@@ -114,7 +114,7 @@ While packaging, the publisher replaces tokens in `template.yaml`:
   which is safe to repeat.
 - `CHANGELOG.md` should have its `[Unreleased]` section turned into a section for the new
   version, with the template URLs for each region you publish. The procedures are in
-  `.claude/skills/prepare-changelog.md` and `.claude/skills/cut-release-changelog.md`.
+  `.claude/skills/prepare-changelog/SKILL.md` and `.claude/skills/cut-release-changelog/SKILL.md`.
   The URLs return 404 until the publish completes.
 - The working tree must be clean and checked out at the commit you intend to tag. The
   publisher reads the working tree and `./VERSION` relative to the current directory, so
@@ -129,7 +129,7 @@ publishing adds build output to the tree.
 
 The fuller validation programme, including the tiers that deploy the published
 template, is described in [Release Validation](./release-validation/README.md) and
-`.claude/skills/release-validation.md`. Most of its tiers test the published artifact,
+`.claude/skills/release-validation/SKILL.md`. Most of its tiers test the published artifact,
 so they run after Step 3.
 
 ### 1.3 Local toolchain
@@ -194,7 +194,7 @@ the command lists the 13 paths it changed.
 
 ### Step 2 — Cut the CHANGELOG
 
-Follow `.claude/skills/prepare-changelog.md`, then `.claude/skills/cut-release-changelog.md`.
+Follow `.claude/skills/prepare-changelog/SKILL.md`, then `.claude/skills/cut-release-changelog/SKILL.md`.
 `## [Unreleased]` becomes `## [<x.y.z>]`, followed by a `## Templates` block with one
 template URL per region.
 
@@ -206,7 +206,7 @@ grep -n "idp-main_$(cat VERSION).yaml" CHANGELOG.md  # one hit per region you pu
 **Success:** one versioned template URL per region. They return 404 until Step 3.
 
 Then review the solution profile for the release, following
-`.claude/skills/update-solution-profile.md`: check the curated files in
+`.claude/skills/update-solution-profile/SKILL.md`: check the curated files in
 `solution-profile/` against the new CHANGELOG section, add the release to
 `solution-profile/changes.yaml`, and set `reviewed_for_version` to the version. Once
 `VERSION` is final, `make solution-profile-check` (and so `make lint`) applies the
@@ -300,7 +300,7 @@ it.
 
 Deploy and test the published release as described in
 [Release Validation](./release-validation/README.md) and
-`.claude/skills/release-validation.md`. It covers deploy variants, the `--headless` and
+`.claude/skills/release-validation/SKILL.md`. It covers deploy variants, the `--headless` and
 `--govcloud` template transforms, an in-place upgrade from the previous release, API
 authorization, security scanning and a benchmark comparison. Expect it to take most of
 a working day and to incur Bedrock charges.

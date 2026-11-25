@@ -8,7 +8,7 @@ Registered as a ``Stop`` hook in ``.claude/settings.json``. It reads the hook
 payload on stdin and, when a backlog run is live, blocks the end of the turn
 unless the run state records a child that is demonstrably still going.
 
-**The failure this exists for.** ``.claude/skills/work-the-backlog.md`` states
+**The failure this exists for.** ``.claude/skills/work-the-backlog/SKILL.md`` states
 the invariant in its ground rules: a turn that ends with no live subagent, no
 ``run_in_background`` command and no scheduled wakeup **is the end of the run**,
 because nothing re-invokes the session and it idles until a human types. That has

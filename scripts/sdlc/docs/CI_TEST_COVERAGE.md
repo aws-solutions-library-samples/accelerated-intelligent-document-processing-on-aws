@@ -15,27 +15,27 @@ its `make` target and the skill that documents how to run it.
 | Test / suite | Make target | Skill |
 |---|---|---|
 | Primary functional suite (Steps 3–14) | *(runs in CI; deploy a stack then use the individual targets below)* | — |
-| API RBAC / authorization (Step 12) | `make api-test STACK_NAME=…` (alias `make stacktest-rbac`) · static-only: `make api-test-static` | `.claude/skills/api-rbac-test.md` |
-| ZAP DAST scan | `make stacktest-zap STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
-| UX review in a real browser (functional pass/fail per flow **plus** usability findings; optionally recorded as a narrated mp4 via `scripts/ux_recorder.py`) | `make ux-test STACK_NAME=…` | `.claude/skills/ux-test.md` |
-| First-time-user stories in a confined browser (one intent-only story as one persona, judged from the journal of its tool calls; unattended, watched or paired) | `make ai-ux-test-stories-local STORY=…` · `make ai-ux-test-stories-pair STORY=… AS=…` | `.claude/skills/ux-test-stories.md` |
-| APIGateway GLOBAL hosting | `make stacktest-hosting-global` | `.claude/skills/run-stack-tests.md` |
-| WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests.md` |
-| APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
-| Jobs API (VPC) | `make stacktest-jobsapi VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
-| Tenant isolation (`TenantIsolationMode=Strict`) | `make stacktest-tenancy` · against an existing Strict stack: `make verify-tenant-isolation STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
-| Load probe: a few dozen packets at once against an existing stack (also on its own weekly schedule, while it is active) | `make stacktest-load STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests.md` |
-| Decision-model window: the callers' largest requests against a deployed decider (on demand only) | `make stacktest-decision-window STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests.md` |
-| List deploy-variant stack-tests | `make stacktest-list` | `.claude/skills/run-stack-tests.md` |
-| Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks.md` |
-| In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade.md` |
-| Full offline test battery (no AWS) | `make test` | `.claude/skills/full-test-battery.md` |
+| API RBAC / authorization (Step 12) | `make api-test STACK_NAME=…` (alias `make stacktest-rbac`) · static-only: `make api-test-static` | `.claude/skills/api-rbac-test/SKILL.md` |
+| ZAP DAST scan | `make stacktest-zap STACK_NAME=…` | `.claude/skills/run-stack-tests/SKILL.md` |
+| UX review in a real browser (functional pass/fail per flow **plus** usability findings; optionally recorded as a narrated mp4 via `scripts/ux_recorder.py`) | `make ux-test STACK_NAME=…` | `.claude/skills/ux-test/SKILL.md` |
+| First-time-user stories in a confined browser (one intent-only story as one persona, judged from the journal of its tool calls; unattended, watched or paired) | `make ai-ux-test-stories-local STORY=…` · `make ai-ux-test-stories-pair STORY=… AS=…` | `.claude/skills/ux-test-stories/SKILL.md` |
+| APIGateway GLOBAL hosting | `make stacktest-hosting-global` | `.claude/skills/run-stack-tests/SKILL.md` |
+| WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests/SKILL.md` |
+| APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests/SKILL.md` |
+| Jobs API (VPC) | `make stacktest-jobsapi VPC_ID=…` | `.claude/skills/run-stack-tests/SKILL.md` |
+| Tenant isolation (`TenantIsolationMode=Strict`) | `make stacktest-tenancy` · against an existing Strict stack: `make verify-tenant-isolation STACK_NAME=…` | `.claude/skills/run-stack-tests/SKILL.md` |
+| Load probe: a few dozen packets at once against an existing stack (also on its own weekly schedule, while it is active) | `make stacktest-load STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests/SKILL.md` |
+| Decision-model window: the callers' largest requests against a deployed decider (on demand only) | `make stacktest-decision-window STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests/SKILL.md` |
+| List deploy-variant stack-tests | `make stacktest-list` | `.claude/skills/run-stack-tests/SKILL.md` |
+| Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks/SKILL.md` |
+| In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade/SKILL.md` |
+| Full offline test battery (no AWS) | `make test` | `.claude/skills/full-test-battery/SKILL.md` |
 | Package/Lambda offline suites (idp_cli, idp_sdk, idp_feature_sdk, feature-platform, seller-entitlement-service) | `make coverage-all-cicd` for every suite a coverage tree measures; `make test-packages-cicd` for the rest | — *(runs per commit in the GitHub `developer-tests` workflow)* |
 | Seller-service ownership preflight (read-only) | `make seller-entitlement-service-preflight PRODUCT_REGISTRY='{…}'` | `feature-platform/seller-entitlement-service/README.md` |
-| Seller-service **e2e** (deploy → live probe → teardown) | `make stacktest-seller` | `.claude/skills/run-stack-tests.md` |
+| Seller-service **e2e** (deploy → live probe → teardown) | `make stacktest-seller` | `.claude/skills/run-stack-tests/SKILL.md` |
 | Seller-service live activation + payload probe | `python feature-platform/seller-entitlement-service/tests/dynamic_activation_test.py --endpoint … --product-id …` | `feature-platform/seller-entitlement-service/README.md` |
 | Seller-service test-stack teardown (incl. retained KMS key + table) | `feature-platform/seller-entitlement-service/tests/teardown_test_stack.sh --stack-name …-citest` | `feature-platform/seller-entitlement-service/README.md` |
-| Run security tests + curate a public-safe snapshot | `make security-results [STACK_NAME=… REGION=…]` (offline-only if no stack) | `.claude/skills/curate-security-results.md` |
+| Run security tests + curate a public-safe snapshot | `make security-results [STACK_NAME=… REGION=…]` (offline-only if no stack) | `.claude/skills/curate-security-results/SKILL.md` |
 
 The user-facing version of this map — every layer, including the ones that *do* run
 in CI — is [`docs/testing.md`](../../../docs/testing.md). This file stays the
@@ -73,7 +73,7 @@ already-run reports without re-running:
 Raw reports carry environment-specific identifiers (account IDs, Cognito pool
 IDs, API hostnames) and stay in gitignored `scratch/`/`.srt/` — only the curated
 summaries are committed. See
-[`.claude/skills/curate-security-results.md`](../../../.claude/skills/curate-security-results.md)
+[`.claude/skills/curate-security-results/SKILL.md`](../../../.claude/skills/curate-security-results/SKILL.md)
 for the runbook and [`security/test-results/README.md`](../../../security/test-results/README.md)
 for the process.
 
@@ -195,7 +195,7 @@ is not enough, so a project-level CI/CD variable or the "Run pipeline" form cann
 add the probe stacks to a deploy somebody clicked to check a merge request. To run
 the probes on demand, use **Run** on the weekly schedule in **Build › Pipeline
 schedules** (GitLab starts that as a scheduled pipeline), or `make stacktest-*` for
-one probe at a time (see `.claude/skills/run-stack-tests.md`).
+one probe at a time (see `.claude/skills/run-stack-tests/SKILL.md`).
 
 ⚠️ `IDP_TEST_ZAP` defaults to `true` but only filters *within* `run_variant_probes`,
 which is never called unless the outer `IDP_RUN_PROBES` gate is on. Reading that
@@ -655,7 +655,7 @@ implementation at one of the releases it pins, seeds it, migrates it in place on
 Terraform module the build just published with every phase of `idp-cli terraform
 migrate-from-genai-idp-terraform`, verifies, and destroys both deployments. What it
 proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack tiers) and in
-tier J of `.claude/skills/release-validation.md`.
+tier J of `.claude/skills/release-validation/SKILL.md`.
 
 The release rotates. The build passes `--upstream-tag rotate`
 (`TERRAFORM_MIGRATION_UPSTREAM_TAG` in `codebuild_deployment.py`), and the driver takes
@@ -846,7 +846,7 @@ A weekly schedule carrying `IDP_RUN_TERRAFORM_UPGRADE=true` runs
 seeds it, upgrades the same deployment in place with `idp-cli deploy --terraform` to
 the module the build just published, verifies that nothing was lost, and destroys it.
 What it proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack
-tiers) and in tier K of `.claude/skills/release-validation.md`.
+tiers) and in tier K of `.claude/skills/release-validation/SKILL.md`.
 
 **FROM is the newest published release.** `resolve_terraform_upgrade_from` in
 `codebuild_deployment.py` reads the public release bucket's
@@ -1267,7 +1267,7 @@ catches it.
 
 ² **`ai_mr_review` is advisory, is not a gate, and does not run on its own.** It
 runs Claude Code (via Bedrock) over the MR diff with
-`.claude/skills/pr-review.md` and posts the review as an MR note; it is
+`.claude/skills/pr-review/SKILL.md` and posts the review as an MR note; it is
 `allow_failure: true`, has `needs: []` so it does not wait for `static_checks`, and
 it is deliberately absent from `test_ci_gate_parity.py`'s `SHARED_GATES` — a
 model's opinion must not decide whether code merges, and a Bedrock throttle must
@@ -1388,7 +1388,7 @@ Run it by hand with `make ai-mr-review`, `make ai-mr-review-dry MR=<iid>` to see
 review without posting it, or `make ai-mr-review-local MR=<iid>` from a laptop,
 which takes the MR head from git over SSH because this instance's REST API sits
 behind federated sign-in and a token alone cannot reach it. The unattended
-contract is `.claude/skills/pr-review-ci.md`.
+contract is `.claude/skills/pr-review-ci/SKILL.md`.
 
 ³ **`ux_test_build` and `ai_ux_test` are advisory, are not gates, and run
 automatically.** On a non-Draft MR to `develop` that changes `src/ui/`, the pair tests
@@ -1399,7 +1399,7 @@ note for the same head. Both jobs are `allow_failure: true`, absent from
 cancels the run. `ai_ux_test` is idempotent per head SHA, and
 `resource_group: ux_test_stack` runs one at a time against the shared stack. The entry
 point is `scripts/sdlc/ai_ux_test.py`, the unattended contract is
-`.claude/skills/ux-test-ci.md`, and `scripts/tests/test_ux_test_ci_jobs.py` pins the
+`.claude/skills/ux-test-ci/SKILL.md`, and `scripts/tests/test_ux_test_ci_jobs.py` pins the
 two jobs' shape.
 
 **Why two jobs.** Chrome's DevTools port is unauthenticated, so no MR code may run in
@@ -1830,8 +1830,8 @@ persona, in the same confined headless browser, egress proxy and socket audit as
 the persona's expectation, never from its prose. All three are `allow_failure: true`
 and absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
 `scripts/sdlc/ai_ux_test_stories.py`, the unattended contract is
-`.claude/skills/ux-test-stories-ci.md`, the operator procedure is
-`.claude/skills/ux-test-stories.md`, and
+`.claude/skills/ux-test-stories-ci/SKILL.md`, the operator procedure is
+`.claude/skills/ux-test-stories/SKILL.md`, and
 `scripts/tests/test_ux_test_stories_ci_jobs.py` pins the jobs' shape.
 
 - **On a merge request.** `ai_ux_test_stories` runs in `ux_review` on a non-Draft MR
@@ -2065,7 +2065,7 @@ commands.
   - **Coverage**: beyond the role permission matrix, Step 12 runs the mandatory
     AppSec API security checklist — IDOR (2.1), token expiry/logout (2.3/2.4),
     deleted-resource (2.5), input validation (3), and TLS (4). See the mapping
-    table in `.claude/skills/api-rbac-test.md`. Input validation runs in
+    table in `.claude/skills/api-rbac-test/SKILL.md`. Input validation runs in
     **tolerant** mode here (a 5xx on malformed input is WARNed, not failed) until
     central schema validation lands; set `IDP_SECTEST_STRICT_INPUT=true` to gate
     on a clean 4xx.
@@ -2571,7 +2571,7 @@ not change nightly. Run it for a release check or after changing the gate.
 > (`IDP_PROBE_MAX_CONCURRENCY`) and retried once, and each deploys **without** a
 > permissions boundary (only the primary suite creates + tests one — Step 13). To
 > run one probe by hand, one stack at a time, use `make stacktest-*` (see
-> `.claude/skills/run-stack-tests.md` and `scripts/sdlc/run_stacktest.py`).
+> `.claude/skills/run-stack-tests/SKILL.md` and `scripts/sdlc/run_stacktest.py`).
 
 Separate from the shared-stack suite above (Steps 3–14, which run against ONE
 stack deployed with default hosting — CloudFront), a **deployment-variant probe
@@ -3267,7 +3267,7 @@ additions.
       structural promises, and process a real sample document. Deliberately
       not wired into CI (~1h+ per variant); the validators and result shape
       already match the probe framework so wiring in is additive. See
-      `.claude/skills/transform-deploy-test.md`. ⚠️ A COMMERCIAL `govcloud`
+      `.claude/skills/transform-deploy-test/SKILL.md`. ⚠️ A COMMERCIAL `govcloud`
       run does NOT prove GovCloud behaviour (partition ARNs, model
       availability, the BDA project rejection) — that needs
       `REGION=us-gov-west-1` against a GovCloud account, which the runner

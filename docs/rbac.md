@@ -982,7 +982,7 @@ unauthorized and a 5xx would invite a retry.
 > `scripts/api_rbac_expectations.yaml` and regenerating the manifest. Skip that
 > and the new operation returns 403 for every caller, including Admin. Fix it by
 > declaring the groups — never by widening an existing entry or letting an
-> unmapped field through. See `.claude/skills/api-rbac-test.md`.
+> unmapped field through. See `.claude/skills/api-rbac-test/SKILL.md`.
 
 ### Layer 1: Authentication at the API, and the declared group policy
 

@@ -32,16 +32,16 @@ CHANGELOG, and the assistant skill files.
 - In a copyable `pip install`, install first-party packages by path, with every
   sibling they need on the same command.
 - Index each new page in `docs/README.md` and keep images in `images/`.
-- When you add a skill, put it in `.claude/skills/` and give it a row in the
-  `CLAUDE.md` skill table. Then either add a `.cline/skills/` symlink to it or add
-  a `CLINE_EXEMPT` row with a reason.
+- When you add a skill, create `.claude/skills/<name>/SKILL.md` with `name` and
+  `description` front matter, and give it a row in the `CLAUDE.md` skill table.
 
 ## Must not
 - Write commentary about the document's own history ("this page previously
   said", "an earlier draft claimed", "correction:").
 - State counts or "as of today" facts that will go stale. Name how to derive
   them instead.
-- Create or edit `.cline` copies of skills. They are symlinks to `.claude/skills/`.
+- Create a copy of a skill outside `.claude/skills/`, or a flat `.md` file inside
+  it. Every assistant reads the one `SKILL.md`.
 - Move `iam-roles/cloudformation-management/README.md` into `docs/`. It is
   repo-only by design.
 - Describe AppSync, or Pattern 1/2/3, as current architecture.
@@ -53,10 +53,10 @@ CHANGELOG, and the assistant skill files.
 - `scripts/tests/test_repo_quality_review_skill.py` (skill table and symlinks)
 
 ## Sources
-- [.claude/skills/documentation.md](../skills/documentation.md): the page
+- [.claude/skills/documentation/SKILL.md](../skills/documentation/SKILL.md): the page
   template, both documentation tiers, the sidebar, the CHANGELOG format, and
   the skill symlink map
-- [.claude/skills/prepare-changelog.md](../skills/prepare-changelog.md): how to
+- [.claude/skills/prepare-changelog/SKILL.md](../skills/prepare-changelog/SKILL.md): how to
   shape the `[Unreleased]` section
 - [CLAUDE.md](../../CLAUDE.md): "Documentation states what is true now" and how
   the link gate works

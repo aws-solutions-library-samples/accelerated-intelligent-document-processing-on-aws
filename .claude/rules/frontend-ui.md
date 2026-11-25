@@ -77,12 +77,12 @@ that sends REST requests.
   `make ui-i18n-coverage` (advisory)
 
 ## Sources
-- [.claude/skills/frontend-ui.md](../skills/frontend-ui.md): the stack, directory
+- [.claude/skills/frontend-ui/SKILL.md](../skills/frontend-ui/SKILL.md): the stack, directory
   layout, context, auth and transport patterns, and lint config
-- [.claude/skills/pr-review.md](../skills/pr-review.md): the UX review criteria
-- [.claude/skills/ux-test.md](../skills/ux-test.md): browser-driven UX testing
+- [.claude/skills/pr-review/SKILL.md](../skills/pr-review/SKILL.md): the UX review criteria
+- [.claude/skills/ux-test/SKILL.md](../skills/ux-test/SKILL.md): browser-driven UX testing
   against a live stack
-- [.claude/skills/ui-i18n.md](../skills/ui-i18n.md): writing the French in the
+- [.claude/skills/ui-i18n/SKILL.md](../skills/ui-i18n/SKILL.md): writing the French in the
   change that edits the English, where the fr-CA rules live, and the review
   criteria
 - [src/ui/src/i18n/README.md](../../src/ui/src/i18n/README.md): how a message is

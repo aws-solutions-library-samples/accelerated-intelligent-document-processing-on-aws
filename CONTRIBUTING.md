@@ -334,26 +334,20 @@ round-trip:
 
 | Skill file | Read it when you are changing |
 |---|---|
-| `.claude/skills/backend-lambda.md` | Lambda handlers or `idp_common` Python code |
-| `.claude/skills/frontend-ui.md` | React / TypeScript / Cloudscape UI code |
-| `.claude/skills/infrastructure.md` | CloudFormation or SAM templates, nested stacks, GovCloud, log-group naming |
-| `.claude/skills/extraction-pipeline.md` | The processing pipeline, configuration, or agentic extraction |
-| `.claude/skills/testing-qa.md` | Tests — pytest patterns, `moto`, conftest layout |
-| `.claude/skills/documentation.md` | Documentation, the CHANGELOG, or the docs site |
-| `.claude/skills/code-review.md` | Anything — it is the self-review checklist to run before you push |
+| `.claude/skills/backend-lambda/SKILL.md` | Lambda handlers or `idp_common` Python code |
+| `.claude/skills/frontend-ui/SKILL.md` | React / TypeScript / Cloudscape UI code |
+| `.claude/skills/infrastructure/SKILL.md` | CloudFormation or SAM templates, nested stacks, GovCloud, log-group naming |
+| `.claude/skills/extraction-pipeline/SKILL.md` | The processing pipeline, configuration, or agentic extraction |
+| `.claude/skills/testing-qa/SKILL.md` | Tests — pytest patterns, `moto`, conftest layout |
+| `.claude/skills/documentation/SKILL.md` | Documentation, the CHANGELOG, or the docs site |
+| `.claude/skills/code-review/SKILL.md` | Anything — it is the self-review checklist to run before you push |
 
-`.claude/skills/` is **canonical**. The Cline assistant's `.cline/skills/` files
-are **symlinks** to them (under different filenames, e.g. `.cline/skills/docs.md`
-→ `.claude/skills/documentation.md`), so editing a `.claude` skill updates both.
-**Do not create a parallel copy under `.cline/skills/`** — add a symlink instead:
-
-```bash
-ln -s ../../.claude/skills/<name>.md .cline/skills/<name>.md
-```
-
-On a clone with `core.symlinks=false` (some Windows setups) those symlinks
-materialize as text files containing a path. If a skill file looks like a bare
-path, run `git config core.symlinks true` and re-checkout.
+Each skill is `.claude/skills/<name>/SKILL.md`, with `name` and `description`
+front matter (the open [Agent Skills](https://agentskills.io) layout). Claude Code
+and Cline both read `.claude/skills/` directly, and `.agents/skills` is a symlink to
+it for other assistants, so there is exactly one copy of each skill. Add a new skill
+as a new directory there; do not create a copy anywhere else. The front-matter rules
+are in the "Skill format" section of `.claude/skills/documentation/SKILL.md`.
 
 ### Documentation lives in two tiers
 
@@ -371,7 +365,7 @@ Both tiers are real documentation and they cover different things:
 the API detail, and any matching `docs/*.md` page that summarizes it. It is easy
 to update one and forget the other, so check both. Adding or changing a
 selectable Bedrock model touches many more files than you would expect — work
-through the checklist in `.claude/skills/documentation.md` rather than from
+through the checklist in `.claude/skills/documentation/SKILL.md` rather than from
 memory.
 
 To preview the site locally:
@@ -647,7 +641,7 @@ a line-scoped `# nosec <ID> - <reason>`; an unreachable advisory goes in
 `scripts/security/dep_audit_allowlist.json` with a justification; a
 security-matrix or Checkov finding goes in `scripts/srt/issues.json`. Adding a
 suppression without a stated reason will be asked about in review. The procedure
-is in `.claude/skills/srt-security-scan.md`.
+is in `.claude/skills/srt-security-scan/SKILL.md`.
 
 ### Type checking
 
@@ -909,7 +903,7 @@ are, say so in the PR description.
 
 **Region and service availability.** Not every Bedrock model is available in
 every Region. If you add one, follow the model checklist in
-`.claude/skills/documentation.md` — it covers the template enums, pricing,
+`.claude/skills/documentation/SKILL.md` — it covers the template enums, pricing,
 limits, client routing, UI, both documentation tiers, and the CHANGELOG.
 
 **Service quotas.** Bedrock and Textract throughput, Lambda concurrency, and the

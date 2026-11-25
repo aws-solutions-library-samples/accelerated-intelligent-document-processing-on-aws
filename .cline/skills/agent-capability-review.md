@@ -1,1 +1,0 @@
-../../.claude/skills/agent-capability-review.md

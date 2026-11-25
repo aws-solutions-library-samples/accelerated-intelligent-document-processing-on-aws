@@ -1,1 +1,0 @@
-../../.claude/skills/srt-security-scan.md

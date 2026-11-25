@@ -79,10 +79,10 @@ definitions and the example IAM roles. Rules specific to feature stacks are in
   `integration_tests` job.
 
 ## Sources
-- [.claude/skills/infrastructure.md](../skills/infrastructure.md): the stack
+- [.claude/skills/infrastructure/SKILL.md](../skills/infrastructure/SKILL.md): the stack
   layout, Lambda resource pattern, log-group invariant, partition gate and
   inventory audit commands
-- [.claude/skills/code-review.md](../skills/code-review.md): the infrastructure
+- [.claude/skills/code-review/SKILL.md](../skills/code-review/SKILL.md): the infrastructure
   review checklist
 - [docs/configuration.md](../../docs/configuration.md): Step Functions retry
   policy and how to add a task state

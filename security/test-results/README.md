@@ -55,7 +55,7 @@ via env: `VERSION=` (default: repo `VERSION`), `DATE=` (default: today),
 
 **Or just ask Claude Code:** *"run security tests and update results"* (add
 *"against stack `<name>`"* for the live tests) — it follows the
-[`curate-security-results`](../../.claude/skills/curate-security-results.md)
+[`curate-security-results`](../../.claude/skills/curate-security-results/SKILL.md)
 skill, which runs `make security-results` and reviews the redactions for you.
 
 ## Process: producing a snapshot for a release (manual, step by step)
@@ -101,7 +101,7 @@ skill, which runs `make security-results` and reviews the redactions for you.
 
 4. **Commit** `security/test-results/<version>/`.
 
-The [`curate-security-results`](../../.claude/skills/curate-security-results.md)
+The [`curate-security-results`](../../.claude/skills/curate-security-results/SKILL.md)
 skill is the operator runbook for this.
 
 ## Reading a snapshot
