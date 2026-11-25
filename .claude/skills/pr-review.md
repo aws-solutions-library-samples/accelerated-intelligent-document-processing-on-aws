@@ -229,6 +229,15 @@ runtime code that looks resources up through CloudFormation.
   - Accessibility: labels on inputs, keyboard nav, focus management
   - `DOMPurify` used for any `dangerouslySetInnerHTML`
   - Responsive behavior reasonable
+  - Translations (`src/ui/src/i18n/`), by the criteria in `.claude/skills/ui-i18n.md`
+    ("Reviewing a change's translations"): English added or edited in `en.json`
+    comes with its French in `fr-CA.json`, or with its stale entries dropped
+    (`make ui-i18n-drop-stale`); a new product term has its glossary row; and the
+    French leaves no English behind and keeps the English's meaning, the
+    glossary's terms, the register, every argument, plural and tag, and fits its
+    place. These are comments. Only `make check-ui-i18n-catalog` blocks a merge:
+    on a stale entry, an entry the build rejects (for example a changed argument or
+    tag), or a dead one. A missing translation never does
 - **Backend / API**:
   - Actionable error messages; failures surface to the UI (e.g. status on `Document`)
   - Progress / status updated at meaningful checkpoints
@@ -388,6 +397,12 @@ Flag these immediately when seen in any diff:
 - `Resource: "*"` in a new IAM policy statement
 - `Principal: "*"` in a new resource policy
 - `console.log(` in production UI code
+- English UI text added or edited in `src/ui/src/i18n/en.json` with no matching
+  `fr-CA.json` change and no `make ui-i18n-drop-stale`, or a new product term
+  with no row in `glossary.fr-CA.csv` (a comment, not a block)
+- An entry of `src/ui/src/i18n/fr-CA.json` whose English changed but whose French
+  did not (only its `sourceHash` moved): check that the French still says what the
+  new English says
 - `print(` used for logging in Lambda code
 - New Lambda without dedicated LogGroup + KMS
 - New IAM role without a `PermissionsBoundary` conditional

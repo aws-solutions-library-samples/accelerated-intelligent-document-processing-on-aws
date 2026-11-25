@@ -127,6 +127,7 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Build + package | `publish.py … --clean-build` in a **clean env** (`env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin AWS_PROFILE=default bash -lc '…'`) | template validation + cfn-lint clean on all packaged templates | `full-test-battery.md` |
 | Agent capability audit | follow `agent-capability-review.md` (one subagent per manifest entry; reads code only, writes only under `scratch/`) | every entry in `scripts/tests/agent_capabilities.yaml` re-verified against the code, and the diff against the manifest is empty or each line of it is a manifest edit in this release's validation PR. The release record carries the counts only (entries checked; verified, inferred and unverified; diff lines), never the findings' text | `agent-capability-review.md` |
 | **Test coverage** | `make coverage-all` then `make check-coverage-debt` | every measurable tree measured, and the ratchet green. Record the per-tree table in the release record and diff it against PREV's — a tree that *lost* coverage is a finding even when the ratchet's 1% tolerance absorbs it | `full-test-battery.md` |
+| Translation coverage | `make ui-i18n-coverage` | `fr-CA` lists nothing missing or stale; if it does, the catch-up before the cut did not happen, which the record states as a finding. The figure itself belongs in the release's CHANGELOG section, not in the record | `prepare-changelog.md`, `ui-i18n.md` |
 
 The build is needed anyway: the transform tiers publish from source, and the
 self-deploy stack-tests take its `idp-main.yaml` URL as `TEMPLATE_URL`.
@@ -353,6 +354,13 @@ UI changed this release** — read the release's `CHANGELOG.md` section for `src
 changes and say which flows you chose. Report functional pass/fail per flow *and*
 the ranked usability findings; a flow that is blocked because the feature is only on
 an unmerged branch is **blocked, not broken**, and the record must say which.
+
+Run the same flows again in French (Canada), switching the language as
+`ux-test.md` says ("Reviewing in French (Canada)", the switch `signin.set_locale`
+makes), and report what only the French shows.
+`make ai-ux-translation-review STACK=<the stack> LOCALE=fr-CA` adds an unattended,
+look-only review of every screen a URL reaches, on Bedrock within its `MAX_USD` cap
+(see the i18n README's "Reviewing translated screens").
 
 Optionally record it (`scripts/ux_recorder.py start … mark … stop`, then `render`) —
 useful when a finding is easier to show than to describe. The session directory

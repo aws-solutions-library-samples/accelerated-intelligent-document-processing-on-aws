@@ -505,8 +505,9 @@ estimated cost and calls nothing; a real run needs `--region` (and `--profile` f
 - **What the report says.** Each entry is `same` (no problem, same wording), `same-meaning` (no problem, worded
   otherwise: the current translation stands) or `disagreement` (a person decides, with the model's suggestion beside
   it). An answer that is not well formed is listed as unreviewed and never counted. The agreement figure is the share
-  of reviewed entries with no problem. A suggestion you take is copied into `<locale>.json` by hand, where
-  `make check-ui-i18n-catalog` checks it.
+  of reviewed entries with no problem. A suggestion you take goes into `<locale>.json` through
+  `make ui-i18n-ingest`, as an entry with its `id` and `message` in a list shaped like the one `make ui-i18n-todo`
+  prints, where the build's parity check judges it.
 - **Model and cost.** The default model is `us.anthropic.claude-opus-5-5`; `--model` takes another inference profile
   of it that has a price in `config_library/pricing.yaml`. The run refuses to start above `--max-usd` (US$20 by
   default) and stops before any batch that could take it past the cap. Each attempt botocore retried, and every

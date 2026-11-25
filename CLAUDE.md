@@ -72,6 +72,16 @@ make ui-lint
 # UI build verification
 make ui-build
 
+# The UI's i18n gates (part of lint, fastlint and lint-cicd): en.json matches the
+# messages, every translation compiles and none is stale, and no file gains a
+# hardcoded user-facing string (see .claude/skills/ui-i18n.md)
+make check-ui-i18n-catalog
+make check-ui-string-debt
+
+# Advisory, never fails: what each translation catalog still lacks, and the make
+# target that clears each list
+make ui-i18n-coverage
+
 # CI/CD linting (check-only, no modifications)
 make lint-cicd
 
@@ -1676,6 +1686,7 @@ that domain:
 |------------|-------------|
 | `.claude/skills/backend-lambda.md` | Writing Lambda handlers or `idp_common` Python code |
 | `.claude/skills/frontend-ui.md` | React / TypeScript / Cloudscape UI changes |
+| `.claude/skills/ui-i18n.md` | Adding, editing or reviewing web UI text and its French (Canada) translation, written with the English in the same change; the glossary, where the fr-CA rules live, the review criteria, and the release catch-up |
 | `.claude/skills/infrastructure.md` | CloudFormation / SAM templates, nested stacks, GovCloud |
 | `.claude/skills/extraction-pipeline.md` | Document processing pipeline, configuration, agentic extraction |
 | `.claude/skills/code-review.md` | Pre-commit self-review checklist for your own changes |

@@ -82,6 +82,11 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] If schema changed, `make codegen` run and committed
 - [ ] Generated files (`src/graphql/generated/`) not manually edited
 
+### Translations
+- [ ] New or edited text is a react-intl message with an `id`, `defaultMessage` and `description`, and `make ui-i18n-extract` was run
+- [ ] Its French is in the same change (`make ui-i18n-todo`, then `make ui-i18n-ingest`), or its stale entries were dropped (`make ui-i18n-drop-stale`); a new product term has its row in `glossary.fr-CA.csv`
+- [ ] The French meets the review criteria in [ui-i18n.md](ui-i18n.md#reviewing-a-changes-translations), and `make check-ui-i18n-catalog` passes
+
 ## Infrastructure Review
 
 ### CloudFormation Templates

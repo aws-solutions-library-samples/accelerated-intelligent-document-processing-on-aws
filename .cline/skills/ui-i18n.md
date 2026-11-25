@@ -1,0 +1,1 @@
+../../.claude/skills/ui-i18n.md

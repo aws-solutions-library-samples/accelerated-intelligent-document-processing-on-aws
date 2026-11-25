@@ -76,7 +76,9 @@ internal symbol and file names, function/resolver/Lambda plumbing, root-cause
 narration, rejected alternatives ("chosen over…"), self-justifying asides
 ("deliberately narrow", "which is why…"), measurement minutiae, and counts of
 tests, sites or findings. A number stays only when it *is* the impact — a recall
-cliff, a cost delta, a 5-hour retry ladder.
+cliff, a cost delta, a 5-hour retry ladder, or how much of the web UI a French
+(Canada) user sees in French (the two figures under "The web UI's French
+(Canada), before the cut").
 
 **Never cut**, however long the entry gets: `⚠️` breaking-change, migration and
 action-required notes, recovery steps for a wedged stack, and statements that a
@@ -97,7 +99,8 @@ capability is unavailable in a partition or mode.
    ```bash
    git log --oneline <last-tag>..HEAD
    ```
-   Read the current `[Unreleased]` body in full.
+   Read the current `[Unreleased]` body in full. Before writing the entries, do the
+   French (Canada) check below: its figures go in one of them.
 
 3. **Classify every existing entry** as: rewrite-shorter / merge-with-another /
    **drop (intra-cycle churn)** / **drop (no customer impact)**. Apply both rules
@@ -130,6 +133,35 @@ capability is unavailable in a partition or mode.
 7. **Do not** add the release date or version number, and do not renumber the
    section — releasing (turning `[Unreleased]` into `## [x.y.z] - DATE` and adding
    the template URLs block) is a separate step the maintainer does at tag time.
+
+## The web UI's French (Canada), before the cut
+
+Each change writes its own French ([ui-i18n.md](ui-i18n.md)), but a change made
+without an agent can leave English behind, so check before the release is cut.
+
+1. **Catch up.** Run `make ui-i18n-coverage`. If `fr-CA` lists missing or stale
+   entries (the catalog gate keeps invalid and dead ones off `develop`), close them
+   first in a catch-up PR, with the two Bedrock tools on your own AWS credentials
+   (see the i18n README's
+   [Revising a translation](../../src/ui/src/i18n/README.md#revising-a-translation)):
+
+   ```bash
+   make ui-i18n-revise LOCALE=fr-CA UI_I18N_REVISE_ARGS="--refresh --dry-run"   # the entries and the estimate
+   make ui-i18n-revise LOCALE=fr-CA UI_I18N_REVISE_ARGS="--refresh --region <region> --profile <name>"
+   make ui-i18n-review LOCALE=fr-CA UI_I18N_REVIEW_ARGS="--provenance <file> --region <region> --profile <name>"
+   ```
+
+   `<file>` is the provenance file the revise run prints, under
+   `test-reports/ui-i18n-revise/` by default. A person reads the review's
+   disagreements and samples what the revise run wrote before the catch-up PR
+   merges.
+2. **Give the figures in the release's CHANGELOG section, and nowhere else.** That is
+   `[Unreleased]` until the cut. Its entry about the web UI's languages states the
+   `fr-CA` coverage from `make ui-i18n-coverage` and the hardcoded strings left from
+   `python3 scripts/check_ui_string_debt.py --summary`, since a screen that stays
+   English is not in the catalog. Evergreen docs give no figure and point to
+   `make ui-i18n-coverage` instead (`scripts/tests/test_documented_counts.py` guards
+   counts in prose).
 
 ## Style reference
 
